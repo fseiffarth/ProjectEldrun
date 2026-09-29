@@ -1,23 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
-import { promptClock, promptLines, promptsFromTranscript } from "../agentPrompts";
-import { ApiError, api, closeTab, deleteOutboxFile, listOutbox, outboxFileUrl, reorderTab, type AgentRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
+import { promptClock, promptLines, promptsFromTranscript, scheduleClock } from "../agentPrompts";
+import { ApiError, api, closeTab, deleteOutboxFile, listOutbox, openOutside, outboxFileUrl, reopenTab, reorderTab, type AgentRow, type ClosedTabRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
 import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readChoice, writeChoice } from "../prefs";
 import { useRowDrag } from "../rowDrag";
 import { applyServerOrder, placeBeside } from "../tabReorder";
 import { ColorSheet } from "./ColorSheet";
-import { NewTabSheet } from "./NewTabSheet";
+import { NewTabSheet, type NewTabLaunch } from "./NewTabSheet";
+import { useProjectInbox } from "../components/ProjectInbox";
 import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
-import { AgentStatusPill } from "../components/AgentStatusPill";
+import { AgentStatusMark } from "../components/AgentStatusPill";
 import { OutboxGallery } from "../components/OutboxGallery";
-import { OutboxGrid } from "../components/OutboxGrid";
 import { OutboxViewer } from "../components/OutboxViewer";
+import { ProjectFiles } from "../components/ProjectFiles";
+import { GitMark } from "../components/GitMark";
 import { tabColorCss } from "../tabColors";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
+import { describeFailure } from "../connection";
+import { installFocusSwipe } from "../terminal/focusSwipe";
 
 /** The orders this list offers, in the words this screen can use for them. The
  * cross-project Agents list calls `native` "Status", because there the arrival
@@ -38,18 +42,13 @@ const SORT_LABEL: Record<AgentSort, string> = {
  *  close again. */
 const CLOSED_HELD_MS = 30_000;
 
-/** How many of the desktop's files the shelf under the tab cards shows. The
- * sidecar lists up to forty, and a screen that ends in forty thumbnails is a
- * screen whose tabs are three scrolls away — the rest are one tap behind the
- * shelf's own button, in the gallery sheet the Focus screen opens. */
-const SHELF_FILES = 6;
-
 /** The line under an agent tab, in the words the desktop's Agents view uses:
  * how many prompts are scheduled and when the first one fires. The desktop
- * computed both against its own clock, so the phone only formats them. */
-function scheduleLine(schedules: TabSchedules | undefined): string {
-  if (!schedules) return "Schedules need desktop Eldrun";
-  if (schedules.total === 0) return "No scheduled prompts";
+ * computed both against its own clock, so the phone only formats them. A tab
+ * with none — or a desktop that did not say — gets no line at all: the ◷
+ * beside the model is always there to add one. */
+function scheduleLine(schedules: TabSchedules | undefined): string | null {
+  if (!schedules || schedules.total === 0) return null;
   const count = schedules.enabled === schedules.total
     ? `${schedules.total} scheduled`
     : `${schedules.enabled} of ${schedules.total} scheduled`;
@@ -67,11 +66,24 @@ function scheduleLine(schedules: TabSchedules | undefined): string {
  * time. The newest prompt leads and is given room to wrap; the ones behind it
  * are one line each, enough to recognize a session by its recent history
  * without turning the card into a transcript (the Focus view is that).
+ *
+ * The prompts still to come lead the list: the soonest scheduled ones, each
+ * behind a ◷ and the desktop time it fires, so the list reads from what is
+ * next down to what was asked last.
  */
 function PromptLines({ tab }: { tab: TabRow }) {
+  const t = useT();
   const lines = promptLines(tab);
+  const scheduled = tab.schedules?.upcoming ?? [];
   return <div className="tab-card-prompts">
     <small className="tab-card-prompts-label">Last prompts</small>
+    {scheduled.map((prompt, index) => {
+      const when = prompt.at ? scheduleClock(prompt.at) : "";
+      return <p className="tab-card-prompt scheduled" key={`scheduled-${prompt.at ?? ""}-${index}`} title={when ? t("mobile.project.scheduledAt", { at: when }) : undefined}>
+        <span className="tab-card-prompt-when"><span aria-hidden="true">◷</span> {when}</span>
+        <span className="tab-card-prompt-text">{prompt.text}</span>
+      </p>;
+    })}
     {lines.length === 0
       ? <p className="tab-card-prompt empty">{promptsFromTranscript(tab)
         ? "Nothing read from this session's transcript yet."
@@ -112,7 +124,7 @@ function withoutClosed(detail: ProjectDetail, closed: Map<string, number>): Proj
     : { ...detail, tabs: detail.tabs.filter((row) => !closed.has(row.id)) };
 }
 
-export function Project({ id, back, terminal }: { id: string; back: () => void; terminal: (tab: TabRow, opts?: { pickModel?: boolean }) => void }) {
+export function Project({ id, back, terminal }: { id: string; back: () => void; terminal: (tab: TabRow, opts?: { pickModel?: boolean; signIn?: boolean }) => void }) {
   const t = useT();
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [creating, setCreating] = useState(false);
@@ -127,20 +139,38 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** The header's ＋: what to open next — a shell, or one of the desktop's
    * agents in one of its modes. */
   const [newTabOpen, setNewTabOpen] = useState(false);
+  /** The ＋ sheet's "Send a file": its picker and a row per pick. */
+  const projectInbox = useProjectInbox(id);
   /** The agent tab being renamed. The desktop owns the tab layout, so the sheet
    * writes through the bridge and the next poll brings the new label back. */
   const [renameTab, setRenameTab] = useState<TabRow | null>(null);
-  /** What the desktop sent this project (`eldrun-send` → `.eldrun/outbox/`),
-   * newest first — the shelf under the tab cards. The files belong to the
-   * project, not to a session, so this screen reads them by the project: a
-   * file sent from a tab that has since been closed is still here. */
+  /** What the agent sent this project (`eldrun-send` → `.eldrun/outbox/`),
+   * newest first, behind the header's 🖼. The files belong to the project, not
+   * to a session, so this screen reads them by the project: a file sent from a
+   * tab that has since been closed is still here. */
   const [outbox, setOutbox] = useState<OutboxFile[]>([]);
-  /** Whether the whole listing is up, in the same sheet the Focus screen's
-   * gallery button opens — the shelf shows `SHELF_FILES` of it. */
+  /** Whether the listing is up, in the same sheet the Focus screen's gallery
+   * button opens. */
   const [galleryOpen, setGalleryOpen] = useState(false);
   /** The file open full screen (a picture or a text preview). */
   const [fileOpen, setFileOpen] = useState<OutboxFile | null>(null);
+  /** The read-only file browser, a drawer a left→right swipe over the screen
+   * slides in from the left, there when the desktop's "Project files on the
+   * phone" switch is on (`detail.files`). Swipe-only: the header's controls
+   * are this list's own. */
+  const [filesOpen, setFilesOpen] = useState(false);
+  const screenRef = useRef<HTMLElement | null>(null);
+  const filesOffered = !!detail?.files;
+  useEffect(() => {
+    const host = screenRef.current;
+    if (!filesOffered || filesOpen || !host) return;
+    // Not from a card's grip (its drag is its own, `touch-action:none`), and
+    // not through a sheet laid over the list.
+    return installFocusSwipe(host, { onSwipeRight: () => setFilesOpen(true), onSwipeLeft: () => {} }, { ignore: ".tab-card-grip, .sheet-backdrop, [role='dialog']", leftEdge: true });
+  }, [filesOffered, filesOpen]);
   const outboxScope = useMemo(() => ({ project: id }), [id]);
+  /** The pictures among them, which the full-screen viewer steps through. */
+  const outboxPictures = useMemo(() => outbox.filter((file) => file.kind.startsWith("image/")), [outbox]);
   /** The tab whose colour is being picked (#264), of any kind the phone lists —
    * colouring is how a row of look-alike sessions is told apart, which is as
    * true of five shells as of five agents. */
@@ -185,7 +215,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       // Keep the last good view rather than blanking the tab list: on a poll
       // this fast, one dropped packet used to wipe the screen and flash the
       // "Desktop unavailable" notice on every flaky-signal hiccup.
-      .catch((reason) => setError(`Host unavailable: ${String(reason)}`))
+      .catch((reason) => setError(describeFailure(reason)))
       .finally(() => { inFlight.current = false; });
   }, [id]);
   useEffect(() => {
@@ -206,7 +236,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   }, [load]);
   /** Reads the outbox now and every `OUTBOX_POLL` while the page is visible;
    * coming back to the page reads it at once. A listing that could not be
-   * fetched keeps what was shown — the next poll retries, and a missing shelf
+   * fetched keeps what was shown — the next poll retries, and a missing 🖼
    * would read as "the desktop sent nothing", which is a different thing. */
   useEffect(() => {
     setOutbox([]);
@@ -251,7 +281,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** A PDF opens in the browser's own viewer; a picture or text full screen
    * here — the Focus screen's gallery does the same with the same files. */
   const openFile = useCallback((file: OutboxFile) => {
-    if (file.kind === "application/pdf") window.open(outboxFileUrl({ project: id }, file.name), "_blank", "noopener");
+    if (file.kind === "application/pdf") void openOutside(outboxFileUrl({ project: id }, file.name));
     else setFileOpen(file);
   }, [id]);
   /** Removes one file the desktop sent, from the tile's own confirm. The row is
@@ -267,16 +297,16 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     });
     setFileOpen((open) => open?.name === file.name ? null : open);
   }, [id]);
-  const create = async (kind: "shell" | "agent", agent?: AgentRow, mode?: string) => {
+  const create = async (kind: "shell" | "agent", agent?: AgentRow, mode?: string, launch?: NewTabLaunch) => {
     setCreating(true); setError("");
-    const action = `${kind}:${agent?.id ?? ""}:${mode ?? ""}`;
+    const action = `${kind}:${agent?.id ?? ""}:${mode ?? ""}:${launch?.worktree ?? ""}:${launch?.cloud ?? ""}:${launch?.task ?? ""}:${launch?.sign_in ?? ""}:${launch?.local ?? ""}`;
     const idempotencyKey = pendingKeys.current.get(action) ?? crypto.randomUUID();
     pendingKeys.current.set(action, idempotencyKey);
     try {
-      const body = await api<{ tab: TabRow }>(`/api/v1/projects/${encodeURIComponent(id)}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, idempotency_key: idempotencyKey }) });
+      const body = await api<{ tab: TabRow }>(`/api/v1/projects/${encodeURIComponent(id)}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, ...launch, idempotency_key: idempotencyKey }) });
       pendingKeys.current.delete(action);
-      terminal(body.tab);
-    } catch (reason) { setError(String(reason)); void load(); } finally { setCreating(false); }
+      terminal(body.tab, launch?.sign_in ? { signIn: true } : undefined);
+    } catch (reason) { setError(describeFailure(reason)); void load(); } finally { setCreating(false); }
   };
   /** Drop the row here rather than reloading, and remember that it is gone: the
    *  next catalog read can still be carrying the tab that was just closed — the
@@ -296,12 +326,40 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     try {
       await closeTab(tab.id);
       dropTab(tab.id);
+      // The desktop now lists it under Recently closed; show that row at once.
+      if (tab.kind === "agent") void load();
     } catch (cause) {
       setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
         ? "Open desktop Eldrun to close a tab."
         : "The tab could not be closed.");
     } finally {
       setClosingId(null);
+    }
+  };
+  /** The closed tab whose reopen is in flight. */
+  const [reopeningId, setReopeningId] = useState<string | null>(null);
+  /** Reopen a closed agent tab on the desktop — back in its place there, on
+   *  its conversation — and put its card back here. */
+  const reopen = async (closedTab: ClosedTabRow) => {
+    setReopeningId(closedTab.id);
+    setError("");
+    try {
+      const body = await reopenTab(id, closedTab.id);
+      closed.current.delete(body.tab.id);
+      setDetail((prev) => prev ? {
+        ...prev,
+        tabs: prev.tabs.some((row) => row.id === body.tab.id) ? prev.tabs : [...prev.tabs, body.tab],
+        closed: (prev.closed ?? []).filter((row) => row.id !== closedTab.id),
+      } : prev);
+    } catch (cause) {
+      setError(cause instanceof ApiError && cause.code === "nothing_to_reopen"
+        ? t("mobile.project.reopenGone")
+        : cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
+          ? t("mobile.project.reopenFailed")
+          : describeFailure(cause));
+      void load();
+    } finally {
+      setReopeningId(null);
     }
   };
   /** Move one tab beside another and tell the desktop, which owns the layout
@@ -339,9 +397,9 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     try {
       await api(`/api/v1/projects/${encodeURIComponent(id)}/activate`, { method: "POST" });
       void load();
-    } catch (reason) { setError(String(reason)); void load(); } finally { setActivating(false); }
+    } catch (reason) { setError(describeFailure(reason)); void load(); } finally { setActivating(false); }
   };
-  return <main className="screen">
+  return <main className="screen project-screen" ref={screenRef}>
     {/* Two rows: the chevron and the name on the first, so a long name keeps the
         whole width; this list's own controls on the second. On one line the
         gallery, the sort and ＋ squeezed the name down to a letter or two.
@@ -354,10 +412,9 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       <div className="terminal-title"><h1>{detail?.project.label ?? "Project"}</h1></div>
       <div className="project-header-tools">
         {/* The same 🖼 the Focus screen carries, in the same place and the same
-            class: the shelf below stands under however many tab cards the project
-            has, so on a project with a screenful of them everything the desktop
-            sent was past the end of the scroll — and the outbox is the project's,
-            not a session's. */}
+            class, and the project screen's only way to the outbox: a shelf under
+            the tab cards was past the end of the scroll on a project with a
+            screenful of them, and showed the same files a second time. */}
         {outbox.length > 0 && <button
           className="terminal-gallery"
           onClick={() => setGalleryOpen(true)}
@@ -374,11 +431,12 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         </label>}
         {/* Opening a session is what this screen is for, so it sits where the
             thumb already is rather than under however many cards the project has
-            (`NewTabSheet`). Disabled without the desktop, which is the same
-            condition the buttons down there carried — the notice below says why. */}
+            (`NewTabSheet`). It opens without the desktop too: sending a file
+            from the phone needs only this host, and the sheet holds its create
+            buttons instead — the notice below says why. */}
         <button
           className="primary new-tab"
-          disabled={creating || !detail?.desktop_available}
+          disabled={!detail}
           onClick={() => setNewTabOpen(true)}
           aria-haspopup="dialog"
           aria-expanded={newTabOpen}
@@ -390,9 +448,13 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {/* Only once the host has answered: `!detail?.desktop_available` was also
         true while the first load was in flight, so every project opened on a
         "Desktop unavailable" notice that vanished a moment later. */}
+    {/* The desktop pill's git dot, in words: what is left to add, commit or
+        push. Nothing while clean or while the desktop is away. */}
+    {detail?.project.git && <p className="project-git"><GitMark state={detail.project.git} long /></p>}
     {detail && !detail.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
     {error && <p className="error">{error}</p>}
-    {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the Eldrun window follows. {isUntested("mobile.project.reorder") && <span className="untested">Untested</span>}</p>}
+    {projectInbox.view}
+    {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the Eldrun window follows. {isUntested("mobile.project.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
     <section className="cards">{tabs.map((tab) => <div
       className={`tab-card${tabColorCss(tab.color) ? " has-tab-color" : ""}${drag.rowClass(tab.id)}`}
       key={tab.id}
@@ -426,12 +488,14 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
                 model (and, where the agent asks, the effort) is one tap from
                 here rather than open-then-find-the-chip. */}
             {tab.agent_model && <button className="tab-card-model" disabled={!tab.available} onClick={() => terminal(tab, { pickModel: true })} aria-haspopup="dialog" aria-label={`Change the model of ${tab.label}`} title="Change the model">{tab.agent_model}</button>}
-            {tab.agent_model && isUntested("mobile.project.modelTap") && <span className="untested">Untested</span>}
+            {tab.agent_model && isUntested("mobile.project.modelTap") && <span className="untested">{t("mobile.newTab.untested")}</span>}
+            {/* Scheduling lives out here beside the tab, not inside the
+                session: reaching a schedule must not mean attaching a
+                terminal. The ◷ rides right of the model; agent tabs only. */}
+            {tab.kind === "agent" && <button className="tab-card-icon accent tab-card-schedule" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`} title="Scheduled prompts"><span aria-hidden="true">◷</span></button>}
+            {tab.kind === "agent" && isUntested("mobile.project.scheduledInPrompts") && <span className="untested">{t("mobile.newTab.untested")}</span>}
           </span>
         </span>
-        {/* A shell card is one row, so its › stays here; an agent card carries
-            the same cluster on its foot instead, out of the ✕'s reach. */}
-        {tab.kind !== "agent" && <span className="card-trailing">{tab.agent_status && <AgentStatusPill status={tab.agent_status} />}<span>›</span></span>}
       </div>
       {/* Close is the card's top-right ✕, where a phone looks for it; every tab
           the phone lists offers it, shell included. */}
@@ -447,54 +511,42 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       ><span aria-hidden="true">⠿</span></button>}
       </div>
       {tab.kind === "agent" && <PromptLines tab={tab} />}
-      {/* Scheduling lives out here beside the tab, not inside the session:
-          reaching a schedule must not mean attaching a terminal, and this is
-          the same place — and the same summary line — the desktop puts it.
-          The ◷ leading the line opens the tab's schedules; agent tabs only. */}
-      {tab.kind === "agent" && <div className="tab-card-foot">
-        <button className="tab-card-icon accent" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`} title="Scheduled prompts"><span aria-hidden="true">◷</span></button>
+      {/* The desktop's schedule summary, where it puts it — only when the tab
+          has schedules; the upcoming ones are listed with the prompts above. */}
+      {tab.kind === "agent" && scheduleLine(tab.schedules) && <div className="tab-card-foot">
         <small className="tab-card-when" title={tab.schedules?.next ? `Next run ${tab.schedules.next.replace("T", " ")} (desktop time)` : undefined}>{scheduleLine(tab.schedules)}</small>
-        {/* The state and the › that says the card opens, at the card's
-            bottom-right corner. They read the same as on a shell card's right
-            edge, a whole card away from the ✕ a thumb must not find here. */}
-        <span className="card-trailing">{tab.agent_status && <AgentStatusPill status={tab.agent_status} />}<span>›</span></span>
       </div>}
       {/* Last, so it lies over the whole card: a tap anywhere the controls above
-          have not claimed — the › on the foot included — opens the session. */}
+          have not claimed opens the session. */}
       <button className="tab-card-open" disabled={!tab.available} onClick={() => terminal(tab)} aria-label={`Open ${tab.label}`} />
+      {/* The agent's state is the desktop's bare glyph — ▶ working, ? asking,
+          ✓ done — set on the card's left border, where it reads down the list
+          at a glance without spending a row's width on a worded pill. */}
+      {tab.agent_status && <AgentStatusMark status={tab.agent_status} />}
     </div>)}</section>
-    {/* What the desktop sent this project, under the tabs: `eldrun-send` puts a
-        file in `.eldrun/outbox/` and it shows up here within a poll, whichever
-        tab it was sent from — the project is what the outbox belongs to. The
-        shelf is drawn only when there is something on it; the newest
-        `SHELF_FILES` stand here and the button below opens the whole listing in
-        the same sheet the Focus screen's gallery button does — it is there
-        whenever the shelf is, not only once the shelf has to cut something off.
-        Reaching everything the desktop sent was otherwise a thing only a
-        session could do, and the outbox belongs to the project. */}
-    {outbox.length > 0 && <section className="outbox-shelf" aria-label={t("mobile.outbox.shelf")}>
-      <div className="outbox-shelf-head">
-        <h2>{t("mobile.outbox.fromDesktop")}</h2>
-        {isUntested("mobile.project.outbox") && <span className="untested">Untested</span>}
-        <small>{t(outbox.length === 1 ? "mobile.outbox.countOne" : "mobile.outbox.count", { count: outbox.length })}</small>
-      </div>
-      <OutboxGrid scope={outboxScope} files={outbox.slice(0, SHELF_FILES)} onOpen={openFile} onDetails={setFileOpen} onDelete={removeFile} />
-      <button
-        className="outbox-shelf-all"
-        onClick={() => setGalleryOpen(true)}
-        aria-haspopup="dialog"
-        aria-expanded={galleryOpen}
-      >{t("mobile.outbox.all", { count: outbox.length })}</button>
+    {/* Agent tabs closed on either surface, newest first: a tap reopens one
+        on the desktop, resuming its conversation, and its card comes back. */}
+    {!!detail?.closed?.length && <section className="create reopen-closed" aria-label={t("mobile.project.recentlyClosed")}>
+      <small className="reopen-closed-label">{t("mobile.project.recentlyClosed")}{isUntested("mobile.project.reopenClosed") && <span className="untested">{t("mobile.newTab.untested")}</span>}</small>
+      {detail.closed.slice(0, 3).map((row) => <button
+        key={row.id}
+        disabled={reopeningId !== null || !detail.desktop_available}
+        onClick={() => void reopen(row)}
+        aria-label={t("mobile.project.reopenHint", { label: row.label })}
+        title={t("mobile.project.reopenHint", { label: row.label })}
+      ><span aria-hidden="true">↺</span> {row.label}</button>)}
     </section>}
     {detail?.project.status === "inactive" && <section className="create"><button className="primary" disabled={activating || !detail.desktop_available} onClick={() => void activate()}>Activate project</button></section>}
     <section className="create"><button disabled={!detail} onClick={() => setPromptsOpen(true)} aria-haspopup="dialog" aria-expanded={promptsOpen}>◷ Collected prompts</button></section>
     {/* The shell and agent buttons that stood here are the header's ＋ now: a
         project with a screenful of tabs put them past the end of the scroll. */}
     {newTabOpen && detail && <NewTabSheet
+      projectId={id}
       agents={detail.agents}
-      busy={creating}
+      busy={creating || !detail.desktop_available}
       onClose={() => setNewTabOpen(false)}
-      onPick={(kind, agent, mode) => { setNewTabOpen(false); void create(kind, agent, mode); }}
+      onPick={(kind, agent, mode, launch) => { setNewTabOpen(false); void create(kind, agent, mode, launch); }}
+      onSendFile={() => { projectInbox.open(); setNewTabOpen(false); }}
     />}
     {promptsOpen && detail && <PromptsSheet projectId={id} tabs={detail.tabs} onClose={() => setPromptsOpen(false)} onSchedule={(tab, initialMessage) => { setPromptsOpen(false); setScheduleTab({ tab, initialMessage }); }} />}
     {colorTab && <ColorSheet
@@ -516,6 +568,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {/* The viewer covers the phone; the gallery stays open behind it, so
         closing the file comes back to the list it was opened from. */}
     {galleryOpen && !fileOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openFile} onDetails={setFileOpen} onDelete={removeFile} onClose={() => setGalleryOpen(false)} />}
-    {fileOpen && <OutboxViewer key={`${id}/${fileOpen.name}`} scope={outboxScope} file={fileOpen} onClose={() => setFileOpen(null)} />}
+    {filesOpen && detail?.files && <ProjectFiles key={id} projectId={id} label={detail.project.label} onClose={() => setFilesOpen(false)} />}
+    {fileOpen && <OutboxViewer key={`${id}/${fileOpen.name}`} scope={outboxScope} file={fileOpen} pictures={outboxPictures} onStep={setFileOpen} onClose={() => setFileOpen(null)} />}
   </main>;
 }

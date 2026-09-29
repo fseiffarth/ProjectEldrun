@@ -19,12 +19,17 @@ root=$(cd "$root" 2>/dev/null && pwd -P) || fail 3 'The project directory is una
 # Refuse redirected outboxes, especially before --clear.
 [ ! -L "$root/.eldrun" ] && [ ! -L "$root/.eldrun/outbox" ] || fail 3 'The outbox must not be a symlink.'
 outbox=$root/.eldrun/outbox
+# The agent tab sending (its `ELDRUN_TAB_UID`): that tab's phone chat shows
+# the file; every gallery lists it. No tab (a plain shell): gallery only.
+tab=${ELDRUN_TAB_UID:-}
+case "$tab" in *[!A-Za-z0-9-]*) tab= ;; esac
+[ "${#tab}" -le 64 ] || tab=
 mkdir -p "$outbox" || fail 3 'Cannot create the project outbox.'
 lock=$outbox/.send-lock
 mkdir "$lock" 2>/dev/null || fail 5 'Another send or clear is in progress; retry shortly.'
 stage=
 cleanup() {
-    if [ -n "$stage" ]; then rm -f "$stage/data"; rmdir "$stage"; fi
+    if [ -n "$stage" ]; then rm -f "$stage/data" "$stage/tab"; rmdir "$stage"; fi
     rmdir "$lock"
 }
 trap cleanup 0
@@ -64,11 +69,23 @@ send_one() {
     stamp=$(date +%Y%m%d-%H%M%S)
     leaf=$stamp-$name
     n=0
-    until link "$stage/data" "$outbox/$leaf" 2>/dev/null; do
-        [ -e "$outbox/$leaf" ] || [ -L "$outbox/$leaf" ] || fail 4 'Cannot publish the file.'
+    # A leaf with neither a file nor a sender marker. The lock keeps other
+    # sends out, so the marker below is ours; it lands before the file does,
+    # so the phone never lists this file unclaimed.
+    while [ -e "$outbox/$leaf" ] || [ -L "$outbox/$leaf" ] \
+        || [ -e "$outbox/.$leaf.tab" ] || [ -L "$outbox/.$leaf.tab" ]; do
         n=$((n + 1))
         leaf=$stamp-${name%"$ext"}-$n$ext
     done
+    marker=
+    if [ -n "$tab" ]; then
+        marker=$outbox/.$leaf.tab
+        printf '%s' "$tab" > "$stage/tab" && mv "$stage/tab" "$marker" || fail 4 'Cannot publish the file.'
+    fi
+    if ! link "$stage/data" "$outbox/$leaf" 2>/dev/null; then
+        [ -z "$marker" ] || rm -f "$marker"
+        fail 4 'Cannot publish the file.'
+    fi
     magic=$(od -An -tx1 -N12 "$stage/data" | tr -d ' \n')
     case "$magic" in
         89504e470d0a1a0a*|ffd8ff*|474946383761*|474946383961*|52494646????????57454250*) report='shown as an image' ;;

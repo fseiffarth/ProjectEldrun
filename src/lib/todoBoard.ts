@@ -1028,7 +1028,7 @@ export function taskFromMail(
   const sender = from && address && from !== address ? `${from} <${address}>` : from || address;
   return convertedCard(conv, {
     title: header.subject || fallbackTitle,
-    notes: sender ? `✉ ${sender}` : "✉",
+    notes: sender ?? "",
     priority: header.priority === "urgent" ? 1 : 5,
     due: null,
     mail: {
@@ -1107,6 +1107,40 @@ export function occurrenceCardOf(
         (t.event.occurrence_start ?? "") === occ.occurrenceStart,
     ) ?? null
   );
+}
+
+/**
+ * A tab as a card — the tab menu's "Create to-do card". Titled after the tab;
+ * an Urgent tab makes a high-priority card. Filed under the tab's project when
+ * the tab lives in one (the root console and boxes have none).
+ *
+ * The link back is the tab's (`TabEntry.todoId`), not the card's: a tab's key
+ * is re-minted on every restore, so only the tab can carry a link that
+ * survives a relaunch. `linkedTabOf` resolves it from the card's side.
+ */
+export function taskFromTab(
+  tab: { label: string; mark?: string },
+  projectId: string | null,
+  conv: CardConversion,
+): Omit<CalendarTask, "id"> {
+  return convertedCard(conv, {
+    title: tab.label,
+    notes: "",
+    priority: tab.mark === "urgent" ? 1 : 5,
+    ...(projectId ? { project_id: projectId } : {}),
+  });
+}
+
+/** The open tab linked to a card, searched across every loaded scope. */
+export function linkedTabOf(
+  tabsByScope: Record<string, readonly { key: string; label: string; todoId?: string }[]>,
+  taskId: string,
+): { scope: string; key: string; label: string } | null {
+  for (const [scope, tabs] of Object.entries(tabsByScope)) {
+    const tab = tabs.find((t) => t.todoId === taskId);
+    if (tab) return { scope, key: tab.key, label: tab.label };
+  }
+  return null;
 }
 
 // ── Drag geometry ───────────────────────────────────────────────────────────

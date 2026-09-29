@@ -1,5 +1,6 @@
 import { PreviewImages } from "./previewImages";
 import { DraftSaver } from "./draftSaver";
+import { registerUnsavedWork } from "../../lib/window/unsavedWork";
 import { lineStarts, indexedLine } from "./lineIndex";
 import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -216,6 +217,7 @@ import {
   addTexChildFile,
   type TexRefCreation,
   texRefRanges,
+  texRefHitRanges,
   synctexViewBest,
   pickSyncRect,
   sourceColumnFraction,
@@ -241,7 +243,14 @@ import {
   type TexSnippetRange,
   compileWasNoop,
 } from "../../lib/viewers/tex/tex";
-import { chordLabel, chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts/shortcuts";
+import {
+  actionMatches,
+  chordLabel,
+  chordMatches,
+  resolveChord,
+  zoomFor,
+  type ShortcutMap,
+} from "../../lib/shortcuts/shortcuts";
 import { useChordHint, useShortcutOverrides } from "../../lib/shortcuts/shortcutHint";
 import {
   renderTexPreview,
@@ -265,8 +274,15 @@ import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
 import { isBibPath } from "../../lib/viewers/tex/bib";
 import { hasCards } from "../../lib/viewers/yamlGrid";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
-import { defaultSpellLanguage, dictionaryLabel } from "../../lib/spellDictionaries";
-import { BoltIcon, BugIcon, CommentIcon, LinkIcon, PlayIcon, UploadIcon } from "../common/icons/Icon";
+import {
+  defaultSpellLanguage,
+  dictionaryChoices,
+  languageDisplayName,
+  type CatalogDictionary,
+  type InstalledDictionary,
+} from "../../lib/spellDictionaries";
+import { ArrowUpRightIcon, BoltIcon, BugIcon, CommentIcon, GearIcon, LinkIcon, PlayIcon, UploadIcon, WarningIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 // The five heavyweight leaf viewers are code-split (§5.1 startup size): a
 // static import here would parse pdfjs-dist + pdf-lib + fontkit (PdfView,
@@ -853,11 +869,16 @@ function SyncResolveHeaderButton({ path, projectId }: { path: string; projectId:
 export function openLinkedFile(
   linkingTabKey: string | undefined,
   linkingFileDir: string,
-  resolved: { path: string; viewer: InternalViewer; label: string },
+  resolved: { path: string; viewer: InternalViewer; label: string; mdGraphOriginKey?: string },
 ) {
   const store = useTabsStore.getState();
+  // A `.tex` editor tab that healed into a workspace (`FileViewerPane`) is
+  // still this file's tab: matching only `viewer: "tex"` answered every later
+  // open of that document with one more copy.
   const sameFile = (t: TabEntry) =>
-    t.kind === "embed" && t.viewer === resolved.viewer && t.embedPath === resolved.path;
+    t.kind === "embed" &&
+    t.embedPath === resolved.path &&
+    (t.viewer === resolved.viewer || (resolved.viewer === "tex" && t.viewer === "texworkspace"));
   const tab = {
     label: resolved.label,
     cmd: "",
@@ -865,6 +886,7 @@ export function openLinkedFile(
     kind: "embed" as const,
     embedPath: resolved.path,
     viewer: resolved.viewer,
+    ...(resolved.mdGraphOriginKey ? { mdGraphOriginKey: resolved.mdGraphOriginKey } : {}),
   };
   // A linking tab of ANOTHER scope — a viewer in the root console, floating over
   // a project — opens its link beside itself, in its own scope's focused
@@ -1174,7 +1196,7 @@ export function ViewerHeader({
         title={t("pdfViewer.openExternalTitle")}
         aria-label={t("pdfViewer.openExternalTitle")}
       >
-        ↗
+        <ArrowUpRightIcon />
       </button>
     </div>
   );
@@ -1461,8 +1483,14 @@ export function useEditableFile(path: string, enabled = true) {
     saver.onStatus = (busy, error) => {
       if (active) { setSaving(busy); setSaveError(error); }
     };
+    // A popout closed by a Wayland scope-out asks this before it goes.
+    const unregister = registerUnsavedWork({
+      dirty: () => saver.dirty,
+      flush: () => saver.flushIfAutosave(),
+    });
     return () => {
       active = false;
+      unregister();
       saver.dispose();
     };
   }, [saver, path, scope]);
@@ -2091,7 +2119,10 @@ export function useReadonlyFile(path: string) {
  * surrounding text is escaped and emitted plain (transparent), so only the link
  * spans paint. SECURITY: every run of source text is HTML-escaped before output.
  */
-export function decorateLinkRanges(source: string, ranges: { start: number; end: number }[]): string {
+export function decorateLinkRanges(
+  source: string,
+  ranges: { start: number; end: number; hit?: boolean }[],
+): string {
   if (ranges.length === 0) return escapeHtmlText(source);
   const sorted = [...ranges].sort((a, b) => a.start - b.start);
   let out = "";
@@ -2103,7 +2134,10 @@ export function decorateLinkRanges(source: string, ranges: { start: number; end:
     // the link by the span it lands on rather than by `selectionStart` — a
     // modified click does not reposition a textarea's caret, so the caret is
     // stale exactly when the follow needs it.
-    out += `<span class="file-link" data-off="${r.start}">${escapeHtmlText(source.slice(r.start, r.end))}</span>`;
+    // A `hit` range is clickable but not a link to look at (the rest of an
+    // `\input{…}` around its underlined path): same hit box, no underline.
+    const cls = r.hit ? "file-link-hit" : "file-link";
+    out += `<span class="${cls}" data-off="${r.start}">${escapeHtmlText(source.slice(r.start, r.end))}</span>`;
     pos = r.end;
   }
   out += escapeHtmlText(source.slice(pos));
@@ -2856,7 +2890,7 @@ function CodeEditor({
   editorApiRef?: React.MutableRefObject<EditorApi | null>;
   /** When set, returns the source ranges to decorate as clickable file links
    *  (#49). Currently the LaTeX viewer's `\input{…}`/`\includegraphics{…}` args. */
-  linkRanges?: (source: string) => { start: number; end: number }[];
+  linkRanges?: (source: string) => { start: number; end: number; hit?: boolean }[];
   /** Undo/redo handlers (#46) — wired to Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y. */
   undo?: () => void;
   redo?: () => void;
@@ -2968,7 +3002,7 @@ function CodeEditor({
         return;
       }
       let hit: DOMRect | null = null;
-      for (const span of layer.querySelectorAll<HTMLElement>(".file-link")) {
+      for (const span of layer.querySelectorAll<HTMLElement>(".file-link, .file-link-hit")) {
         const r = span.getBoundingClientRect();
         if (linkRectHit(r, x, y)) {
           hit = r;
@@ -2989,7 +3023,7 @@ function CodeEditor({
   const linkOffsetAt = useCallback((x: number, y: number): number | null => {
     const layer = linkLayerRef.current;
     if (!layer) return null;
-    for (const span of layer.querySelectorAll<HTMLElement>(".file-link")) {
+    for (const span of layer.querySelectorAll<HTMLElement>(".file-link, .file-link-hit")) {
       const r = span.getBoundingClientRect();
       if (linkRectHit(r, x, y)) {
         const off = span.getAttribute("data-off");
@@ -3587,6 +3621,8 @@ function CodeEditor({
   // fades away after typing stops. The whole feature is gated on the (default-ON)
   // `change_tint` setting.
   const changeTint = useSettingsStore((s) => s.settings?.change_tint !== false);
+  // The editor's own chords (`editor*`, zoom), rebindable in Keyboard Shortcuts.
+  const shortcutOverrides = useSettingsStore((s) => s.settings?.keyboard_shortcuts) as ShortcutMap | undefined;
   const changeTintRef = useRef(changeTint);
   changeTintRef.current = changeTint;
   const [changes, setChanges] = useState<ChangeRange[]>([]);
@@ -4102,19 +4138,25 @@ function CodeEditor({
     }
   };
 
-  // Ctrl/Cmd+F opens the find bar; Ctrl/Cmd+R opens it with the replace row. Bound
-  // on the container so it fires whenever focus is anywhere in the editor pane
-  // (the cursor is in the tab), not only when the textarea holds focus — it
-  // catches the key as it bubbles up. Ctrl/Cmd+R is also always intercepted so it
-  // never falls through to the webview's page reload, which would tear down the app.
+  // Ctrl/Cmd+F opens the find bar; Ctrl/Cmd+R opens it with the replace row
+  // (both as bound: `editorFind` / `editorReplace`). Bound on the container so
+  // it fires whenever focus is anywhere in the editor pane (the cursor is in
+  // the tab), not only when the textarea holds focus — it catches the key as
+  // it bubbles up. Ctrl/Cmd+R is also always intercepted so it never falls
+  // through to the webview's page reload, which would tear down the app.
   const onContainerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+    const overrides = shortcutOverrides;
+    const reload = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r";
+    if (actionMatches("editorFind", overrides, e)) {
       e.preventDefault();
       openFind();
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r") {
+    } else if (actionMatches("editorReplace", overrides, e)) {
       e.preventDefault();
       if (replaceOpen) replaceInputRef.current?.focus();
       else openFind(true);
+    } else if (reload) {
+      // The webview's reload, still kept off Ctrl+R when replace moved away.
+      e.preventDefault();
     }
   };
 
@@ -4715,24 +4757,28 @@ function CodeEditor({
     //    and re-requests in it,
     //  - → (Right) accepts only the next word (repeat to walk word-by-word),
     //  - Esc dismisses.
-    if ((e.ctrlKey || e.metaKey) && e.key === " ") {
+    const overrides = shortcutOverrides;
+    if (actionMatches("editorAutocomplete", overrides, e)) {
       e.preventDefault();
       void requestCompletion();
       return;
     }
     if (suggestion) {
-      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && ["[", "]"].includes(e.key)) {
+      // Alt+[ / Alt+]. The US key positions count too: on German QWERTZ the
+      // brackets sit behind AltGr, so Alt+Ü / Alt++ is the reachable chord.
+      const bracket = e.key === "[" || e.code === "BracketLeft" ? "[" : e.key === "]" || e.code === "BracketRight" ? "]" : null;
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && bracket) {
         e.preventDefault();
         if (acCopilot) {
           const items = acCandidates.current;
           if (items.length > 1 && items[0].version === acDocumentVersion.current) {
             recordAcOutcome(false);
-            acCandidate.current = (acCandidate.current + (e.key === "]" ? 1 : items.length - 1)) % items.length;
+            acCandidate.current = (acCandidate.current + (bracket === "]" ? 1 : items.length - 1)) % items.length;
             const item = items[acCandidate.current];
             acOutcome.current = { model: `${item.provider}/${item.model ?? item.provider}`, mode: "copilot" };
             setSuggestion({ text: item.text, at: item.at, candidate: item });
           }
-        } else void requestCompletion({ candidate: (acCandidate.current + (e.key === "]" ? 1 : 2)) % 3 });
+        } else void requestCompletion({ candidate: (acCandidate.current + (bracket === "]" ? 1 : 2)) % 3 });
         return;
       }
       if (e.key === "ArrowRight" && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
@@ -4774,46 +4820,38 @@ function CodeEditor({
     if (!MODIFIER_KEYS.has(e.key) && (e.key.startsWith("Arrow") ||
         ["Home", "End", "PageUp", "PageDown", "Escape"].includes(e.key))) dismissSuggestion();
 
-    // #46 undo/redo.
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-      e.preventDefault();
-      if (e.shiftKey) redo?.();
-      else undo?.();
-      return;
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+    // #46 undo/redo (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z unless rebound).
+    if (actionMatches("editorRedo", overrides, e)) {
       e.preventDefault();
       redo?.();
       return;
     }
+    if (actionMatches("editorUndo", overrides, e)) {
+      e.preventDefault();
+      undo?.();
+      return;
+    }
 
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+    if (actionMatches("editorSave", overrides, e)) {
       e.preventDefault();
       save();
       return;
     }
-    // Text-size: Ctrl/Cmd with "+"/"=" grows, "-" shrinks, "0" resets.
-    if (e.ctrlKey || e.metaKey) {
-      if (e.key === "+" || e.key === "=") {
-        e.preventDefault();
-        incFont?.();
-        return;
-      }
-      if (e.key === "-" || e.key === "_") {
-        e.preventDefault();
-        decFont?.();
-        return;
-      }
-      if (e.key === "0") {
-        e.preventDefault();
-        resetFont?.();
-        return;
-      }
+    // Text-size: Ctrl/Cmd +/-/0 on any layout. stopPropagation keeps the
+    // window-level UI zoom (useKeyboard / DetachedApp) from also zooming the
+    // whole window — the editor zooms its text, as an agent pane zooms its font.
+    const zoom = zoomFor(e, overrides);
+    if (zoom) {
+      e.preventDefault();
+      e.stopPropagation();
+      (zoom === "in" ? incFont : zoom === "out" ? decFont : resetFont)?.();
+      return;
     }
-    // Ctrl/Cmd+Shift+C — comment out the touched lines, or uncomment them when
-    // they already are. `%` in TeX, the language's own marker elsewhere; falls
-    // through untouched in a language with no line comment.
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "c") {
+    // Ctrl/Cmd+Shift+C (as bound) — comment out the touched lines, or
+    // uncomment them when they already are. `%` in TeX, the language's own
+    // marker elsewhere; falls through untouched in a language with no line
+    // comment.
+    if (actionMatches("editorComment", overrides, e)) {
       const marker = lineCommentMarker(lang);
       if (!marker) return;
       const toggled = applyLineComment(e.currentTarget, marker);
@@ -5864,6 +5902,107 @@ function RenderedPreview({
   );
 }
 
+/** Rendered SVG preview with Ctrl/⌘+wheel zoom toward the cursor (plain wheel
+ *  scrolls; double-click resets to 100%). A sandboxed iframe would swallow the
+ *  wheel, so the SVG is drawn as an `<img>` from an `image/svg+xml` Blob URL
+ *  instead — just as inert: an image-context SVG runs no script and loads no
+ *  external resource. Scale 1 is the SVG's intrinsic size (the viewport width
+ *  when it declares none). */
+function SvgPreview({ content, fileName }: { content: string; fileName: string }) {
+  const t = useT();
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const u = URL.createObjectURL(new Blob([content], { type: "image/svg+xml" }));
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [content]);
+  const [baseWidth, setBaseWidth] = useState<number | null>(null);
+  const [scale, setScale] = useState(1);
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  // The point under the cursor, as a fraction of the image, plus where the
+  // cursor sits in the viewport. Applied once the new size has laid out so that
+  // point stays put. A fraction (not a scroll offset) survives several wheel
+  // ticks landing before one render: each reads the still-displayed layout.
+  const pendingAnchor = useRef<{ fx: number; fy: number; ax: number; ay: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const img = imgRef.current;
+    const a = pendingAnchor.current;
+    pendingAnchor.current = null;
+    if (!el || !img || !a) return;
+    const r = el.getBoundingClientRect();
+    const ir = img.getBoundingClientRect();
+    const left = ir.left - r.left + el.scrollLeft;
+    const top = ir.top - r.top + el.scrollTop;
+    el.scrollLeft = left + a.fx * ir.width - a.ax;
+    el.scrollTop = top + a.fy * ir.height - a.ay;
+  }, [scale]);
+  const wheelRef = useZoomModifierWheel((e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    const el = scrollRef.current;
+    const img = imgRef.current;
+    if (!el || !img || e.deltaY === 0) return;
+    const prev = scaleRef.current;
+    const next = clampScale(prev * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP));
+    if (next === prev) return;
+    const r = el.getBoundingClientRect();
+    const ir = img.getBoundingClientRect();
+    if (ir.width <= 0 || ir.height <= 0) return;
+    const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+    pendingAnchor.current = {
+      fx: clamp01((e.clientX - ir.left) / ir.width),
+      fy: clamp01((e.clientY - ir.top) / ir.height),
+      ax: e.clientX - r.left,
+      ay: e.clientY - r.top,
+    };
+    scaleRef.current = next;
+    setScale(next);
+  });
+  const setScroller = useCallback(
+    (el: HTMLDivElement | null) => {
+      scrollRef.current = el;
+      wheelRef(el);
+    },
+    [wheelRef],
+  );
+  return (
+    <div
+      ref={setScroller}
+      onDoubleClick={() => setScale(1)}
+      style={{ width: "100%", height: "100%", overflow: "auto", background: "#fff" }}
+    >
+      {/* Centred while smaller than the pane; grows to scroll once larger. Auto
+          margins (not align/justify) so an oversized image never overflows
+          past the unreachable top/left edge. */}
+      <div style={{ display: "flex", width: "max-content", minWidth: "100%", minHeight: "100%" }}>
+      {url && (
+        <img
+          ref={imgRef}
+          src={url}
+          alt={t("fileViewer.previewOf", { file: fileName })}
+          draggable={false}
+          onLoad={(e) => {
+            const w = e.currentTarget.naturalWidth || scrollRef.current?.clientWidth || 300;
+            setBaseWidth(w);
+          }}
+          style={{
+            display: "block",
+            margin: "auto",
+            maxWidth: "none",
+            height: "auto",
+            width: baseWidth != null ? baseWidth * scale : undefined,
+          }}
+        />
+      )}
+      </div>
+    </div>
+  );
+}
+
 /** Markdown editing toolbar (#md-toolbar): inline/structural formatting plus a
  *  generated table of contents, applied through the editor's imperative API so
  *  each action is one undo step. Buttons `preventDefault` on mousedown so the
@@ -6292,8 +6431,10 @@ function EditorAiControls({ ai, path }: { ai: TabAiPrefs; path: string }) {
  * The dictionary the spelling chip reads, beside it — so the language can be
  * switched where the writing happens instead of in Project Settings. The
  * choice is `Settings.spell_language`, machine-wide (the backend's default,
- * an installed English variant, is what an unset value shows). Lists what is
- * installed; adding a language stays a Project Settings job (it downloads).
+ * an installed English variant, is what an unset value shows). Beside it, a
+ * "＋ Language" menu downloads any other catalog language (the same
+ * `spell_install_language` Project Settings' picker uses) and selects it —
+ * shown even with nothing installed, which is when it is needed most.
  * Re-lists whenever the setting moves, which is also how a download made in
  * Settings while this tab is open reaches the list.
  */
@@ -6303,29 +6444,86 @@ function SpellLanguageSelect() {
   const spellLanguage = useSettingsStore(
     (s) => s.settings?.spell_language as string | undefined,
   );
-  const [installed, setInstalled] = useState<string[]>([]);
+  const [dicts, setDicts] = useState<{
+    installed: InstalledDictionary[];
+    catalog: CatalogDictionary[];
+  } | null>(null);
+  // Bumped after a download: re-downloading the language the setting already
+  // names (its files were missing) moves no setting, yet must re-list.
+  const [listEpoch, setListEpoch] = useState(0);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    invoke<string[]>("spell_languages")
-      .then((codes) => {
-        if (live) setInstalled(codes);
+    invoke<{ installed: InstalledDictionary[]; catalog: CatalogDictionary[] }>("spell_dictionaries")
+      .then((d) => {
+        if (live) setDicts(d);
       })
       .catch(() => {
-        if (live) setInstalled([]);
+        if (live) setDicts({ installed: [], catalog: [] });
       });
     return () => {
       live = false;
     };
-  }, [spellLanguage]);
-  if (installed.length === 0) return null;
+  }, [spellLanguage, listEpoch]);
+  if (!dicts) return null;
+  const choices = dictionaryChoices(dicts.installed, dicts.catalog, uiLang);
+
+  const download = async (code: string) => {
+    if (busy) return;
+    setBusy(code);
+    setError(null);
+    try {
+      await invoke("spell_install_language", { code });
+      // Read it right away: the language you just fetched is the one you want.
+      await useSettingsStore.getState().updateSettings({ spell_language: code });
+      setListEpoch((n) => n + 1);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
-    <Dropdown
-      className="file-viewer-ai-mode"
-      value={spellLanguage ?? defaultSpellLanguage(installed.map((code) => ({ code })))}
-      title={t("fileViewer.spellingLanguageTitle")}
-      options={installed.map((code) => ({ value: code, label: dictionaryLabel(code, uiLang) }))}
-      onChange={(v) => void useSettingsStore.getState().updateSettings({ spell_language: v })}
-    />
+    <>
+      {choices.installed.length > 0 && (
+        <Dropdown
+          className="file-viewer-ai-mode"
+          value={spellLanguage ?? defaultSpellLanguage(dicts.installed)}
+          title={t("fileViewer.spellingLanguageTitle")}
+          options={choices.installed.map((d) => ({ value: d.code, label: d.label }))}
+          disabled={busy !== null}
+          onChange={(v) => void useSettingsStore.getState().updateSettings({ spell_language: v })}
+        />
+      )}
+      {choices.downloadable.length > 0 && (
+        <>
+          <Dropdown
+            className="file-viewer-ai-mode"
+            value=""
+            placeholder={
+              busy
+                ? t("fileViewer.spellingDownloading", { lang: languageDisplayName(busy, uiLang) })
+                : t("fileViewer.spellingAddLanguage")
+            }
+            title={t("fileViewer.spellingAddLanguageTitle")}
+            options={choices.downloadable.map((d) => ({ value: d.code, label: d.label }))}
+            disabled={busy !== null}
+            onChange={(v) => void download(v)}
+          />
+          <UntestedTag id="fileViewer.spellingAddLanguage" />
+        </>
+      )}
+      {error && (
+        <ErrorNote
+          as="span"
+          role="alert"
+          className="file-viewer-spell-error"
+          error={t("projectSettings.spellDownloadFailed", { error })}
+        />
+      )}
+    </>
   );
 }
 
@@ -7598,7 +7796,7 @@ function TextView({
         <PrintButton onPrint={handlePrint} disabled={!loaded} />
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
-      {saveError && <div className="file-viewer-error">{saveError}</div>}
+      {saveError && <ErrorNote className="file-viewer-error" error={saveError} />}
       {fmt.status && <div className="file-viewer-status-line">{fmt.status}</div>}
       {(showEditor || structured) && <ValidationBanner issue={issue} onJump={jumpToLine} />}
       <div
@@ -7643,7 +7841,11 @@ function TextView({
             />
           ) : (
             // Preview reflects the live draft, so it tracks unsaved edits.
-            <RenderedPreview kind={previewKind!} content={draft} fileName={fileName} />
+            previewKind === "svg" ? (
+              <SvgPreview content={draft} fileName={fileName} />
+            ) : (
+              <RenderedPreview kind={previewKind!} content={draft} fileName={fileName} />
+            )
           )
         ) : compareOpen ? (
           <CompareView
@@ -7705,6 +7907,9 @@ function TextView({
  *  contents at one moment, and the file can change. */
 const remoteImagesAllowed = new Set<string>();
 
+// A graph source can restore its mode when a linked markdown tab returns to it.
+const mdGraphShow = new Map<string, () => void>();
+
 function MarkdownView({
   path,
   onOpenExternally,
@@ -7728,6 +7933,11 @@ function MarkdownView({
   // withdrew falls back to the preview rather than stranding a blank pane.
   const graphEnabled = useExperimental("md_graph");
   const [mode, setMode] = useState<"preview" | "edit" | "graph">("preview");
+  useEffect(() => {
+    if (!tabKey) return;
+    mdGraphShow.set(tabKey, () => setMode("graph"));
+    return () => { mdGraphShow.delete(tabKey); };
+  }, [tabKey]);
   useEffect(() => {
     if (!graphEnabled && mode === "graph") setMode("preview");
   }, [graphEnabled, mode]);
@@ -7765,6 +7975,8 @@ function MarkdownView({
   // Register the preview scroller only while in preview mode, so it never fights
   // CodeEditor for the same group id (edit mode links via the textarea instead).
   const reportPreviewSync = useScrollSync(mode === "preview" ? groupId : null, bodyScrollRef);
+  const graphOrigin = tabKey ? findTabByKey(useTabsStore.getState(), tabKey)?.mdGraphOriginKey : undefined;
+  const canReturnToGraph = graphEnabled && graphOrigin && findTabByKey(useTabsStore.getState(), graphOrigin);
 
   // After the preview HTML is committed to the DOM, run the mermaid/KaTeX
   // enrichment pass (Dev A): it finds the mermaid code blocks and math
@@ -8055,6 +8267,23 @@ function MarkdownView({
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
+        {canReturnToGraph && (
+          <button
+            className="md-graph-back"
+            disabled={isDirty || saving}
+            title={t(isDirty || saving ? "mdGraph.backSaveFirst" : "mdGraph.back")}
+            onClick={() => {
+              if (!tabKey || !graphOrigin) return;
+              mdGraphShow.get(graphOrigin)?.();
+              const store = useTabsStore.getState();
+              store.setActive(graphOrigin);
+              store.removeTab(tabKey);
+            }}
+          >
+            ← {t("mdGraph.back")}
+            <UntestedTag id="mdGraph.back" />
+          </button>
+        )}
         <div className="file-viewer-modes">
           <button
             className={`file-viewer-mode${mode === "preview" ? " active" : ""}`}
@@ -8096,7 +8325,7 @@ function MarkdownView({
         <PrintButton onPrint={handlePrint} disabled={!loaded} />
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
-      {saveError && <div className="file-viewer-error">{saveError}</div>}
+      {saveError && <ErrorNote className="file-viewer-error" error={saveError} />}
       {mode === "edit" && fmt.status && (
         <div className="file-viewer-status-line">{fmt.status}</div>
       )}
@@ -8129,13 +8358,15 @@ function MarkdownView({
         {mode === "graph" ? (
           <MdGraphView
             path={path}
-            onOpen={(target) =>
+            onOpen={(target) => {
+              const viewer = viewerForPath(target);
               openLinkedFile(tabKey, dirname(path), {
                 path: target,
-                viewer: viewerForPath(target),
+                viewer,
                 label: basename(target),
-              })
-            }
+                mdGraphOriginKey: viewer === "markdown" ? tabKey : undefined,
+              });
+            }}
           />
         ) : mode === "edit" && compareOpen ? (
           <CompareView
@@ -8512,7 +8743,7 @@ function TexWorkspaceView({
   }, [upTarget, goTo]);
   const upLabel = upTarget ? basename(upTarget.path) : undefined;
 
-  // The two chords (Ctrl+Shift+↑ / Ctrl+Shift+↓ by default, rebindable in the
+  // The two chords (Alt+Shift+↑ / Alt+Shift+↓ by default, rebindable in the
   // Keyboard Shortcuts panel). Listened for on the workspace's own root rather
   // than in `useKeyboard`: they mean nothing outside a workspace tab, so the
   // scope is "focus is somewhere in this workspace" — the editor's textarea,
@@ -9213,7 +9444,11 @@ function TexView({
   // #49 + #tex-ref-jump: decorate every `\input{…}`/`\includegraphics{…}` path and
   // every `\ref{…}`/`\cite{…}` key so both read as the clickable links they are.
   const linkRanges = useCallback(
-    (source: string) => [...texRefRanges(source), ...texKeyRefRanges(source)],
+    (source: string) => [
+      ...texRefRanges(source),
+      ...texRefHitRanges(source),
+      ...texKeyRefRanges(source),
+    ],
     [],
   );
 
@@ -9258,8 +9493,10 @@ function TexView({
   // failure (the PDF is always shown/refreshed regardless). `"miss"` = SyncTeX
   // ran but found no box for that line (the PDF kept its position); `"unavail"` =
   // SyncTeX could not run at all (tool absent, or a backend not yet rebuilt), the
-  // case that used to masquerade as a miss. Auto-cleared by the effect below.
-  const [syncNote, setSyncNote] = useState<null | "miss" | "unavail">(null);
+  // case that used to masquerade as a miss; `"noPdf"` = a Ctrl/⌘+click forward
+  // search before the document was ever compiled, so there is no PDF to jump
+  // into yet. Auto-cleared by the effect below.
+  const [syncNote, setSyncNote] = useState<null | "miss" | "unavail" | "noPdf">(null);
   // The last build finished without running an engine (latexmk found every
   // source unchanged) — a success that produced nothing new. Cleared by the
   // next build; shown until then so it explains the PDF the reader is looking at.
@@ -9453,6 +9690,12 @@ function TexView({
     async (caret: number) => {
       const pdf = targetPdf();
       setSyncNote(null);
+      // Not compiled yet: say so, rather than letting SyncTeX fail on the
+      // missing PDF and read as "SyncTeX didn't run".
+      if (!(await texPathExists(pdf, scope))) {
+        setSyncNote("noPdf");
+        return;
+      }
       const { line, column } = offsetToLineCol(draftRef.current, caret);
       const phrase = phraseAt(draftRef.current, caret) ?? undefined;
       // Try every spelling SyncTeX might have stored the source under. `null` here
@@ -9469,7 +9712,7 @@ function TexView({
         setSyncNote(recs === null ? "unavail" : "miss");
       }
     },
-    [targetPdf, path, openPdf, rootDir],
+    [targetPdf, path, openPdf, rootDir, scope],
   );
 
   // Ctrl/⌘+click in the editor: follow a `\input{…}`-style reference when the
@@ -9508,6 +9751,11 @@ function TexView({
       // #54: pass the compiler options. The backend filters extra_flags so none
       // can ever enable shell-escape (compile_args_never_enable_shell_escape).
       const flags = extraFlags.trim().split(/\s+/).filter(Boolean);
+      // A compile the reader asked for always builds: latexmk's `-g` overrides
+      // its "every source unchanged, nothing to do" no-op, which otherwise hands
+      // back the old PDF (say after an \input'd file changed outside Eldrun or a
+      // package was updated). The direct-engine path always runs the engine.
+      if (cap?.latexmk && !flags.some((f) => /^-g+$/.test(f))) flags.unshift("-g");
       const res = await invokeTrusted<TexCompileResult>("compile_tex", {
         path: target,
         engine: engine || null,
@@ -9593,6 +9841,7 @@ function TexView({
     engine,
     outDir,
     extraFlags,
+    cap?.latexmk,
     openPdf,
     rootDir,
     t,
@@ -9678,7 +9927,7 @@ function TexView({
           <PrintButton onPrint={handlePrint} disabled={!loaded} />
         </ViewerHeader>
         {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
-        {saveError && <div className="file-viewer-error">{saveError}</div>}
+        {saveError && <ErrorNote className="file-viewer-error" error={saveError} />}
         {createRef && (
           <TexCreateRefBanner
             creation={createRef.creation}
@@ -9813,7 +10062,7 @@ function TexView({
           aria-pressed={showOptions}
           title={t("fileViewer.compilerOptionsTitle")}
         >
-          {t("fileViewer.optionsBtn")}
+          {t("fileViewer.optionsBtn")} <GearIcon />
         </button>
         <button
           className={`file-viewer-tex-preview-toggle${hoverPref.on ? " active" : ""}`}
@@ -9841,7 +10090,7 @@ function TexView({
             onClick={() => openPdf(pdfPath)}
             title={t("fileViewer.openCompiledPdfTitle")}
           >
-            {t("fileViewer.openPdfBtn")}
+            {t("fileViewer.openPdfBtn")} <ArrowUpRightIcon />
           </button>
         )}
         <button
@@ -9940,21 +10189,28 @@ function TexView({
       )}
       {syncNote && (
         <div className="file-viewer-tex-sync-miss" role="status">
-          {t(syncNote === "unavail" ? "fileViewer.syncUnavailMsg" : "fileViewer.syncMissMsg")}
+          {t(
+            syncNote === "noPdf"
+              ? "fileViewer.syncNoPdfMsg"
+              : syncNote === "unavail"
+                ? "fileViewer.syncUnavailMsg"
+                : "fileViewer.syncMissMsg",
+          )}
+          {syncNote === "noPdf" && <UntestedTag id="fileViewer.syncNoPdfMsg" />}
         </div>
       )}
       {shellEscape && (
         <div className="file-viewer-tex-shell-warning" role="alert">
-          {t("fileViewer.shellEscapeWarnPre")}<code>\write18</code>{t("fileViewer.shellEscapeWarnMid")}{" "}
+          <WarningIcon /> {t("fileViewer.shellEscapeWarnPre")}<code>\write18</code>{t("fileViewer.shellEscapeWarnMid")}{" "}
           <code>texmf.cnf</code> {t("fileViewer.shellEscapeWarnOr")} <code>latexmkrc</code>{" "}
           {t("fileViewer.shellEscapeWarnPost")} <code>.tex</code> {t("fileViewer.shellEscapeWarnEnd")}
         </div>
       )}
-      {saveError && <div className="file-viewer-error">{saveError}</div>}
+      {saveError && <ErrorNote className="file-viewer-error" error={saveError} />}
       {compileError && (
         <div className="file-viewer-tex-error-card" role="alert">
           <div className="file-viewer-tex-error-head">
-            <span className="file-viewer-tex-error-icon" aria-hidden="true">⚠</span>
+            <span className="file-viewer-tex-error-icon" aria-hidden="true"><WarningIcon /></span>
             <span className="file-viewer-tex-error-title">
               {t("fileViewer.compileErrorTitle")}
             </span>

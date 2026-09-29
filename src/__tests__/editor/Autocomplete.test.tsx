@@ -137,8 +137,11 @@ describe("local autocomplete (#45)", () => {
     el.selectionStart = el.selectionEnd = SOURCE.length;
     await act(async () => { fireEvent.keyDown(el, { key: " ", ctrlKey: true }); });
     expect(screen.getByText("choice0")).toBeTruthy();
+    // The middle step is German QWERTZ, where `]` hides behind AltGr: Alt on
+    // the US `]` position types "+" and must cycle just the same.
     for (const index of [1, 2, 0]) {
-      await act(async () => { fireEvent.keyDown(el, { key: "]", altKey: true }); });
+      const chord = index === 2 ? { key: "+", code: "BracketRight", altKey: true } : { key: "]", altKey: true };
+      await act(async () => { fireEvent.keyDown(el, chord); });
       expect(screen.getByText(`choice${index}`)).toBeTruthy();
     }
     expect(mockInvoke.mock.calls.filter(([cmd]) => cmd === "complete_text")).toHaveLength(3);

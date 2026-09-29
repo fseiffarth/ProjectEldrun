@@ -156,13 +156,13 @@ select option {
 }
 
 /* The head of the bar reads left-to-right as one evenly spaced run — grip ·
-   clock · hairline · ★ root · 🗑 Trash · ▣ box — and the spacing is what makes
-   it read as one: each item carries its own 10px of inset (the clock button's
-   padding, the root pill's, the Trash pill's, the box chip's), so the visible
+   clock · hairline · logo scope chip — and the spacing is what makes it read as
+   one: each item carries its own 10px of inset (the clock button's padding,
+   the box chip's), so the visible
    gap between any two neighbours is the sum of the two facing insets and is the
    same everywhere. Hence NO trailing padding here and no margin on the hairline:
    the pills' own left padding is the space after the line, and adding more would
-   push the root pill twice as far from the clock as the Trash pill is from it —
+   push the chip twice as far from the clock as the pills sit from each other —
    which is exactly what it used to do. The 5px gap pairs with the clock button's
    own 5px padding to make the grip-to-clock and clock-to-hairline gaps 10 too. */
 .header-left {
@@ -190,20 +190,34 @@ select option {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 22px;
+  gap: 3px;
+  height: 34px;
   color: var(--text-muted);
-  font-size: 14px;
   line-height: 1;
   user-select: none;
-  opacity: 0.6;
   cursor: var(--cur-grab, grab);
-  transition: opacity var(--transition), color var(--transition);
+  transition: color var(--transition);
 }
 .app-drag-grip:hover {
-  opacity: 1;
   color: var(--text-primary);
 }
 .app-drag-grip:active { cursor: var(--cur-grabbing, grabbing); }
+.app-drag-grip-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 33px;
+  height: 30px;
+  flex: none;
+  color: var(--top-frame-text);
+}
+.app-drag-grip-mark svg {
+  position: relative;
+  width: 25px;
+  height: 25px;
+}
+.app-drag-grip-dots { font-size: 12px; opacity: .7; }
+.app-drag-grip:hover .app-drag-grip-dots { opacity: 1; }
 
 /* The project strip's track, and now nothing else's: the global buttons that
    used to share it moved to .header-right, so the one elastic thing in the bar
@@ -295,6 +309,11 @@ select option {
   background: color-mix(in srgb, var(--wm-maximize) 20%, transparent);
   border-color: color-mix(in srgb, var(--wm-maximize) 45%, transparent);
 }
+.wm-fullscreen:hover,
+.wm-fullscreen[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--wm-maximize) 20%, transparent);
+  border-color: color-mix(in srgb, var(--wm-maximize) 45%, transparent);
+}
 .wm-close:hover,
 .vpn-indicator-close:hover,
 .vpn-prompt-close:hover,
@@ -319,6 +338,20 @@ select option {
   height: 9px;
   border-radius: 2px;
   border: 1.5px solid var(--wm-maximize);
+}
+
+/* Fullscreen glyph: four corner brackets, drawn as eight short bars. */
+.wm-fullscreen::before {
+  --wm-fs-c: linear-gradient(var(--wm-maximize), var(--wm-maximize));
+  content: "";
+  width: 11px;
+  height: 11px;
+  background:
+    var(--wm-fs-c) left top / 4px 1.5px, var(--wm-fs-c) left top / 1.5px 4px,
+    var(--wm-fs-c) right top / 4px 1.5px, var(--wm-fs-c) right top / 1.5px 4px,
+    var(--wm-fs-c) left bottom / 4px 1.5px, var(--wm-fs-c) left bottom / 1.5px 4px,
+    var(--wm-fs-c) right bottom / 4px 1.5px, var(--wm-fs-c) right bottom / 1.5px 4px;
+  background-repeat: no-repeat;
 }
 
 /* Close glyph: an × from two crossed bars. */
@@ -347,11 +380,8 @@ select option {
 .dialog-close-btn::after { transform: rotate(-45deg); }
 
 /* ── App logo ────────────────────────────────────────────────────────── */
-/* The Eldrun spark. It used to live in a pill of its own at the head of the
-   project row (`.root-pill`, with a one-per-launch intro animation); root and
-   Trash now fold into the scope chip beside the projects, so the mark is drawn
-   by `.box-chip-star` there and by `.detached-titlebar-logo` in a popout's
-   title bar. Nothing sizes it here any more — each host does. */
+/* The full mark now lives in the drag grip above; the cropped spark is still
+   used by the root scope chip and detached title bars. */
 
 /* ── Version / debug / conn-type ─────────────────────────────────────── */
 /* The release label lives at the bottom of the docked file viewer rather than

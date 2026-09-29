@@ -18,6 +18,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useT } from "../i18n";
 import {
   chordLabel,
+  chordMatches,
   resolveChord,
   type ChordDescriptor,
   type ShortcutAction,
@@ -28,6 +29,22 @@ import {
  *  (every consumer falls back to the built-in defaults). */
 export function useShortcutOverrides(): ShortcutMap | undefined {
   return useSettingsStore((s) => s.settings?.keyboard_shortcuts) as ShortcutMap | undefined;
+}
+
+/** The panel toggle's key as the user has it — the Super/F9 default for this
+ *  desktop (`livePanelToggleKey`) unless rebound — for the copy that names it
+ *  (the "panels hidden" toast, the onboarding tips). Read at call time. */
+export function livePanelToggleLabel(): string {
+  const overrides = useSettingsStore.getState().settings?.keyboard_shortcuts as ShortcutMap | undefined;
+  return chordLabel(resolveChord("togglePanels", overrides));
+}
+
+/** Whether a keydown is the app's window-fullscreen chord (F11 unless
+ *  rebound) — for the windows that toggle their own fullscreen outside
+ *  `useKeyboard` (popouts, the presenters). */
+export function osFullscreenChord(e: KeyboardEvent): boolean {
+  const overrides = useSettingsStore.getState().settings?.keyboard_shortcuts as ShortcutMap | undefined;
+  return chordMatches(resolveChord("osFullscreen", overrides), e);
 }
 
 /**

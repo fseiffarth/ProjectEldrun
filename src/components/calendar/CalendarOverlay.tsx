@@ -4,6 +4,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { useFloatingFrame } from "../common/useFloatingFrame";
+import { CalendarGlyph } from "../header/HeaderGlyphs";
 import { OverlayApprovals } from "../layout/OverlayApprovals";
 import { CalendarPane } from "./CalendarPane";
 
@@ -13,6 +14,14 @@ import { CalendarPane } from "./CalendarPane";
  * a second calendar UI. The store is already global (one `calendar.json` across
  * every scope), so the overlay and any open tab are two views of one set of
  * events and cannot drift; all this adds is a size and a way to close it.
+ *
+ * It wears mail's chrome — the root console's, not a dialog's: one floating
+ * subwindow (`.root-overlay.subwindow`) whose title bar holds the calendar
+ * glyph and name, a tab strip, then the approvals, fill and × controls. The
+ * strip has a single fixed tab, the calendar's counterpart of mail's Inbox: the
+ * pane's view switcher (day / week / month / agenda / tasks) is the pane's own
+ * local state, driven by its toolbar chips and its digit keys exactly as in a
+ * calendar tab, so it stays in the pane rather than being lifted into the bar.
  */
 export function CalendarOverlayHost() {
   const t = useT();
@@ -21,11 +30,14 @@ export function CalendarOverlayHost() {
 
   // Turning the setting off takes the surface away rather than leaving it on
   // screen over a button that is no longer there — the same withdrawal rule the
-  // mail overlay follows for its two gates.
+  // mail overlay follows for its gate.
   const live = enabled && open;
   // Moves, resizes and fills like the root console; remembered per overlay.
   const { frameRef, frameStyle, frameClass, barProps, grips, fillButton } =
     useFloatingFrame("eldrun.calendarOverlayFrame");
+  // `barProps.title` is the move hint; on the whole bar it would hover over the
+  // tab too, so it goes on the mark alone (the root console's placement).
+  const { title: moveHint, ...barRest } = barProps;
 
   useEffect(() => {
     if (!live) return;
@@ -46,13 +58,8 @@ export function CalendarOverlayHost() {
   if (!live) return null;
 
   return (
-    /* `.project-dialog.dialog-framed` + `.settings-title-row` + `.dialog-close-btn`
-       — the app's canonical dialog chrome, applied exactly as the mail overlay
-       and GlobalMachineMonitorDialog apply it: a whole pane hosted in a dialog,
-       sized by its own rule, in a body that clips because the pane scrolls its
-       own regions. */
     <div
-      className="modal-backdrop"
+      className="modal-backdrop root-overlay-backdrop app-overlay-backdrop calendar-overlay-backdrop"
       onMouseDown={(e) => {
         // Backdrop only — a drag that starts on the grid and ends out here
         // (creating or resizing an event) must not be read as "dismiss".
@@ -61,30 +68,44 @@ export function CalendarOverlayHost() {
     >
       <div
         ref={frameRef}
-        className={`project-dialog dialog-framed calendar-overlay ${frameClass}`}
+        className={`root-overlay subwindow focused calendar-overlay ${frameClass}`}
         style={frameStyle}
         role="dialog"
         aria-modal="true"
         aria-label={t("calendar.overlayTitle")}
       >
         {grips}
-        <div {...barProps} className={`settings-title-row ${barProps.className}`}>
-          <h2>
-            {t("calendar.overlayTitle")} <UntestedTag id="calendar.overlayTitle" />
-          </h2>
-          <OverlayApprovals domain="calendar" />
-          {fillButton}
-          <button
-            type="button"
-            className="dialog-close-btn"
-            title={t("common.close")}
-            aria-label={t("common.close")}
-            onClick={() => useCalendarStore.getState().closeOverlay()}
-          >
-            ×
-          </button>
+        {/* The root console's bar: mark, tab strip, controls. The bar is the
+            move handle; buttons keep their own press. */}
+        <div {...barRest} className={`tab-bar root-overlay-bar ${barRest.className}`}>
+          <div className="root-overlay-mark app-overlay-mark calendar-overlay-mark" title={moveHint}>
+            <CalendarGlyph className="calendar-overlay-glyph" />
+            <span className="app-overlay-label">{t("calendar.overlayTitle")}</span>
+            <UntestedTag id="calendar.overlayTitle" />
+          </div>
+          <div className="tab-strip calendar-tab-strip" role="tablist">
+            {/* One fixed tab, mail's Inbox without the siblings: the calendar
+                has no documents to open beside it, but the bar keeps the same
+                anatomy as every other overlay in this chrome. */}
+            <div role="tab" tabIndex={0} aria-selected="true" className="tab calendar-tab active">
+              <span className="tab-label">{t("calendar.overlayTab")}</span>
+            </div>
+          </div>
+          <div className="tab-controls root-overlay-controls">
+            <OverlayApprovals domain="calendar" />
+            {fillButton}
+            <button
+              type="button"
+              className="subwindow-hide"
+              title={t("common.close")}
+              aria-label={t("common.close")}
+              onClick={() => useCalendarStore.getState().closeOverlay()}
+            >
+              ×
+            </button>
+          </div>
         </div>
-        <div className="calendar-overlay-body">
+        <div className="subwindow-body calendar-overlay-body" role="tabpanel">
           <CalendarPane visible />
         </div>
       </div>

@@ -151,7 +151,9 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
     // The media `accept` is what opens the photo picker rather than the file browser.
     expect(gallery.accept).toBe("image/*,video/*");
     expect(gallery.multiple).toBe(true);
-    expect(fileInput().accept).toBe("");
+    // "From this phone" names non-media types too, or Android offers only the
+    // camera and the photo picker — no way into the phone's files.
+    expect(fileInput().accept).toContain("application/*");
 
     Object.defineProperty(gallery, "files", { configurable: true, value: [new File(["abc"], "IMG_0099.jpg", { type: "image/jpeg" })] });
     fireEvent.change(gallery);

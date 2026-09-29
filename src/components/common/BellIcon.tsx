@@ -22,7 +22,7 @@ export function BellIcon({ className, off }: BellIconProps) {
       aria-hidden="true"
       focusable="false"
     >
-      <g stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+      <g stroke="currentColor" strokeWidth="1.1" strokeLinecap="round">
         {/* dome: straight sides closed by a half-round top */}
         <path d="M4.9 10.6V7.3a3.1 3.1 0 0 1 6.2 0v3.3" />
         {/* rim */}

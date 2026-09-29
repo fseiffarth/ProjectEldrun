@@ -24,6 +24,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { OrbitSpinner } from "../common/OrbitSpinner";
 import { useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface Props {
   /** Owning project, or `null` in the root scope. */
@@ -278,7 +279,7 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
     return (
       <div className="du-root du-home">
         <h2 className="du-home-title">{t("diskUsage.analyzerTitle")}</h2>
-        {error && <div className="du-error">{error}</div>}
+        {error && <ErrorNote className="du-error" error={error} />}
 
         <div className="du-targets">
           {devices.map((dev) => (

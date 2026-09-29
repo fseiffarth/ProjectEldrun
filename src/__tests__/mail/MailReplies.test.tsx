@@ -41,7 +41,7 @@ describe("replies already written to the open message", () => {
       return Promise.resolve([]);
     });
     render(view(header()));
-    await screen.findByText("↩ You replied (1)");
+    await screen.findByText("You replied (1)");
     expect(screen.getByText("Yes, I will be there.")).toBeTruthy();
     expect(screen.getByText(/to bob@friends\.example/)).toBeTruthy();
 
@@ -59,6 +59,6 @@ describe("replies already written to the open message", () => {
 
     found = [reply];
     act(() => useMailStore.setState({ sync: { a1: { phase: "done" } } }));
-    await screen.findByText("↩ You replied (1)");
+    await screen.findByText("You replied (1)");
   });
 });

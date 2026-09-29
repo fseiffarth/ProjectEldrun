@@ -19,6 +19,8 @@
  * Nothing here sends keystrokes: what a tapped row does is the caller's.
  */
 
+import { busyRow } from "./agentBusy";
+
 export interface SelectOption {
   /** Position in the run, 0-based. The caller moves the highlight by the
    * difference between this and `current`, which is why it is not the printed
@@ -175,6 +177,14 @@ function readContinuation(
   return { label: text.slice(0, descriptionColumn).trim(), description: text.slice(descriptionColumn).trim() };
 }
 
+/** Where the dialog's own text ends going up. A `/model` opened mid-turn is
+ * drawn right under Claude Code's spinner (`✻ Wiggling… (12s · ↓ 2k tokens)`)
+ * with no blank between them: read as text, the spinner became the heading —
+ * a new one every tick, so every repaint looked like a new step. */
+function dialogText(line: SelectLineLike): boolean {
+  return !!line.text.trim() && !busyRow(line.text);
+}
+
 /** The dialog's heading, read upwards from its first row: past the blank the
  * TUI leaves under the heading, then the contiguous block above it, of which
  * the first line is the heading and the rest its blurb. */
@@ -182,7 +192,7 @@ function readTitle(lines: readonly SelectLineLike[], start: number): string | un
   let index = start - 1;
   while (index >= 0 && !lines[index].text.trim()) index -= 1;
   const block: string[] = [];
-  while (index >= 0 && lines[index].text.trim()) {
+  while (index >= 0 && dialogText(lines[index])) {
     block.unshift(lines[index].text.trim());
     if (block.length > HEADING_BLOCK) return undefined;
     index -= 1;
@@ -216,12 +226,18 @@ function readContext(lines: readonly SelectLineLike[], start: number): { questio
   let taken = 0;
   for (let block = 0; block < CONTEXT_BLOCKS && taken < CONTEXT_LINES; block += 1) {
     while (index >= 0 && !lines[index].text.trim()) index -= 1;
-    while (index >= 0 && lines[index].text.trim() && taken < CONTEXT_LINES) {
+    // The spinner is the session's, not the dialog's: nothing above it is.
+    if (index >= 0 && busyRow(lines[index].text)) break;
+    const top = index;
+    while (index >= 0 && dialogText(lines[index]) && taken < CONTEXT_LINES) {
       context = index;
       taken += 1;
       index -= 1;
     }
     if (block === 0) question = context;
+    // Claude Code's tab row over an agent's question is the question's label,
+    // not a block of context: what it labels is the agent's message above.
+    else if (top === index + 1 && readQuestionTabs(lines[top].text)) block -= 1;
   }
   return { question, context };
 }
@@ -393,6 +409,26 @@ export function missingSelectRow(step: SelectStep, prompt: SelectPrompt): number
   return undefined;
 }
 
+/** Where to walk the highlight to reveal what `step` has not seen, half a
+ * window at a time rather than one row per round trip — Cursor draws
+ * thirty-nine models in a ten-row window, and a row-by-row reveal held the
+ * sheet for most of a minute.
+ *
+ * Half, not whole: the frame the walk lands on must still show a row the step
+ * already holds, whether the window scrolls just far enough to keep the
+ * highlight in view or centres it. A frame sharing no row with the step is
+ * read as the next step of a multi-step dialog (`sameSelectStep`), and what
+ * was revealed so far would be thrown away. */
+export function revealSelectRow(step: SelectStep, prompt: SelectPrompt): number | undefined {
+  const missing = missingSelectRow(step, prompt);
+  if (missing === undefined) return undefined;
+  const size = prompt.options.length;
+  const first = prompt.options[0].number;
+  if (missing < first) return Math.max(missing, first + 1 - Math.ceil(size / 2));
+  const total = size + (prompt.hidden ?? 0);
+  return Math.min(total, Math.max(missing, missing - 1 + Math.floor(size / 2)));
+}
+
 /** The keystrokes that move a dialog's highlight from `current` to `target` and
  * accept it — the same keys the on-screen arrow row sends, so a tapped row is
  * answered exactly as a walked one. */
@@ -405,4 +441,35 @@ export function selectMoveKeys(current: number, target: number): string[] {
   const distance = Math.abs(target - current);
   const key = target > current ? "\u001b[B" : "\u001b[A";
   return Array.from({ length: distance }, () => key);
+}
+
+/** One question of Claude Code's question dialog, as its tab row names it. */
+export interface QuestionTab {
+  label: string;
+  answered: boolean;
+}
+
+const TAB_ROW = /^\s*(?:←\s+)?((?:[☐☒☑✔✓]\s+\S.*?)(?:\s{2,}[☐☒☑✔✓]\s+\S.*?)*)(?:\s+→)?\s*$/u;
+const TAB = /^([☐☒☑✔✓])\s+(\S.*)$/u;
+
+/** The tab row Claude Code draws over the question an agent asks
+ * (`AskUserQuestion`): each question's short header behind a box —
+ * `☐ Push scope`, or `← ☒ Scope  ☐ Tag  ✔ Submit →` when it asks several —
+ * which lands at the bottom of the screen above the question as a bare row of
+ * checkboxes. It is the question's label, so a caller shows it as one; the
+ * `Submit` step is navigation, not a question, and is left out.
+ *
+ * At least one `☐`/`☒` has to be there: a lone `✔ Done` line is somebody's
+ * sentence, not this row. */
+export function readQuestionTabs(text: string): QuestionTab[] | null {
+  const row = TAB_ROW.exec(text);
+  if (!row || !/[☐☒]/u.test(row[1])) return null;
+  const tabs: QuestionTab[] = [];
+  for (const part of row[1].split(/\s{2,}/u)) {
+    const tab = TAB.exec(part);
+    if (!tab) return null;
+    if (tab[2] === "Submit" && (tab[1] === "✔" || tab[1] === "✓")) continue;
+    tabs.push({ label: tab[2], answered: tab[1] !== "☐" });
+  }
+  return tabs.length > 0 ? tabs : null;
 }

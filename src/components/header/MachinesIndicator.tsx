@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { ConnLamp } from "../common/ConnLamp";
@@ -10,18 +11,23 @@ import { useGlobalMachineMonitorStore } from "../../stores/remote/globalMachineM
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
-import { useRemoteUsageStore } from "../../stores/remote/remoteUsage";
+import { machineKey, useRemoteUsageStore, type RemoteUsageReport } from "../../stores/remote/remoteUsage";
 import { useHostBusyStore, busyReading, busyLabel } from "../../stores/remote/hostBusy";
 import { parseSshAddress } from "../projects/scaffold";
 import { TerminalSignInToggle } from "../projects/TerminalSignInToggle";
 import { openConnectionInRoot } from "../../lib/remote/remoteConnect";
 import { isHpcHost, mayAutoTouch, setHpcPatch, targetOfSpec } from "../../lib/remote/hpc/hpcHost";
+import { isCarefulHost } from "../../lib/remote/carefulHost";
 import { hpcGuardRefusal } from "../../lib/remote/hpc/hpcGuard";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
 import type { ConnState } from "../../stores/remote/remoteStatus";
 import type { GlobalMachine, MachineImportEntry, ProjectEntry } from "../../types";
+import { ErrorNote } from "../common/ErrorNote";
+import { useMachinesOverlayStore } from "../../stores/machinesOverlay";
+import { MachinesOverlayFrame } from "./MachinesOverlay";
+import { MachinesGlyph } from "./HeaderGlyphs";
 
 const MENU_ID = "machines";
 
@@ -127,6 +133,80 @@ const STATE_TIP: Record<RowState, TranslationKey> = {
  *  would otherwise pay seventeen logins for each of them. */
 const PROBE_MIN_INTERVAL_MS = 60_000;
 
+/** How often the open menu re-reads a Detailed machine's CPU/GPU utilization.
+ *  One `global_machine_usage_check` login per machine per tick, and only while
+ *  the menu is on screen — gentler than the system monitor's 3 s remote poll. */
+const UTIL_POLL_MS = 10_000;
+
+/** The open-sweep's two brakes, one pair for both surfaces (the dropdown and
+ *  the overlay). In flight: a second open while the first sweep is still
+ *  running must not stack a second round trip per host (`stores/remote/hostBusy`'s
+ *  `inFlight` makes the same promise for the busy probe; the store's `probeAll`
+ *  makes none). And a minimum interval, stamped per machine: reopening the list
+ *  is a glance, not a new question. `probeAll` is all-or-nothing (it owns which
+ *  machines it may touch), so the sweep runs only when at least one eligible
+ *  machine's answer has aged out, and stamps every eligible machine when it
+ *  returns. */
+const probeBrakes = { inFlight: false, lastAt: new Map<string, number>() };
+
+type HandCheck = { ok: boolean; at: number; error?: string };
+
+/** Per-row manual checks — the only reachability a tagged HPC machine ever has,
+ *  since every sweep skips it by design — and when the last sweep landed. Kept
+ *  apart from `stores/remote/globalMachines` on purpose: its `reachable` is the
+ *  sweep's map, and a hand probe must not be filed as one (nor may it touch
+ *  `status`, which means "a session we opened"). A row prefers its hand check
+ *  only while it is the newer of the two. Shared by the dropdown and the
+ *  overlay, so both surfaces and the header's lamps read the same answer. */
+const useMachineChecksStore = create<{
+  sweepAt: number;
+  checked: Record<string, HandCheck>;
+  setSweepAt: (at: number) => void;
+  setChecked: (update: (prev: Record<string, HandCheck>) => Record<string, HandCheck>) => void;
+}>((set) => ({
+  sweepAt: 0,
+  checked: {},
+  setSweepAt: (at) => set({ sweepAt: at }),
+  setChecked: (update) => set((s) => ({ checked: update(s.checked) })),
+}));
+
+/**
+ * Whether a row gets the inline CPU/GPU utilization bars: the machine is one the
+ * user switched to **Detailed** in the system monitor (`careful_hosts` answered
+ * `false` for its target — the default for every remote machine is careful) and
+ * is not HPC-tagged, which outranks that answer. Careful is "read me lightly";
+ * a sweep that logs in every few seconds just to draw a bar is not light.
+ */
+export function showsUtilization(
+  settings: Parameters<typeof isCarefulHost>[0],
+  m: { user?: string; host: string; port?: number },
+): boolean {
+  const target = targetOfSpec(m);
+  return !isHpcHost(settings, target) && !isCarefulHost(settings, target);
+}
+
+/** The two bar readings from a usage report. GPU is the busiest adapter, and
+ *  `null` when the host reports no GPU — omitted, never drawn as an idle zero. */
+export function utilizationOf(r: RemoteUsageReport): { cpu: number; gpu: number | null } {
+  const clamp = (n: number) => Math.min(100, Math.max(0, n));
+  const gpu = r.gpus.length ? Math.max(...r.gpus.map((g) => g.utilPct)) : null;
+  return { cpu: clamp(r.cpuPct), gpu: gpu === null ? null : clamp(gpu) };
+}
+
+/** One labelled mini meter; tone by ratio like the local-model meters. */
+function UtilBar({ label, pct, title }: { label: string; pct: number; title: string }) {
+  const tone = pct >= 85 ? "high" : pct >= 60 ? "medium" : "low";
+  return (
+    <span className="machines-util-item" title={title}>
+      <span className="machines-util-label">{label}</span>
+      <span className="local-model-meter machines-util-meter">
+        <span className={`local-model-meter-fill ${tone}`} style={{ width: `${pct}%` }} />
+      </span>
+      <span className="machines-util-value">{Math.round(pct)}%</span>
+    </span>
+  );
+}
+
 export function targetLabel(m: { user?: string; host: string; port?: number }): string {
   return `${m.user ? `${m.user}@` : ""}${m.host}${m.port ? `:${m.port}` : ""}`;
 }
@@ -156,9 +236,30 @@ export function targetLabel(m: { user?: string; host: string; port?: number }): 
  * "up" means only the second; and a session on a host that has stopped answering
  * is drawn as *stale*, which is the one state nothing else in the app can catch,
  * since no sweep writes `status` any more.
+ *
+ * **Two surfaces, one list.** A hover shows the dropdown; a click on the button
+ * (or the dropdown's ⤢ door) opens the Machines overlay (`MachinesOverlayHost`,
+ * framed by `header/MachinesOverlay`), where the same rows are tiles in a grid
+ * — the Models & agents overlay's `.models-tile` look. Both are this component
+ * (`surface`), so every rule above holds in both; the overlay only drops what
+ * belongs to a narrow pop-up: the drag grip (reordering stays the dropdown's)
+ * and the ▸ fold (a tile has the room to show its details).
  */
 export function MachinesIndicator() {
+  return <MachinesSurface surface="menu" />;
+}
+
+/** The Machines overlay, at the shell (`layout/AppShell`). Renders nothing
+ *  while closed, so none of its probes or polls run then. */
+export function MachinesOverlayHost() {
+  const open = useMachinesOverlayStore((s) => s.open);
+  if (!open) return null;
+  return <MachinesSurface surface="overlay" />;
+}
+
+function MachinesSurface({ surface }: { surface: "menu" | "overlay" }) {
   const t = useT();
+  const isOverlay = surface === "overlay";
   // Off by default (Settings' "Remote features") — most projects are local-only,
   // so this fleet-wide SSH list stays out of the header until asked for.
   const enabled = useSettingsStore((s) => s.settings?.machines_enabled ?? false);
@@ -205,6 +306,7 @@ export function MachinesIndicator() {
   // `requestExtend` is picked up by the target's mounted `ProjectPill`.
   const projects = useProjectsStore((s) => s.projects).filter((p) => p.status !== "inactive");
   const openUsage = useRemoteUsageStore((s) => s.open);
+  const usageReports = useRemoteUsageStore((s) => s.reports);
   const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
   const requestExtend = useRemoteMachinesStore((s) => s.requestExtend);
 
@@ -219,9 +321,18 @@ export function MachinesIndicator() {
   };
 
   // The shared menu store makes the status controls mutually exclusive.
-  const open = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
+  // The overlay is open for as long as it is mounted (its host renders nothing
+  // while closed), so every "while open" effect below simply runs in it.
+  const menuOpen = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
+  const open = isOverlay || menuOpen;
   const openMenu = useHeaderHoverMenuStore((s) => s.open);
   const closeMenu = useHeaderHoverMenuStore((s) => s.close);
+  /** Put this surface away — before a hand-off to a window of its own (the
+   *  usage report, a project's machine picker), as the dropdown always has. */
+  const dismiss = () => {
+    if (isOverlay) useMachinesOverlayStore.getState().close();
+    else closeMenu(MENU_ID);
+  };
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const closeTimer = useRef<number | undefined>(undefined);
   // While an import/export panel is up — or a native file dialog is open, which
@@ -230,25 +341,16 @@ export function MachinesIndicator() {
   // than state, so the guard is live the instant a dialog opens, before any
   // re-render.
   const keepOpenRef = useRef(false);
-  // ── The open-sweep's two brakes ─────────────────────────────────────────────
-  // In flight: a second open while the first sweep is still running must not
-  // stack a second round trip per host (`stores/remote/hostBusy`'s `inFlight` makes the
-  // same promise for the busy probe; the store's `probeAll` makes none).
-  const probeInFlight = useRef(false);
-  // And a minimum interval, stamped per machine: reopening the menu is a glance,
-  // not a new question. `probeAll` is all-or-nothing (it owns which machines it
-  // may touch), so the sweep runs only when at least one eligible machine's
-  // answer has aged out, and stamps every eligible machine when it returns.
-  const lastProbeAt = useRef<Map<string, number>>(new Map());
-  // When the last sweep landed, as state rather than a ref, because a row's
-  // reachability has to re-render when it changes: a per-row Check (below) is
-  // preferred over the sweep's answer only while it is the newer of the two.
-  const [sweepAt, setSweepAt] = useState(0);
-  // Per-row manual checks — the only reachability a tagged HPC machine ever has,
-  // since every sweep skips it by design. Local to the menu on purpose: the
-  // store's `reachable` is the sweep's map, and a hand probe must not be filed
-  // as one (nor may it touch `status`, which means "a session we opened").
-  const [checked, setChecked] = useState<Record<string, { ok: boolean; at: number; error?: string }>>({});
+  // The open-sweep's two brakes are module-level (`probeBrakes`), shared by the
+  // dropdown and the overlay: opening one right after the other is still one
+  // login per host.
+  // When the last sweep landed and the per-row hand checks live in
+  // `useMachineChecksStore`, shared for the same reason — a Check pressed in
+  // the overlay has to reach the header's lamps too.
+  const sweepAt = useMachineChecksStore((s) => s.sweepAt);
+  const setSweepAt = useMachineChecksStore((s) => s.setSweepAt);
+  const checked = useMachineChecksStore((s) => s.checked);
+  const setChecked = useMachineChecksStore((s) => s.setChecked);
   const [checking, setChecking] = useState<Set<string>>(new Set());
   // Failures of the two calls this component makes itself (the hand Check, the
   // explicit HPC login) — the store's `errors` map is written by the store's own
@@ -257,7 +359,7 @@ export function MachinesIndicator() {
   // Per-row DOM nodes (keyed by machine id) + their last-measured positions,
   // for the FLIP slide animation when the list reorders.
   const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const prevRects = useRef<Map<string, number>>(new Map());
+  const prevRects = useRef<Map<string, { left: number; top: number }>>(new Map());
   // Which row's "Add to a project" picker is open, if any. This is the ONLY way
   // a global machine reaches a project — the drag-onto-a-pill gesture it
   // replaced could not be made to work (see the component doc), and a picker
@@ -544,18 +646,18 @@ export function MachinesIndicator() {
     // *background* call (no `background: false` anywhere below): the backend
     // refuses it on a tagged host, which is the redundancy that survives a
     // frontend guard someone forgets.
-    if (probeInFlight.current) return;
+    if (probeBrakes.inFlight) return;
     const eligible = machines.filter(autoTouchable);
     const now = Date.now();
     const due = eligible.filter(
-      (m) => now - (lastProbeAt.current.get(m.id) ?? 0) >= PROBE_MIN_INTERVAL_MS,
+      (m) => now - (probeBrakes.lastAt.get(m.id) ?? 0) >= PROBE_MIN_INTERVAL_MS,
     );
     if (due.length === 0) return;
-    probeInFlight.current = true;
+    probeBrakes.inFlight = true;
     void probeAll()
       .then(() => {
         const at = Date.now();
-        for (const m of eligible) lastProbeAt.current.set(m.id, at);
+        for (const m of eligible) probeBrakes.lastAt.set(m.id, at);
         setSweepAt(at);
         const gm = useGlobalMachinesStore.getState();
         const probeBusy = useHostBusyStore.getState().probeGlobal;
@@ -567,10 +669,34 @@ export function MachinesIndicator() {
       // would never probe again for the rest of the session.
       .catch(() => {})
       .finally(() => {
-        probeInFlight.current = false;
+        probeBrakes.inFlight = false;
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, probeAll]);
+
+  // Inline utilization bars: while the menu is open, read every connected
+  // Detailed machine's CPU/GPU once now and every `UTIL_POLL_MS` after. A
+  // *background* read (the backend refuses it on a tagged host), never stacked
+  // (`recheck` skips a key already in flight), and it stops with the menu.
+  useEffect(() => {
+    if (!open) return;
+    const sweep = () => {
+      const gm = useGlobalMachinesStore.getState();
+      const s = useSettingsStore.getState().settings;
+      const recheck = useRemoteUsageStore.getState().recheck;
+      for (const m of gm.machines) {
+        if ((gm.status[m.id] ?? "off") !== "connected") continue;
+        if (!showsUtilization(s, m) || !mayAutoTouch(s, targetOfSpec(m))) continue;
+        void recheck(
+          { kind: "machine", key: machineKey(m.id), label: m.label || m.host, user: m.user, host: m.host, port: m.port },
+          { background: true },
+        );
+      }
+    };
+    sweep();
+    const timer = window.setInterval(sweep, UTIL_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [open]);
 
   const orderKey = machines.map((m) => m.id).join("|");
 
@@ -625,19 +751,21 @@ export function MachinesIndicator() {
 
   // FLIP: after the reordered rows paint, translate each card from where it was
   // to where it now is (0ms), then release the transform on the next frame so it
-  // slides into place. WebKitGTK animates `transform` cheaply, and comparing top
+  // slides into place. WebKitGTK animates `transform` cheaply, and comparing
   // offsets tolerates the rows' variable height (an expanded row is taller).
+  // Both axes, because the overlay's tiles wrap: a tile can move sideways.
   useLayoutEffect(() => {
-    const next = new Map<string, number>();
+    const next = new Map<string, { left: number; top: number }>();
     rowRefs.current.forEach((el, id) => {
-      const top = el.getBoundingClientRect().top;
-      next.set(id, top);
+      const { left, top } = el.getBoundingClientRect();
+      next.set(id, { left, top });
       const prev = prevRects.current.get(id);
       if (prev !== undefined) {
-        const dy = prev - top;
-        if (Math.abs(dy) > 0.5) {
+        const dx = prev.left - left;
+        const dy = prev.top - top;
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
           el.style.transition = "none";
-          el.style.transform = `translateY(${dy}px)`;
+          el.style.transform = `translate(${dx}px, ${dy}px)`;
           // Force a reflow so the pre-slide transform is committed before release.
           void el.offsetHeight;
           requestAnimationFrame(() => {
@@ -653,8 +781,10 @@ export function MachinesIndicator() {
   // Escape and an outside click close a keyboard-opened menu immediately.
   // `keepOpenRef` still wins for native dialogs, and a reorder drag cannot
   // unmount rows underneath its pointer capture.
+  // The dropdown's only: the overlay has its own Escape and backdrop
+  // (`MachinesOverlayFrame`), and a press anywhere in it is not "outside".
   useEffect(() => {
-    if (!open) return;
+    if (isOverlay || !menuOpen) return;
     const onPointerDown = (e: PointerEvent) => {
       if (keepOpenRef.current || reorderDragRef.current) return;
       const el = anchorRef.current;
@@ -671,7 +801,7 @@ export function MachinesIndicator() {
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open, closeMenu]);
+  }, [isOverlay, menuOpen, closeMenu]);
 
   // Group the machines by COLOUR so each lamp is drawn once, with a count —
   // exactly like a project pill's `RemoteConnMenu` aggregates its hosts. No
@@ -725,8 +855,10 @@ export function MachinesIndicator() {
   // pulling out of a collapsed header. "Connecting" deliberately is not: the whole
   // fleet is amber for the first seconds after launch and after every reconnect,
   // which would make the bar reflow on its own every time Eldrun starts.
+  // The header's instance reports; the overlay's is a second reader of the
+  // same fleet and must not clear the key when it unmounts.
   useHeaderStatusReport(
-    "machines",
+    isOverlay ? null : "machines",
     !enabled
       ? null
       : {
@@ -1267,56 +1399,15 @@ export function MachinesIndicator() {
     return lines.join("\n");
   };
 
-  return (
-    <div
-      ref={anchorRef}
-      className="global-apps-menu header-status-menu-anchor no-drag"
-      onMouseEnter={reveal}
-      onMouseLeave={scheduleClose}
-    >
-      <button
-        type="button"
-        className="global-apps-menu-btn machines-indicator-btn"
-        aria-label={t("machines.ariaLabel")}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={t("machines.triggerTitle")}
-        // Click/focus keeps the hover-opened menu revealed. Toggling here would
-        // immediately close the same menu that mouseenter just opened.
-        onClick={reveal}
-        onFocus={reveal}
-      >
-        <span className="header-conn-lamps">
-          {lampGroups.map((g) => (
-            <span key={g.lamp} className="conn-lamp-count">
-              <ConnLamp status={g.lamp} busy={g.working.length > 0} label={lampLabel(g)} />
-              {g.machines.length > 1 && (
-                <span className="conn-lamp-count-num">{g.machines.length}</span>
-              )}
-            </span>
-          ))}
-        </span>
-        <span className="vpn-indicator-label">{t("machines.label")}</span>
-      </button>
-      {open && (
-        <div className="tab-new-menu vpn-indicator-menu machines-indicator-menu" role="menu">
-          {/* Pinned title: stays put while the region below it scrolls, so the
-              scrollbar starts beneath the header (unified `.menu-scroll-region`
-              shape). Keeping it OUT of the scroller also spares the accent rail /
-              rounded top from the native scrollbar running over them. */}
-          <div className="tab-new-menu-group-label vpn-indicator-title">
-            <span>{t("machines.groupLabel")}</span>
-            <button
-              type="button"
-              className="vpn-indicator-close"
-              aria-label={t("common.close")}
-              title={t("common.close")}
-              onClick={() => closeMenu(MENU_ID)}
-            >
-              ×
-            </button>
-          </div>
-          <div className="menu-scroll-region">
+  // The rows as they sit in each surface: straight in the dropdown's column,
+  // one tile grid in the overlay (the Models overlay's `.models-home-grid`).
+  const tileGrid = (rows: ReactNode) =>
+    isOverlay ? <div className="models-home-grid machines-grid">{rows}</div> : rows;
+
+  // The list itself, shared by both surfaces: the dropdown scrolls it under
+  // its pinned title, the overlay lays it out as a page of tiles.
+  const body = (
+    <>
           {ioMode === "export" ? (
             <div className="vpn-indicator-row menu-form machines-io-panel">
               <div className="vpn-indicator-note">
@@ -1355,7 +1446,7 @@ export function MachinesIndicator() {
                 ))}
                 </>
               )}
-              {ioError && <div className="vpn-indicator-error">{ioError}</div>}
+              {ioError && <ErrorNote className="vpn-indicator-error" error={ioError} />}
               <div className="vpn-indicator-actions">
                 <button
                   type="button"
@@ -1468,7 +1559,7 @@ export function MachinesIndicator() {
                       <UntestedTag id="machinesIndicator.4" />
                     </span>
                   </label>
-                  {ioError && <div className="vpn-indicator-error">{ioError}</div>}
+                  {ioError && <ErrorNote className="vpn-indicator-error" error={ioError} />}
                   <div className="vpn-indicator-actions">
                     <button
                       type="button"
@@ -1565,7 +1656,7 @@ export function MachinesIndicator() {
                 aria-label={t("machines.usageAria")}
                 title={t("machines.usageTitle")}
                 onClick={() => {
-                  closeMenu(MENU_ID);
+                  dismiss();
                   openUsage();
                 }}
               >
@@ -1586,7 +1677,7 @@ export function MachinesIndicator() {
               drops them — the same distance either way, whatever their own
               heights). It is a `transform`, so no layout moves and the rects
               measured at pointerdown stay valid. */}
-          {machines.map((m, idx) => {
+          {tileGrid(machines.map((m, idx) => {
             const st = status[m.id] ?? "off";
             const hpc = isHpcHost(settings, targetOfSpec(m));
             // The row's actual state, from BOTH maps — see `RowState`. This is
@@ -1604,6 +1695,9 @@ export function MachinesIndicator() {
             // before it dropped says nothing about it now — and a stale row is by
             // definition one whose session may already be gone.
             const busy = state === "connected" ? busyReading({ readings }, m) : null;
+            const usageReport =
+              state === "connected" && showsUtilization(settings, m) ? usageReports[machineKey(m.id)] : undefined;
+            const util = usageReport ? utilizationOf(usageReport) : null;
             const name = m.label || m.host;
             // `ConnLamp`'s own tooltip is "<label>: <colour>", and most states
             // share their colour with another (red covers error and stale, grey
@@ -1640,6 +1734,121 @@ export function MachinesIndicator() {
               disconnectArm === m.id ||
               editId === m.id ||
               attachId === m.id;
+            // The icon actions: on the head line's second row in the dropdown,
+            // at the tile's foot in the overlay (after its details).
+            const rowActions = !rowFormOpen && (
+              <div className="machines-row-actions">
+                {/* The connect, and — for a tagged cluster — the ONLY way it
+                    ever gets connected or probed from here at all. Every
+                    sweep skips it by design, so its row has to carry the
+                    gestures the fleet actions no longer make on its behalf:
+                    this button and the Check beside it. */}
+                <button
+                  type="button"
+                  className="machines-row-action is-accent"
+                  aria-label={t(
+                    state === "error"
+                      ? "machines.retryAria"
+                      : hpc
+                        ? "machines.hpcLoginAria"
+                        : st === "connected"
+                          ? "machines.reconnectAria"
+                          : "machines.connectAria",
+                  )}
+                  title={t(
+                    state === "error"
+                      ? "machines.retryTitle"
+                      : hpc
+                        ? "machines.hpcLoginTitle"
+                        : state === "stale"
+                          ? "machines.reconnectStaleTitle"
+                          : st === "connected"
+                            ? "machines.reconnectTitle"
+                            : "machines.connectTitle",
+                  )}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (state === "error") startRetry(m.id);
+                    // A tagged machine goes through this component's own
+                    // connect, which marks itself a gesture (`background:
+                    // false`) — the store's is a background-defaulted call
+                    // the backend is right to refuse on a login node.
+                    else if (hpc) void explicitConnect(m);
+                    else void connect(m.id);
+                  }}
+                  disabled={st === "connecting"}
+                >
+                  {st === "connected" || state === "error" ? "↻" : "▷"}
+                </button>
+                {/* Ask this one host whether it answers, because the user
+                    asked. It is the only reachability a tagged machine has
+                    (no sweep will ever probe one), and on any other machine
+                    it re-asks a question the 60s sweep interval is holding. */}
+                <button
+                  type="button"
+                  className="machines-row-action"
+                  aria-label={t("machines.checkAria")}
+                  title={t(hpc ? "machines.checkTitleHpc" : "machines.checkTitle")}
+                  disabled={checking.has(m.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void runCheck(m);
+                  }}
+                >
+                  {checking.has(m.id) ? "⋯" : "◎"}
+                </button>
+                {st === "connected" && (
+                  <button
+                    type="button"
+                    className="machines-row-action is-danger"
+                    aria-label={t("machines.disconnectAria")}
+                    title={t("machines.disconnectTitle")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDisconnectArm(m.id);
+                    }}
+                  >
+                    ⏻
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="machines-row-action"
+                  aria-label={t("machines.attachAria")}
+                  title={t("machines.attachTitle")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAttachId(m.id);
+                  }}
+                >
+                  ⇥
+                </button>
+                <button
+                  type="button"
+                  className="machines-row-action"
+                  aria-label={t("machines.editAria")}
+                  title={t("machines.editTitle")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startEdit(m);
+                  }}
+                >
+                  ✎
+                </button>
+                <button
+                  type="button"
+                  className="machines-row-action is-danger"
+                  aria-label={t("machines.removeAria")}
+                  title={t("machines.removeTitle")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRemoveArm(m.id);
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            );
             return (
               <div
                 key={m.id}
@@ -1647,7 +1856,7 @@ export function MachinesIndicator() {
                   if (el) rowRefs.current.set(m.id, el);
                   else rowRefs.current.delete(m.id);
                 }}
-                className={`vpn-indicator-row machines-indicator-row${
+                className={`vpn-indicator-row machines-indicator-row${isOverlay ? " models-tile machines-tile" : ""}${
                   reorderDrag?.id === m.id ? " reorder-dragging" : reorderDrag ? " reorder-parting" : ""
                 }`}
                 style={
@@ -1659,23 +1868,33 @@ export function MachinesIndicator() {
                 }
               >
                 <div className="vpn-indicator-head">
-                  <button
-                    type="button"
-                    className="machines-row-grip"
-                    aria-label={t("machines.gripAria")}
-                    title={t("machines.gripTitle")}
-                    onPointerDown={(e) => startReorderDrag(m.id, e)}
-                    onPointerMove={moveReorderDrag}
-                    onPointerUp={(e) => endReorderDrag(e, true)}
-                    onPointerCancel={(e) => endReorderDrag(e, false)}
-                    onKeyDown={(e) => {
-                      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-                      e.preventDefault();
-                      nudgeMachine(m.id, e.key === "ArrowUp" ? -1 : 1);
-                    }}
-                  >
-                    ⠿
-                  </button>
+                  {/* No grip on a tile: reordering is the dropdown's, whose
+                      single column is what the drag's slot maths measures. */}
+                  {!isOverlay && (
+                    <button
+                      type="button"
+                      className="machines-row-grip"
+                      aria-label={t("machines.gripAria")}
+                      title={t("machines.gripTitle")}
+                      onPointerDown={(e) => startReorderDrag(m.id, e)}
+                      onPointerMove={moveReorderDrag}
+                      onPointerUp={(e) => endReorderDrag(e, true)}
+                      onPointerCancel={(e) => endReorderDrag(e, false)}
+                      onKeyDown={(e) => {
+                        if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+                        e.preventDefault();
+                        nudgeMachine(m.id, e.key === "ArrowUp" ? -1 : 1);
+                      }}
+                    >
+                      ⠿
+                    </button>
+                  )}
+                  {/* The Models overlay tile's icon box. */}
+                  {isOverlay && (
+                    <span className="models-tile-icon machines-tile-icon" aria-hidden="true">
+                      <MachinesGlyph className="machines-tile-glyph" />
+                    </span>
+                  )}
                   <ConnLamp
                     status={STATE_LAMP[state]}
                     busy={busy !== null}
@@ -1706,133 +1925,35 @@ export function MachinesIndicator() {
                       {t(badge)}
                     </span>
                   )}
-                  <button
-                    type="button"
-                    className="machines-row-expand-btn"
-                    aria-label={t(expandedIds.has(m.id) ? "machines.hideDetailsAria" : "machines.showDetailsAria")}
-                    aria-expanded={expandedIds.has(m.id)}
-                    title={t(expandedIds.has(m.id) ? "machines.hideDetailsTitle" : "machines.showDetailsTitle")}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleExpanded(m.id);
-                    }}
-                  >
-                    {expandedIds.has(m.id) ? "▾" : "▸"}
-                  </button>
-                  {!rowFormOpen && (
-                    <div className="machines-row-actions">
-                      {/* The connect, and — for a tagged cluster — the ONLY way it
-                          ever gets connected or probed from here at all. Every
-                          sweep skips it by design, so its row has to carry the
-                          gestures the fleet actions no longer make on its behalf:
-                          this button and the Check beside it. */}
-                      <button
-                        type="button"
-                        className="machines-row-action is-accent"
-                        aria-label={t(
-                          state === "error"
-                            ? "machines.retryAria"
-                            : hpc
-                              ? "machines.hpcLoginAria"
-                              : st === "connected"
-                                ? "machines.reconnectAria"
-                                : "machines.connectAria",
-                        )}
-                        title={t(
-                          state === "error"
-                            ? "machines.retryTitle"
-                            : hpc
-                              ? "machines.hpcLoginTitle"
-                              : state === "stale"
-                                ? "machines.reconnectStaleTitle"
-                                : st === "connected"
-                                  ? "machines.reconnectTitle"
-                                  : "machines.connectTitle",
-                        )}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (state === "error") startRetry(m.id);
-                          // A tagged machine goes through this component's own
-                          // connect, which marks itself a gesture (`background:
-                          // false`) — the store's is a background-defaulted call
-                          // the backend is right to refuse on a login node.
-                          else if (hpc) void explicitConnect(m);
-                          else void connect(m.id);
-                        }}
-                        disabled={st === "connecting"}
-                      >
-                        {st === "connected" || state === "error" ? "↻" : "▷"}
-                      </button>
-                      {/* Ask this one host whether it answers, because the user
-                          asked. It is the only reachability a tagged machine has
-                          (no sweep will ever probe one), and on any other machine
-                          it re-asks a question the 60s sweep interval is holding. */}
-                      <button
-                        type="button"
-                        className="machines-row-action"
-                        aria-label={t("machines.checkAria")}
-                        title={t(hpc ? "machines.checkTitleHpc" : "machines.checkTitle")}
-                        disabled={checking.has(m.id)}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void runCheck(m);
-                        }}
-                      >
-                        {checking.has(m.id) ? "⋯" : "◎"}
-                      </button>
-                      {st === "connected" && (
-                        <button
-                          type="button"
-                          className="machines-row-action is-danger"
-                          aria-label={t("machines.disconnectAria")}
-                          title={t("machines.disconnectTitle")}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDisconnectArm(m.id);
-                          }}
-                        >
-                          ⏻
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="machines-row-action"
-                        aria-label={t("machines.attachAria")}
-                        title={t("machines.attachTitle")}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setAttachId(m.id);
-                        }}
-                      >
-                        ⇥
-                      </button>
-                      <button
-                        type="button"
-                        className="machines-row-action"
-                        aria-label={t("machines.editAria")}
-                        title={t("machines.editTitle")}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          startEdit(m);
-                        }}
-                      >
-                        ✎
-                      </button>
-                      <button
-                        type="button"
-                        className="machines-row-action is-danger"
-                        aria-label={t("machines.removeAria")}
-                        title={t("machines.removeTitle")}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setRemoveArm(m.id);
-                        }}
-                      >
-                        ✕
-                      </button>
-                    </div>
+                  {!isOverlay && (
+                    <button
+                      type="button"
+                      className="machines-row-expand-btn"
+                      aria-label={t(expandedIds.has(m.id) ? "machines.hideDetailsAria" : "machines.showDetailsAria")}
+                      aria-expanded={expandedIds.has(m.id)}
+                      title={t(expandedIds.has(m.id) ? "machines.hideDetailsTitle" : "machines.showDetailsTitle")}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleExpanded(m.id);
+                      }}
+                    >
+                      {expandedIds.has(m.id) ? "▾" : "▸"}
+                    </button>
                   )}
+                  {!isOverlay && rowActions}
                 </div>
+                {/* A tile's second line, the Models overlay's `.models-tile-desc`:
+                    where the machine is and what its lamp means, in words — the
+                    dropdown keeps both in the name's tooltip. */}
+                {isOverlay && (
+                  <div className="models-tile-desc machines-tile-desc">
+                    <span className="models-tile-intro machines-tile-target">{targetLabel(m)}</span>
+                    <span className="models-tile-stat machines-tile-stat">
+                      {stateTip}
+                      {busy && <span className="machines-tile-busy">{busyLabel(busy)}</span>}
+                    </span>
+                  </div>
+                )}
                 {/* Why the row says what it says — shown as soon as anything
                     fails, not only once the user opens Retry. This is what tells
                     apart a stale saved password from an unknown host key from the
@@ -1844,12 +1965,31 @@ export function MachinesIndicator() {
                     to be nothing but a toggle springing silently back. Also still
                     the only place an auto-connect failure at launch explains
                     itself — `autoConnect` never opens a modal. */}
+                {/* CPU and GPU utilization, right on the row — only for a
+                    machine read in Detailed mode (see `showsUtilization`). */}
+                {util && !rowFormOpen && (
+                  <div className="machines-util" aria-label={t("machines.utilAria", { machine: name })}>
+                    <UtilBar
+                      label={t("machines.utilCpu")}
+                      pct={util.cpu}
+                      title={t("machines.utilCpuTitle", { pct: String(Math.round(util.cpu)) })}
+                    />
+                    {util.gpu !== null && (
+                      <UtilBar
+                        label={t("machines.utilGpu")}
+                        pct={util.gpu}
+                        title={t("machines.utilGpuTitle", { pct: String(Math.round(util.gpu)) })}
+                      />
+                    )}
+                    <UntestedTag id="machines.utilAria" />
+                  </div>
+                )}
                 {rowError && !rowFormOpen && (
                   <div className="vpn-indicator-error machines-row-error">{rowError}</div>
                 )}
-                {expandedIds.has(m.id) && (
+                {(isOverlay || expandedIds.has(m.id)) && (
                   <>
-                    <div className="vpn-indicator-holders">{targetLabel(m)}</div>
+                    {!isOverlay && <div className="vpn-indicator-holders">{targetLabel(m)}</div>}
                     <button
                       type="button"
                       className="vpn-indicator-connect machines-monitor-btn"
@@ -1917,6 +2057,7 @@ export function MachinesIndicator() {
                     </label>
                   </>
                 )}
+                {isOverlay && rowActions}
                 {attachId === m.id ? (
                   <div className="vpn-indicator-row menu-form machines-attach-form">
                     <div className="vpn-indicator-hint">
@@ -1937,7 +2078,7 @@ export function MachinesIndicator() {
                         )}
                         onClick={() => {
                           setAttachId(null);
-                          closeMenu(MENU_ID);
+                          dismiss();
                           attachToProject(p, m);
                         }}
                       >
@@ -1973,7 +2114,7 @@ export function MachinesIndicator() {
                         if (e.key === "Enter") void submitRetry(m.id);
                       }}
                     />
-                    {retryError && <div className="vpn-indicator-error">{retryError}</div>}
+                    {retryError && <ErrorNote className="vpn-indicator-error" error={retryError} />}
                     <div className="vpn-indicator-actions">
                       <button type="button" className="vpn-indicator-connect" onClick={() => void submitRetry(m.id)}>
                         {t("machines.retry")}
@@ -2113,7 +2254,7 @@ export function MachinesIndicator() {
                         {t("machines.terminalEditHint.post")}
                       </div>
                     )}
-                    {editError && <div className="vpn-indicator-error">{editError}</div>}
+                    {editError && <ErrorNote className="vpn-indicator-error" error={editError} />}
                     <div className="vpn-indicator-actions">
                       {editViaTerminal ? (
                         <button
@@ -2162,7 +2303,7 @@ export function MachinesIndicator() {
                 ) : null}
               </div>
             );
-          })}
+          }))}
 
           <div className="tab-new-menu-group-label">{t("machines.addGroupLabel")}</div>
           {adding ? (
@@ -2287,7 +2428,7 @@ export function MachinesIndicator() {
                   {t("machines.terminalLoginHint.post")}
                 </div>
               )}
-              {addError && <div className="vpn-indicator-error">{addError}</div>}
+              {addError && <ErrorNote className="vpn-indicator-error" error={addError} />}
               <div className="vpn-indicator-actions">
                 {addViaTerminal ? (
                   <button
@@ -2350,6 +2491,83 @@ export function MachinesIndicator() {
           )}
             </>
           )}
+    </>
+  );
+
+  if (isOverlay) return <MachinesOverlayFrame>{body}</MachinesOverlayFrame>;
+
+  return (
+    <div
+      ref={anchorRef}
+      className="global-apps-menu header-status-menu-anchor no-drag"
+      onMouseEnter={reveal}
+      onMouseLeave={scheduleClose}
+    >
+      <button
+        type="button"
+        className="global-apps-menu-btn machines-indicator-btn"
+        aria-label={t("machines.ariaLabel")}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        title={t("machines.triggerTitle")}
+        // A click opens the Machines overlay — the Models & agents button's
+        // pattern (`layout/LocalModelMenu`): hover is the glance, click is the
+        // room. The dropdown goes with the click rather than staying up over
+        // the overlay it just raised. Focus alone still reveals the dropdown,
+        // the keyboard's way to the glance.
+        onClick={() => {
+          window.clearTimeout(closeTimer.current);
+          closeMenu(MENU_ID);
+          useMachinesOverlayStore.getState().openOverlay();
+        }}
+        onFocus={reveal}
+      >
+        <span className="header-conn-lamps">
+          {lampGroups.map((g) => (
+            <span key={g.lamp} className="conn-lamp-count">
+              <ConnLamp status={g.lamp} busy={g.working.length > 0} label={lampLabel(g)} />
+              {g.machines.length > 1 && (
+                <span className="conn-lamp-count-num">{g.machines.length}</span>
+              )}
+            </span>
+          ))}
+        </span>
+        <span className="vpn-indicator-label">{t("machines.label")}</span>
+      </button>
+      {menuOpen && (
+        <div className="tab-new-menu vpn-indicator-menu machines-indicator-menu" role="menu">
+          {/* Pinned title: stays put while the region below it scrolls, so the
+              scrollbar starts beneath the header (unified `.menu-scroll-region`
+              shape). Keeping it OUT of the scroller also spares the accent rail /
+              rounded top from the native scrollbar running over them. */}
+          <div className="tab-new-menu-group-label vpn-indicator-title">
+            <span>{t("machines.groupLabel")}</span>
+            {/* The door to the overlay, for a pointer that came in by hover
+                and would otherwise not know a click on the button opens it. */}
+            <button
+              type="button"
+              className="machines-open-overlay"
+              aria-label={t("machines.openOverlayAria")}
+              title={t("machines.openOverlayTitle")}
+              onClick={() => {
+                closeMenu(MENU_ID);
+                useMachinesOverlayStore.getState().openOverlay();
+              }}
+            >
+              ⤢
+            </button>
+            <button
+              type="button"
+              className="vpn-indicator-close"
+              aria-label={t("common.close")}
+              title={t("common.close")}
+              onClick={() => closeMenu(MENU_ID)}
+            >
+              ×
+            </button>
+          </div>
+          <div className="menu-scroll-region">
+            {body}
           </div>
         </div>
       )}

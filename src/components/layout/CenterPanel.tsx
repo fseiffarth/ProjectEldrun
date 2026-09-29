@@ -28,11 +28,13 @@ import {
   effectiveTabLocation,
   findGroup,
   hydrateScopeFromDisk,
+  isRelaunchableLocalTab,
   isResumableAgentTab,
   isPtyTabKind,
   localTabCwd,
   remoteHostIdOf,
   useTabsStore,
+  type DetachedDockTarget,
   type LayoutNode,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
@@ -53,6 +55,14 @@ import {
 } from "../tabs/detachedDropTargets";
 import { createDetachedDragNet } from "../tabs/detachedDragNet";
 import {
+  DETACHED_DROP_CLAIM,
+  DETACHED_DROP_PROBE,
+  awaitPointerClaim,
+  installPointerTracker,
+  type DetachedDropClaim,
+  type DetachedDropProbe,
+} from "../../lib/window/dropClaim";
+import {
   snapshotFrame,
   physToClient,
   type PhysPoint,
@@ -60,7 +70,6 @@ import {
 } from "../../lib/window/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/terminal/tmuxSession";
-import { isTrashProject } from "../../lib/projects/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
 import { restoreProjectScope, useProjectsStore } from "../../stores/projects";
 import { BOX_SCOPE_PREFIX, boxFolderOfScope, restoreBoxScope, useBoxesStore } from "../../stores/boxes";
@@ -444,14 +453,18 @@ function CenterPanelImpl() {
   const resolveTarget = useCallback(
     (x: number, y: number) => {
       const setTarget = useDragStore.getState().setTarget;
-      const computeReorderIndex = (tabBar: Element, px: number): number => {
-        const tabEls = tabBar.querySelectorAll(".tab");
-        let slot = tabEls.length;
-        tabEls.forEach((el, i) => {
+      // The slot is the `data-tab-index` of the first tab right of the pointer's
+      // midpoint — NOT its DOM position: a tab-group chip stands for several
+      // tabs, so DOM order and tab order part ways once a bar has one.
+      const computeReorderIndex = (tabBar: HTMLElement, px: number): number => {
+        const tabEls = tabBar.querySelectorAll<HTMLElement>(".tab[data-tab-index]");
+        const count = Number(tabBar.dataset.tabCount);
+        const end = Number.isFinite(count) ? count : tabEls.length;
+        for (const el of tabEls) {
           const r = el.getBoundingClientRect();
-          if (slot === tabEls.length && px < r.left + r.width / 2) slot = i;
-        });
-        return slot;
+          if (px < r.left + r.width / 2) return Number(el.dataset.tabIndex);
+        }
+        return end;
       };
       const el = document.elementFromPoint(x, y);
       const tabBar = el?.closest(".tab-bar");
@@ -601,6 +614,7 @@ function CenterPanelImpl() {
   const resolveTargetRef = useRef(resolveTarget);
   resolveTargetRef.current = resolveTarget;
   useEffect(() => {
+    installPointerTracker();
     const win = getCurrentWindow();
     // Our own window frame (physical px). Streamed physical cursor → our client px
     // via `physToClient` (innerPhys/scale). Snapshotted at each drag start (the
@@ -641,7 +655,16 @@ function CenterPanelImpl() {
       useDragStore.getState().end();
     };
     const net = createDetachedDragNet(expire);
+    // The coordinate-free claim in flight (see the PROBE host below).
+    let claimToken: string | null = null;
+    let cancelClaim: (() => void) | null = null;
+    const endClaim = () => {
+      claimToken = null;
+      cancelClaim?.();
+      cancelClaim = null;
+    };
     const endSession = () => {
+      endClaim();
       net.stop();
       session?.dispose();
       session = null;
@@ -732,6 +755,184 @@ function CenterPanelImpl() {
       }),
     );
 
+    // The ONE commit for a cross-window drop that ends in this window's care,
+    // shared by the geometric END (below) and the coordinate-free claim path
+    // (`DETACHED_DROP_PROBE`/`CLAIM`, further down). The caller has already
+    // written the release point into the drag store and resolved the main-side
+    // target for it; this decides and mutates. `phys` is the final physical
+    // cursor where the platform has one (it places a new window), else null.
+    const settle = (input: {
+      cancelled: boolean;
+      shift: boolean;
+      inMain: boolean;
+      overPopoutId: string | null;
+      /** The pane inside `overPopoutId` the drop resolved to, when known. */
+      popoutTarget: DetachedDockTarget | undefined;
+      phys: PhysPoint | null;
+    }) => {
+      const f = useDragStore.getState().drag;
+      const { inMain, overPopoutId, phys } = input;
+      const store = useTabsStore.getState();
+      const done = () => {
+        endSession();
+        useDragStore.getState().end();
+      };
+
+      // ── Single dragged tab: unified {newWindow | dockDetached | dockMain} ────
+      if (f?.kind === "detached" && f.detachedScope && f.detachedGroupId && f.detachedTabKey) {
+        const scope = f.detachedScope;
+        const srcGroup = f.detachedGroupId;
+        const tabKey = f.detachedTabKey;
+        const decision = decideDetachedTabDrop({
+          cancelled: input.cancelled,
+          shift: input.shift,
+          inMain,
+          overPopoutId,
+          srcGroupId: srcGroup,
+        });
+        switch (decision.kind) {
+          case "dockDetached": {
+            // Move the tab from its source popout INTO the sibling popout under
+            // the cursor, at the pane the cursor resolves to. Re-seed BOTH windows
+            // (the destination plays the drop-in landing on the moved tab).
+            const target = input.popoutTarget;
+            store.moveTabBetweenDetached(scope, srcGroup, decision.toGroupId, tabKey, target);
+            reseedDetached(scope, decision.toGroupId, tabKey);
+            reseedDetached(scope, srcGroup);
+            break;
+          }
+          case "dockMain": {
+            // Dock just the dragged tab into its OWN scope's in-window layout at
+            // the resolved target (bar → merge; body edge → split; else default).
+            // Targets only apply when the popout's scope IS the active one.
+            const sameScope = store.scope === scope;
+            const target =
+              sameScope && f.reorderGroup
+                ? { targetGroupId: f.reorderGroup, edge: "center" as const }
+                : sameScope && f.overGroup && f.edge
+                  ? { targetGroupId: f.overGroup, edge: f.edge }
+                  : undefined;
+            store.attachDetachedTab(scope, srcGroup, tabKey, target);
+            if (sameScope) useTabLandStore.getState().markLanded(tabKey);
+            reseedDetached(scope, srcGroup);
+            break;
+          }
+          case "newWindow": {
+            // Shift, or a free-space release: pop the tab into its OWN new popout
+            // at the PHYSICAL cursor (Rust `.position()` is physical). A lone-tab
+            // source is refused downstream (null) → clean no-op, never a hang.
+            if (phys) {
+              const bounds = {
+                x: Math.round(phys.x - 80),
+                y: Math.round(phys.y - 8),
+                w: 900,
+                h: 640,
+              };
+              const newLabel = store.detachTabToNewWindow(scope, srcGroup, tabKey, bounds);
+              if (newLabel) reseedDetached(scope, srcGroup);
+            }
+            break;
+          }
+          case "local":
+          case "none":
+            // The source popout already committed a within-popout drop (or the
+            // gesture was cancelled) — nothing for the host to do.
+            break;
+        }
+        done();
+        return;
+      }
+
+      // ── One pane of a multi-pane popout: dock JUST that pane, or pop it into
+      // its own window — NEVER the whole popout (a pane drop must not haul its
+      // sibling panes into the main window). ────────────────────────────────
+      if (f?.kind === "detached" && f.detachedScope && f.detachedGroupId && f.detachedPaneId) {
+        const scope = f.detachedScope;
+        const srcGroup = f.detachedGroupId;
+        const paneId = f.detachedPaneId;
+        const decision = decideDetachedPaneDrop({
+          cancelled: input.cancelled,
+          shift: input.shift,
+          inMain,
+          overPopoutId,
+          srcGroupId: srcGroup,
+        });
+        switch (decision.kind) {
+          case "dockMain": {
+            // Dock only the dragged pane at the resolved target (bar → merge;
+            // body edge → split; else its own pane). Targets only apply when
+            // the popout's scope IS the active one.
+            const sameScope = store.scope === scope;
+            const target =
+              sameScope && f.reorderGroup
+                ? { targetGroupId: f.reorderGroup, edge: "center" as const }
+                : sameScope && f.overGroup && f.edge
+                  ? { targetGroupId: f.overGroup, edge: f.edge }
+                  : undefined;
+            store.attachDetachedPane(scope, srcGroup, paneId, target);
+            reseedDetached(scope, srcGroup);
+            break;
+          }
+          case "newWindow": {
+            // Shift, or a free-space release: the pane becomes its own popout
+            // at the physical cursor. A lone-pane source is refused downstream
+            // (null) → clean no-op.
+            if (phys) {
+              const bounds = {
+                x: Math.round(phys.x - 80),
+                y: Math.round(phys.y - 8),
+                w: 900,
+                h: 640,
+              };
+              const newLabel = store.detachPaneToNewWindow(scope, srcGroup, paneId, bounds);
+              if (newLabel) reseedDetached(scope, srcGroup);
+            }
+            break;
+          }
+          case "none":
+            // Cancelled / released over the source or a sibling popout — stay put.
+            break;
+        }
+        done();
+        return;
+      }
+
+      // ── Whole group: dock into main, or stay floating ───────────────────────
+      if (f?.kind === "detached" && f.detachedGroupId && f.detachedScope) {
+        const decision = decideDetachedGroupDrop({
+          cancelled: input.cancelled,
+          shift: input.shift,
+          inMain,
+          overPopoutId,
+          srcGroupId: f.detachedGroupId,
+        });
+        if (decision.kind === "dockMain") {
+          // Mirror listenDetachedHost: attachGroup re-injects only into the ACTIVE
+          // scope's live layout; a non-active scope re-injects into its STORED
+          // layout via dropDetachedGroup (else attachGroup silently no-ops).
+          if (store.scope === f.detachedScope) {
+            if (f.reorderGroup) {
+              store.attachGroup(f.detachedGroupId, {
+                targetGroupId: f.reorderGroup,
+                edge: "center",
+              });
+            } else if (f.overGroup && f.edge) {
+              store.attachGroup(f.detachedGroupId, {
+                targetGroupId: f.overGroup,
+                edge: f.edge,
+              });
+            } else {
+              store.attachGroup(f.detachedGroupId);
+            }
+          } else {
+            store.dropDetachedGroup(f.detachedScope, f.detachedGroupId);
+          }
+        }
+        // `float` (Shift / free space / over a sibling popout) → leave it be.
+      }
+      done();
+    };
+
     reg(
       listen<DetachedDragEnd>(DETACHED_DRAG_END, (ev) => {
         const d = useDragStore.getState().drag;
@@ -756,171 +957,96 @@ function CenterPanelImpl() {
           useDragStore.getState().move(px, py);
           resolveTargetRef.current(px, py);
         }
-        const f = useDragStore.getState().drag;
         const inMain =
           px >= 0 && py >= 0 && px <= window.innerWidth && py <= window.innerHeight;
         // The sibling popout under the final cursor (null if none / it's the source).
         const sibling = siblingAt(phys);
-        const overPopoutId = sibling?.groupId ?? null;
-        const store = useTabsStore.getState();
-        const done = () => {
-          endSession();
-          useDragStore.getState().end();
-        };
+        settle({
+          cancelled: ev.payload.cancelled,
+          shift: ev.payload.shift ?? false,
+          inMain,
+          overPopoutId: sibling?.groupId ?? null,
+          popoutTarget: phys && sibling ? session!.targetAt(sibling, phys) : undefined,
+          phys,
+        });
+      }),
+    );
 
-        // ── Single dragged tab: unified {newWindow | dockDetached | dockMain} ────
-        if (f?.kind === "detached" && f.detachedScope && f.detachedGroupId && f.detachedTabKey) {
-          const scope = f.detachedScope;
-          const srcGroup = f.detachedGroupId;
-          const tabKey = f.detachedTabKey;
-          const decision = decideDetachedTabDrop({
-            cancelled: ev.payload.cancelled,
-            shift: ev.payload.shift ?? false,
-            inMain,
-            overPopoutId,
-            srcGroupId: srcGroup,
-          });
-          switch (decision.kind) {
-            case "dockDetached": {
-              // Move the tab from its source popout INTO the sibling popout under
-              // the cursor, at the pane the cursor resolves to. Re-seed BOTH windows
-              // (the destination plays the drop-in landing on the moved tab).
-              const target = phys && sibling ? session!.targetAt(sibling, phys) : undefined;
-              store.moveTabBetweenDetached(scope, srcGroup, decision.toGroupId, tabKey, target);
-              reseedDetached(scope, decision.toGroupId, tabKey);
-              reseedDetached(scope, srcGroup);
-              break;
-            }
-            case "dockMain": {
-              // Dock just the dragged tab into its OWN scope's in-window layout at
-              // the resolved target (bar → merge; body edge → split; else default).
-              // Targets only apply when the popout's scope IS the active one.
-              const sameScope = store.scope === scope;
-              const target =
-                sameScope && f.reorderGroup
-                  ? { targetGroupId: f.reorderGroup, edge: "center" as const }
-                  : sameScope && f.overGroup && f.edge
-                    ? { targetGroupId: f.overGroup, edge: f.edge }
-                    : undefined;
-              store.attachDetachedTab(scope, srcGroup, tabKey, target);
-              if (sameScope) useTabLandStore.getState().markLanded(tabKey);
-              reseedDetached(scope, srcGroup);
-              break;
-            }
-            case "newWindow": {
-              // Shift, or a free-space release: pop the tab into its OWN new popout
-              // at the PHYSICAL cursor (Rust `.position()` is physical). A lone-tab
-              // source is refused downstream (null) → clean no-op, never a hang.
-              if (phys) {
-                const bounds = {
-                  x: Math.round(phys.x - 80),
-                  y: Math.round(phys.y - 8),
-                  w: 900,
-                  h: 640,
-                };
-                const newLabel = store.detachTabToNewWindow(scope, srcGroup, tabKey, bounds);
-                if (newLabel) reseedDetached(scope, srcGroup);
-              }
-              break;
-            }
-            case "local":
-            case "none":
-              // The source popout already committed a within-popout drop (or the
-              // gesture was cancelled) — nothing for the host to do.
-              break;
-          }
-          done();
-          return;
-        }
-
-        // ── One pane of a multi-pane popout: dock JUST that pane, or pop it into
-        // its own window — NEVER the whole popout (a pane drop must not haul its
-        // sibling panes into the main window). ────────────────────────────────
-        if (f?.kind === "detached" && f.detachedScope && f.detachedGroupId && f.detachedPaneId) {
-          const scope = f.detachedScope;
-          const srcGroup = f.detachedGroupId;
-          const paneId = f.detachedPaneId;
-          const decision = decideDetachedPaneDrop({
-            cancelled: ev.payload.cancelled,
-            shift: ev.payload.shift ?? false,
-            inMain,
-            overPopoutId,
-            srcGroupId: srcGroup,
-          });
-          switch (decision.kind) {
-            case "dockMain": {
-              // Dock only the dragged pane at the resolved target (bar → merge;
-              // body edge → split; else its own pane). Targets only apply when
-              // the popout's scope IS the active one.
-              const sameScope = store.scope === scope;
-              const target =
-                sameScope && f.reorderGroup
-                  ? { targetGroupId: f.reorderGroup, edge: "center" as const }
-                  : sameScope && f.overGroup && f.edge
-                    ? { targetGroupId: f.overGroup, edge: f.edge }
-                    : undefined;
-              store.attachDetachedPane(scope, srcGroup, paneId, target);
-              reseedDetached(scope, srcGroup);
-              break;
-            }
-            case "newWindow": {
-              // Shift, or a free-space release: the pane becomes its own popout
-              // at the physical cursor. A lone-pane source is refused downstream
-              // (null) → clean no-op.
-              if (phys) {
-                const bounds = {
-                  x: Math.round(phys.x - 80),
-                  y: Math.round(phys.y - 8),
-                  w: 900,
-                  h: 640,
-                };
-                const newLabel = store.detachPaneToNewWindow(scope, srcGroup, paneId, bounds);
-                if (newLabel) reseedDetached(scope, srcGroup);
-              }
-              break;
-            }
-            case "none":
-              // Cancelled / released over the source or a sibling popout — stay put.
-              break;
-          }
-          done();
-          return;
-        }
-
-        // ── Whole group: dock into main, or stay floating ───────────────────────
-        if (f?.kind === "detached" && f.detachedGroupId && f.detachedScope) {
-          const decision = decideDetachedGroupDrop({
-            cancelled: ev.payload.cancelled,
-            shift: ev.payload.shift ?? false,
-            inMain,
-            overPopoutId,
-            srcGroupId: f.detachedGroupId,
-          });
-          if (decision.kind === "dockMain") {
-            // Mirror listenDetachedHost: attachGroup re-injects only into the ACTIVE
-            // scope's live layout; a non-active scope re-injects into its STORED
-            // layout via dropDetachedGroup (else attachGroup silently no-ops).
-            if (store.scope === f.detachedScope) {
-              if (f.reorderGroup) {
-                store.attachGroup(f.detachedGroupId, {
-                  targetGroupId: f.reorderGroup,
-                  edge: "center",
-                });
-              } else if (f.overGroup && f.edge) {
-                store.attachGroup(f.detachedGroupId, {
-                  targetGroupId: f.overGroup,
-                  edge: f.edge,
-                });
-              } else {
-                store.attachGroup(f.detachedGroupId);
-              }
-            } else {
-              store.dropDetachedGroup(f.detachedScope, f.detachedGroupId);
-            }
-          }
-          // `float` (Shift / free space / over a sibling popout) → leave it be.
-        }
-        done();
+    // ── Coordinate-free drops (#42 on native Wayland) ─────────────────────────
+    // A popout that has no desktop geometry cannot stream a cursor; it releases
+    // and broadcasts a PROBE instead (`lib/window/dropClaim`). This window then
+    // waits for the pointer to show up SOMEWHERE: in its own DOM (→ dock into
+    // main at the pane under it) or in a sibling popout, which answers with a
+    // CLAIM naming the pane it resolved. The drag store is put into the same
+    // `detached` state the geometric START uses, so the pane layer stops eating
+    // the crossing event and the ladder in `settle` runs unchanged. No claim
+    // within the timeout leaves the tab in its source popout.
+    reg(
+      listen<DetachedDropProbe>(DETACHED_DROP_PROBE, (ev) => {
+        const probe = ev.payload;
+        // A main-window drag probes for popouts itself (`TabBar` consumes the
+        // claim); only a popout-sourced probe (it names its record) is hosted here.
+        if (probe.sourceLabel === win.label || !probe.groupId) return;
+        endSession();
+        useDragStore.getState().startDetachedDrag({
+          label: probe.label,
+          pointerX: -1e4,
+          pointerY: -1e4,
+          detachedScope: probe.scope,
+          detachedGroupId: probe.groupId,
+          detachedTabKey: probe.tabKey,
+        });
+        claimToken = probe.token;
+        cancelClaim = awaitPointerClaim(
+          (x, y) => {
+            if (claimToken !== probe.token) return;
+            claimToken = null;
+            // Next task, not now: the `detached` drag was just written and the
+            // `.center-panel.dragging` class that lets `elementFromPoint` reach
+            // the tab bars under the pane layer lands with React's commit.
+            setTimeout(() => {
+              if (useDragStore.getState().drag?.detachedTabKey !== probe.tabKey) return;
+              useDragStore.getState().move(x, y);
+              resolveTargetRef.current(x, y);
+              settle({
+                cancelled: false,
+                shift: false,
+                inMain: true,
+                overPopoutId: null,
+                popoutTarget: undefined,
+                phys: null,
+              });
+            }, 0);
+          },
+          () => {
+            if (claimToken !== probe.token) return;
+            claimToken = null;
+            settle({
+              cancelled: true,
+              shift: false,
+              inMain: false,
+              overPopoutId: null,
+              popoutTarget: undefined,
+              phys: null,
+            });
+          },
+          { since: probe.releasedAt },
+        );
+      }),
+    );
+    reg(
+      listen<DetachedDropClaim>(DETACHED_DROP_CLAIM, (ev) => {
+        const claim = ev.payload;
+        if (!claimToken || claim.token !== claimToken || !claim.groupId) return;
+        endClaim();
+        settle({
+          cancelled: false,
+          shift: false,
+          inMain: false,
+          overPopoutId: claim.groupId,
+          popoutTarget: claim.target ?? undefined,
+          phys: null,
+        });
       }),
     );
 
@@ -1195,9 +1321,9 @@ function CenterPanelImpl() {
               tab.kind,
               scopeKey,
               localRunning,
-              localPersistEnabled || isTrashProject(paneProject),
+              localPersistEnabled,
               mobileAgentTmuxReady.current.get(mobileReadyKey) === true,
-              isResumableAgentTab(tab),
+              isResumableAgentTab(tab) || isRelaunchableLocalTab(tab),
             )
               ? tab.tmuxSession
               : undefined;
@@ -1254,7 +1380,7 @@ function CenterPanelImpl() {
           a subwindow body. Coordinates come from the same measured group rects. */}
       <SplitPreviewOverlay groupRects={groupRects} />
 
-      {/* Focus frame (always) + Shift+↑/↓ subwindow numbering (transient), drawn
+      {/* Focus frame (always) + Ctrl+Shift+↑/↓ subwindow numbering (transient), drawn
           above the pane layer for the same reason as the split preview — the
           opaque panes (z-index:2) would otherwise cover an in-body frame. */}
       <FocusFrameOverlay
@@ -1335,7 +1461,7 @@ export function SplitPreviewOverlay({ groupRects }: { groupRects: Record<string,
  * The focused-subwindow marker, drawn above the pane layer (see the render site
  * for why). Two roles:
  *  - Always: a light accent frame around the focused subwindow's pane rect.
- *  - While Shift+↑/↓ subwindow-nav is active: the frame follows the previewed
+ *  - While Ctrl+Shift+↑/↓ subwindow-nav is active: the frame follows the previewed
  *    group and every subwindow shows a numbered badge — the committed focus is
  *    0, others numbered in document order (wrapping) so ↑/↓ read as relative
  *    steps. Focus commits (moving the frame's committed home) on Shift release.
@@ -1554,7 +1680,7 @@ function ScrollLinkButton({ a, b }: { a: string; b: string }) {
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.7"
         strokeLinecap="round"
         strokeLinejoin="round"
         aria-hidden="true"

@@ -4,6 +4,11 @@
 //! The directory must resolve below its project root. Types come from bytes:
 //! images/PDF, inert UTF-8 text (including HTML/SVG), or attachment downloads.
 //! Nothing detects terminal paths or copies files on the agent's behalf.
+//!
+//! `eldrun-send` run in an agent tab leaves a marker beside each file,
+//! `.<leaf>.tab`, holding the tab's `$ELDRUN_TAB_UID`: that tab's chat shows
+//! the file, every other tab's gallery still lists it. The marker is hidden by
+//! the leaf alphabet and never crosses — the listing says only `from_tab`.
 
 use std::{
     fs,
@@ -23,7 +28,9 @@ pub const MAX_LISTED: usize = 40;
 /// The longest leaf that crosses.
 const MAX_NAME: usize = 120;
 /// Enough of a file to tell its format.
-const SNIFF_BYTES: usize = 4096;
+pub const SNIFF_BYTES: usize = 4096;
+/// The longest tab id a sender marker may hold (a UUID is 36).
+const MAX_TAB_ID: u64 = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OutboxFile {
@@ -34,6 +41,10 @@ pub struct OutboxFile {
     pub size: u64,
     /// Unix seconds of the file's mtime — ordering, and "just now" on the phone.
     pub modified: u64,
+    /// Sent from the tab the listing was asked through (its sender marker
+    /// names that tab): the one chat that shows it. Absent when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub from_tab: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -124,28 +135,25 @@ fn probe(dir: &Path, name: &str) -> Option<(fs::File, fs::Metadata, &'static str
     if !valid_name(name) {
         return None;
     }
-    let path = dir.join(name);
-    // `symlink_metadata` does not follow: a link inside the outbox is refused
-    // as such, wherever it points.
-    let meta = fs::symlink_metadata(&path).ok()?;
-    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_OUTBOX_FILE {
+    let (file, meta, kind) = open_sniffed(&dir.join(name))?;
+    if meta.len() == 0 || meta.len() > MAX_OUTBOX_FILE {
         return None;
     }
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)] {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    #[cfg(windows)] {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
-    }
-    let mut file = options.open(&path).ok()?;
-    let meta = file.metadata().ok()?;
-    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_OUTBOX_FILE {
-        return None;
-    }
+    Some((file, meta, kind))
+}
+
+/// Opens a regular file without following a link at its leaf, and classifies
+/// its first bytes — the one way a phone-facing read opens a file, shared with
+/// the project file browser (`files.rs`). The descriptor comes back positioned
+/// after the head; `rewind` before reading the whole of it.
+pub fn open_sniffed(path: &Path) -> Option<(fs::File, fs::Metadata, &'static str)> {
+    let (file, meta) = open_regular(path)?;
+    sniff_opened(file, meta)
+}
+
+/// [`open_sniffed`] for a regular file the caller already opened (the file
+/// browser opens its own, relative to a folder descriptor).
+pub fn sniff_opened(mut file: fs::File, meta: fs::Metadata) -> Option<(fs::File, fs::Metadata, &'static str)> {
     let mut head = [0u8; SNIFF_BYTES];
     let mut filled = 0;
     while filled < SNIFF_BYTES {
@@ -159,7 +167,53 @@ fn probe(dir: &Path, name: &str) -> Option<(fs::File, fs::Metadata, &'static str
     Some((file, meta, kind))
 }
 
-fn unix_secs(time: SystemTime) -> u64 {
+/// Opens a regular file without following a link at its leaf (nor blocking
+/// on a FIFO swapped in after the check).
+pub(super) fn open_regular(path: &Path) -> Option<(fs::File, fs::Metadata)> {
+    // `symlink_metadata` does not follow: a link is refused as such, wherever
+    // it points.
+    let meta = fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let file = options.open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    Some((file, meta))
+}
+
+/// The sender marker of leaf `name`: `.<name>.tab`.
+fn marker_name(name: &str) -> String {
+    format!(".{name}.tab")
+}
+
+/// The tab id `eldrun-send` recorded for `name`, if a well-formed one is
+/// there — the hook's alphabet (`[A-Za-z0-9-]`), bounded.
+fn sender(dir: &Path, name: &str) -> Option<String> {
+    let (file, meta) = open_regular(&dir.join(marker_name(name)))?;
+    if meta.len() == 0 || meta.len() > MAX_TAB_ID {
+        return None;
+    }
+    let mut id = String::new();
+    file.take(MAX_TAB_ID).read_to_string(&mut id).ok()?;
+    let id = id.trim_end();
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .then(|| id.to_string())
+}
+
+pub fn unix_secs(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
@@ -168,6 +222,12 @@ fn unix_secs(time: SystemTime) -> u64 {
 /// files are left out silently — the folder is the agent's to fill and the
 /// listing is what the phone can actually show.
 pub fn list(root: &Path) -> Result<Vec<OutboxFile>, OutboxError> {
+    list_for(root, None)
+}
+
+/// [`list`] as one tab sees it: every file, with `from_tab` set on those the
+/// tab whose `ELDRUN_TAB_UID` is `tab` sent.
+pub fn list_for(root: &Path, tab: Option<&str>) -> Result<Vec<OutboxFile>, OutboxError> {
     let Some(dir) = outbox_dir(root)? else {
         return Ok(Vec::new());
     };
@@ -180,11 +240,13 @@ pub fn list(root: &Path) -> Result<Vec<OutboxFile>, OutboxError> {
         let Some((_file, meta, kind)) = probe(&dir, &name) else {
             continue;
         };
+        let from_tab = tab.is_some_and(|tab| sender(&dir, &name).as_deref() == Some(tab));
         images.push(OutboxFile {
             name,
             kind,
             size: meta.len(),
             modified: meta.modified().map(unix_secs).unwrap_or(0),
+            from_tab,
         });
     }
     images.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| b.name.cmp(&a.name)));
@@ -233,7 +295,11 @@ pub fn remove(root: &Path, name: &str) -> Result<(), OutboxError> {
     };
     // `dir` is canonical and `name` is a validated leaf, so this is the file
     // `probe` just held open; `remove_file` never follows a link.
-    fs::remove_file(dir.join(name)).map_err(|e| OutboxError::Io(e.to_string()))
+    fs::remove_file(dir.join(name)).map_err(|e| OutboxError::Io(e.to_string()))?;
+    // Its sender marker goes with it, or a later file of the same leaf would
+    // inherit it.
+    let _ = fs::remove_file(dir.join(marker_name(name)));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -408,6 +474,48 @@ mod tests {
         assert_eq!(remove(dir.path(), "absent.png"), Err(OutboxError::NotFound));
         assert_eq!(remove(dir.path(), "../keep.png"), Err(OutboxError::NotFound));
         assert!(box_dir.join("keep.png").exists());
+    }
+
+    #[test]
+    fn only_the_sending_tab_sees_a_file_as_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let box_dir = outbox(dir.path());
+        touch(&box_dir, "mine.png", PNG, Duration::from_secs(3));
+        fs::write(box_dir.join(".mine.png.tab"), "aaaa-1").unwrap();
+        touch(&box_dir, "theirs.png", PNG, Duration::from_secs(2));
+        fs::write(box_dir.join(".theirs.png.tab"), "bbbb-2\n").unwrap();
+        touch(&box_dir, "unmarked.png", PNG, Duration::from_secs(1));
+        touch(&box_dir, "bogus.png", PNG, Duration::from_secs(0));
+        fs::write(box_dir.join(".bogus.png.tab"), "aaaa-1/../x").unwrap();
+
+        let own = |tab: Option<&str>| -> Vec<String> {
+            list_for(dir.path(), tab).unwrap().into_iter().filter(|f| f.from_tab).map(|f| f.name).collect()
+        };
+        // Every tab lists all four; each chat claims only its own.
+        assert_eq!(list_for(dir.path(), Some("aaaa-1")).unwrap().len(), 4);
+        assert_eq!(own(Some("aaaa-1")), ["mine.png"]);
+        assert_eq!(own(Some("bbbb-2")), ["theirs.png"]);
+        assert!(own(Some("cccc-3")).is_empty());
+        assert!(own(None).is_empty());
+        // The marker never crosses, and a listing without a tab says nothing.
+        let json = serde_json::to_string(&list(dir.path()).unwrap()).unwrap();
+        assert!(!json.contains("from_tab") && !json.contains("aaaa"), "{json}");
+
+        // Deleting the file drops its marker, so a later leaf can't inherit it.
+        assert_eq!(remove(dir.path(), "mine.png"), Ok(()));
+        assert!(!box_dir.join(".mine.png.tab").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_marker_claims_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("id"), "aaaa-1").unwrap();
+        let box_dir = outbox(dir.path());
+        touch(&box_dir, "plot.png", PNG, Duration::from_secs(1));
+        std::os::unix::fs::symlink(outside.path().join("id"), box_dir.join(".plot.png.tab")).unwrap();
+        assert!(!list_for(dir.path(), Some("aaaa-1")).unwrap()[0].from_tab);
     }
 
     #[test]

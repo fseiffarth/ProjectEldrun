@@ -475,6 +475,13 @@ pub fn cmdline(pid: u32) -> Option<String> {
     platform::cmdline(pid)
 }
 
+/// Every live process's parent, one uncached walk of the process table. For a
+/// caller that needs many subtrees at once and would otherwise pay
+/// [`descendant_pids`]'s full enumeration per root.
+pub fn parent_map() -> HashMap<u32, u32> {
+    platform::parent_map()
+}
+
 /// A whole-system sample (all processes + per-core CPU + memory/load) for the
 /// htop-like monitor pane. Delegates to the per-OS backend; non-`/proc` targets
 /// return `SystemSnapshot { supported: false, .. }`.

@@ -16,6 +16,7 @@ import {
 } from "../../lib/viewers/fileUtils";
 import { useT } from "../../lib/i18n";
 import { FileIcon } from "./icons/FileIcon";
+import { HexagonIcon } from "./icons/Icon";
 
 /**
  * A node in the 3D cloud. In the project cloud it's a project or a box; once a
@@ -904,7 +905,7 @@ export function ProjectBlobPane({ visible = true }: { visible?: boolean } = {}) 
                 )}
                 {boxNames.map((boxName) => (
                   <span key={boxName} className="blob-node-box-tag" title={t("pill.inBoxes", { list: boxName })}>
-                    <span aria-hidden>▣</span>
+                    <HexagonIcon />
                     <span className="blob-node-box-tag-label">{boxName}</span>
                   </span>
                 ))}
@@ -1008,7 +1009,7 @@ export function ProjectBlobPane({ visible = true }: { visible?: boolean } = {}) 
                   ))}
                   {hoveredBoxNames.map((boxName) => (
                     <span key={boxName} className="blob-hover-box-tag">
-                      <span aria-hidden>▣</span>
+                      <HexagonIcon />
                       {boxName}
                     </span>
                   ))}

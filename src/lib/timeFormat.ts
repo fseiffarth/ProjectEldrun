@@ -1,5 +1,6 @@
 import { useSettingsStore } from "../stores/settings";
 import { useI18nStore, type Language } from "./i18n";
+import { useOsClockStore } from "./osClock";
 
 /**
  * **The one answer to "12-hour or 24-hour?"** — read by every surface that
@@ -14,19 +15,19 @@ import { useI18nStore, type Language } from "./i18n";
  * what this replaces, was exactly that: it moved the grid and left the header
  * clock, the alarm popup and every task readout behind.
  *
- * **Unset derives from the language, and that is the interesting part.** A
- * default has to be *some* convention, and the honest one is the one the user's
- * language uses: English-speaking countries read 5 PM, most of the rest of the
- * world reads 17:00. So an unset setting follows `Settings.language` — which is
- * a statement the user has already made — instead of pinning everyone to one
- * hemisphere's habit and making the other half go and find a switch. Setting it
- * explicitly overrides that for good: a choice made by hand must not be undone
- * by a later language switch, which is why `null`/`undefined` (never `false`) is
- * what "not chosen" looks like on the wire.
+ * **Unset follows the OS.** The user has already told their desktop which
+ * clock they read — its panel clock is right there beside Eldrun — so an unset
+ * setting takes that answer (`lib/osClock.ts`) instead of guessing from the UI
+ * language: an English UI on a German desktop still reads 17:00. Only when the
+ * OS has no opinion (or has not answered yet) does the language decide. Setting
+ * it explicitly overrides both for good: a choice made by hand must not be
+ * undone by a later desktop or language change, which is why `null`/`undefined`
+ * (never `false`) is what "not chosen" looks like on the wire.
  */
 
 /**
- * The convention a language implies, used only while nothing is set.
+ * The convention a language implies — the last resort, used only while nothing
+ * is set and the OS gave no answer.
  *
  * A language, not a region: Eldrun has no region setting, and the five languages
  * it speaks split cleanly here — English is the AM/PM one, German, Spanish,
@@ -39,38 +40,42 @@ export function defaultUse24h(lang: Language): boolean {
 }
 
 /**
- * The effective clock: the explicit setting when there is one, the language's
- * convention otherwise.
+ * The effective clock: the explicit setting when there is one, then the OS's
+ * clock, then the language's convention.
  *
  * `legacy` is the retired calendar-only key (`calendar_time_format_24h`), read
  * once so a user who already turned 24-hour on for their calendar keeps it
  * app-wide instead of silently losing it. It is never written again — the two
  * cannot drift, because only one of them is a destination.
  *
- * Pure, and takes all three inputs, for the reason `lib/alerts`' `now` is a
- * parameter: this is a three-way precedence rule, and the case that matters
- * (unset, so the language decides) is only testable if nothing is ambient.
+ * Pure, and takes every input, for the reason `lib/alerts`' `now` is a
+ * parameter: this is a precedence rule, and the cases that matter (unset, so
+ * the OS or the language decides) are only testable if nothing is ambient.
  */
 export function resolveUse24h(
   setting: boolean | null | undefined,
   legacy: boolean | null | undefined,
+  os: boolean | null | undefined,
   lang: Language,
 ): boolean {
   if (setting !== undefined && setting !== null) return setting;
   if (legacy !== undefined && legacy !== null) return legacy;
+  if (os !== undefined && os !== null) return os;
   return defaultUse24h(lang);
 }
 
 /**
- * The hook every component uses. Subscribes to both stores, so flipping the
- * switch — or the language, while the switch is untouched — re-renders the
- * clocks in place, the way `useT()` already re-renders the words.
+ * The hook every component uses. Subscribes to every input, so flipping the
+ * switch — or the OS answering, or the language changing while the switch is
+ * untouched — re-renders the clocks in place, the way `useT()` already
+ * re-renders the words.
  */
 export function useUse24h(): boolean {
   const setting = useSettingsStore((s) => s.settings?.time_format_24h);
   const legacy = useSettingsStore((s) => s.settings?.calendar_time_format_24h);
+  const os = useOsClockStore((s) => s.use24h);
   const lang = useI18nStore((s) => s.lang);
-  return resolveUse24h(setting, legacy, lang);
+  return resolveUse24h(setting, legacy, os, lang);
 }
 
 /**
@@ -87,6 +92,7 @@ export function readUse24h(): boolean {
   return resolveUse24h(
     settings?.time_format_24h,
     settings?.calendar_time_format_24h,
+    useOsClockStore.getState().use24h,
     useI18nStore.getState().lang,
   );
 }

@@ -36,9 +36,11 @@ pub mod net_usage;
 pub mod network;
 pub mod ollama;
 pub mod openvpn;
+pub mod os_clock;
 pub mod pdf_clip;
 pub mod power;
 pub mod presenter;
+pub mod print_native;
 pub mod printing;
 pub mod project_runtime;
 // Full project export/import — move a project to another computer

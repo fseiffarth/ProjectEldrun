@@ -6,6 +6,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** `translate` at the live language, for the async callbacks below (component
  *  `t` inside them would churn their identity on a language switch). */
@@ -61,8 +62,8 @@ function MobileIcon({ tone }: { tone: StatusTone }) {
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
     >
-      <rect x="4.1" y="1.5" width="7.8" height="13" rx="1.6" stroke="currentColor" strokeWidth="1.4" />
-      <path d="M6.7 3.6H9.3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <rect x="4.1" y="1.5" width="7.8" height="13" rx="1.6" stroke="currentColor" strokeWidth="1.15" />
+      <path d="M6.7 3.6H9.3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
       <circle cx="8" cy="12.3" r="0.7" fill="currentColor" />
       <circle className="mobile-indicator-icon-dot" cx="12.6" cy="3.4" r="2.25" fill="currentColor" />
     </svg>
@@ -271,8 +272,8 @@ export function MobileIndicator() {
         : t("mobile.indStoppedTitle");
 
   // "Checking" is every poll of an ordinary healthy host, so only a real error
-  // escalates out of a collapsed header. Not set up is `off`: present, dormant,
-  // and never a reason to break a collapsed cluster open.
+  // reddens a collapsed header's summary lamp. Not set up is `off`: present,
+  // dormant, and never a colour on that lamp.
   useHeaderStatusReport(
     "mobile",
     !visible
@@ -356,7 +357,7 @@ export function MobileIndicator() {
               </div>
             </div>
             {status?.origin && <div className="mobile-indicator-origin">{status.origin}</div>}
-            {error && <div className="mobile-indicator-error">{error}</div>}
+            {error && <ErrorNote className="mobile-indicator-error" error={error} />}
             {uploadNotice && <div className="mobile-indicator-notice" role="status">{uploadNotice}</div>}
             {pairCode && (
               <div className="mobile-indicator-paircode" role="status">

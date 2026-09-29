@@ -6,7 +6,7 @@ use crate::schema::agent_tasks::{AgentPromptTarget, AgentScheduleResult, AgentSc
 use super::{agent_tasks, root_mcp::{Caller, Session}};
 
 pub const SERVER_NAME: &str = "eldrun-schedule";
-pub const CONTRACT: &str = "Schedules fire only while Eldrun is running and this tab is open, when it is next idle at/after the time. Occurrences over one hour late are missed. By default the user must approve proposals first. Recurring prompts always require approval. Times are desktop-local YYYY-MM-DDTHH:MM / HH:MM. Prompts only: no commands or prefix commands.";
+pub const CONTRACT: &str = "Schedules fire only while Eldrun is running and this tab is open, when it is next idle at/after the time. Occurrences over one hour late are missed. By default the user must approve proposals first. Recurring prompts always require approval. Times are desktop-local YYYY-MM-DDTHH:MM / HH:MM. Weekdays are numbered 1 = Monday … 7 = Sunday (the calendar tools' 0 = Sunday convention does not apply here). A one-time schedule needs five minutes' lead; a daily or weekday rule whose next occurrence is closer than that starts at the occurrence after it. Arguments are validated before anything else runs — a malformed call costs no budget. Prompts only: no commands or prefix commands.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -91,7 +91,10 @@ fn resolve(when: When, now: DateTime<Local>, reset: Option<DateTime<Utc>>) -> Re
         When::AfterUsageReset => once((reset.ok_or("unsupported: no readable usage reset")? + Duration::minutes(1)).with_timezone(&Local)),
     };
     agent_tasks::validate_rule(&rule)?;
-    let at = next_occurrence(&rule, now).ok_or("invalid local time")?;
+    // A recurring rule has a next occurrence past the lead by definition: the
+    // one inside it is skipped, not a reason to refuse the whole rule.
+    let from = if matches!(rule, AgentScheduleRule::Once { .. }) { now } else { now + Duration::minutes(5) };
+    let at = next_occurrence(&rule, from).ok_or("invalid local time")?;
     if at < now + Duration::minutes(5) { return Err("lead_time: at least five minutes required".into()); }
     Ok((rule, at))
 }
@@ -161,6 +164,14 @@ pub fn remove_proposals(session: &str) -> Result<(), String> {
     })
 }
 
+/// One schedule as `list_my_schedules` shows it. An agent-authored row in
+/// full; a user-authored one with only an 80-character preview of its text.
+fn schedule_row(s: &ScheduledAgentPrompt, now: DateTime<Local>) -> Value {
+    json!({"id":s.id,"rule":s.rule,"enabled":s.enabled,"origin":s.origin,"last":s.last,
+        "message":if s.origin.is_some() { s.message.clone() } else { s.message.chars().take(80).collect() },
+        "next_occurrence":if matches!(s.rule, AgentScheduleRule::Once { .. }) && s.last.is_some() { None } else { next_occurrence(&s.rule, now).map(|d| d.to_rfc3339()) }})
+}
+
 pub fn tool_names() -> &'static [&'static str] { &["schedule_prompt", "list_my_schedules", "cancel_schedule"] }
 /// Audit only fixed refusal categories, never argument values or prompt text.
 pub fn refusal_reason(reply: &Value) -> Option<&'static str> {
@@ -171,22 +182,53 @@ pub fn refusal_reason(reply: &Value) -> Option<&'static str> {
 }
 pub fn tools() -> Value {
     let object = |properties: Value, required: Value| json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
-    let when = json!({"oneOf":[
-        object(json!({"type":{"const":"once"},"at":{"type":"string"}}),json!(["type","at"])),
-        object(json!({"type":{"const":"daily"},"time":{"type":"string"}}),json!(["type","time"])),
-        object(json!({"type":{"const":"weekdays"},"time":{"type":"string"},"weekdays":{"type":"array","items":{"type":"integer","minimum":1,"maximum":7},"minItems":1,"maxItems":7}}),json!(["type","time","weekdays"])),
-        object(json!({"type":{"const":"in"},"minutes":{"type":"integer","minimum":5,"maximum":525600}}),json!(["type","minutes"])),
-        object(json!({"type":{"const":"after_usage_reset"}}),json!(["type"]))
+    let time = |what: &str| json!({"type":"string","description":format!("{what}, desktop-local \"HH:MM\" (24-hour).")});
+    let when = json!({"description":"When the prompt fires. Exactly one shape; `type` picks it.","oneOf":[
+        object(json!({"type":{"const":"once","description":"One time, at `at`."},"at":{"type":"string","description":"Desktop-local \"YYYY-MM-DDTHH:MM\", at least five minutes ahead."}}),json!(["type","at"])),
+        object(json!({"type":{"const":"daily","description":"Every day at `time`."},"time":time("The daily time")}),json!(["type","time"])),
+        object(json!({"type":{"const":"weekdays","description":"On the listed weekdays at `time`."},"time":time("The time on each listed day"),"weekdays":{"type":"array","items":{"type":"integer","minimum":1,"maximum":7},"minItems":1,"maxItems":7,"description":"1 = Monday … 7 = Sunday, no repeats. Not the calendar tools' 0 = Sunday numbering."}}),json!(["type","time","weekdays"])),
+        object(json!({"type":{"const":"in","description":"After `minutes`, rounded up to the next whole minute."},"minutes":{"type":"integer","minimum":5,"maximum":525600,"description":"Minutes from now: at least 5, at most a year."}}),json!(["type","minutes"])),
+        object(json!({"type":{"const":"after_usage_reset","description":"One minute after this agent CLI's next usage-window reset, read from its own usage panel; refused as `unsupported` when that cannot be read."}}),json!(["type"]))
     ]});
     json!([
-        {"name":"schedule_prompt","description":format!("Propose a prompt for this tab only. {CONTRACT}"),"inputSchema":object(json!({"message":{"type":"string","maxLength":16384},"when":when}),json!(["message","when"]))},
+        {"name":"schedule_prompt","description":format!("Propose a prompt for this tab only. {CONTRACT}"),"inputSchema":object(json!({"message":{"type":"string","maxLength":16384,"description":"The prompt text this tab is to be given, as the user would type it. No slash, !, #, $ or @ prefix; line breaks are collapsed."},"when":when}),json!(["message","when"]))},
         {"name":"list_my_schedules","description":"List this tab's schedules, with only an 80-character preview of user-authored messages.","inputSchema":object(json!({}),json!([])),"annotations":{"readOnlyHint":true}},
-        {"name":"cancel_schedule","description":"Cancel an agent-authored schedule in this tab. User-authored rows cannot be cancelled.","inputSchema":object(json!({"id":{"type":"string","maxLength":256}}),json!(["id"]))}
+        {"name":"cancel_schedule","description":"Cancel an agent-authored schedule in this tab. User-authored rows cannot be cancelled.","inputSchema":object(json!({"id":{"type":"string","maxLength":256,"description":"The schedule's id, as schedule_prompt or list_my_schedules returned it."}}),json!(["id"]))}
     ])
+}
+
+/// The checks that come before any work — the usage probe the command layer
+/// runs for `after_usage_reset` included: the arguments must parse against the
+/// tool's shape, and a `schedule_prompt` must be inside the hourly budget. A
+/// refused call is refused here and costs nothing. `Ok` for every other
+/// message (the RPC layer answers those itself).
+pub fn admit(session: &Session, message: &Value) -> Result<(), String> {
+    if message["method"] != "tools/call" { return Ok(()); }
+    let name = message["params"]["name"].as_str().unwrap_or_default();
+    let args = message["params"].get("arguments").cloned().unwrap_or(json!({}));
+    match name {
+        "schedule_prompt" => {
+            let create: Create = serde_json::from_value(args).map_err(|e| e.to_string())?;
+            sanitize_prompt(&create.message)?;
+            if !matches!(create.when, When::AfterUsageReset) { resolve(create.when, Local::now(), None)?; }
+            if !session.admit_schedule_rate() { return Err("hourly_limit: twelve schedule calls per session per hour".into()); }
+            Ok(())
+        }
+        "cancel_schedule" => serde_json::from_value::<Cancel>(args).map(|_| ()).map_err(|e| e.to_string()),
+        "list_my_schedules" => serde_json::from_value::<Empty>(args).map(|_| ()).map_err(|e| e.to_string()),
+        _ => Ok(()),
+    }
 }
 
 /// Returns an RPC reply and whether schedule views must refresh.
 pub fn handle_message(session: &Session, message: &Value, reset: Option<DateTime<Utc>>) -> (Option<Value>, bool) {
+    let admission = admit(session, message);
+    handle_admitted(session, message, reset, admission)
+}
+
+/// [`handle_message`] with the [`admit`] verdict already taken — the command
+/// layer takes it first, before deciding whether to run the usage probe.
+pub fn handle_admitted(session: &Session, message: &Value, reset: Option<DateTime<Utc>>, admission: Result<(), String>) -> (Option<Value>, bool) {
     let error = |id: Value, code, text: &str| Some(json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":text}}));
     if message["jsonrpc"] != "2.0" || !message["method"].is_string()
         || message.get("id").is_some_and(|id| !id.is_string() && !id.is_i64() && !id.is_u64())
@@ -207,7 +249,7 @@ pub fn handle_message(session: &Session, message: &Value, reset: Option<DateTime
             let name = message["params"]["name"].as_str().unwrap_or_default();
             let args = message["params"].get("arguments").cloned().unwrap_or(json!({}));
             let result = (|| -> Result<Value, String> {
-                if name == "schedule_prompt" && !session.admit_schedule_rate() { return Err("hourly_limit: twelve schedule calls per session per hour".into()); }
+                admission?;
                 agent_tasks::mutate(|file| {
                     session.check()?;
                     if level(project)? != policy { return Err("policy changed; retry".into()); }
@@ -221,11 +263,8 @@ pub fn handle_message(session: &Session, message: &Value, reset: Option<DateTime
                         }
                         "list_my_schedules" => {
                             let _: Empty = serde_json::from_value(args).map_err(|e| e.to_string())?;
-                            let rows: Vec<Value> = file.projects.get(project).and_then(|p| p.get(&binding.target)).into_iter().flat_map(|t| &t.schedules).map(|s| {
-                                json!({"id":s.id,"rule":s.rule,"enabled":s.enabled,"origin":s.origin,"last":s.last,
-                                    "message":if s.origin.is_some() { s.message.clone() } else { s.message.chars().take(80).collect() },
-                                    "next_occurrence":if matches!(s.rule, AgentScheduleRule::Once { .. }) && s.last.is_some() { None } else { next_occurrence(&s.rule, now).map(|d| d.to_rfc3339()) }})
-                            }).collect();
+                            let rows: Vec<Value> = file.projects.get(project).and_then(|p| p.get(&binding.target)).into_iter()
+                                .flat_map(|t| &t.schedules).map(|s| schedule_row(s, now)).collect();
                             Ok(json!({"schedules":rows}))
                         }
                         _ => Err("unknown tool".into()),
@@ -346,6 +385,58 @@ mod tests {
         for _ in 0..12 { assert!(s.admit_schedule_rate()); }
         assert!(!s.admit_schedule_rate());
     }
+    /// A daily or weekday rule whose next occurrence is inside the five-minute
+    /// lead is not refused: it starts at the occurrence after. A one-time
+    /// schedule inside the lead still is.
+    #[test]
+    fn recurring_rules_inside_the_lead_roll_to_the_next_occurrence() {
+        let (_, at) = resolve(When::Daily { time: "12:03".into() }, now(), None).unwrap();
+        assert_eq!(at, wall("2026-09-21T12:03").unwrap());
+        let (_, at) = resolve(When::Daily { time: "12:05".into() }, now(), None).unwrap();
+        assert_eq!(at, wall("2026-09-20T12:05").unwrap(), "exactly the lead is enough");
+        // 2026-09-20 is a Sunday (7): the same day inside the lead rolls a week.
+        let (_, at) = resolve(When::Weekdays { weekdays: vec![7], time: "12:02".into() }, now(), None).unwrap();
+        assert_eq!(at, wall("2026-09-27T12:02").unwrap());
+        assert!(resolve(When::Once { at: "2026-09-20T12:03".into() }, now(), None).unwrap_err().starts_with("lead_time"));
+    }
+
+    /// Bad arguments are refused before the budget is touched, so a hundred
+    /// malformed calls leave the hourly allowance intact; a well-formed one
+    /// takes a slot and the thirteenth is refused before any store is opened.
+    #[test]
+    fn admission_validates_before_it_spends_budget() {
+        let s = session();
+        let call = |args: Value| json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"schedule_prompt","arguments":args}});
+        for _ in 0..100 {
+            assert!(admit(&s, &call(json!({"message":"go","when":{"type":"after_usage_reset"},"target":"other"}))).is_err());
+            assert!(admit(&s, &call(json!({"message":"/clear","when":{"type":"after_usage_reset"}}))).is_err());
+        }
+        for _ in 0..12 { assert!(admit(&s, &call(json!({"message":"go","when":{"type":"after_usage_reset"}}))).is_ok()); }
+        assert!(admit(&s, &call(json!({"message":"go","when":{"type":"after_usage_reset"}}))).unwrap_err().starts_with("hourly_limit"));
+        assert!(admit(&s, &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).is_ok());
+        assert!(admit(&s, &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"cancel_schedule","arguments":{"id":"a","tab":"x"}}})).is_err());
+    }
+
+    /// The user's own rows are listed as an 80-character preview; an agent's
+    /// own rows in full — the row builder `list_my_schedules` uses.
+    #[test]
+    fn user_rows_are_previewed_to_eighty_characters() {
+        let s = session();
+        let long: String = "ü".repeat(200);
+        let mut file = AgentTasksFile::default();
+        add(&mut file, &s, Level::Propose).unwrap();
+        let target = file.projects.get_mut("p").unwrap().get_mut("t").unwrap();
+        target.schedules[0].message = long.clone();
+        let mut user = target.schedules[0].clone();
+        user.origin = None; user.id = "user".into();
+        let own = schedule_row(&target.schedules[0], now());
+        let theirs = schedule_row(&user, now());
+        assert_eq!(own["message"].as_str().unwrap().chars().count(), 200);
+        assert_eq!(theirs["message"].as_str().unwrap().chars().count(), 80, "characters, not bytes");
+        assert_eq!(theirs["id"], "user");
+        assert!(theirs["next_occurrence"].is_string());
+    }
+
     #[test]
     fn revoked_and_closed_tab_sessions_are_refused_before_policy_or_store() {
         let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_my_schedules","arguments":{}}});

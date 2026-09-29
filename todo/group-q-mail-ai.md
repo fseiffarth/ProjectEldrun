@@ -25,8 +25,7 @@ own IMAP/SMTP transport does, but every prompt here runs against a **loopback**
 Ollama and refuses a non-loopback host **even when `ollama_allow_remote_host` is
 true** — stricter than the setting on purpose. No web fetch / image proxy / link
 resolution inside any prompt; the only input is what the local store already
-holds. Design + full rationale: [`docs/mail_local_ai_plan.md`](../docs/mail_local_ai_plan.md);
-the store/encryption invariants it must honour:
+holds. The store/encryption invariants it must honour:
 [`docs/context/mail_encryption.md`](../docs/context/mail_encryption.md).*
 
 *Files: new `src-tauri/src/services/mail_ai.rs` (the loopback-only `/api/chat`
@@ -147,6 +146,25 @@ the user runs it, and each new surface carries an `UntestedTag`.
 - [ ] 🖐️ #207/#208 — a mail with "meeting tomorrow at 3" pre-fills the event
   dialog with the right date; to-do extraction makes a first-column card with the
   mail link; with `auto_create` on, both are created without a dialog.
+  - [ ] ✅ Works on Linux (X11)
+  - [ ] ❌ Doesn't work on Linux (X11)
+  - [ ] ✅ Works on Linux (Wayland)
+  - [ ] ❌ Doesn't work on Linux (Wayland)
+  - [ ] ✅ Works on Windows
+  - [ ] ❌ Doesn't work on Windows
+  - [ ] ✅ Works on macOS
+  - [ ] ❌ Doesn't work on macOS
+
+**Live QA — agent attachments (#859b)** —
+needs `root_mcp_mail` on, a mail account, and Settings → Agent fence → *Root
+agent reads projects* on before the root tab is opened.
+- [ ] 🖐️ #859b — in a root tab ask "write a mail to bob@example.com, attach
+  `<project>/<a pdf>`": the draft under *Drafted by agents* says "1 attached ·
+  suggests 1 recipients"; the composer shows the chip as `Project/path` with the
+  *from agent* mark, Preview shows the file, To stays empty until the
+  *Agent suggests* pill's Add; Send sends exactly that file. With the switch off
+  (new root tab) the agent is told to switch it on; a `.env` or a symlink is
+  refused by name.
   - [ ] ✅ Works on Linux (X11)
   - [ ] ❌ Doesn't work on Linux (X11)
   - [ ] ✅ Works on Linux (Wayland)

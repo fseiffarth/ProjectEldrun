@@ -12,6 +12,7 @@ import {
   type MigrationPlan,
 } from "./migration";
 import type { ProjectEntry } from "../../types";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * "Migrate project": update an old project to the current Eldrun state, one
@@ -110,7 +111,7 @@ export function ProjectMigrationDialog({
           ) : (
             <>
               <SettingsSection title={project.name} help={t("migrate.help")} />
-              {error && <div className="settings-error">{error}</div>}
+              {error && <ErrorNote className="settings-error" error={error} />}
               {!plan && !error && (
                 <div className="settings-empty">{t("migrate.loading")}</div>
               )}

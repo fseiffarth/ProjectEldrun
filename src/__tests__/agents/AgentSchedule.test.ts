@@ -7,6 +7,7 @@ import {
   scheduleStatus,
   scheduleSummary,
   scheduleVerdict,
+  upcomingSchedules,
   type ScheduledAgentPrompt,
 } from "../../lib/agents/agentSchedule";
 
@@ -110,6 +111,18 @@ describe("schedule status", () => {
     ], now);
     expect([summary.total, summary.enabled]).toEqual([3, 2]);
     expect(summary.next?.getHours()).toBe(23);
+  });
+
+  it("lists the enabled schedules still to fire, soonest first, up to the limit", () => {
+    const now = new Date(2026, 8, 1, 12, 0);
+    const upcoming = upcomingSchedules([
+      { ...prompt({ type: "daily", time: "09:00" }), id: "a", message: "morning" },
+      { ...prompt({ type: "daily", time: "23:00" }), id: "b", message: "night" },
+      { ...prompt({ type: "daily", time: "13:00" }), id: "c", message: "off", enabled: false },
+      { ...prompt({ type: "once", at: "2026-09-01T08:00" }), id: "d", message: "missed" },
+      { ...prompt({ type: "once", at: "2026-09-01T14:00" }), id: "e", message: "soon" },
+    ], now, 2);
+    expect(upcoming.map((row) => row.message)).toEqual(["soon", "night"]);
   });
 
   it("counts down in the largest unit that still says something", () => {

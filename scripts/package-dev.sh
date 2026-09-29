@@ -200,6 +200,12 @@ else
   fi
 fi
 
+# The compile is done; what follows writes the stamp and installs, and is
+# seconds long. package-dev-auto.sh cancels a build for a newer commit only
+# before this point — killing an `install` halfway leaves a truncated binary
+# behind the desktop icon.
+[ -n "${PACKAGE_DEV_INSTALLING_MARK:-}" ] && : >"$PACKAGE_DEV_INSTALLING_MARK"
+
 RAW_BIN="$ROOT/target/release/eldrun"
 if [[ ! -f "$RAW_BIN" ]]; then
   echo "package-dev: release binary not found at $RAW_BIN after build" >&2
@@ -266,12 +272,33 @@ MSG
   exit 0
 fi
 
+# Nor under a running window. The window keeps its old inode either way, but
+# once the path names another file apport discards the window's core dump
+# ("executable was modified after program start") — which is how all six
+# main-process heap-corruption crashes of 2026-09-17..23 left nothing to read.
+# A post-commit freeze almost always lands under a running window, so leave the
+# snapshot where it is: start-eldrun-dev-build.sh adopts it on the next launch,
+# and the dev-build chip already offers that relaunch.
+if pgrep -f "^$BINARY_DEST" >/dev/null 2>&1; then
+  cat <<MSG
+package-dev: built $RAW_BIN ($VERSION @ $COMMIT$DIRTY, from $MODE), and left it
+  there: Eldrun (dev) is running from $BINARY_DEST, and replacing that path
+  under it costs the window its core dump if it crashes. Relaunching Eldrun
+  (dev) adopts this snapshot.
+MSG
+  exit 0
+fi
+
 # The running frozen instance keeps its old inode; `install` replaces the path
 # atomically enough that a relaunch picks the new snapshot up.
 install -Dm755 "$RAW_BIN" "$BINARY_DEST"
 # The record travels with the binary: the launcher reads `<installed>.frozen`
 # to say which commit it is opening and whether that is behind HEAD.
 install -m644 "$FROZEN_STAMP" "$BINARY_DEST.frozen" 2>/dev/null || true
+# And keep this build under dev-builds/eldrun-<commit>: the next install
+# replaces the path, and a crash in this snapshot is only symbolizable
+# against these exact bytes (scripts/crash-symbolize.sh).
+"$ROOT/scripts/retain-dev-build.sh" "$BINARY_DEST" "$COMMIT$DIRTY" || true
 
 STAMP="$(date +%Y-%m-%d)"
 

@@ -139,6 +139,29 @@ const QUESTION = [
   "  esc to cancel",
 ].join("\n");
 
+/** An agent's own question (`AskUserQuestion`): its message, the tab row
+ * naming the question, the question — both wrapped by Claude Code itself at
+ * the pane's width — and the options, each with its note, then the two rows
+ * Claude Code adds to every such question. */
+const AGENT_QUESTION = [
+  "● My fix is ready and verified, but pushing develop now would also push four",
+  "  other commits. I need your call before pushing.",
+  "",
+  "☐ Push scope",
+  "",
+  "Four other-session commits sit unpushed on develop. How should I land my",
+  "Windows/CodeQL fix?",
+  "",
+  "❯ 1. Fix only (Recommended)",
+  "     Put my fix directly on the pushed main.",
+  "  2. Push everything",
+  "     Push develop with all four commits.",
+  "  3. Type something.",
+  "  4. Chat about this",
+  "",
+  "Enter to select · ↑/↓ to navigate · Esc to cancel",
+].join("\n");
+
 const CODEX_TAB = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
 
 /** codex 0.155.1, captured off a live pane: the startup banner, the line that
@@ -220,9 +243,8 @@ describe("Eldrun Mobile Focus — the question an agent is waiting on", () => {
     // behind this block, and a startup banner is not a question.
     expect(within(question()).queryByText(/Claude Code v2/)).toBeNull();
     expect(within(question()).queryByText(/run \/doctor/)).toBeNull();
-    // …and the rows themselves are a list, under the dialog's own numbers.
+    // …and the rows themselves are a list, in the dialog's own order.
     expect(rows()).toHaveLength(3);
-    expect(rows()[0]).toContain("1");
     expect(rows()[0]).toContain("Yes");
     expect(rows()[2]).toContain("No, and tell Claude what to do differently");
     // Not twice: the rows are the list, not the list and the text behind it.
@@ -272,7 +294,7 @@ describe("Eldrun Mobile Focus — the question an agent is waiting on", () => {
     // is context; the banner above it is neither.
     expect(within(question()).getByText(/Automatically switched to Luna Reserve/)).toBeTruthy();
     expect(within(question()).queryByText(/OpenAI Codex \(v0/)).toBeNull();
-    expect(rows().map((row) => row.replace(/^\d/, ""))).toEqual(["Upgrade", "Add Credits", "Continue with Luna Reserve"]);
+    expect(rows()).toEqual(["Upgrade", "Add Credits", "Continue with Luna Reserve"]);
     // Codex paints that question on a near-white card. Dropped into this dark
     // view it was a white slab: the emphasis survives, the palette does not.
     const painted = Array.from(ask.querySelectorAll("span"));
@@ -286,6 +308,34 @@ describe("Eldrun Mobile Focus — the question an agent is waiting on", () => {
     const context = within(question()).getByText(/Automatically switched to Luna Reserve/);
     expect(context.style.background).toBe(CARD_BG);
     expect(context.style.color).toBe(CARD_FG);
+  });
+
+  it("shows an agent's own question as prose, its header as a title, its rows as a sheet's", async () => {
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await act(async () => {});
+    await paint(AGENT_QUESTION);
+
+    // The tab row is the question's title, not a line of the agent's message.
+    expect(question().querySelector(".question-tabs")?.textContent).toBe("Push scope");
+    expect(within(question()).queryByText(/☐/)).toBeNull();
+    // The question and the message above it read as paragraphs, not as the
+    // pane's width in hard breaks.
+    const ask = Array.from(question().querySelectorAll(".question-ask .readable-line"), (line) => line.textContent);
+    expect(ask).toEqual(["Four other-session commits sit unpushed on develop. How should I land my Windows/CodeQL fix?"]);
+    const message = Array.from(question().querySelectorAll(".readable-turn .readable-line"), (line) => line.textContent ?? "");
+    expect(message.filter((line) => line.includes("would also push four other commits."))).toHaveLength(1);
+    // The recommendation is a tag beside the label, the notes are notes.
+    const first = question().querySelectorAll(".option-list button")[0];
+    expect(first.querySelector("strong")?.firstChild?.textContent).toBe("Fix only");
+    expect(first.querySelector(".question-recommended")?.textContent).toBe("Recommended");
+    expect(first.querySelector("small")?.textContent).toBe("Put my fix directly on the pushed main.");
+    // The rows are the model sheet's: label and note, no number beside them.
+    expect(rows()).toEqual([
+      "Fix onlyRecommendedPut my fix directly on the pushed main.",
+      "Push everythingPush develop with all four commits.",
+      "Type something.",
+      "Chat about this",
+    ]);
   });
 
   it("gives the list back when the answer never lands", async () => {

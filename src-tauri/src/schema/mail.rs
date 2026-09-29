@@ -100,8 +100,31 @@ pub struct MailAiPrefs {
     /// root tab does not consult it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_access: Option<bool>,
+    /// How much of the account `agent_access` opens: the messages the user
+    /// marked (`agent_marks` in the store) or the whole account. Unset =
+    /// [`MailAgentScope::Marked`], so a switch turned on by the two-state build
+    /// reads as the narrower consent (`docs/mail_mcp_plan.md` §1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_scope: Option<MailAgentScope>,
     #[serde(flatten, default)]
     pub extra: HashMap<String, Value>,
+}
+
+/// What a contained reader may see of an account whose `agent_access` is on.
+///
+/// An unknown value deserializes as `Marked`: a newer build's wider mode must
+/// not turn into "whole account" on an older one, and the accounts file must
+/// keep loading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MailAgentScope {
+    /// Every message of the account.
+    All,
+    /// Only the messages the user marked for agents. Last, because serde's
+    /// `other` has to be.
+    #[default]
+    #[serde(other)]
+    Marked,
 }
 
 impl MailAiPrefs {
@@ -115,6 +138,7 @@ impl MailAiPrefs {
             && self.todo.is_none()
             && self.auto_create.is_none()
             && self.agent_access.is_none()
+            && self.agent_scope.is_none()
             && self.extra.is_empty()
     }
 }
@@ -936,6 +960,23 @@ pub struct MailHeaderPage {
     pub scanned: Option<u32>,
 }
 
+/// One page of a server-backed folder search: the [`MailHeaderPage`] answer
+/// plus whether the server was reached and whether its matches were capped.
+///
+/// A sync indexes only a folder's newest headers, so a local query can only
+/// match the downloaded tail. `mail_search` asks the server first and
+/// backfills what it finds — `remote` says whether that happened. `false`
+/// means local-only (offline, no saved password, the server refused).
+/// `partial` says the server found more matches than the bounded backfill can
+/// index, so older matches may be missing from this page even when online.
+#[derive(Debug, Clone, Serialize)]
+pub struct MailSearchPage {
+    #[serde(flatten)]
+    pub page: MailHeaderPage,
+    pub remote: bool,
+    pub partial: bool,
+}
+
 /// What the header list is ordered by.
 ///
 /// It is an **enum, not a column name**, and that is the whole point: the sort
@@ -1018,7 +1059,12 @@ pub struct MailBody {
 
 // ── Compose ─────────────────────────────────────────────────────────────────
 
-/// A file the user explicitly picked, already copied inside the mail sandbox
+/// Largest single file staged onto a draft — the composer's cap, and the one
+/// `services::mail_attach` reads up to (plus one byte, to know it was over).
+pub const MAX_STAGED_BYTES: u64 = 20 * 1024 * 1024;
+
+/// A file the user explicitly picked — or, with `origin: "agent"`, one a root
+/// agent named by project and path — already copied inside the mail sandbox
 /// directory. The draft references `staged_id`s only — never a path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StagedAttachment {
@@ -1026,6 +1072,27 @@ pub struct StagedAttachment {
     pub filename: String,
     pub mime: String,
     pub size: u64,
+    /// `"agent"` for a row an agent staged; unset for the user's own pick, and
+    /// for every row written before the column existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Where an agent's row came from, `<project name>/<relative path>`, shown
+    /// on the chip so `paper.pdf` from one project is not taken for another's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// One file an agent's `attach` resolved, on its way into the outbox
+/// (`MailStore::change_draft_files`). Never serialized: the bytes go to disk
+/// sealed, and `source` onto the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewStagedFile {
+    pub staged_id: String,
+    pub filename: String,
+    pub mime: String,
+    /// `<project name>/<relative path>`.
+    pub source: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1056,6 +1123,10 @@ pub struct MailDraft {
     /// MCP spawn owner. Older class-only drafts stay available in the composer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_session: Option<String>,
+    /// Addresses a root agent *suggested*. Never copied into `to`, never read
+    /// by a send: the composer offers each as a pill the user adds by a click.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_to: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -1144,6 +1215,156 @@ pub struct MailPreviewBlob {
     pub mime: String,
     pub bytes_b64: String,
     pub truncated: bool,
+}
+
+// ── Address book ────────────────────────────────────────────────────────────
+
+/// Schema version of `contacts.json`.
+pub const CONTACTS_VERSION: u32 = 1;
+
+/// Which book a card lives in — Thunderbird's two built-in ones.
+///
+/// `Collected` is filled by the machine (every address the user sends to that
+/// no card holds yet); `Personal` only by the user. Keeping them apart is what
+/// lets the collected pile grow without cluttering the book someone curates,
+/// and what makes "promote to Personal" a one-field edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MailContactBook {
+    #[default]
+    Personal,
+    Collected,
+}
+
+/// One labelled phone number (`mobile`, `work`, `home`, … — free text, so an
+/// imported `TYPE=pager` survives as itself instead of being forced into a
+/// fixed set).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MailContactPhone {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub number: String,
+}
+
+/// One address-book card.
+///
+/// **Addresses are bare addr-specs**, validated with the composer's own
+/// `validate_recipient` on save: whatever the book suggests is spliced into a
+/// draft's `To:` exactly as typed, and a card must never be the way a
+/// display-name form (or a CR/LF) reaches `RCPT TO`. The first address is the
+/// primary one — what a click on "Write" and the autocomplete default to.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MailContact {
+    /// Minted by the backend when empty, as an account's is.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub book: MailContactBook,
+    /// The name shown everywhere. Empty on a collected card until the user
+    /// names it; the UI then falls back to first + last, then the address.
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub first_name: String,
+    #[serde(default)]
+    pub last_name: String,
+    /// Thunderbird's nickname: typed in full in a recipient field, it expands
+    /// to this card ahead of every other match.
+    #[serde(default)]
+    pub nickname: String,
+    #[serde(default)]
+    pub emails: Vec<String>,
+    #[serde(default)]
+    pub phones: Vec<MailContactPhone>,
+    #[serde(default)]
+    pub organization: String,
+    #[serde(default)]
+    pub job_title: String,
+    /// Postal address, free text (one line per line).
+    #[serde(default)]
+    pub address: String,
+    #[serde(default)]
+    pub website: String,
+    /// `YYYY-MM-DD`, or `--MM-DD` when the year is unknown (vCard's form).
+    #[serde(default)]
+    pub birthday: String,
+    #[serde(default)]
+    pub notes: String,
+    /// How many sent messages went to one of this card's addresses — the
+    /// autocomplete's tie-break, Thunderbird's "popularity index".
+    #[serde(default)]
+    pub popularity: u32,
+    /// Unix seconds of the last send to this card; `0` = never.
+    #[serde(default)]
+    pub last_used: i64,
+    #[serde(default)]
+    pub created: i64,
+    #[serde(default)]
+    pub updated: i64,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// A mailing list: a name that expands to several addresses in a recipient
+/// field. Members are **addresses**, not card ids, so deleting a card never
+/// silently shrinks a list, and a list can hold someone the book does not.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MailContactList {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub nickname: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub members: Vec<String>,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// `contacts.json` — the whole address book.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MailContacts {
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub contacts: Vec<MailContact>,
+    #[serde(default)]
+    pub lists: Vec<MailContactList>,
+    /// Thunderbird's "automatically add outgoing addresses to Collected
+    /// Addresses". Stored **inverted** so a missing field (every file written
+    /// before the option existed) means on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collect_disabled: bool,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// What the Address Book tab reads in one call.
+#[derive(Debug, Clone, Serialize)]
+pub struct MailContactsView {
+    pub contacts: Vec<MailContact>,
+    pub lists: Vec<MailContactList>,
+    pub collect_outgoing: bool,
+}
+
+/// The outcome of an import (vCard, LDIF, a Thunderbird profile) or of an
+/// "Add from Inbox" harvest.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct MailContactsImportReport {
+    /// The file dialog was cancelled: nothing was read.
+    pub cancelled: bool,
+    pub added: u32,
+    /// Cards whose address was already in the book, folded into that card.
+    pub merged: u32,
+    /// Cards with no usable address, or past the size caps. For a harvest:
+    /// automated senders (`noreply@…`) and the user's own addresses too.
+    pub skipped: u32,
+    /// Mailing lists added or extended (Thunderbird imports only).
+    pub lists: u32,
 }
 
 #[cfg(test)]

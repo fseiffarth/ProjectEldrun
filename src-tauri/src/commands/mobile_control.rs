@@ -795,16 +795,75 @@ pub async fn stop_host_for_exit() {
     stop_installed_host(shutdown.is_ok()).await;
 }
 
+/// What a launch does with the Mobile host.
+#[derive(Debug, PartialEq, Eq)]
+enum LaunchHost {
+    /// It answers, and it is this window's build.
+    Keep,
+    /// Installed and current, but not running: start that copy.
+    Start,
+    /// Reinstall from the running image, as Settings → Mobile → Update host
+    /// does: this version has no copy yet, the copy is an earlier build
+    /// ([`binary_behind`]), or the host answering is another version.
+    Update,
+}
+
+/// The launch's choice. `answering` is the running host's reported version
+/// (`Some(None)` when it answers without one), `None` when nothing answers.
+///
+/// The sidecar is a *copy* of the binary under `bin/<version>/`, run by the
+/// service manager, and a launch used to start whatever copy was there — so a
+/// rebuilt or updated window kept serving the phone the old HTTP API until
+/// someone found the Update host button, and a feature whose routes were new
+/// (the outbox shelf, 2026-09-20; the project files 📁, 2026-09-28) simply
+/// did not appear on the phone.
+fn launch_host(answering: Option<Option<&str>>, copy: &Path, running: &Path, version: &str) -> LaunchHost {
+    let stale_version = matches!(answering, Some(reported) if reported != Some(version));
+    if !copy.is_file() || binary_behind(copy, running) || stale_version {
+        LaunchHost::Update
+    } else if answering.is_some() {
+        LaunchHost::Keep
+    } else {
+        LaunchHost::Start
+    }
+}
+
 /// Start the Mobile host at launch when the configuration says it should be
 /// running — the counterpart of [`stop_host_for_exit`], without which the
-/// first quit would leave Mobile down until the next login. Off the main
-/// thread; a no-op when Mobile is off (`HostConfig::load` refuses a disabled
-/// or absent configuration) or the host already answers on its socket.
+/// first quit would leave Mobile down until the next login — and bring its
+/// copy up to this window's build first when it is behind ([`launch_host`]).
+/// Off the main thread; a no-op when Mobile is off (`HostConfig::load` refuses
+/// a disabled or absent configuration).
+///
+/// An update that fails (Tailscale Serve down, the image unreadable) falls
+/// back to starting the installed copy: an old host is still a working phone,
+/// and Settings → Mobile keeps offering the update by hand.
 pub fn start_host_on_launch() {
     tauri::async_runtime::spawn(async {
         let Ok(config) = HostConfig::load(&storage::state_dir()) else {
             return;
         };
+        let status = mobile_admin(AdminRequest::Status).await;
+        let answering = match &status {
+            Ok(AdminResponse::Host { version, .. }) => Some(version.as_deref()),
+            Ok(_) => Some(None),
+            Err(_) => None,
+        };
+        let version = env!("CARGO_PKG_VERSION");
+        let copy = config.control_dir.join("bin").join(version).join(HOST_BINARY_NAME);
+        let action = match mobile_binary_source() {
+            Ok(running) => launch_host(answering, &copy, &running, version),
+            Err(_) if answering.is_some() => LaunchHost::Keep,
+            Err(_) => LaunchHost::Start,
+        };
+        match action {
+            LaunchHost::Keep => return,
+            LaunchHost::Update => match mobile_host_apply(true).await {
+                Ok(()) => return,
+                Err(error) => eprintln!("mobile host: update at launch: {error}"),
+            },
+            LaunchHost::Start => {}
+        }
         if mobile_admin(AdminRequest::Status).await.is_ok() {
             return;
         }
@@ -1065,7 +1124,7 @@ mod tests {
 
 #[cfg(test)]
 mod sidecar_staleness_tests {
-    use super::binary_behind;
+    use super::{binary_behind, launch_host, LaunchHost};
     use std::{
         path::Path,
         time::{Duration, SystemTime},
@@ -1131,6 +1190,32 @@ mod sidecar_staleness_tests {
 
         assert!(!binary_behind(&temp.path().join("absent"), &running));
         assert!(!binary_behind(&running, &temp.path().join("absent")));
+    }
+
+    /// A launch brings the phone's host up to the window's build by itself —
+    /// the Update host button was the only way, and a new route stayed 404.
+    #[test]
+    fn a_launch_updates_a_host_that_is_behind_and_only_starts_a_current_one() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let running = temp.path().join("running");
+        let copy = temp.path().join("copy");
+        let absent = temp.path().join("absent");
+        file(&running, b"sidecar bytes", 600);
+        file(&copy, b"sidecar bytes", 60);
+
+        // Current copy: keep a running host, start a stopped one.
+        assert_eq!(launch_host(Some(Some("1.2.3")), &copy, &running, "1.2.3"), LaunchHost::Keep);
+        assert_eq!(launch_host(None, &copy, &running, "1.2.3"), LaunchHost::Start);
+        // This version was never installed (a version bump): the unit still
+        // points at the last version's copy.
+        assert_eq!(launch_host(None, &absent, &running, "1.2.3"), LaunchHost::Update);
+        // The host answering is another version, though this one's copy exists.
+        assert_eq!(launch_host(Some(Some("1.2.2")), &copy, &running, "1.2.3"), LaunchHost::Update);
+        assert_eq!(launch_host(Some(None), &copy, &running, "1.2.3"), LaunchHost::Update);
+        // Same version, an earlier build — the dev-build case.
+        file(&copy, b"sidecar bytes", 900);
+        assert_eq!(launch_host(Some(Some("1.2.3")), &copy, &running, "1.2.3"), LaunchHost::Update);
+        assert_eq!(launch_host(None, &copy, &running, "1.2.3"), LaunchHost::Update);
     }
 }
 

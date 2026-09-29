@@ -2,16 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_FENCE_DEFAULT_PATHS,
   agentFenceInstallCommand,
-  agentFenceLabelKey,
+  agentFenceMarkLevel,
   agentFenceReasonKey,
   parseAgentFencePaths,
 } from "../../lib/agents/agentFence";
 
 describe("agent fence project-pill states", () => {
-  it("maps inherit/off/on to their distinct labels", () => {
-    expect(agentFenceLabelKey(undefined)).toBe("pill.agentFenceInherit");
-    expect(agentFenceLabelKey(false)).toBe("pill.agentFenceOff");
-    expect(agentFenceLabelKey(true)).toBe("pill.agentFenceOn");
+  it("marks only tabs that run unfenced right now — there is no policy off", () => {
+    expect(agentFenceMarkLevel(undefined)).toBeNull();
+    expect(agentFenceMarkLevel({ live_unfenced: 0 })).toBeNull();
+    expect(agentFenceMarkLevel({ live_unfenced: 2 })).toBe("live");
   });
 
   it("maps backend status reasons to localized UI keys", () => {
@@ -21,6 +21,8 @@ describe("agent fence project-pill states", () => {
       "pill.agentFenceReasonBwrap",
     );
     expect(agentFenceReasonKey("enforced")).toBeNull();
+    expect(agentFenceReasonKey("host session")).toBe("pill.agentFenceReasonHostSession");
+    expect(agentFenceReasonKey("off")).toBeNull();
     expect(agentFenceReasonKey("sandbox-exec unavailable")).toBe("pill.agentFenceReasonSeatbelt");
   });
 });

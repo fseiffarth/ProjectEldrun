@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { ApiError, MAX_INBOX_FILE, uploadToDesktop } from "../api";
+import { ANY_FILE_ACCEPT, ApiError, MAX_INBOX_FILE, uploadToDesktop } from "../api";
 import { isUntested } from "../../../src/lib/untested";
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 
@@ -64,7 +64,7 @@ export function SendToDesktop() {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M5 20h14" /></svg>
       </button></li>
     </ul>
-    <input ref={input} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="send-to-desktop-input" onChange={(event) => { send(event.target.files); event.target.value = ""; }} />
+    <input ref={input} type="file" accept={ANY_FILE_ACCEPT} multiple hidden aria-hidden="true" tabIndex={-1} data-testid="send-to-desktop-input" onChange={(event) => { send(event.target.files); event.target.value = ""; }} />
     {uploads.map((upload) => upload.state === "failed"
       ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismiss(upload.id)} aria-label={t("mobile.sendToDesktop.dismiss", { name: upload.name })}>✕</button></div>
       : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>{t(upload.state === "sent" ? "mobile.sendToDesktop.sent" : "mobile.sendToDesktop.sending")}</span>{upload.state === "sent" && <button onClick={() => dismiss(upload.id)} aria-label={t("mobile.sendToDesktop.dismiss", { name: upload.name })}>✕</button>}</div>)}

@@ -25,8 +25,18 @@ fn resolve<T: TimeZone>(text: &str, now: DateTime<T>) -> Option<DateTime<Utc>> {
     let at = |date: NaiveDate| now.timezone().from_local_datetime(&date.and_hms_opt(hour, minute, 0)?).earliest().map(|d| d.with_timezone(&Utc));
     if let Some(date) = date {
         let month = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"].iter().position(|m| date[1].eq_ignore_ascii_case(m))? as u32 + 1;
-        let year = date.get(3).map_or(Some(now.year()), |y| y.as_str().parse().ok())?;
-        return at(NaiveDate::from_ymd_opt(year, month, date[2].parse().ok()?)?);
+        let day: u32 = date[2].parse().ok()?;
+        if let Some(year) = date.get(3) {
+            return at(NaiveDate::from_ymd_opt(year.as_str().parse().ok()?, month, day)?);
+        }
+        // No year written: a panel read late in December names January's
+        // reset without one. This year's date, or next year's when that is
+        // already past — never a reset in the past.
+        let this_year = at(NaiveDate::from_ymd_opt(now.year(), month, day)?);
+        return match this_year {
+            Some(candidate) if candidate > now => Some(candidate),
+            _ => at(NaiveDate::from_ymd_opt(now.year() + 1, month, day)?),
+        };
     }
     let day = DAY.find(text).map(|d| d.as_str().to_ascii_lowercase());
     let today = now.date_naive();
@@ -69,7 +79,10 @@ mod tests {
         let raw = "Current session: 39% used · resets Sep 15, 10:30pm (Europe/Berlin)\nCurrent week (all models): 54% used · resets Sep 17, 2pm (Europe/Berlin)";
         assert_eq!(next_reset(raw, now).unwrap().to_rfc3339(), "2026-09-15T20:30:00+00:00");
         assert!(next_reset("nothing about resets 4pm", now).is_none());
-        assert!(next_reset("Session: 3% · resets Sep 12, 10pm (UTC)", now).is_none());
+        // A dated phrase without a year that has passed this year is next year's.
+        assert_eq!(next_reset("Session: 3% · resets Sep 12, 10pm (UTC)", now).unwrap().to_rfc3339(), "2027-09-12T22:00:00+00:00");
+        assert!(next_reset("Session: 3% · resets Sep 12, 2026, 10pm (UTC)", now).is_none(), "a written year is not second-guessed");
+        assert_eq!(next_reset("Session: 3% · resets Sep 15, 1pm (UTC)", now).unwrap().to_rfc3339(), "2026-09-15T13:00:00+00:00");
         assert!(next_reset("Session: 3% · resets Sep 15, 25:00 (UTC)", now).is_none());
     }
 }

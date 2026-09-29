@@ -10,7 +10,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { renderHook } from "@testing-library/react";
 
 import {
-  isEscalated,
   summaryLamp,
   useHeaderStatusReport,
   useHeaderStatusStore,
@@ -52,7 +51,7 @@ describe("report()", () => {
   });
 });
 
-describe("summaryLamp / isEscalated", () => {
+describe("summaryLamp", () => {
   it("is grey with no members and with only dormant ones — never a claimed connection", () => {
     expect(summaryLamp({})).toBe("off");
     expect(summaryLamp({ vpn: { tone: "off", label: "" }, machines: { tone: "off", label: "" } })).toBe(
@@ -74,13 +73,6 @@ describe("summaryLamp / isEscalated", () => {
         conn: { tone: "ok", label: "" },
       }),
     ).toBe("error");
-  });
-
-  it("escalates only attention and alert out of the fold", () => {
-    expect(isEscalated("off")).toBe(false);
-    expect(isEscalated("ok")).toBe(false);
-    expect(isEscalated("attention")).toBe(true);
-    expect(isEscalated("alert")).toBe(true);
   });
 });
 

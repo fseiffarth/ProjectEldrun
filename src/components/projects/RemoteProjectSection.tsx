@@ -15,6 +15,8 @@ import type { ConnState } from "../../stores/remote/remoteStatus";
 import type { useRemoteSession } from "./useRemoteSession";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { HpcHostToggle } from "./HpcHostToggle";
+import { TerminalIcon, WarningIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 type RemoteSession = ReturnType<typeof useRemoteSession>;
 
@@ -304,7 +306,7 @@ export function RemoteProjectSection({
               return (
                 <div className="ssh-tooling-warning" role="alert">
                   {warnings.map((w) => (
-                    <div key={w}>⚠ {w}</div>
+                    <div key={w}><WarningIcon /> {w}</div>
                   ))}
                 </div>
               );
@@ -478,7 +480,7 @@ export function RemoteProjectSection({
                       }
                       onClick={() => void startVpnTerm()}
                     >
-                      <span className="dialog-connect-btn-icon" aria-hidden="true">▶_</span>
+                      <span className="dialog-connect-btn-icon" aria-hidden="true"><TerminalIcon /></span>
                       {vpnTerm ? t("remoteConnect.vpnTermOpenBelow") : t("remoteConnect.vpnTermOpenBtn")}
                     </button>
                     {!vpnTerm && (
@@ -514,7 +516,7 @@ export function RemoteProjectSection({
                         </div>
                       </div>
                     )}
-                    {vpnError && <div className="project-dialog-error">{vpnError}</div>}
+                    {vpnError && <ErrorNote className="project-dialog-error" error={vpnError} />}
                   </div>
                 )}
                 {/* Outside the branch above, so it is reachable from *both* states: it
@@ -665,7 +667,7 @@ export function RemoteProjectSection({
                     title={t("remoteProjectSection.sshTermBtnTitle")}
                     onClick={() => void startSshTerm()}
                   >
-                    <span className="dialog-connect-btn-icon" aria-hidden="true">▶_</span>
+                    <span className="dialog-connect-btn-icon" aria-hidden="true"><TerminalIcon /></span>
                     {sshTerm ? t("remoteConnect.sshTermOpenBelow") : t("remoteConnect.sshTermOpenBtn")}
                   </button>
                   {!winManual && sshTerm && sshStatus !== "connected" && (

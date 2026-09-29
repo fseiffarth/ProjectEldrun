@@ -296,6 +296,46 @@ fn uid_set_chunks(uids: &[u32], max_chars: usize) -> Vec<String> {
     chunks
 }
 
+/// Quote one search word as an IMAP quoted-string for a `SEARCH` criterion.
+///
+/// The query is user-typed text going into a protocol command, so it is
+/// quoted rather than interpolated: `"` and `\` are escaped, and CR/LF are
+/// dropped — a newline in a quoted-string would break the command framing and
+/// let the rest of the query parse as new commands. Non-ASCII passes through;
+/// the criterion using this declares `CHARSET UTF-8`.
+fn imap_quoted(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 2);
+    out.push('"');
+    for c in raw.chars() {
+        if c == '\r' || c == '\n' {
+            continue;
+        }
+        if c == '"' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
+/// The `UID SEARCH` criterion for one query: subject or sender, the two header
+/// fields the local index a search backfills into can actually match on (see
+/// [`MailEngine::search_uids`).
+///
+/// `charset` declares `CHARSET UTF-8` up front so non-ASCII queries work; the
+/// caller retries without it, because a server that answers the declaration
+/// with `BAD` rejects the extension rather than the query.
+fn server_search_criterion(query: &str, charset: bool) -> String {
+    let q = imap_quoted(query);
+    let core = format!("OR SUBJECT {q} FROM {q}");
+    if charset {
+        format!("CHARSET UTF-8 {core}")
+    } else {
+        core
+    }
+}
+
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 /// The header-shaped half of a parsed message.
@@ -970,6 +1010,33 @@ pub trait MailEngine: Send + Sync {
         folder_path: &str,
         limit: u32,
     ) -> Result<FetchedHeaders, MailError>;
+    /// UIDs in this folder whose subject or sender matches `query` — the search
+    /// the local index cannot answer, because a sync keeps only a folder's
+    /// newest headers while the server holds the whole mailbox.
+    ///
+    /// Server-side and case-insensitive per RFC 3501. Ascending and uncapped;
+    /// the caller pages. Deliberately subject/sender only: the local index the
+    /// matches are backfilled into holds header fields (a header-only fetch has
+    /// no body for a preview), so a body-text criterion would spend the fetch
+    /// budget on rows the list that follows could never display.
+    async fn search_uids(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
+        query: &str,
+    ) -> Result<Vec<u32>, MailError>;
+    /// Header rows for these UIDs, for backfilling the local index with what a
+    /// server search found. Same shape as [`MailEngine::headers`]' rows —
+    /// header-only, `BODY.PEEK` so nothing is marked read. UIDs the server no
+    /// longer reports are skipped rather than failing the batch.
+    async fn headers_for_uids(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
+        uids: &[u32],
+    ) -> Result<Vec<FetchedHeader>, MailError>;
     async fn body(
         &self,
         account: &MailAccount,
@@ -1649,6 +1716,99 @@ impl MailEngine for InProcessEngine {
         session.finish(out)
     }
 
+    async fn search_uids(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
+        query: &str,
+    ) -> Result<Vec<u32>, MailError> {
+        vpn_gate(account)?;
+        let needle = query.trim();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
+        let out: Result<Vec<u32>, MailError> = async {
+            session.ensure_selected(folder_path).await?;
+            let deadline = tokio::time::Instant::now() + COMMAND_TIMEOUT;
+            // `CHARSET UTF-8` first so a non-ASCII query works; without it on
+            // the retry, because a `BAD` there rejects the declaration rather
+            // than the query. Anything but a `Protocol` refusal is returned at
+            // once — an auth failure will not fix itself by rephrasing.
+            for charset in [true, false] {
+                let criterion = server_search_criterion(needle, charset);
+                match tokio::time::timeout_at(deadline, session.uid_search(criterion)).await {
+                    Ok(Ok(uids)) => {
+                        let mut out: Vec<u32> = uids.into_iter().collect();
+                        out.sort_unstable();
+                        return Ok(out);
+                    }
+                    Ok(Err(e)) => {
+                        let err = classify_imap_error(e);
+                        if charset && matches!(err, MailError::Protocol(_)) {
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                    Err(_) => return Err(MailError::Timeout { op: "IMAP SEARCH" }),
+                }
+            }
+            unreachable!("the loop above returns on both attempts");
+        }
+        .await;
+        session.finish(out)
+    }
+
+    async fn headers_for_uids(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
+        uids: &[u32],
+    ) -> Result<Vec<FetchedHeader>, MailError> {
+        vpn_gate(account)?;
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
+        let out: Result<Vec<FetchedHeader>, MailError> = async {
+            session.ensure_selected(folder_path).await?;
+            // The same row `headers` builds — `BODY.PEEK`, never `BODY`, for
+            // its reason — addressed by UID set instead of by tail range.
+            let fetch = "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])";
+            let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
+            let mut out = Vec::new();
+            for set in uid_set_chunks(uids, MAX_UID_SET_CHARS) {
+                let mut stream = tokio::time::timeout_at(deadline, session.uid_fetch(set, fetch))
+                    .await
+                    .map_err(|_| MailError::Timeout { op: "IMAP FETCH" })?
+                    .map_err(classify_imap_error)?;
+                while let Some(item) = next_before(&mut stream, deadline, "IMAP FETCH").await? {
+                    let item = item.map_err(classify_imap_error)?;
+                    let Some(uid) = item.uid else { continue };
+                    let raw = item.header().unwrap_or(b"");
+                    let Ok(headers) = parse_headers(raw) else {
+                        continue;
+                    };
+                    let mut headers = headers;
+                    headers.size = item.size.unwrap_or(raw.len() as u32) as u64;
+                    let flags: Vec<String> = item.flags().map(|f| format!("{f:?}")).collect();
+                    out.push(FetchedHeader {
+                        uid,
+                        seen: flags.iter().any(|f| f.contains("Seen")),
+                        flagged: flags.iter().any(|f| f.contains("Flagged")),
+                        answered: flags.iter().any(|f| f.contains("Answered")),
+                        headers,
+                    });
+                }
+            }
+            Ok(out)
+        }
+        .await;
+        session.finish(out)
+    }
+
     async fn body(
         &self,
         account: &MailAccount,
@@ -2230,6 +2390,30 @@ mod tests {
         let uids: Vec<u32> = (1..=500).collect();
         let chunks = uid_set_chunks(&uids, 4);
         assert_eq!(chunks, vec!["1:500"]);
+    }
+
+    // ── Server search criteria ──────────────────────────────────────────
+
+    #[test]
+    fn search_criterion_names_subject_or_sender() {
+        assert_eq!(
+            server_search_criterion("invoice", true),
+            "CHARSET UTF-8 OR SUBJECT \"invoice\" FROM \"invoice\""
+        );
+        assert_eq!(
+            server_search_criterion("invoice", false),
+            "OR SUBJECT \"invoice\" FROM \"invoice\""
+        );
+    }
+
+    #[test]
+    fn search_quoting_cannot_break_command_framing() {
+        // A quote or backslash in the query is escaped in place ...
+        assert_eq!(imap_quoted("say \"hi\" \\ bye"), "\"say \\\"hi\\\" \\\\ bye\"");
+        // ... and a newline is dropped, never sent: inside a quoted-string it
+        // would end the command and let the rest parse as new commands.
+        assert_eq!(imap_quoted("a\r\nb"), "\"ab\"");
+        assert_eq!(server_search_criterion("a\"b", true).matches('"').count(), 6);
     }
 
     // ── The crypto provider ─────────────────────────────────────────────────

@@ -43,6 +43,22 @@ card of the same tab, joined to the first by an edge the history draws itself
 The frontend's `tab.sessionId` stays the launch id throughout; nothing pushes
 the live id into the window, and nothing needs to.
 
+A `clear` start also writes `live_sessions/<key>.prev` — the id the clear
+rolled away from — before the source. That is "Undo clear"
+(`undo_clear_plan`, `agent_tab_undo_clear`, frontend `stores/agents/agentClearUndo`):
+Claude, while the source still says `clear` and that transcript exists, gets
+`/resume <prev>` typed into the running session; the resume's own
+`SessionStart` moves the source on, so there is nothing left to undo. Codex
+(whose in-session `/resume` is a picker) has its record written back to
+`<prev>` with source `resume` and the tab is relaunched — the restart path for
+one tab: its minted tmux session ends and the pane respawns with the restore
+args, so `resolve_codex_session` resumes the cleared conversation. Every other
+resumable agent is relaunched the same way on its `RESUMABLE_AGENTS` flag —
+Vibe by the id its hook still holds, the continue-last agents on "latest",
+which is the cleared conversation only while the new chat holds nothing (the
+undo is withdrawn at the next prompt for that reason). Local tabs only. The id
+never crosses to the phone: its Undo asks the desktop (`undo_clear`).
+
 ### The turn state (working / decision / done)
 
 The same script serves four more events since 2026-09-15 — `UserPromptSubmit`,
@@ -74,6 +90,17 @@ one-time trust (`/hooks` in Codex) before they run; until then
 record. Gemini and the other "continue last" agents restore on their CLI's
 continue flag, not a captured id.
 
+Vibe 2.25 has `--resume <session-id>`. Eldrun registers a `post_agent` hook in
+the user's `~/.vibe/hooks.toml` and in each prepared local-model `VIBE_HOME`;
+after a completed turn it records Vibe's current ID under the tab's
+`ELDRUN_TAB_UID`. A local tab with a recorded, still-present session resumes
+that exact ID (including after Vibe's in-app `/resume` or `/branch`). Existing
+tabs without a record retain the prior `--continue` fallback. Remote Vibe tabs
+also retain `--continue`, since no Eldrun hook is installed on the host. Vibe's
+session logging must be enabled for either flag. Fenced/container tabs receive
+a per-project shadow of `hooks.toml`, like Claude/Codex hook config, so they can
+record their live ID without editing the host hook registration.
+
 ### The phone send hint
 
 An accepted Claude `SessionStart` prints a one-line `eldrun-send <file>` hint
@@ -81,7 +108,7 @@ when `ELDRUN_PROJECT_DIR` is set. The existing continuity check runs first, so
 a nested startup cannot print it; `Stop` and Codex never print it. Claude adds
 SessionStart stdout to context. The PowerShell hook mirrors it; other agents
 learn the command from the project's scaffold `AGENTS.md`. See
-`docs/mobile_send_plan.md` and the third-party update checklist.
+the third-party update checklist.
 
 ### Where Codex keeps a session, and why resume died
 
@@ -157,6 +184,16 @@ env var the resolver sets, `ELDRUN_TAB_AGENT`:
   neither the key nor the current record is accepted only from a `SessionStart`
   whose `source` is `clear` or `resume`; a nested `-p` run's `startup` and its
   `Stop` are refused, and the mode is written only alongside an accepted id.
+  One `startup` is let through: Claude 2.1.282 relaunches itself to switch
+  its renderer (the fullscreen upsell dialog, `/tui`) or to update, and a
+  session that has no transcript yet comes back under a fresh id with
+  `--session-id` dropped. Before this exception the record stayed on a launch
+  id that never wrote a file, so the phone's Reader showed an empty session
+  and the tab's turn state never lit (2026-09-25). The tab's own session is
+  the one whose transcript is missing beside the new one, so a plain start
+  is followed exactly when `<transcript dir>/<current record>.jsonl` does not
+  exist; a CLI nested under the tab was started by a session that has been
+  prompted, whose file is there.
 - **Codex** (`codex`): Codex mints its ids, so its record is free-form — except
   that a Claude fired inside a Codex tab is refused outright (`CLAUDECODE` is
   set by Claude for its children, never by Codex). The rollout binder also

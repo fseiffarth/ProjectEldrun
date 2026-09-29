@@ -35,6 +35,7 @@ import {
   renderPdfPagesToImages,
   printHtmlBody,
   PDF_PRINT_CSS,
+  type NativePrint,
 } from "../../../lib/viewers/print";
 import {
   SELF,
@@ -124,6 +125,8 @@ import {
   screenshotFilename,
   type ScreenshotCaptureDetail,
 } from "../../../lib/window/screenshot";
+import { printPdfNative } from "../../../lib/window/printing";
+import { layoutPrintPdf } from "../../../lib/viewers/pdfPrintLayout";
 import { useSettingsStore } from "../../../stores/settings";
 import { PageStrip } from "../../common/PageStrip";
 import { PrinterIcon } from "../../common/PrinterIcon";
@@ -151,7 +154,8 @@ import {
   type CaretPhrase,
 } from "../../../lib/viewers/tex/tex";
 import { useT, type TranslationKey } from "../../../lib/i18n";
-import { CommentIcon, SearchIcon, TagIcon } from "../../common/icons/Icon";
+import { useUnsavedWork } from "../../../lib/window/unsavedWork";
+import { ArrowUpRightIcon, CommentIcon, PlayIcon, SearchIcon, TagIcon } from "../../common/icons/Icon";
 
 /** How often the open PDF re-checks its file's mtime for an on-disk change (a
  *  LaTeX recompile rewrites the very bytes this tab is showing). Mirrors the
@@ -1851,6 +1855,7 @@ function PdfCanvas({
   // the LIVE dirty flag to decide whether an on-disk change may auto-reload.
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
+  useUnsavedWork(dirty);
 
   // ── Presenting this PDF fullscreen (`present.ts`) ────────────────────────
   //
@@ -2630,25 +2635,48 @@ function PdfCanvas({
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [current, setCurrent] = useState(0);
   const findInputRef = useRef<HTMLInputElement>(null);
-  // Print: the webview can't print a PDF directly, so rasterise the already-open
-  // pages to images and print those through the shared pipeline. `printing`
-  // disables the button while the (async) render runs.
+  // Print: the shared preview arranges the job (paper, margins, sheet order, turns,
+  // selection) from page images — the webview can't show a PDF — but what goes to
+  // the printer is the real PDF: `native` rebuilds the preview's sheets as vector
+  // pages (`layoutPrintPdf`) and hands them to the system print UI
+  // (`printPdfNative`; GTK / WebView2 / PDFKit). Only where there is no native
+  // path does the preview print its images. `printing` disables the button while
+  // the (async) render runs.
   const [printing, setPrinting] = useState(false);
   const handlePrint = useCallback(async () => {
     if (!doc || printing || pages.length === 0) return;
     setPrinting(true);
+    setEditError(null);
     try {
-      // Rasterise the ARRANGEMENT, not the file: printing an edited PDF prints what
-      // is on screen, without having to save it first.
-      const images = await renderPdfPagesToImages(pages, (id) => sources.get(id)?.doc);
+      // The ARRANGEMENT, not the file: printing an edited PDF prints what is on
+      // screen, without having to save it first. Preview sheet n is `sheets[n-1]`.
+      const sheets = pages;
+      const title = basename(path);
+      const images = await renderPdfPagesToImages(sheets, (id) => sources.get(id)?.doc);
       const body = images
         .map((src) => `<div class="print-page"><img src="${src}" alt=""></div>`)
         .join("");
-      await printHtmlBody(body, PDF_PRINT_CSS);
+      const native: NativePrint = async (sequence, opts) => {
+        // The bytes Save and a page drag-out write — blackouts burned in, pending
+        // metadata deletion applied — one page per viewer sheet, in its order.
+        const bytes = await buildPdf(sheets, sources, {
+          emptyMsg: t("pdfViewer.pdfBuildEmpty"),
+          sourceClosedMsg: t("pdfViewer.pdfSourceClosed"),
+          redactDpi,
+          stripMetadata: stripMeta,
+        });
+        const laidOut = await layoutPrintPdf(bytes, sequence, opts);
+        return printPdfNative(laidOut, title, { paper: opts.paper, grayscale: opts.grayscale });
+      };
+      await printHtmlBody(body, PDF_PRINT_CSS, title, native);
+    } catch (e) {
+      setEditError(
+        t("pdfViewer.printFailed", { msg: e instanceof Error ? e.message : String(e) }),
+      );
     } finally {
       setPrinting(false);
     }
-  }, [doc, printing, pages, sources]);
+  }, [doc, printing, pages, sources, redactDpi, stripMeta, path, t]);
 
   /**
    * Write the arrangement back to the file. The ONLY place a PDF is written.
@@ -4223,6 +4251,7 @@ function PdfCanvas({
             <PrinterIcon />
           )}
         </button>
+        <UntestedTag id="pdfViewer.printLabel" />
         {/* Fullscreen present: this PDF in a window of its own, with nothing else
             on the screen. Beside Print because the two are the same job aimed at
             the two audiences a document has — the room and the page. */}
@@ -4237,7 +4266,7 @@ function PdfCanvas({
           }
           aria-label={t("pdfViewer.fullscreenPresentLabel")}
         >
-          ▶ {t("pdfViewer.fullscreenPresentBtn")}
+          <PlayIcon /> {t("pdfViewer.fullscreenPresentBtn")}
         </button>
         <UntestedTag id="pdfViewer.7" />
         {deckEnabled && (
@@ -4247,7 +4276,7 @@ function PdfCanvas({
             disabled={!doc || makingDeck}
             title={t("pdfViewer.presentTitle")}
           >
-            {makingDeck ? "…" : `▶ ${t("pdfViewer.presentButton")}`}
+            {makingDeck ? "…" : <><PlayIcon /> {t("pdfViewer.presentButton")}</>}
           </button>
         )}
         {onOpenExternally && (
@@ -4257,7 +4286,7 @@ function PdfCanvas({
             title={t("pdfViewer.openExternalTitle")}
             aria-label={t("pdfViewer.openExternalTitle")}
           >
-            ↗
+            <ArrowUpRightIcon />
           </button>
         )}
       </div>

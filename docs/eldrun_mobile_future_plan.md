@@ -2,9 +2,9 @@
 
 Status: **Proposed. Nothing in this document is implemented.**
 
-This is the follow-up review that
-[`eldrun_mobile_agent_plan.md`](eldrun_mobile_agent_plan.md) §12 requires
-before any of its deferred phases begin. It specs six directions surfaced by
+This is the follow-up review the original mobile plan (removed once built;
+its still-deferred list is kept at the end of this file) required before any
+of its deferred phases begin. It specs six directions surfaced by
 the 2026-08-26 code review of the mobile surface, ordered by value against the
 product thesis: the phone exists to *steer agent turns*, not to mirror the
 desktop. A seventh (G), a security hardening from the 2026-08-28 mobile
@@ -35,6 +35,26 @@ independent of all of them and touches only the PWA's own lock.
 ---
 
 ## A. Agent-turn push notifications
+
+> **Channel landed 2026-09-28, calendar reminders first (todo 31bm).** The push
+> transport below is built — `mobile_control/push.rs` (VAPID + RFC 8291,
+> vendor-host allowlist, no redirects, 410 → drop), `push.json` inside
+> `AuthStore` so revoke/forget-all drop subscriptions, `GET/PUT/DELETE
+> /api/v1/push`, admin `notify`, `sw.js` handlers — and its first sender is
+> the desktop reminder engine (`stores/calendar/alarms.ts`), not agent edges.
+> Deviations: one route (`/api/v1/push`) instead of three; a per-device
+> *details* choice (the calendar analogue of the project-label opt-in); no
+> desktop-side switch — the phone's own Reminders sheet is the opt-in.
+>
+> **Agent edges landed the same day (todo 31bn)**, as A.4 describes:
+> `MobileBridgeHost` diffs `mobileAgentState` snapshots (`lib/mobileAgentTurns`:
+> into `question`, `working → done`; never a first sighting) and sends admin
+> `agent_turn { tmux_session, status }`; the sidecar resolves the tab through
+> its catalog (`host::agent_tab_ref`), stays quiet while `TerminalRegistry`
+> says a phone holds it, and keeps one notice per tab per 30 s. Per-phone
+> choices replace the single toggle: `calendar`, `agents` (off / questions /
+> all) and `details` (which also carries the project/tab names — A.3's
+> label opt-in). A tap lands on the tab through `lastPlace::resolvePlace`.
 
 ### A.1 Goal
 
@@ -228,7 +248,31 @@ when its old chunk is gone.
 
 ## D. Read-only file browsing
 
-Downloads already exist for explicitly sent outbox files (`docs/mobile_send_plan.md`).
+> **Re-evaluated and built 2026-09-28 (todo 31bo, never live).** Since this
+> section was written the phone grew the outbox (`mobile_control/outbox.rs`,
+> `OutboxViewer`), boxes and the root console as scopes, and host-wide gates
+> in `eldrun_mobile_host` that the sidecar reads itself (`root_access`). The
+> build follows D.2's sealed tokens and D.3's routes, with these changes:
+>
+> - **One host-wide switch, not a per-project flag.** `eldrun_mobile_host.
+>   project_files` (default off), beside the mail and root switches in Mobile
+>   settings. A second checkbox on every project row doubled the list for
+>   little: a phone shell reads the whole machine anyway, and the per-project
+>   consent is the Mobile switch that already puts a project on the phone.
+> - **The outbox's viewer, not a text-only view.** The file route answers
+>   bytes typed by `outbox::classify` (pictures, PDF, inert text, or an
+>   attachment), up to `MAX_OUTBOX_FILE`; a longer text answers its first
+>   `MAX_OUTBOX_FILE` bytes. The phone opens it in `OutboxViewer`, so Save and
+>   Share come with it. Still nothing in the project can be changed.
+> - **Projects only.** Boxes and the root console answer `files_unavailable`;
+>   a box's members are projects of their own.
+> - **Symlinks are not listed at all**, and a token whose path crosses one is
+>   refused (the canonical path must equal root + the sealed relative path).
+> - Routes: `GET /api/v1/projects/{id}/files[?dir=<token>]` and
+>   `GET /api/v1/projects/{id}/files/raw?f=<token>[&download=1]`; the project
+>   detail carries `files: bool` so the phone shows its 📁 only when on.
+
+Downloads already exist for explicitly sent outbox files (`eldrun-send`, `docs/context/agent_sessions.md`).
 This section concerns browsing beyond that outbox.
 
 ### D.1 Goal
@@ -337,7 +381,7 @@ Acceptance: mark-read on the phone shows read in the desktop client after its
 next sync tick; gate off → no buttons and a refused request; the flag write
 failing server-side surfaces the error string, never a silently stale list.
 
-### E.3 What landed (2026-09-03, code-complete, phone QA pending — 31t)
+### E.3 What landed (2026-09-03, code-complete, phone QA pending — 31bg)
 
 The design above, with three deliberate deviations and one addition:
 
@@ -548,3 +592,20 @@ sign-off before implementation) → D → E → F. Each phase is independently
 shippable and independently refusable. G sits outside this order entirely: it
 touches only the PWA's own lock, depends on nothing else here, and can land at
 any time — after the user signs off on the extractable-key tradeoff in G.3.
+
+## Still deferred from the original mobile plan
+
+Carried over from the original plan's §12 when it was removed (2026-09-29).
+Everything this file does not cover still needs its own review first:
+
+- creation while the desktop is absent, which requires a daemon-owned or
+  transactional shared tab-state model;
+- remote primary/worker tabs, containers, and VMs, each with its own authority
+  and connectivity rules;
+- structured attention/approval state supplied by agents rather than terminal
+  scraping;
+- tab termination (ending the session behind a tab), move, or mode changes
+  after creation — a phone renames (`PUT /api/v1/tabs/{id}`) and closes
+  (`DELETE /api/v1/tabs/{id}`, the desktop's own ×; the tmux session keeps
+  running) a tab, but never kills what runs in one;
+- native wrappers, multi-user hosts, or non-Tailscale publication.

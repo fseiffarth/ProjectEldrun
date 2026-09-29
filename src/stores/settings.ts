@@ -11,6 +11,7 @@ import {
   type WindowState,
 } from "../types";
 import { applyLanguage, type Language } from "../lib/i18n";
+import { probeOsClock } from "../lib/osClock";
 import { mergeVerdicts, verdictsUnchanged, type PyMainCache } from "../lib/terminal/pythonMainCache";
 import { THEME_COLOR_RE, THEME_VAR_NAMES } from "../lib/theme/themeTokens";
 import {
@@ -86,11 +87,12 @@ export async function listenSettingsChanged(): Promise<() => void> {
 export function resolveTheme(scheme: string): string {
   if (scheme !== "system") return scheme;
   try {
-    return window.matchMedia?.("(prefers-color-scheme: light)").matches
-      ? "fancy_light"
-      : "fancy_dark";
+    const media = window.matchMedia?.("(prefers-color-scheme: light)");
+    // Unreadable OS preference — fall back to the app default (Plain Dark).
+    if (!media) return "dark";
+    return media.matches ? "fancy_light" : "fancy_dark";
   } catch {
-    return "fancy_dark";
+    return "dark";
   }
 }
 
@@ -111,7 +113,7 @@ function armSystemThemeListener(scheme: string) {
       systemThemeOnChange = () => applyTheme("system");
       media.addEventListener("change", systemThemeOnChange);
     } catch {
-      // No matchMedia (tests) — "system" then just means fancy_dark.
+      // No matchMedia (tests) — "system" then just means the default, dark.
     }
   } else if (systemThemeMedia && systemThemeOnChange) {
     systemThemeMedia.removeEventListener("change", systemThemeOnChange);
@@ -558,7 +560,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   load: async (opts) => {
     const settings = await invoke<Settings>("get_settings");
-    applyTheme(settings.color_scheme ?? "fancy_dark");
+    // The default clock when `time_format_24h` is unset (`lib/timeFormat.ts`).
+    probeOsClock();
+    applyTheme(settings.color_scheme ?? "dark");
     applyAccent(settings.ui_accent);
     applyThemeVars(settings.ui_theme_vars);
     applyCorners(settings.ui_corners);

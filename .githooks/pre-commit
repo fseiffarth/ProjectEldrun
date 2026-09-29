@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#
+# Privacy scan of what this commit is about to record — the early half of the
+# repo's privacy gate. pre-push stays the authoritative one: plumbing commits
+# (commit-tree + update-ref), rebases, cherry-picks and `--no-verify` never run
+# this hook, and pre-push scans every commit a push publishes however it was
+# made. This hook exists so that the common case — a plain `git commit` — keeps
+# a leak out of history altogether, instead of it being found at push time and
+# needing an amend or a rebase to get out again.
+#
+# Scans the index (`GIT_INDEX_FILE` is honoured, so a private-index commit run
+# through `git hook run pre-commit` scans its own snapshot) and the identity
+# the commit will be stamped with. When gitleaks is installed it runs too —
+# CI's `secrets` job runs it over the whole history either way.
+#
+# Override once: ELDRUN_SKIP_PRIVACY_CHECK=1 git commit …  (or --no-verify).
+set -uo pipefail
+
+# The version bump pre-push commits mid-push touches only the version files,
+# and pre-push has just scanned the range it rides on.
+[ -n "${ELDRUN_VERSION_BUMP:-}" ] && exit 0
+[ -n "${ELDRUN_SKIP_PRIVACY_CHECK:-}" ] && exit 0
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+fail() {
+  echo "pre-commit: privacy check failed — nothing was committed." >&2
+  echo "            Fix or unstage each match above; this repo is public." >&2
+  echo "            To override once: ELDRUN_SKIP_PRIVACY_CHECK=1 git commit …" >&2
+  exit 1
+}
+
+(cd "$repo_root" && scripts/privacy-check.sh) </dev/null >/dev/null || fail
+
+if command -v gitleaks >/dev/null 2>&1; then
+  (cd "$repo_root" && gitleaks git --pre-commit --staged --redact --no-banner --verbose --log-level=warn) </dev/null || fail
+fi
+exit 0

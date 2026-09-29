@@ -23,6 +23,7 @@ import type { StoredVpnConfig } from "../../types";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
+import { ErrorNote } from "../common/ErrorNote";
 
 const MENU_ID = "vpn";
 
@@ -512,10 +513,10 @@ export function VpnIndicator() {
     : connecting
       ? "connecting"
       : "connected";
-  // Mid-connect is the one VPN state worth interrupting a collapsed header for:
-  // it is transient, it is what a user is waiting on, and it is where a failure
-  // shows up. A tunnel that is simply *up* stays folded — the cluster's summary
-  // lamp already goes green for it, and its own line rides the tooltip.
+  // Mid-connect is the one VPN state worth turning a collapsed header's summary
+  // lamp amber for: it is transient, it is what a user is waiting on, and it is
+  // where a failure shows up. A tunnel that is simply *up* reports `ok` — the
+  // summary lamp goes green for it, and its own line rides the tooltip.
   useHeaderStatusReport(
     "vpn",
     !enabled
@@ -621,7 +622,7 @@ export function VpnIndicator() {
               ? t("vpnIndicator.titleConnecting")
               : t("vpnIndicator.titleConnected")
         }
-        // Hover-opened, like its sibling header menus (GlobalAppMenu,
+        // Hover-opened, like its sibling header menus (SettingsMenu,
         // LocalModelMenu). Click focuses rather than toggling: a click also fires
         // mouseenter, so a toggle here would open on enter and immediately shut.
         onClick={reveal}
@@ -822,7 +823,7 @@ export function VpnIndicator() {
               </button>
             </div>
           )}
-          {error && <div className="vpn-indicator-error">{error}</div>}
+          {error && <ErrorNote className="vpn-indicator-error" error={error} />}
           </div>
         </div>
       )}

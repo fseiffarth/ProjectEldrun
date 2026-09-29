@@ -4,7 +4,7 @@
  * severe bug, since the switcher is the primary way to move between projects.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, act, fireEvent } from "@testing-library/react";
+import { render, act } from "@testing-library/react";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(null) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
@@ -98,56 +98,6 @@ describe("project switcher pill rendering", () => {
     });
 
     expect(container!.querySelectorAll(".project-pill").length).toBe(2);
-  });
-
-  it("gives the built-in Trash project a scope-chip row, not a pill", async () => {
-    // Trash was a pinned pill at the head of the row; it now lives in the scope
-    // chip's dropdown beside root and the boxes, so it costs the header no
-    // width at all.
-    useProjectsStore.setState({
-      projects: [proj("eldrun-trash", 0, { name: "Trash" })],
-      activeId: "eldrun-trash",
-      loaded: true,
-    });
-
-    let container: HTMLElement;
-    await act(async () => {
-      ({ container } = render(<ProjectSwitcher open />));
-    });
-
-    expect(container!.querySelector(".trash-project-pill")).toBeNull();
-    expect(container!.querySelector(".root-pill")).toBeNull();
-
-    const main = container!.querySelector(".box-chip-main") as HTMLElement;
-    await act(async () => {
-      fireEvent.click(main);
-    });
-    const menu = document.querySelector(".box-chip-menu") as HTMLElement;
-    const row = [...menu.querySelectorAll("button")].find((b) =>
-      b.textContent?.includes("Trash"),
-    ) as HTMLElement;
-    expect(row).toBeTruthy();
-    expect(row.querySelector(".box-chip-menu-trash-icon")).toBeTruthy();
-    // Not a box, so a pill drag can never drop into it.
-    expect(row.hasAttribute("data-box-id")).toBe(false);
-  });
-
-  it("keeps Trash out of the scrolling strip", async () => {
-    useProjectsStore.setState({
-      projects: [proj("eldrun-trash", 0, { name: "Trash" }), proj("a", 1), proj("b", 2)],
-      activeId: "a",
-      loaded: true,
-    });
-
-    let container: HTMLElement;
-    await act(async () => {
-      ({ container } = render(<ProjectSwitcher open />));
-    });
-
-    // The strip holds the two real projects, and Trash wears no pill anywhere.
-    const strip = container!.querySelector(".project-pills-scroll") as HTMLElement;
-    expect(strip.querySelectorAll(".project-pill").length).toBe(2);
-    expect(container!.querySelector(".trash-project-pill")).toBeNull();
   });
 
   it("no longer carries the settings gear — it lives in the header cluster", async () => {

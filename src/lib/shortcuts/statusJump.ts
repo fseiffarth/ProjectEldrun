@@ -1,0 +1,66 @@
+/**
+ * Steering's status jumps: walk every tab — in every project, the root and the
+ * boxes — that is waiting on an answer, working, or finished unseen, and bring
+ * the next one up with `jumpToTab` (the pill status bars' own jump).
+ *
+ * The statuses are the activity store's, the ones the tab glow and the pill
+ * bars draw: `attentionByTab` "decision" / "done" and `busyByTab`. The walk
+ * order is the station ring (`projectStations`: root first, then the pills in
+ * display order), any other scope (a box) after it, and each scope's tabs in
+ * strip order — so pressing the key again goes on from the tab it landed on.
+ */
+import type { AttentionKind } from "../../stores/activity";
+import { projectStations } from "../../stores/keyboardSteering";
+import { ROOT_SCOPE, isPtyTabKind, type TabEntry } from "../../stores/tabs";
+
+export type TabStatusKind = "decision" | "working" | "done";
+
+export interface StatusTab {
+  scope: string;
+  key: string;
+}
+
+/** The scopes in walk order: the station ring, then the rest by name. */
+function scopeOrder(tabsByScope: Record<string, TabEntry[]>): string[] {
+  const ring = projectStations().map((id) => id ?? ROOT_SCOPE);
+  const rest = Object.keys(tabsByScope)
+    .filter((scope) => !ring.includes(scope))
+    .sort();
+  return [...ring, ...rest];
+}
+
+/** Every open tab in `kind`, in walk order. */
+export function statusTabs(
+  kind: TabStatusKind,
+  busyByTab: Record<string, boolean>,
+  attentionByTab: Record<string, AttentionKind>,
+  tabsByScope: Record<string, TabEntry[]>,
+): StatusTab[] {
+  const out: StatusTab[] = [];
+  for (const scope of scopeOrder(tabsByScope)) {
+    for (const tab of tabsByScope[scope] ?? []) {
+      const ptyId = `${scope}:${tab.key}`;
+      const hit =
+        kind === "working"
+          ? isPtyTabKind(tab.kind) && !!busyByTab[ptyId]
+          : attentionByTab[ptyId] === kind;
+      if (hit) out.push({ scope, key: tab.key });
+    }
+  }
+  return out;
+}
+
+/** The tab after (`delta` 1) or before (-1) the one showing, wrapping; the
+ *  first (last) when the one showing is not in the list. Null when none is. */
+export function nextStatusTab(
+  list: StatusTab[],
+  current: StatusTab | null,
+  delta: 1 | -1,
+): StatusTab | null {
+  if (list.length === 0) return null;
+  const at = current
+    ? list.findIndex((t) => t.scope === current.scope && t.key === current.key)
+    : -1;
+  if (at < 0) return list[delta > 0 ? 0 : list.length - 1];
+  return list[(at + delta + list.length) % list.length];
+}

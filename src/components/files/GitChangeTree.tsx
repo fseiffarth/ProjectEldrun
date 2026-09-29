@@ -212,7 +212,7 @@ export function GitChangeTree({ projectDir, scope }: Props) {
         <div className="git-change-empty">{t("gitChangeTree.noChanges")}</div>
       )}
       {tree && tree.children.length > 0 && (
-        <div className="git-change-rows">
+        <div className="git-change-rows menu-scroll-region">
           {tree.children.map((c) => (
             <Row key={c.path} node={c} depth={0} collapsed={collapsed} toggle={toggle} />
           ))}

@@ -15,7 +15,11 @@ import { isUntested } from "../../../src/lib/untested";
 import { useT } from "../../../src/lib/i18n";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
 import { SendToDesktop } from "../components/SendToDesktop";
+import { GitMark } from "../components/GitMark";
 import { readSpeechLang, type SpeechLang } from "../speechLang";
+import { NotificationsSheet, pushSummary } from "../components/NotificationsSheet";
+import { getPushState, pushSupport, type HostPushState } from "../push";
+import { EldrunMark } from "../EldrunMark";
 
 const BUILD_STAMP = formatBuildStamp();
 
@@ -144,6 +148,12 @@ export function Home({ open, openTab, todo, mail }: {
    * fix it mid-answer has already been read to in the wrong voice. */
   const [speechLang, setSpeechLang] = useState<SpeechLang>(() => readSpeechLang());
   const [speechLangSheet, setSpeechLangSheet] = useState(false);
+  const [pushSheet, setPushSheet] = useState(false);
+  const [push, setPush] = useState<HostPushState | null>(null);
+  useEffect(() => {
+    if (pushSupport() !== "supported") return;
+    getPushState().then(setPush, () => undefined);
+  }, []);
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<ProjectRow[]>([]);
   /** Whether any list has come back yet. Until it has, an empty `rows` is
@@ -152,6 +162,12 @@ export function Home({ open, openTab, todo, mail }: {
   const [loaded, setLoaded] = useState(false);
   /** Null while the list is loading fine; otherwise why it is not. */
   const [offline, setOffline] = useState<UnavailableReason | null>(null);
+  /** Bumped to load the list again without a change of view or query: the
+   * page coming back into view, the phone coming back online, and a slow
+   * retry while the last load failed. After a silent re-login the reader
+   * lands back on this screen, and the list it was showing is whatever the
+   * dead link left — nothing else would ever ask for it again. */
+  const [reload, setReload] = useState(0);
   const [alerts, setAlerts] = useState<MobileAlerts | null>(null);
   /** The hand-arranged project order, this phone's own (`projectOrder.ts`). It
    * is read once: nothing else on the phone writes it, and re-reading it on
@@ -181,7 +197,28 @@ export function Home({ open, openTab, todo, mail }: {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [view, query]);
+  }, [view, query, reload]);
+  useEffect(() => {
+    const again = () => setReload((count) => count + 1);
+    const onVisible = () => { if (document.visibilityState === "visible") again(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", again);
+    window.addEventListener("online", again);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", again);
+      window.removeEventListener("online", again);
+    };
+  }, []);
+  /** While the last load failed, try again on a slow clock — the project
+   * screen's own poll does this for its tab list (`Project.tsx`). */
+  useEffect(() => {
+    if (!offline) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") setReload((count) => count + 1);
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [offline]);
   useEffect(() => {
     // Alerts sit under the project list and are deliberately not part of the
     // agents mode, which shows agent tabs and nothing else; polling a feed
@@ -217,15 +254,15 @@ export function Home({ open, openTab, todo, mail }: {
     writeOrder("projectOrder", next);
   };
   const drag = useRowDrag(listed.map((project) => project.id), moveProject, canReorder);
-  return <main className="screen">
+  return <main className="screen home-screen">
     <header className="home-header">
       <div className="home-brand" aria-label="Eldrun">
-        <img className="home-logo" src="/icons/icon.svg" alt="" />
-        <strong>Eldrun</strong>
+        <span className="home-logo-frame" aria-hidden="true"><EldrunMark className="home-logo" /></span>
+        <span className="home-brand-copy"><strong>Eldrun</strong><small>v{APP_VERSION}{BUILD_STAMP && ` · ${BUILD_STAMP}`}</small></span>
       </div>
       {/* The global views used to live here as a header rail; they are tabs of
           their own now, so the bar at the bottom of every screen carries them. */}
-      <div className="mobile-build"><small title="Bundle build time">Eldrun Mobile v{APP_VERSION}{BUILD_STAMP && ` · ${BUILD_STAMP}`}</small><span className={offline ? "lamp off" : "lamp"} /></div>
+      <span className={offline ? "lamp off" : "lamp"} />
     </header>
     <div className="projects-row">
       <h1>{view === "agents" ? "Agents" : "Projects"}</h1>
@@ -243,12 +280,13 @@ export function Home({ open, openTab, todo, mail }: {
         <strong>{describeUnavailable(offline).title}</strong>
         <span>{describeUnavailable(offline).hint}</span>
         <span>{rows.length ? "Showing the last list this session loaded." : "Project data is never loaded from cache."}</span>
+        {isUntested("mobile.home.recover") && <span className="untested">Untested</span>}
       </p>}
       {!loaded && !offline && <p className="projects-empty" role="status">Loading projects…</p>}
       {loaded && rows.length === 0 && <p className="projects-empty">{view === "search"
         ? query.trim() ? "No project by that name has Eldrun Mobile access." : "Type a project's name to find it."
         : "No project is active right now. Search finds any project with Eldrun Mobile access."}</p>}
-      {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this order is kept on this phone, so the Eldrun window's own project pills stay as they are. A project that has only just become active joins the end. {isUntested("mobile.home.reorder") && <span className="untested">Untested</span>}</p>}
+      {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this order is kept on this phone, so the Eldrun window's own project pills stay as they are. A project that has only just become active joins the end. {isUntested("mobile.home.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
       {/* A box row says it is one where a project row says its status: a box
           has no status of its own (listing it is what its switch means), and
           a "Paper" box beside a "Paper" project must be tellable apart.
@@ -258,12 +296,12 @@ export function Home({ open, openTab, todo, mail }: {
           opens the project, and the two must not be one gesture), which is the
           same shape — and so the same classes — the tab list already wears. */}
       <section className="cards">{listed.map((project) => <div
-        className={`tab-card one-row${drag.rowClass(project.id)}`}
+        className={`tab-card one-row home-project-card${drag.rowClass(project.id)}`}
         key={project.id}
         ref={drag.rowRef(project.id)}
       >
         <div className="tab-card-head">
-          <button className="card" onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{scopeCaption(project)}</small></span><span className="count">{project.live_sessions}</span></button>
+          <button className="card" onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{scopeCaption(project)}{project.git && <GitMark state={project.git} />}</small></span><span className="count">{project.live_sessions}</span></button>
           {canReorder && <button
             className="tab-card-grip"
             aria-label={`Move ${project.label}`}
@@ -284,8 +322,13 @@ export function Home({ open, openTab, todo, mail }: {
           <span><strong>{t("mobile.speech.language")}{isUntested("mobile.speech.language") && <span className="untested">Untested</span>}</strong><small>{speechLangSummary(speechLang, t)}</small></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
         </button></li>
+        <li><button aria-haspopup="dialog" aria-expanded={pushSheet} onClick={() => setPushSheet(true)}>
+          <span><strong>{t("mobile.push.title")}{isUntested("mobile.push.title") && <span className="untested">Untested</span>}</strong><small>{pushSummary(push, t)}</small></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+        </button></li>
       </ul>
     </section>
     {speechLangSheet && <SpeechLangSheet chosen={speechLang} onChoose={setSpeechLang} onClose={() => setSpeechLangSheet(false)} />}
+    {pushSheet && <NotificationsSheet onChange={setPush} onClose={() => setPushSheet(false)} />}
   </main>;
 }

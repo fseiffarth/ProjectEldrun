@@ -66,13 +66,27 @@ pub const PROBE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// add an agent: run its `--version`, paste the output as the comment, add the
 /// line. Do not add one from a README.
 const VERSION_ARGV: &[(&str, &[&str])] = &[
-    // "2.1.263 (Claude Code)"
+    // "2.1.282 (Claude Code)"
     ("claude", &["--version"]),
-    // "codex-cli 0.153.4"
+    // "codex-cli 0.157.0"
     ("codex", &["--version"]),
     // "0.0.393 Commit: ea52078"
     ("copilot", &["--version"]),
+    // "1.2.9"
+    ("antigravity", &["--version"]),
+    // "Muse Code 1.3.0 (1.3.0-R3057.1)" — only with [`VERSION_ENV`]'s flag.
+    ("muse", &["--version"]),
 ];
+
+/// Environment a version probe sets for one agent, keyed like [`VERSION_ARGV`].
+///
+/// For the CLI whose launcher does more than print on `--version`: Muse's
+/// wrapper script checks for an update on *any* invocation and, once its
+/// interval has passed, starts a background self-update — so an unguarded
+/// daily probe would be Eldrun updating somebody else's CLI.
+/// `MUSE_NO_AUTO_UPDATE=1` skips that branch of the launcher (read out of the
+/// 1.3.0 launcher, 2026-09-25) and the version still prints.
+const VERSION_ENV: &[(&str, &[(&str, &str)])] = &[("muse", &[("MUSE_NO_AUTO_UPDATE", "1")])];
 
 /// One recorded "verified against" note: the release someone actually checked,
 /// and which surface that check covered.
@@ -89,38 +103,44 @@ pub struct Verified {
 
 /// The machine-readable half of `docs/third_party_update_checklist.md`.
 ///
-/// One row per *check*, not per agent: Codex has three because three different
-/// surfaces were verified at three different releases, and the oldest of them
-/// is the weakest assumption Eldrun currently rests on. Collapsing them to one
-/// number per agent would throw away the only part that says where to look.
+/// One row per *check*, not per agent: Codex has four because four different
+/// surfaces are verified separately, and once they sit at different releases
+/// the oldest of them is the weakest assumption Eldrun currently rests on.
+/// Collapsing them to one number per agent would throw away the only part that
+/// says where to look.
 ///
 /// Bump a row when you re-verify that surface — the row and the prose note it
 /// mirrors, in the same commit.
 const VERIFIED: &[Verified] = &[
     Verified {
         agent: "claude",
-        version: "2.1.251",
+        version: "2.1.282",
         surface: "§1.1 — SessionStart/Stop hook payload, --resume, /usage envelope",
     },
     Verified {
         agent: "codex",
-        version: "0.151.0",
+        version: "0.157.0",
         surface: "§1.2 — mobile mode lines and Shift+Tab (agentModes.ts)",
     },
     Verified {
         agent: "codex",
-        version: "0.153.0",
+        version: "0.157.0",
         surface: "§1.2 — decision lamp: title repaints, numbered approval rows",
     },
     Verified {
         agent: "codex",
-        version: "0.153.4",
+        version: "0.157.0",
         surface: "§1.2 — the two-step /model sheet read off the screen",
     },
     Verified {
         agent: "codex",
-        version: "0.154.0",
+        version: "0.157.0",
         surface: "§1.2 — resume writer-lock conflict and release on process exit (offline probe)",
+    },
+    Verified {
+        agent: "antigravity",
+        version: "1.2.9",
+        surface: "§1.5 — footer model/effort and the /model dialog (antigravity.ts)",
     },
 ];
 
@@ -133,6 +153,14 @@ pub fn version_argv(agent_id: &str) -> Option<Vec<String>> {
         .map(|(_, args)| args.iter().map(|s| (*s).to_string()).collect())
 }
 
+/// Environment variables the version probe for `agent_id` must set.
+pub fn version_env(agent_id: &str) -> &'static [(&'static str, &'static str)] {
+    VERSION_ENV
+        .iter()
+        .find(|(id, _)| *id == agent_id)
+        .map_or(&[], |(_, env)| env)
+}
+
 /// True when this agent can be asked its version at all — what a caller reports
 /// as "this CLI cannot say", instead of showing an empty version chip.
 pub fn is_supported(agent_id: &str) -> bool {
@@ -141,8 +169,12 @@ pub fn is_supported(agent_id: &str) -> bool {
 
 /// Every recorded check for one agent, oldest verified release first.
 pub fn verified_notes(agent_id: &str) -> Vec<&'static Verified> {
+    notes_in(VERIFIED, agent_id)
+}
+
+fn notes_in(table: &'static [Verified], agent_id: &str) -> Vec<&'static Verified> {
     let mut notes: Vec<&'static Verified> =
-        VERIFIED.iter().filter(|note| note.agent == agent_id).collect();
+        table.iter().filter(|note| note.agent == agent_id).collect();
     notes.sort_by(|a, b| version_cmp(a.version, b.version));
     notes
 }
@@ -296,10 +328,18 @@ pub enum DriftState {
 
 /// Compare an installed version against every recorded check for that agent.
 pub fn drift(agent_id: &str, installed: Option<&str>) -> (DriftState, Vec<StaleNote>) {
+    drift_in(VERIFIED, agent_id, installed)
+}
+
+fn drift_in(
+    table: &'static [Verified],
+    agent_id: &str,
+    installed: Option<&str>,
+) -> (DriftState, Vec<StaleNote>) {
     let Some(installed) = installed else {
         return (DriftState::Unknown, Vec::new());
     };
-    let notes = verified_notes(agent_id);
+    let notes = notes_in(table, agent_id);
     if notes.is_empty() {
         return (DriftState::Unverified, Vec::new());
     }
@@ -558,6 +598,20 @@ mod tests {
             parse_version("0.0.393 Commit: ea52078").as_deref(),
             Some("0.0.393")
         );
+        assert_eq!(parse_version("1.2.9").as_deref(), Some("1.2.9"));
+        assert_eq!(
+            parse_version("Muse Code 1.3.0 (1.3.0-R3057.1)").as_deref(),
+            Some("1.3.0")
+        );
+    }
+
+    #[test]
+    fn a_probe_env_belongs_to_an_agent_with_a_recipe() {
+        for (agent, _) in VERSION_ENV {
+            assert!(is_supported(agent), "{agent} has a probe env but no recipe");
+        }
+        assert_eq!(version_env("muse"), &[("MUSE_NO_AUTO_UPDATE", "1")]);
+        assert!(version_env("claude").is_empty());
     }
 
     #[test]
@@ -598,9 +652,17 @@ mod tests {
 
     #[test]
     fn drift_names_every_stale_check_oldest_first() {
-        // Installed 0.153.4 matches one note, has moved past two and predates
-        // the writer-lock check. The oldest baseline sorts first.
-        let (state, stale) = drift("codex", Some("0.153.4"));
+        // Checks made at different releases, listed out of order. Installed
+        // 0.153.4 matches one, has moved past two and predates the last; the
+        // oldest baseline sorts first.
+        static TABLE: &[Verified] = &[
+            Verified { agent: "codex", version: "0.154.0", surface: "§1.2 — d" },
+            Verified { agent: "codex", version: "0.151.0", surface: "§1.2 — a" },
+            Verified { agent: "codex", version: "0.153.4", surface: "§1.2 — c" },
+            Verified { agent: "codex", version: "0.153.0", surface: "§1.2 — b" },
+            Verified { agent: "claude", version: "9.9.9", surface: "§1.1" },
+        ];
+        let (state, stale) = drift_in(TABLE, "codex", Some("0.153.4"));
         assert_eq!(state, DriftState::Moved);
         assert_eq!(stale.len(), 3);
         assert_eq!(stale[0].version, "0.151.0");
@@ -608,6 +670,17 @@ mod tests {
         assert_eq!(stale[2].version, "0.154.0");
         assert_eq!(stale[2].direction, Direction::Older);
         assert!(stale.iter().all(|note| note.surface.contains("§1.2")));
+    }
+
+    #[test]
+    fn an_install_older_than_every_codex_check_names_them_all() {
+        // Today's table: an install older than all four Codex checks names
+        // all four, a matching install none.
+        let (state, stale) = drift("codex", Some("0.153.4"));
+        assert_eq!(state, DriftState::Moved);
+        assert_eq!(stale.len(), 4);
+        assert!(stale.iter().all(|note| note.direction == Direction::Older));
+        assert_eq!(drift("codex", Some("0.157.0")).0, DriftState::Match);
     }
 
     #[test]
@@ -619,7 +692,7 @@ mod tests {
 
     #[test]
     fn matching_every_note_is_a_match_and_no_notes_is_unverified() {
-        assert_eq!(drift("claude", Some("2.1.251")).0, DriftState::Match);
+        assert_eq!(drift("claude", Some("2.1.282")).0, DriftState::Match);
         // `copilot` has a recipe but no recorded check — the honest answer is
         // "nobody has verified this", not a tick.
         assert_eq!(drift("copilot", Some("0.0.393")).0, DriftState::Unverified);

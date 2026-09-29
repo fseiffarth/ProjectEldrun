@@ -55,9 +55,9 @@ export function SettingsHeader({
   );
 }
 
-/** Scroll targets inside the main settings panel. `eldrun:open-settings` may
- *  carry one as `{ panel, anchor }`, which is how a deep link from elsewhere in
- *  the app lands on its section instead of at the top of a very long scroll. */
+/** Page ids inside the main settings panel. `eldrun:open-settings` may carry
+ *  one as `{ panel, anchor }`, which is how a deep link from elsewhere in the
+ *  app opens that page instead of the General one. */
 export const SETTINGS_ANCHORS = {
   mobile: "settings-anchor-mobile",
 } as const;
@@ -241,21 +241,66 @@ export function SettingsList({
   );
 }
 
-/** Persistent category navigation, compacted to the shared dropdown on narrow windows. */
-export function SettingsNavigation({ value, options, onChange }: {
+export interface SettingsNavEntry {
   value: string;
-  options: { value: string; label: string }[];
+  label: string;
+  /** Which of the page's settings matched the search box, shown under the
+   *  label so a hit on "zoom" says *why* Layout is still listed. */
+  hits?: string[];
+}
+
+export interface SettingsNavGroup {
+  label: string;
+  entries: SettingsNavEntry[];
+}
+
+/** Persistent category navigation: a search box, then the groups, each entry
+ *  one page on the right. Compacted to the search box plus the shared dropdown
+ *  on narrow windows. Enter in the search box opens the first match; Escape
+ *  clears a query before it can close the dialog. */
+export function SettingsNavigation({ value, groups, onChange, query, onQuery }: {
+  value: string;
+  groups: SettingsNavGroup[];
   onChange: (value: string) => void;
+  query: string;
+  onQuery: (query: string) => void;
 }) {
   const t = useT();
+  const flat = groups.flatMap((group) => group.entries);
   return <nav className="settings-navigation" aria-label={t("settings.categories")}>
+    <input
+      type="text"
+      className="settings-navigation-search"
+      value={query}
+      placeholder={t("settings.search")}
+      aria-label={t("settings.search")}
+      autoComplete="off"
+      spellCheck={false}
+      onChange={(e) => onQuery(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && flat[0]) {
+          e.preventDefault();
+          onChange(flat[0].value);
+        } else if (e.key === "Escape" && query) {
+          e.preventDefault();
+          onQuery("");
+        }
+      }}
+    />
     <div className="settings-navigation-compact">
-      <Dropdown ariaLabel={t("settings.categories")} title={t("settings.categories")} value={value} options={options} onChange={onChange} />
+      <Dropdown ariaLabel={t("settings.categories")} title={t("settings.categories")} value={value} options={flat} onChange={onChange} placeholder={t("settings.categories")} />
     </div>
     <div className="settings-navigation-links">
-      {options.map((option) => <button key={option.value} type="button" className="settings-btn"
-        aria-current={option.value === value ? "location" : undefined}
-        onClick={() => onChange(option.value)}>{option.label}</button>)}
+      {groups.map((group) => <div key={group.label} className="settings-navigation-group" role="group" aria-label={group.label}>
+        <div className="settings-navigation-group-title">{group.label}</div>
+        {group.entries.map((entry) => <button key={entry.value} type="button" className="settings-btn"
+          aria-current={entry.value === value ? "location" : undefined}
+          onClick={() => onChange(entry.value)}>
+          {entry.label}
+          {entry.hits && entry.hits.length > 0 && <span className="settings-navigation-hit">{entry.hits.join(" · ")}</span>}
+        </button>)}
+      </div>)}
+      {flat.length === 0 && <div className="settings-empty">{t("settings.searchNoMatch")}</div>}
     </div>
   </nav>;
 }

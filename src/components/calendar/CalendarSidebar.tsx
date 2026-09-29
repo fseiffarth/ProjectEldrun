@@ -374,8 +374,8 @@ export function CalendarSidebar({
               </span>
             )}
 
-            {/* Reminders on/off for this calendar. Shown on hover while on, and
-                always while off; the header's own bell, struck through when off — a mute nobody can see is a missed meeting. */}
+            {/* Reminders on/off for this calendar. Always shown, on or off; the
+                header's own bell, struck through when off — a mute nobody can see is a missed meeting. */}
             <button
               className={`cal-link-btn cal-list-refresh cal-list-alerts${cal.alerts_off ? " cal-list-alerts-off" : ""}`}
               aria-pressed={!cal.alerts_off}

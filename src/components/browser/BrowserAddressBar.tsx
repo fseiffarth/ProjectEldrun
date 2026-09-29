@@ -4,6 +4,7 @@ import { parseAddressInput, type AddressCommit } from "../../lib/linkTarget";
 import { useT } from "../../lib/i18n";
 import type { SecurityState } from "../../types/browser";
 import { BrowserSecurityChip } from "./BrowserSecurityChip";
+import { WarningIcon } from "../common/icons/Icon";
 
 /**
  * The address field — **a security control, not a text field**.
@@ -164,7 +165,7 @@ export function BrowserAddressBar({
 
       {parts.userinfo && !editing && (
         <span className="browser-address-flag" title={t("browser.userinfoWarningHelp")}>
-          {t("browser.userinfoWarning")}
+          <WarningIcon /> {t("browser.userinfoWarning")}
         </span>
       )}
       {security?.punycode_warning && !editing && (

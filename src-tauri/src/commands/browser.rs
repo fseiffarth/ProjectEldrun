@@ -261,7 +261,7 @@ pub async fn browser_open_live(app: AppHandle, url: String) -> Result<LiveWindow
 /// the sense that a failed hook install leaves the engine's default in place,
 /// which is a *prompt*, never a silent grant.
 #[cfg(target_os = "windows")]
-fn deny_all_permissions(win: &tauri::WebviewWindow) {
+pub(crate) fn deny_all_permissions(win: &tauri::WebviewWindow) {
     use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PERMISSION_STATE_DENY;
     use webview2_com::PermissionRequestedEventHandler;
 
@@ -290,7 +290,7 @@ fn deny_all_permissions(win: &tauri::WebviewWindow) {
 /// WKWebView asks its UI delegate, and wry's delegate implements no media/
 /// geolocation grant, so the request is denied there too. Nothing to install.
 #[cfg(not(target_os = "windows"))]
-fn deny_all_permissions(win: &tauri::WebviewWindow) {
+pub(crate) fn deny_all_permissions(win: &tauri::WebviewWindow) {
     let _ = win;
 }
 

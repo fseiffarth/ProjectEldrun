@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { invokeTrusted } from "../../lib/execTrust";
 import { GitHistory } from "./GitHistory";
 import { GitChangeTree, type ChangeScope } from "./GitChangeTree";
+import { GitPushProposals } from "../agents/GitPushMcp";
 import { AlertsSection } from "./AlertsSection";
 import {
   FileSourceSwitch,
@@ -15,7 +17,6 @@ import { RunHostPicker } from "../tabs/TabLocalityBadges";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
-import { isTrashProject } from "../../lib/projects/trashProject";
 import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useSyncStore, amberPaths, localNewPaths } from "../../stores/remote/sync";
@@ -23,7 +24,7 @@ import { confirmSyncTransfer } from "../../stores/remote/syncConfirm";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
-import { resolveLocalMirror, type FilesPanelView, type ProjectEntry } from "../../types";
+import { resolveLocalMirror, type FilesPanelView, type GitReleasePreview, type ProjectEntry } from "../../types";
 import { fmtModified, type SortKey } from "../../lib/viewers/fileUtils";
 import {
   readGitBarSnapshot,
@@ -78,13 +79,16 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { RemarksPane } from "./RemarksPane";
-import { CommentIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
+import { ArrowDownIcon, ArrowUpIcon, CheckIcon, CommentIcon, GearIcon, HexagonIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** How long the pointer must rest on a session row before its stats card opens
  *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
  *  long enough that a mouse merely passing over the list never triggers it. */
 const TOOLTIP_DWELL_MS = 400;
 const MOBILE_STATUS_POLL_MS = 15_000;
+/** Git view re-read cadence: nothing watches the repo while that view shows. */
+const GIT_VIEW_POLL_MS = 5_000;
 
 interface MobileHostStatus {
   running: boolean;
@@ -452,8 +456,7 @@ export function ProjectFilesView({
     && !!project
     && !project.remote
     && !project.sandbox?.enabled
-    && !project.vm?.enabled
-    && !isTrashProject(project);
+    && !project.vm?.enabled;
   const [mobileHostConnected, setMobileHostConnected] = useState(false);
   const [mobileAccessBusy, setMobileAccessBusy] = useState(false);
   const [mobileAccessError, setMobileAccessError] = useState<string | null>(null);
@@ -1205,6 +1208,42 @@ export function ProjectFilesView({
     }
   }, [active, effectiveGitRoot, remoteBlocked]);
 
+  // The counts are one `git status` reading; nothing above re-reads them when
+  // the repo moves under the view (an agent's or a terminal's add/commit/
+  // checkout), so a bar read mid-edit went on offering "Add 163" after the
+  // tree was clean. Follow the file tree's `fs-change` (its watch covers the
+  // repo's index/HEAD/refs, `fs_watch.rs`), and in the Git view — which mounts
+  // no tree, and must not steal the backend's single watch slot from one shown
+  // elsewhere — re-read on entry and on a slow poll while it is on screen.
+  useEffect(() => {
+    if (!active || !effectiveGitRoot || remoteBlocked) return;
+    const root = effectiveGitRoot;
+    const local = !project?.remote;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    if (local) {
+      void listen("fs-change", () => refreshGit(root)).then((un) => {
+        if (cancelled) un();
+        else unlisten = un;
+      });
+    }
+    let poll: ReturnType<typeof setInterval> | null = null;
+    if (view === "git") {
+      refreshGit(root);
+      if (local) {
+        poll = setInterval(() => {
+          if (document.visibilityState === "visible") refreshGit(root);
+        }, GIT_VIEW_POLL_MS);
+      }
+    }
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      if (poll) clearInterval(poll);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, effectiveGitRoot, remoteBlocked, project?.remote, view]);
+
   // The gear dialog belongs to the project it was opened on; a project switch
   // reloads the filters under it, so close it rather than let it re-target.
   useEffect(() => {
@@ -1274,6 +1313,53 @@ export function ProjectFilesView({
     }
   };
 
+  // Release: tag the branch's pushed tip and push only that tag
+  // (`services::git_release`). The dialog opens on the backend's suggestion;
+  // anything that blocks a release right now (push first, tag exists) is
+  // said instead of offered.
+  const handleRelease = async () => {
+    if (!effectiveGitRoot || onNestedRepo) return;
+    setGitBusy(true);
+    setGitError(null);
+    let preview: GitReleasePreview;
+    try {
+      preview = await invokeTrusted<GitReleasePreview>("git_release_preview", { projectDir: effectiveGitRoot, projectId: projectId ?? null });
+    } catch (e) {
+      setGitError(String(e));
+      setGitBusy(false);
+      return;
+    }
+    setGitBusy(false);
+    if (preview.problem && preview.category !== "tag_exists") {
+      await showMessage({ title: t("projectFilesView.releaseBlockedTitle"), body: preview.problem, error: true });
+      return;
+    }
+    let done = "";
+    const tag = await promptText({
+      title: <>{t("projectFilesView.releaseDialogTitle")} <UntestedTag id="gitRelease" /></>,
+      body: [
+        t("projectFilesView.releaseBody", {
+          sha: preview.head?.slice(0, 7) ?? "",
+          subject: preview.subject?.replace(/^\S+\s/, "") ?? "",
+          branch: preview.branch ?? "",
+          url: preview.url ?? "",
+        }),
+        preview.source ? t("projectFilesView.releaseSource", { file: preview.source }) : t("projectFilesView.releaseCounted"),
+        preview.problem ?? "",
+      ].filter(Boolean).join("\n\n"),
+      label: t("projectFilesView.releaseLabel"),
+      initial: preview.suggested,
+      confirmLabel: t("projectFilesView.releaseConfirm"),
+      validate: (value) => (/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(value.trim()) ? null : t("projectFilesView.releaseInvalid")),
+    }, async (value) => {
+      done = await invokeTrusted<string>("git_release_tag", { projectDir: effectiveGitRoot, projectId: projectId ?? null, tag: value.trim() });
+    });
+    if (tag !== null && done) {
+      refreshGit(effectiveGitRoot);
+      await showMessage({ title: t("projectFilesView.releaseDoneTitle"), body: done });
+    }
+  };
+
   // Keep pending Git work visible from the Files view without keeping the
   // action controls in a separate header row. The colour matches the next
   // actionable step: add, then commit, then push.
@@ -1329,13 +1415,17 @@ export function ProjectFilesView({
           // the one sentence saying this folder is the scratch area.
           title={isRootScope ? `${projectDir}\n${t("projectFilesView.rootScopeTitle")}` : undefined}
         >
-          {activeBox
-            ? `▣ ${activeBox.name}`
-            : project
-              ? project.name
-              : isRootScope
-                ? `✦ ${t("projectFilesView.rootScopeName")}`
-                : t("projectFilesView.filesFallbackName")}
+          {activeBox ? (
+            <>
+              <HexagonIcon /> {activeBox.name}
+            </>
+          ) : project ? (
+            project.name
+          ) : isRootScope ? (
+            `✦ ${t("projectFilesView.rootScopeName")}`
+          ) : (
+            t("projectFilesView.filesFallbackName")
+          )}
         </span>
         {isRootScope && <UntestedTag id="projectFilesView.1" />}
         {!activeBox && project && (
@@ -1403,9 +1493,7 @@ export function ProjectFilesView({
             <MobileAccessIcon on={mobileAccessOn} />
           </button>
         )}
-        {mobileAccessError && (
-          <div className="side-panel-mobile-access-error" role="alert">{mobileAccessError}</div>
-        )}
+        {mobileAccessError && <ErrorNote className="side-panel-mobile-access-error" role="alert" error={mobileAccessError} />}
         {sshTagMenu && projectId && (
           <ContextMenuPortal
             x={sshTagMenu.x}
@@ -1583,7 +1671,7 @@ export function ProjectFilesView({
             onClick={() => setView(view === "jobs" ? "files" : "jobs")}
             title={t("projectFilesView.slurmJobsTitle", { count: jobRows.length })}
           >
-            ⚙ {jobRows.length > 0 && <span className="side-panel-orange-count">{jobRows.length}</span>}
+            <GearIcon /> {jobRows.length > 0 && <span className="side-panel-orange-count">{jobRows.length}</span>}
           </button>
         )}
         {!activeBox && remarksEnabled && projectId && (
@@ -1635,7 +1723,7 @@ export function ProjectFilesView({
             }}
             title={t("projectFilesView.importTitle")}
           >
-            ⬇
+            <ArrowDownIcon />
           </button>
         )}
         {importMenu && (
@@ -1700,7 +1788,7 @@ export function ProjectFilesView({
             onClick={() => setShowSettings(true)}
             title={t("projectFilesView.projectSettingsTitle")}
           >
-            ⚙
+            <GearIcon />
           </button>
         )}
       </div>
@@ -1811,7 +1899,7 @@ export function ProjectFilesView({
                   <div className="git-action git-action--commit">
                     <button className="git-action-btn git-action-btn--commit" disabled={gitBusy} onClick={handleCommitOpen} title={t("projectFilesView.commitStagedTitle", { count: gitStatus.staged })}>
                       <span data-testid="commit-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.staged }} />
-                      <span className="git-btn-glyph">✔</span><span className="git-btn-label">{t("projectFilesView.commit", { count: gitStatus.staged })}</span>
+                      <span className="git-btn-glyph"><CheckIcon /></span><span className="git-btn-label">{t("projectFilesView.commit", { count: gitStatus.staged })}</span>
                     </button>
                     <button className="git-action-toggle" disabled={gitBusy} aria-label={t("projectFilesView.showStagedFiles")} aria-expanded={openTree === "commit"} title={t("projectFilesView.showStagedFiles")} onClick={() => setOpenTree((prev) => (prev === "commit" ? null : "commit"))}>
                       {openTree === "commit" ? "▾" : "▴"}
@@ -1822,7 +1910,7 @@ export function ProjectFilesView({
                   <div className="git-action git-action--push">
                     <button className="git-action-btn git-action-btn--push" disabled={gitBusy} onClick={handlePush} title={t(unpushedCommits.length === 1 ? "projectFilesView.pushCommitOneTitle" : "projectFilesView.pushCommitManyTitle", { count: unpushedCommits.length })}>
                       <span data-testid="push-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.unpushed }} />
-                      <span className="git-btn-glyph">⬆</span><span className="git-btn-label">{t("projectFilesView.push", { count: unpushedCommits.length })}</span>
+                      <span className="git-btn-glyph"><ArrowUpIcon /></span><span className="git-btn-label">{t("projectFilesView.push", { count: unpushedCommits.length })}</span>
                     </button>
                     <button className="git-action-toggle" disabled={gitBusy} aria-label={t("projectFilesView.showUnpushedFiles")} aria-expanded={openTree === "push"} title={t("projectFilesView.showUnpushedFiles")} onClick={() => setOpenTree((prev) => (prev === "push" ? null : "push"))}>
                       {openTree === "push" ? "▾" : "▴"}
@@ -1838,13 +1926,25 @@ export function ProjectFilesView({
                     onClick={() => setPullRequest((n) => n + 1)}
                     title={t("projectFilesView.pullTitle", { count: gitStatus.behind ?? 0 })}
                   >
-                    <span className="git-btn-glyph">⬇</span><span className="git-btn-label">{t("projectFilesView.pull", { count: gitStatus.behind ?? 0 })}</span>
+                    <span className="git-btn-glyph"><ArrowDownIcon /></span><span className="git-btn-label">{t("projectFilesView.pull", { count: gitStatus.behind ?? 0 })}</span>
+                  </button>
+                )}
+                {/* Release: only once everything is pushed and nothing is
+                    incoming, on a local project's own repo, and not when the
+                    tip already carries a tag. */}
+                {!onNestedRepo && !project?.remote && gitStatus.has_remote && !gitStatus.head_tagged && unpushedCommits.length === 0 && (gitStatus.behind ?? 0) === 0 && (
+                  <button className="git-action-btn git-action-btn--release" disabled={gitBusy} onClick={() => void handleRelease()} title={t("projectFilesView.releaseTitle")}>
+                    <span className="git-btn-glyph">🏷</span><span className="git-btn-label">{t("projectFilesView.release")}</span>
+                    <UntestedTag id="gitRelease" />
                   </button>
                 )}
                 {treeScope && projectDir && <GitChangeTree projectDir={projectDir} scope={treeScope} />}
               </>
             )}
-            {gitError && <div className="git-action-error">{gitError}</div>}
+            {gitError && <ErrorNote className="git-action-error" error={gitError} />}
+            {/* An agent's push request for this project (`services::git_push_mcp`):
+                the card that approves or dismisses it, beside the user's own Push. */}
+            {!onNestedRepo && <GitPushProposals projectId={projectId} />}
           </div>
         )}
         </>
@@ -1894,7 +1994,7 @@ export function ProjectFilesView({
                       })();
                     }}
                   >
-                    ⬇
+                    <ArrowDownIcon />
                   </button>
                   <button
                     type="button"
@@ -1921,7 +2021,7 @@ export function ProjectFilesView({
                       })();
                     }}
                   >
-                    ⬆
+                    <ArrowUpIcon />
                   </button>
                 </div>
               </div>
@@ -2043,7 +2143,7 @@ export function ProjectFilesView({
                       })();
                     }}
                   >
-                    ⬇
+                    <ArrowDownIcon />
                   </button>
                   <button
                     type="button"
@@ -2066,7 +2166,7 @@ export function ProjectFilesView({
                       })();
                     }}
                   >
-                    ⬆
+                    <ArrowUpIcon />
                   </button>
                   {deleteSide && (
                     <button
@@ -2152,7 +2252,7 @@ export function ProjectFilesView({
                           })();
                         }}
                       >
-                        ⬆
+                        <ArrowUpIcon />
                       </button>
                     </div>
                   </div>
@@ -2205,7 +2305,7 @@ export function ProjectFilesView({
                             })();
                           }}
                         >
-                          ⬆
+                          <ArrowUpIcon />
                         </button>
                       </div>
                     </div>

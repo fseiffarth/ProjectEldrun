@@ -17,8 +17,9 @@ import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/act
 import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout } from "../../stores/agents/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
-import { isTrashProject } from "../../lib/projects/trashProject";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
+import { undoAgentClear } from "../../stores/agents/agentClearUndo";
+import { reopenClosedAgentTab, useClosedAgentTabsStore } from "../../stores/agents/closedAgentTabs";
 import { isTabColor } from "../../lib/theme/tabColors";
 import type { AgentUsageReport } from "../../lib/agents/agentUsage";
 import { METRIC, agentLabel, agentPromptLeaf, sub } from "../../lib/usageMetrics";
@@ -45,19 +46,33 @@ import {
 import {
   AGENT_ITEMS,
   SHELL_ITEMS,
+  buildCloudTabSpec,
+  buildSignInTabSpec,
   buildStaticTabSpec,
   customAgentToItem,
+  enabledInstalledAgentBins,
+  type BuiltInAgentStatus,
   type StaticMenuItem,
 } from "../tabs/newTabItems";
+import { worktreeAgentSpec } from "../tabs/agentWorktrees";
+import { probeLocalModelPlacement } from "../tabs/localModelGroup";
+import { listLocalDrivers, loadOllamaModel } from "../../lib/agents/localDrivers";
+import { localLaunchTabSpec, vibeLocalTabSpec } from "../../lib/agents/localTabSpec";
+import { agentWorktreeChoices, worktreeName, type GitWorktree } from "../../lib/agents/agentWorktrees";
+import { cleanCloudTask, cloudLaunch, cloudLaunchesFor } from "../../lib/agents/cloudSessions";
+import { loginIdForCmd, signInLaunch } from "../../lib/agents/signInLaunch";
 import { useI18nStore, useT } from "../../lib/i18n";
-import { resolveUse24h } from "../../lib/timeFormat";
+import { readUse24h } from "../../lib/timeFormat";
 import { finishAlert } from "../../lib/alertDone";
 import { useAlertsFeed, type AlertsFeed } from "../files/useAlertsFeed";
+import { agentTurnEdges, type AgentTurnEdge, type MobileAgentState } from "../../lib/mobileAgentTurns";
+import { freshGitDot, gitDotRows, type MobileGitDot, type MobileGitStateRow } from "../../lib/mobileGitDots";
 import {
   desktopTimeZone,
   localOccurrenceKey,
   nextScheduleOccurrence,
   scheduleSummary,
+  upcomingSchedules,
   type ScheduleRule,
   type ScheduledAgentPrompt,
 } from "../../lib/agents/agentSchedule";
@@ -69,17 +84,41 @@ interface CatalogAgent { id: string; label: string; modes: string[] }
 interface AgentTabStatus { tmux_session: string; status: "working" | "question" | "done"; model?: string; working_at?: number; done_at?: number }
 /** The same readings for an agent tab with no status: a finished turn stays
  * sorted among the finished ones on the phone after it has been read. */
-interface AgentTabTiming { tmux_session: string; working_at?: number; done_at?: number }
-interface AgentTabSchedules { tmux_session: string; total: number; enabled: number; next?: string }
+interface AgentTabTiming { tmux_session: string; model?: string; working_at?: number; done_at?: number }
 interface AgentTabPrompt { text: string; at?: string }
+/** `upcoming` carries the soonest scheduled messages, `at` desktop-local
+ * `YYYY-MM-DDTHH:MM` like `next`. */
+interface AgentTabSchedules { tmux_session: string; total: number; enabled: number; next?: string; upcoming: AgentTabPrompt[] }
 interface AgentTabPrompts { tmux_session: string; prompts: AgentTabPrompt[] }
 interface CreateRequest {
   project_id: string;
   kind: "shell" | "agent";
   agent_id?: string;
   mode?: string;
+  /** Opaque id from `launch_options`; the path stays here. */
+  worktree?: string;
+  cloud?: string;
+  task?: string;
+  /** A sign-in tab (`lib/agents/signInLaunch`): "default" or "alternate". */
+  sign_in?: string;
+  /** The agent tab (tmux name) whose CLI to sign in, in place of `agent_id`;
+   *  only the sidecar sets it. */
+  like_tab?: string;
+  /** A local-model agent: the opaque id `launch_options.local` listed, in
+   *  place of `agent_id`. */
+  local?: string;
   idempotency_key: string;
 }
+interface MobileWorktree { id: string; label: string; branch?: string; main: boolean }
+interface MobileCloudLaunch { agent_id: string; action: string; task: boolean }
+interface MobileSignInOption { agent_id: string; signed_in?: boolean; account?: string; alternate?: string }
+/** The ＋ sheet's local-model group: the model the desktop's "+" drives and
+ * the agents it offers for it. `ready` is false until the model sits on the
+ * GPU (`probeLocalModelPlacement`) — a start then loads it first. */
+interface MobileLocalAgent { id: string; label: string; caution: boolean }
+interface MobileLocalLaunch { model: string; ready: boolean; agents: MobileLocalAgent[] }
+/** One row of `agent_logins` (`services::agent_auth::LoginStatus`). */
+interface AgentLoginRow { id: string; signed_in: boolean; account: string | null; shared: boolean }
 interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; overdue?: boolean; due_today?: boolean; color?: string }
 interface TodoSubtask { id: string; title: string; done: boolean }
 interface TodoTaskInput {
@@ -127,7 +166,7 @@ interface MobileCalendarEvent {
   status?: string;
   recurring: boolean;
 }
-interface MobileCalendarInfo { id: string; name: string; color: string; visible: boolean; readonly: boolean; source_url?: string; caldav: boolean }
+interface MobileCalendarInfo { id: string; name: string; color: string; visible: boolean; readonly: boolean; subscribed: boolean; caldav: boolean }
 interface MobileCalendar { month: string; week_start: 0 | 1; calendars: MobileCalendarInfo[]; events: MobileCalendarEvent[]; truncated: boolean }
 interface MobileCalendarEventInput { calendar_id: string; start: string; end: string; all_day: boolean; title: string; location: string; notes: string; conference: string; category: string; status: string }
 type CalendarAction =
@@ -156,6 +195,8 @@ type TodoAction =
   | { type: "column_rename"; column_id: string; name: string }
   | { type: "column_move"; column_id: string; delta: -1 | 1 }
   | { type: "column_delete"; column_id: string };
+/** `error` is a fixed code (`AgentUsageReport.code`), never the CLI's own
+ * words: its stderr names paths on this machine. */
 interface MobileAgentUsage { label: string; supported: boolean; raw?: string; error?: string; cached: boolean }
 interface MobileAgentTally { prompts: number; worked_s: number; decisions: number; done: number }
 interface MobileAgentStatus {
@@ -172,7 +213,7 @@ interface MobileAgentTranscript {
   reason?: string;
   version?: string;
   unchanged?: boolean;
-  entries: { kind: string; text: string; at?: string; cut?: boolean }[];
+  entries: { kind: string; text: string; at?: string; cut?: boolean; subagent?: string; role?: string }[];
   truncated: boolean;
   /** Codex's context and rate-limit figures, passed through untouched. */
   usage?: { contextLeft?: number; session?: { used: number; resetsAt?: number }; week?: { used: number; resetsAt?: number } };
@@ -191,8 +232,10 @@ type PromptMutation =
 type DesktopRequest =
 | { type: "catalog"; request_id: string; project_id?: string }
   | { type: "activity"; request_id: string }
+  | { type: "git_states"; request_id: string }
   | { type: "activate"; request_id: string; project_id: string }
   | { type: "create"; request_id: string; request: CreateRequest }
+  | { type: "launch_options"; request_id: string; project_id: string }
   | { type: "todo"; request_id: string }
   | { type: "alerts"; request_id: string }
   | { type: "alert_resolve"; request_id: string; alert_id: string }
@@ -210,20 +253,24 @@ type DesktopRequest =
   | { type: "color_tab"; request_id: string; project_id: string; tmux_session: string; color?: string | null }
   | { type: "reorder_tab"; request_id: string; project_id: string; tmux_session: string; anchor_tmux_session: string; place: "before" | "after" }
   | { type: "close_tab"; request_id: string; project_id: string; tmux_session: string }
+  | { type: "reopen_tab"; request_id: string; project_id: string; closed_id?: string | null }
   | { type: "prompts"; request_id: string; project_id: string }
   | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
   | { type: "agent_status"; request_id: string; project_id: string; tmux_session: string; refresh: boolean }
-  | { type: "agent_transcript"; request_id: string; project_id: string; tmux_session: string; version?: string | null; limit?: number | null }
+  | { type: "agent_transcript"; request_id: string; project_id: string; tmux_session: string; subagent?: string | null; version?: string | null; limit?: number | null }
   | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_input"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_prompt"; request_id: string; project_id: string; tmux_session: string; message: string }
+  | { type: "undo_clear"; request_id: string; project_id: string; tmux_session: string }
   | { type: "desktop_images"; request_id: string; project_id: string }
   | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string };
 type DesktopResponse =
-| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[]; prompts: AgentTabPrompts[]; timings: AgentTabTiming[] }
+| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[]; prompts: AgentTabPrompts[]; timings: AgentTabTiming[]; closed: ClosedAgentTabRow[]; git?: MobileGitDot }
   | { status: "activity"; statuses: AgentTabStatus[]; prompts: AgentTabPrompts[] }
+  | { status: "git_states"; states: MobileGitStateRow[] }
   | { status: "activated" }
   | { status: "created"; tmux_session: string }
+  | { status: "launch_options"; worktrees: MobileWorktree[]; cloud: MobileCloudLaunch[]; sign_in: MobileSignInOption[]; local?: MobileLocalLaunch }
   | { status: "todo"; board: TodoBoard }
   | { status: "alerts"; alerts: MobileAlerts }
   | { status: "calendar"; calendar: MobileCalendar }
@@ -240,6 +287,10 @@ type DesktopResponse =
   | { status: "desktop_images"; images: DesktopImage[] }
   | { status: "attached"; attachment: InboxAttachment }
   | { status: "error"; code: string; message: string };
+
+/** One agent tab closed in the scope, as the phone's "Recently closed" row
+ * shows it: the opaque id minted at close, never the session id. */
+interface ClosedAgentTabRow { id: string; label: string; agent: string; closed_at: number }
 
 /** One image the desktop offers the phone's composer — an opaque id and a
  * folder label, never a path (`services::desktop_images`). */
@@ -290,15 +341,14 @@ async function agentChoices(): Promise<CatalogChoice[]> {
 
 /** The one gate every bridge handler applies before it touches a project: the
  * per-project Mobile switch is on, and the project is none of the trust tiers
- * the sidecar deliberately never reaches (remote, sandboxed, VM). Trash is the
- * one sandboxed project that stays reachable, exactly as it is on the desktop. */
+ * the sidecar deliberately never reaches (remote, sandboxed, VM). */
 function mobileProject(projectId: string | undefined) {
   if (!projectId) return undefined;
   const project = useProjectsStore.getState().projects.find((entry) => entry.id === projectId);
   if (
     !project
     || project.remote
-    || (project.sandbox?.enabled && !isTrashProject(project))
+    || project.sandbox?.enabled
     || project.vm?.enabled
     || !project.eldrun_mobile_access
   ) {
@@ -325,7 +375,7 @@ interface MobileScope {
   /** The project.json a persist exports to; "" for a box, whose layout lives
    *  in the state dir only (the tab store's own rule for box scopes). */
   localFile: string;
-  /** The project behind a project scope, for the rules only Trash has. */
+  /** The project behind a project scope. */
   project?: ProjectEntry;
 }
 
@@ -424,22 +474,70 @@ function mobileAgentState(ptyId: string): "working" | "question" | "done" | "idl
   return "idle";
 }
 
+/**
+ * Every phone-reachable agent tab's state, by tmux session — the snapshot the
+ * push edges are found between. Root's tabs are included on its switch alone:
+ * `mobileRootScope`'s review probe is a backend call, too costly per activity
+ * change, and the sidecar's catalog (`discovery::root_open`) is what decides
+ * whether a notice names a root tab at all.
+ */
+/** The scopes whose agent tabs a phone can reach, and so hear about. */
+function agentTurnScopes(): string[] {
+  const scopes = [
+    ...useProjectsStore.getState().projects.flatMap((entry) => mobileScope(entry.id) ?? []),
+    ...useBoxesStore.getState().boxes.flatMap((entry) => mobileScope(boxScopeId(entry.id)) ?? []),
+  ].map((scope) => scope.id);
+  if (useSettingsStore.getState().settings?.eldrun_mobile_host?.root_access === true) scopes.push(ROOT_SCOPE);
+  return scopes;
+}
+
+function agentTurnSnapshot(): Map<string, MobileAgentState> {
+  const tabsByScope = useTabsStore.getState().tabsByScope;
+  const snapshot = new Map<string, MobileAgentState>();
+  for (const scopeId of agentTurnScopes()) {
+    for (const tab of tabsByScope[scopeId] ?? []) {
+      if (isAgentKind(tab.kind) && tab.tmuxSession) snapshot.set(tab.tmuxSession, mobileAgentState(`${scopeId}:${tab.key}`));
+    }
+  }
+  return snapshot;
+}
+
+/** How long activity changes are gathered before one comparison. Short
+ * enough that a question reaches the phone at once; long enough that a burst
+ * of output does not walk every tab of every scope per chunk. */
+const AGENT_TURN_SETTLE_MS = 500;
+
+/** The model tag a phone card shows for `tab`, with both of its sources asked
+ * to re-read for the next poll. A local-model tab whose session names no model
+ * says the one it was started on. */
+function mobileModelTag(projectId: string, tab: TabEntry): string | undefined {
+  const models = useAgentModelsStore.getState();
+  void models.refresh(projectId, tab);
+  void models.refreshScreen(projectId, tab);
+  return agentTabModelTag(projectId, tab, models.byTab, models.screenByTab)
+    ?? (tab.kind === "local_agent" ? tab.env?.ELDRUN_LOCAL_MODEL : undefined);
+}
+
+/** An agent tab as the phone counts one: a local-model tab is one too — the
+ * catalog lists it as `agent` (`services::mobile_control::discovery`). */
+function isAgentKind(kind: TabEntry["kind"]): boolean {
+  return kind === "agent" || kind === "local_agent";
+}
+
 function projectAgentStatuses(projectId: string): AgentTabStatus[] {
   const activity = useActivityStore.getState();
-  const models = useAgentModelsStore.getState();
   return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
-    if (tab.kind !== "agent" || !tab.tmuxSession) return [];
+    if (!isAgentKind(tab.kind) || !tab.tmuxSession) return [];
     const ptyId = `${projectId}:${tab.key}`;
     const state = mobileAgentState(ptyId);
     if (state === "idle") return [];
     const status: AgentTabStatus["status"] = state;
     // The phone sorts by these and tags the row with the model; the answer is
     // whatever the desktop knows at this poll (the model store throttles its
-    // own re-read), so the phone can be one poll behind, never wrong. The
-    // model is read off the pane first, which owes nothing to that throttle.
-    void models.refresh(projectId, tab);
+    // own re-reads), so the phone can be one poll behind, never wrong. The
+    // model is read off the live tmux pane first (`agentTabModelTag`).
     const row: AgentTabStatus = { tmux_session: tab.tmuxSession, status };
-    const model = agentTabModelTag(projectId, tab, models.byTab);
+    const model = mobileModelTag(projectId, tab);
     if (model) row.model = model;
     const workingAt = status === "working" ? Date.now() : activity.lastWorkingByTab[ptyId];
     if (workingAt !== undefined) row.working_at = workingAt;
@@ -451,19 +549,22 @@ function projectAgentStatuses(projectId: string): AgentTabStatus[] {
 
 /** Timings of the agent tabs `projectAgentStatuses` leaves out (a quiet or
  * already-read tab), so the phone's "last working" sort keeps a read turn in
- * its place among the finished ones instead of dropping it to its tab-bar spot. */
+ * its place among the finished ones instead of dropping it to its tab-bar spot
+ * — and their model, so a quiet card is tagged like a busy one. */
 function projectAgentTimings(projectId: string): AgentTabTiming[] {
   const activity = useActivityStore.getState();
   return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
-    if (tab.kind !== "agent" || !tab.tmuxSession) return [];
+    if (!isAgentKind(tab.kind) || !tab.tmuxSession) return [];
     const ptyId = `${projectId}:${tab.key}`;
     if (mobileAgentState(ptyId) !== "idle") return [];
     const row: AgentTabTiming = { tmux_session: tab.tmuxSession };
+    const model = mobileModelTag(projectId, tab);
+    if (model) row.model = model;
     const workingAt = activity.lastWorkingByTab[ptyId];
     if (workingAt !== undefined) row.working_at = workingAt;
     const doneAt = activity.lastDoneByTab[ptyId];
     if (doneAt !== undefined) row.done_at = doneAt;
-    return row.working_at === undefined && row.done_at === undefined ? [] : [row];
+    return row.model === undefined && row.working_at === undefined && row.done_at === undefined ? [] : [row];
   });
 }
 
@@ -552,29 +653,61 @@ function mergePromptRows(recent: readonly { text: string; at: string }[], sent: 
 function projectAgentPrompts(projectId: string): AgentTabPrompts[] {
   const models = useAgentModelsStore.getState();
   return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
-    if (tab.kind !== "agent" || !tab.tmuxSession) return [];
+    if (!isAgentKind(tab.kind) || !tab.tmuxSession) return [];
     void models.refresh(projectId, tab);
-    const ptyId = `${projectId}:${tab.key}`;
-    const recent = models.recentByTab[ptyId] ?? [];
-    // An agent whose transcript is not read (OpenCode, Gemini, …) is known to
-    // have been asked what Eldrun itself sent it: the composers here and on the
-    // phone and the schedules all record into the prompt history.
-    const sent = historyPromptsOf(projectId, tab);
-    // Last, the prompt off the pane's own screen (`lib/agents/prompt/echo`); it
-    // carries no time, and a row without one is honest about that rather than
-    // inventing the read's. Not for OpenCode: its full-screen TUI has no prompt
-    // echo, and the reader took its panels for prompts.
-    const fallback = tab.cmd === "opencode" ? undefined : models.promptByTab[ptyId];
-    const promptTail = mergePromptRows(recent, sent);
-    const prompts: AgentTabPrompt[] = promptTail.length
-      ? promptTail
-      : sent.length
-        ? sent
-        : fallback
-          ? [{ text: fallback.slice(0, MOBILE_PROMPT_CHARS) }]
-          : [];
+    const prompts = tabPromptRows(projectId, tab);
     return prompts.length ? [{ tmux_session: tab.tmuxSession, prompts }] : [];
   });
+}
+
+/** One agent tab's prompt tail, newest last, from what the model store holds
+ * now — the caller decides whether to have it re-read first. */
+function tabPromptRows(projectId: string, tab: TabEntry): AgentTabPrompt[] {
+  const models = useAgentModelsStore.getState();
+  const ptyId = `${projectId}:${tab.key}`;
+  const recent = models.recentByTab[ptyId] ?? [];
+  // An agent whose transcript is not read (OpenCode, Gemini, …) is known to
+  // have been asked what Eldrun itself sent it: the composers here and on the
+  // phone and the schedules all record into the prompt history.
+  const sent = historyPromptsOf(projectId, tab);
+  // Last, the prompt off the pane's own screen (`lib/agents/prompt/echo`); it
+  // carries no time, and a row without one is honest about that rather than
+  // inventing the read's. Not for OpenCode: its full-screen TUI has no prompt
+  // echo, and the reader took its panels for prompts.
+  const fallback = tab.cmd === "opencode" ? undefined : models.promptByTab[ptyId];
+  const promptTail = mergePromptRows(recent, sent);
+  return promptTail.length
+    ? promptTail
+    : sent.length
+      ? sent
+      : fallback
+        ? [{ text: fallback.slice(0, MOBILE_PROMPT_CHARS) }]
+        : [];
+}
+
+/** The prompt the turn that just finished in `tmuxSession` answered, read
+ * fresh: the store's 10s floor could still hold the turn before a quick one. */
+async function finishedTurnPrompt(tmuxSession: string): Promise<string | undefined> {
+  const found = agentTurnScopes().flatMap((scopeId) =>
+    (useTabsStore.getState().tabsByScope[scopeId] ?? []).flatMap((tab) =>
+      isAgentKind(tab.kind) && tab.tmuxSession === tmuxSession ? [{ scopeId, tab }] : []))[0];
+  if (!found) return undefined;
+  await useAgentModelsStore.getState().refresh(found.scopeId, found.tab, true).catch(() => undefined);
+  const rows = tabPromptRows(found.scopeId, found.tab);
+  return rows[rows.length - 1]?.text;
+}
+
+/** Tell the sidecar about one turn edge. A finished turn carries its prompt;
+ * a backend or sidecar that predates the field refuses the request, and is
+ * told the bare edge instead (exported for tests). */
+export async function reportAgentTurn(edge: AgentTurnEdge): Promise<void> {
+  const send = (prompt?: string) => invoke<{ status?: string }>("mobile_admin", {
+    request: { type: "agent_turn", tmux_session: edge.tmuxSession, status: edge.status, ...(prompt ? { prompt } : {}) },
+  });
+  const prompt = edge.status === "done" ? await finishedTurnPrompt(edge.tmuxSession) : undefined;
+  if (!prompt) return void (await send());
+  const answer = await send(prompt).catch(() => undefined);
+  if (answer?.status !== "ok") await send();
 }
 
 function agentPrompts(projectId?: string): AgentTabPrompts[] {
@@ -586,6 +719,9 @@ function allAgentPrompts(): AgentTabPrompts[] {
   return allMobileScopes().flatMap((scope) => projectAgentPrompts(scope.id));
 }
 
+/** How many upcoming scheduled prompts a phone tab card lists. */
+const MAX_UPCOMING_SCHEDULES = 3;
+
 /** Each agent tab's scheduled-prompt summary, computed here against the desktop
  * clock the way the Agents view computes the line under a tab. It rides with the
  * catalog because the phone's project overview shows one line per tab: asking
@@ -594,7 +730,7 @@ async function agentScheduleSummaries(projectId?: string): Promise<AgentTabSched
   const scope = mobileScope(projectId);
   if (!scope) return [];
   const targets = (useTabsStore.getState().tabsByScope[scope.id] ?? []).flatMap((tab) =>
-    tab.kind === "agent" && tab.tmuxSession && tab.scheduleTargetId
+    isAgentKind(tab.kind) && tab.tmuxSession && tab.scheduleTargetId
       ? [{ tmux: tab.tmuxSession, target: tab.scheduleTargetId }]
       : [],
   );
@@ -610,6 +746,8 @@ async function agentScheduleSummaries(projectId?: string): Promise<AgentTabSched
       total: summary.total,
       enabled: summary.enabled,
       next: summary.next ? localOccurrenceKey(summary.next) : undefined,
+      upcoming: upcomingSchedules(schedules, now, MAX_UPCOMING_SCHEDULES)
+        .map(({ message, at }) => ({ text: message, at: localOccurrenceKey(at) })),
     };
   }));
 }
@@ -624,17 +762,47 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
   // The new tab must be in the *shown* scope to get a terminal at all, so the
   // desktop goes there first — the project's activation, or the box's open.
   await enterScope(scope);
-  const project = scope.project;
   const requestHash = await invoke<string>("mobile_opaque_id", {
     domain: "request",
     value: request.idempotency_key,
   });
 
   let spec: Omit<TabEntry, "key">;
-  if (request.kind === "shell") {
-    if (project && isTrashProject(project)) {
-      return { status: "error", code: "invalid_request", message: "Trash accepts agent tabs only" };
+  if (request.local) {
+    if (request.kind !== "agent" || request.agent_id || request.mode || request.worktree || request.cloud || request.sign_in) {
+      return { status: "error", code: "invalid_request", message: "A local-model agent names nothing else" };
     }
+    const local = await localChoices(scope);
+    const choice = local?.choices.find((entry) => entry.public.id === request.local);
+    if (!local || !choice) return { status: "error", code: "unknown_agent", message: "Local model agent is unavailable" };
+    try {
+      spec = choice.driver
+        ? await localLaunchTabSpec(scope.id, choice.driver, choice.public.label, local.model, cwd)
+        : await vibeLocalTabSpec(scope.id, local.model, cwd);
+    } catch (error) {
+      return { status: "error", code: "launch_failed", message: String(error) };
+    }
+    // The desktop "+" offers its agents only once the model is on the GPU;
+    // the phone may start one earlier, so the load starts with it and the
+    // first answer waits for it rather than crawling on a CPU copy.
+    if (!local.ready) void loadOllamaModel(local.model, "gpu").catch(() => {});
+  } else if (request.sign_in) {
+    // Built-ins only, as for cloud: a custom agent's login is not ours to
+    // guess. The CLI is the phone's pick, or the one the named tab runs.
+    let item: StaticMenuItem | undefined;
+    if (request.like_tab) {
+      const tab = (useTabsStore.getState().tabsByScope[scope.id] ?? [])
+        .find((entry) => entry.tmuxSession === request.like_tab && entry.kind === "agent");
+      if (!tab) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
+      item = AGENT_ITEMS.find((entry) => entry.cmd === tab.cmd);
+    } else {
+      const choice = (await agentChoices()).find((entry) => entry.public.id === request.agent_id);
+      if (!choice) return { status: "error", code: "unknown_agent", message: "Agent is unavailable" };
+      item = AGENT_ITEMS.includes(choice.item) ? choice.item : undefined;
+    }
+    if (!item) return { status: "error", code: "unsupported_sign_in", message: "Sign-in is unavailable for this agent" };
+    spec = buildSignInTabSpec(item, signInLaunch(item.cmd, request.sign_in === "alternate"), cwd, t);
+  } else if (request.kind === "shell") {
     if (request.agent_id || request.mode) {
       return { status: "error", code: "invalid_request", message: "Shell requests cannot name an agent or mode" };
     }
@@ -643,13 +811,27 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
     const choices = await agentChoices();
     const choice = choices.find((entry) => entry.public.id === request.agent_id);
     if (!choice) return { status: "error", code: "unknown_agent", message: "Agent is unavailable" };
-    if (project && isTrashProject(project) && !AGENT_ITEMS.some((item) => item.cmd === choice.item.cmd)) {
-      return { status: "error", code: "unknown_agent", message: "Trash accepts built-in agent CLIs only" };
-    }
     if (request.mode && !choice.public.modes.includes(request.mode)) {
       return { status: "error", code: "unsupported_mode", message: "Agent mode is unavailable" };
     }
-    spec = buildStaticTabSpec(choice.item, cwd, scope.name, t);
+    if (request.cloud) {
+      // Built-ins only: a custom agent's own args are not ours to extend.
+      const launch = scope.project && AGENT_ITEMS.includes(choice.item)
+        ? cloudLaunch(choice.item.cmd, request.cloud)
+        : undefined;
+      if (!launch) return { status: "error", code: "unsupported_cloud", message: "Cloud session is unavailable" };
+      const task = launch.needsTask ? cleanCloudTask(request.task) : "";
+      if (task === null) return { status: "error", code: "task_required", message: "Cloud session needs a task" };
+      spec = buildCloudTabSpec(choice.item, launch, task, cwd, t);
+    } else if (request.worktree) {
+      const wt = (await worktreesOf(scope)).find((entry) => entry.id === request.worktree)?.worktree;
+      if (!wt) return { status: "error", code: "worktree_not_found", message: "Worktree is unavailable" };
+      spec = wt.is_main
+        ? buildStaticTabSpec(choice.item, cwd, scope.name, t)
+        : worktreeAgentSpec(choice.item, wt, scope.name, t);
+    } else {
+      spec = buildStaticTabSpec(choice.item, cwd, scope.name, t);
+    }
   }
   let created: TabEntry;
   try {
@@ -668,6 +850,124 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
   }
   if (scope.id === ROOT_SCOPE) useTabsStore.getState().revealTabInScope(ROOT_SCOPE, created.key);
   return { status: "created", tmux_session: created.tmuxSession };
+}
+
+/** A project scope's startable worktrees under their opaque ids — the same
+ * list the desktop "+" asks from (`agentWorktreeChoices`: empty unless a
+ * linked worktree exists). Box and root scopes have none. */
+async function worktreesOf(scope: MobileScope): Promise<{ id: string; worktree: GitWorktree }[]> {
+  if (!scope.project || !scope.cwd) return [];
+  let list: GitWorktree[] = [];
+  try {
+    list = agentWorktreeChoices(
+      (await invoke<GitWorktree[]>("git_worktree_list", { projectDir: scope.cwd, site: "mirror" })) ?? [],
+    );
+  } catch {
+    return [];
+  }
+  const named = await Promise.all(list.map(async (worktree) => {
+    try {
+      return { id: await invoke<string>("mobile_opaque_id", { domain: "worktree", value: worktree.path }), worktree };
+    } catch {
+      return null; // a path too long for an opaque id is simply not offered
+    }
+  }));
+  return named.filter((entry): entry is { id: string; worktree: GitWorktree } => entry !== null);
+}
+
+/** What the phone's ＋ can start an agent in: worktrees by opaque id and
+ * directory/branch name, and the catalog agents' cloud launches. Cloud is a
+ * project's only (it clones the project's repository). */
+async function launchOptions(projectId: string): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const worktrees = (await worktreesOf(scope)).map(({ id, worktree }) => ({
+    id,
+    label: worktree.is_main ? "" : worktreeName(worktree.path),
+    ...(worktree.branch ? { branch: worktree.branch } : {}),
+    main: worktree.is_main,
+  }));
+  const cloud = scope.project
+    ? (await agentChoices())
+        .filter((choice) => AGENT_ITEMS.includes(choice.item))
+        .flatMap((choice) => cloudLaunchesFor(choice.item.cmd).map((launch) => ({
+          agent_id: choice.public.id,
+          action: launch.action,
+          task: launch.needsTask,
+        })))
+    : [];
+  const local = await localChoices(scope);
+  return {
+    status: "launch_options",
+    worktrees,
+    cloud,
+    sign_in: await signInOptions(),
+    ...(local && local.choices.length > 0
+      ? { local: { model: local.model, ready: local.ready, agents: local.choices.map((choice) => choice.public) } }
+      : {}),
+  };
+}
+
+/** One local-model agent under its opaque id; `driver` is the
+ * `list_local_drivers` id, absent for Mistral (`vibe`). */
+interface LocalChoice { public: MobileLocalAgent; driver?: string }
+
+/**
+ * The desktop "+"'s local-model group for `scope` (`localModelMenuGroup`):
+ * the "tabs" model and the agents that can drive it — Mistral when installed
+ * and enabled, then every available driver. Not in the root console, whose
+ * agent tabs are never tmux-wrapped and so could not be attached to.
+ */
+async function localChoices(scope: MobileScope): Promise<{ model: string; ready: boolean; choices: LocalChoice[] } | null> {
+  if (scope.id === ROOT_SCOPE) return null;
+  const settings = useSettingsStore.getState().settings;
+  const model = settings?.ollama_roles?.tabs ?? settings?.ollama_model;
+  if (!model) return null;
+  const [drivers, statuses, placement] = await Promise.all([
+    listLocalDrivers(model).catch(() => []),
+    invoke<(BuiltInAgentStatus & { id: string })[]>("list_agents").catch(() => []),
+    probeLocalModelPlacement(model),
+  ]);
+  const withVibe = enabledInstalledAgentBins(statuses, settings?.disabled_agents).has("vibe");
+  const rows = [
+    ...(withVibe ? [{ key: "vibe", label: "Mistral", caution: false, driver: undefined }] : []),
+    ...drivers.filter((d) => d.available).map((d) => ({ key: d.id, label: d.label, caution: d.heavy_harness, driver: d.id })),
+  ];
+  const choices = await Promise.all(rows.map(async (row) => ({
+    driver: row.driver,
+    public: {
+      // The `agent` domain, kept apart from the catalog agents' ids (bare
+      // commands) by the prefix; the two are looked up in separate lists.
+      id: await invoke<string>("mobile_opaque_id", { domain: "agent", value: `local:${row.key}` }),
+      label: row.label,
+      caution: row.caution,
+    },
+  })));
+  return { model, ready: placement === "ready", choices };
+}
+
+/** The agents the phone can open a sign-in tab for, each with the state of
+ * its shared login where Eldrun keeps one (`services::agent_auth`). Every
+ * built-in qualifies: one without a login command signs in as it starts. */
+async function signInOptions(): Promise<MobileSignInOption[]> {
+  // A login store that cannot be read leaves the states unknown, never the
+  // list — or the ＋ sheet's whole answer — empty.
+  const logins = await invoke<AgentLoginRow[] | null>("agent_logins").catch(() => null);
+  const byId = new Map((Array.isArray(logins) ? logins : []).map((row) => [row.id, row]));
+  return (await agentChoices())
+    .filter((choice) => AGENT_ITEMS.includes(choice.item))
+    .map((choice) => {
+      const login = byId.get(loginIdForCmd(choice.item.cmd));
+      const alternate = signInLaunch(choice.item.cmd).alternate?.kind;
+      return {
+        agent_id: choice.public.id,
+        ...(login?.shared ? { signed_in: login.signed_in } : {}),
+        ...(login?.shared && login.signed_in && login.account ? { account: login.account } : {}),
+        ...(alternate ? { alternate } : {}),
+      };
+    });
 }
 
 /** Make `scope` the one the desktop shows: a project is activated, a box is
@@ -757,6 +1057,40 @@ async function closeMobileTab(projectId: string, tmuxSession: string): Promise<D
   // relaunch brings it back.
   await persistScopeLayout(scope.id);
   return { status: "closed" };
+}
+
+/** The scope's closed agent tabs for the phone's "Recently closed" row — the
+ * desktop's own list (`stores/agents/closedAgentTabs`), so a tab closed on
+ * either surface can be reopened from both. Label and agent only. */
+function closedAgentTabRows(projectId?: string): ClosedAgentTabRow[] {
+  const scope = mobileScope(projectId);
+  if (!scope) return [];
+  return (useClosedAgentTabsStore.getState().byScope[scope.id] ?? []).map((closed) => ({
+    id: closed.id,
+    label: closed.tab.label,
+    agent: closed.tab.cmd,
+    closed_at: closed.closedAt,
+  }));
+}
+
+/** Reopen a closed agent tab from the phone — the newest, or the one it names —
+ * exactly as the desktop's "Reopen closed agent tab" does: back in its old
+ * place, on the resume args a restart would give it. Like a create, the scope
+ * is shown first, since only the shown scope's panes spawn a terminal. */
+async function reopenMobileTab(projectId: string, closedId?: string): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  await enterScope(scope);
+  const entry = reopenClosedAgentTab(scope.id, closedId);
+  if (!entry) return { status: "error", code: "nothing_to_reopen", message: "There is no closed tab to reopen" };
+  if (!entry.tmuxSession) {
+    return { status: "error", code: "launch_failed", message: "Persistent terminal session was not created" };
+  }
+  if (scope.id === ROOT_SCOPE) useTabsStore.getState().revealTabInScope(ROOT_SCOPE, entry.key);
+  await persistScopeLayout(scope.id);
+  return { status: "created", tmux_session: entry.tmuxSession };
 }
 
 /** Paint one tab from the phone, or clear its colour (#264).
@@ -854,12 +1188,25 @@ async function mutateSchedule(
       scheduleId: action.schedule_id,
     });
   } else {
+    // The phone edits only these three fields and never shows prefix commands.
+    // Keep commands the desktop composer attached to an existing rule; the
+    // desktop editor may still deliberately clear them by writing [].
+    const existing = action.type === "update"
+      ? (await invoke<ScheduledAgentPrompt[]>("agent_schedules_list", {
+        projectId,
+        scheduleTargetId: target,
+      })).find((schedule) => schedule.id === action.schedule_id)
+      : undefined;
+    if (action.type === "update" && !existing) {
+      return { status: "error", code: "schedule_not_found", message: "Schedule is unavailable" };
+    }
     await invoke("agent_schedule_upsert", {
       projectId,
       scheduleTargetId: target,
       schedule: {
         id: action.type === "create" ? crypto.randomUUID() : action.schedule_id,
         ...action.schedule,
+        ...(existing ? { preface: existing.preface ?? [] } : {}),
       },
     });
     void persistScopeLayout(projectId);
@@ -962,6 +1309,7 @@ async function agentStatusFor(
       label: agentLabel(leaf),
       supported: false,
       error: String(error),
+      code: "cli_failed",
       cached: false,
     })),
     invoke<{ days: Record<string, Record<string, number>> }>("usage_summary", {
@@ -979,12 +1327,22 @@ async function agentStatusFor(
       usage: {
         label: usage.label,
         supported: usage.supported,
-        raw: usage.raw,
-        error: usage.error,
+        // The panel goes as printed, unless the CLI printed a path of this
+        // machine into it — then the phone is told that, not the path.
+        raw: usage.raw && !namesLocalPath(usage.raw) ? usage.raw : undefined,
+        error: usage.raw && namesLocalPath(usage.raw)
+          ? "cli_output_withheld"
+          : usage.code ?? (usage.error ? "cli_error" : undefined),
         cached: usage.cached,
       },
     },
   };
+}
+
+/** Whether a CLI's text names a place on this machine — a home directory, a
+ * temp or system path, a Windows drive — which the phone must not be shown. */
+function namesLocalPath(text: string): boolean {
+  return /(^|[\s("'`])(?:~\/|\/(?:home|Users|tmp|var|etc|opt|usr|root|mnt|media|private)\/|[A-Za-z]:\\)/.test(text);
 }
 
 async function taskId(task: CalendarTask) {
@@ -1305,7 +1663,9 @@ async function calendarSnapshot(month: string): Promise<MobileCalendar> {
       color: boundedText(entry.color, 64).value,
       visible: entry.visible,
       readonly: entry.readonly,
-      source_url: entry.source_url ? boundedText(entry.source_url, 2_000).value : undefined,
+      // Only the fact: a feed URL routinely embeds a private token, and the
+      // phone only ever asked whether there was one.
+      subscribed: !!entry.source_url,
       caldav: !!entry.caldav_account_id,
     }))),
     truncated: occurrences.length > shown.length,
@@ -1599,8 +1959,7 @@ async function mailReply(
   const original = await mailBody(header.id, false).catch(() => null);
   const quoted = (original?.text ?? "").split("\n").map((line) => `> ${line}`).join("\n");
   const lang = useI18nStore.getState().lang;
-  const settings = useSettingsStore.getState().settings;
-  const use24h = resolveUse24h(settings?.time_format_24h, settings?.calendar_time_format_24h, lang);
+  const use24h = readUse24h();
   const intro = t("mail.quotedIntro", { date: formatMailDate(header.date, lang, use24h), sender: formatAddress(header.from) });
   try {
     const saved = await mailDraftSave({
@@ -1614,7 +1973,7 @@ async function mailReply(
       ...(header.rfc_message_id ? { in_reply_to: header.rfc_message_id } : {}),
       staged: [],
     });
-    const result = await mailDraftSend(saved.id);
+    const result = await mailDraftSend(saved.id, saved.staged.map((a) => a.staged_id));
     if (result.error) {
       return { status: "error", code: "mail_reply_failed", message: boundedText(result.error, 400).value };
     }
@@ -1662,6 +2021,26 @@ async function recordTabPrompt(projectId: string, tmuxSession: string, message: 
     sent: { tabLabel: tab.label, sessionId: tab.sessionId, agent: tab.cmd, result: "delivered" },
   }).catch(() => []);
   return { status: "seen" };
+}
+
+/** The phone's Undo after a Clear: this window brings back the conversation
+ * the tab's last `/clear` ended (`undoAgentClear` — in-session for Claude, a
+ * relaunch onto it for the other resumable agents), so the session id stays
+ * here. */
+async function undoTabClear(projectId: string, tmuxSession: string): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const tab = scheduleTargetTab(scope.id, tmuxSession);
+  if (!tab) return { status: "error", code: "tab_not_found", message: "Tab not found" };
+  const result = await undoAgentClear(scope.id, tab);
+  switch (result) {
+    case "undone": return { status: "seen" };
+    case "nothing_to_undo": return { status: "error", code: "nothing_to_undo", message: "There is no cleared conversation to bring back" };
+    case "remote_tab": return { status: "error", code: "remote_tab", message: "The tab runs on a remote host" };
+    default: return { status: "error", code: "tab_not_ready", message: "The tab is not ready for input on the desktop" };
+  }
 }
 
 /** The phone typed into this agent tab. It types into a tmux client of its own,
@@ -1713,17 +2092,23 @@ async function attachDesktopImage(projectId: string, imageId: string): Promise<D
   }
 }
 
+/** The agents whose transcript `services::agent_transcript` reads; any other
+ * family answers `unsupported` there, and so does the short-circuit below. */
+const TRANSCRIPT_AGENTS = new Set(["claude", "codex", "opencode"]);
+
 /**
  * The phone's Focus view on an agent tab: the conversation as the agent's own
  * transcript records it, read by the backend (`agent_tab_transcript`,
  * `services::agent_transcript`) for the tab's launch id — the same resolution
  * the Agents view's model tag and last-prompt line use, live id first. A tab
  * with no session id (an agent Eldrun does not resume) has no transcript to
- * name, and says so rather than answering with somebody else's.
+ * name, and says so rather than answering with somebody else's. `subagent`
+ * is the handle on one of its `agent` entries, read instead.
  */
 async function agentTranscriptFor(
   projectId: string,
   tmuxSession: string,
+  subagent: string | null | undefined,
   version: string | null | undefined,
   limit: number | null | undefined,
 ): Promise<DesktopResponse> {
@@ -1734,19 +2119,36 @@ async function agentTranscriptFor(
   const tab = scheduleTargetTab(scope.id, tmuxSession);
   if (!tab) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
   if (!tab.sessionId) {
-    return { status: "agent_transcript", transcript: { available: false, reason: "no_session", entries: [], truncated: false } };
+    // Two different answers for the phone: a family whose transcript is
+    // never read (the backend's `unsupported`, decided by the same list) hands
+    // Focus to the terminal; a tab that has no session id *yet* — every tab
+    // the phone just created, until the agent's hook records one — keeps
+    // Focus reading the screen until the session reads.
+    const reason = TRANSCRIPT_AGENTS.has(tab.cmd) ? "no_session" : "unsupported";
+    return { status: "agent_transcript", transcript: { available: false, reason, entries: [], truncated: false } };
   }
   const transcript = await invoke<MobileAgentTranscript>("agent_tab_transcript", {
     agent: tab.cmd,
     projectId: scope.id,
     // OpenCode records no session id Eldrun can follow; its session is the
-    // newest one of the folder the tab runs in.
+    // newest one of the folder the tab runs in — for a tab opened fresh rather
+    // than restored with `--continue`, the newest one begun since it launched,
+    // so a new tab is a new chat and not the folder's last conversation.
     tabDir: tab.cwd || scope.cwd,
+    since: tab.launchedAt && !tab.args?.includes("--continue") ? tab.launchedAt : null,
     sessionId: tab.sessionId,
+    subagent: subagent ?? null,
     version: version ?? null,
     limit: limit ?? null,
   }).catch((): MobileAgentTranscript => ({ available: false, reason: "read_failed", entries: [], truncated: false }));
   return { status: "agent_transcript", transcript };
+}
+
+/** The project screen's git dot (`lib/mobileGitDots`). A box or the root
+ *  console has no dot of its own. */
+async function projectGitDot(projectId: string | undefined): Promise<MobileGitDot | undefined> {
+  const project = mobileScope(projectId)?.project;
+  return project ? freshGitDot(project) : undefined;
 }
 
 async function handleRequest(
@@ -1762,10 +2164,14 @@ async function handleRequest(
       schedules: await agentScheduleSummaries(request.project_id),
       prompts: agentPrompts(request.project_id),
       timings: agentTimings(request.project_id),
+      closed: closedAgentTabRows(request.project_id),
+      git: await projectGitDot(request.project_id),
     };
     case "activity": return { status: "activity", statuses: allAgentStatuses(), prompts: allAgentPrompts() };
+    case "git_states": return { status: "git_states", states: gitDotRows(allMobileScopes().flatMap((scope) => scope.project ?? [])) };
     case "activate": return activate(request.project_id);
     case "create": return create(request.request, t);
+    case "launch_options": return launchOptions(request.project_id);
     case "todo": return { status: "todo", board: await todoSnapshot() };
     case "alerts": return { status: "alerts", alerts: await alertsSnapshot(alerts) };
     case "alert_resolve": return resolveAlertRow(alerts, request.alert_id);
@@ -1779,6 +2185,7 @@ async function handleRequest(
     case "mail_reply": return mailReadAllowed() ? mailReply(request.folder_id, request.message_id, request.offset, request.body, t) : MAIL_READ_DISABLED;
     case "rename_tab": return renameAgentTab(request.project_id, request.tmux_session, request.label);
     case "close_tab": return closeMobileTab(request.project_id, request.tmux_session);
+    case "reopen_tab": return reopenMobileTab(request.project_id, request.closed_id ?? undefined);
     case "color_tab": return colorMobileTab(request.project_id, request.tmux_session, request.color);
     case "reorder_tab": return reorderMobileTab(request.project_id, request.tmux_session, request.anchor_tmux_session, request.place);
     case "schedules": return schedulesFor(request.project_id, request.tmux_session);
@@ -1786,16 +2193,40 @@ async function handleRequest(
     case "prompts": return promptsFor(request.project_id);
     case "prompt_mutate": return mutatePrompt(request.project_id, request.action);
     case "agent_status": return agentStatusFor(request.project_id, request.tmux_session, request.refresh);
-    case "agent_transcript": return agentTranscriptFor(request.project_id, request.tmux_session, request.version, request.limit);
+    case "agent_transcript": return agentTranscriptFor(request.project_id, request.tmux_session, request.subagent, request.version, request.limit);
     case "tab_seen": return markTabSeen(request.project_id, request.tmux_session);
     case "tab_input": return markTabInput(request.project_id, request.tmux_session);
     case "tab_prompt": return recordTabPrompt(request.project_id, request.tmux_session, request.message);
+    case "undo_clear": return undoTabClear(request.project_id, request.tmux_session);
     case "desktop_images": return desktopImagesFor(request.project_id);
     case "attach_desktop_image": return attachDesktopImage(request.project_id, request.image_id);
   }
 }
 
-let mutationQueue: Promise<unknown> = Promise.resolve();
+/** Desktop mutations run one at a time — but per domain, not on one chain.
+ * The sidecar starts each request's deadline as it emits it, so a slow mail
+ * reply (60 s budget) ahead of a tab create on one shared chain made the phone
+ * read "desktop unavailable" for the create and then watch the tab appear
+ * anyway. Tabs, the board and calendar, mail, and schedules/prompts each keep
+ * their own order; nothing in one waits on another. */
+const mutationQueues = new Map<string, Promise<unknown>>();
+
+function mutationDomain(type: DesktopRequest["type"]): string | null {
+  switch (type) {
+    case "create": case "activate": case "rename_tab": case "close_tab": case "reopen_tab": case "color_tab": case "reorder_tab": return "tabs";
+    case "todo_mutate": case "alert_resolve": case "calendar_mutate": return "board";
+    case "mail_mark": case "mail_reply": return "mail";
+    case "schedule_mutate": case "prompt_mutate": return "schedules";
+    default: return null;
+  }
+}
+
+/** Queue `run` behind the last mutation of its domain (exported for tests). */
+export function enqueueMutation(domain: string, run: () => Promise<void>): Promise<void> {
+  const next = (mutationQueues.get(domain) ?? Promise.resolve()).then(run, run);
+  mutationQueues.set(domain, next);
+  return next;
+}
 
 export function MobileBridgeHost() {
   const t = useT();
@@ -1813,6 +2244,28 @@ export function MobileBridgeHost() {
   const tRef = useRef(t);
   alertsRef.current = alerts;
   tRef.current = t;
+  // Agent-turn push notices: a tab that starts waiting on an answer, or
+  // finishes a turn, is reported to the sidecar, which decides which phones
+  // hear of it. Only while the host is on — with no phone there is no one to
+  // tell, and no reason to watch.
+  useEffect(() => {
+    if (!mobileHostOn) return;
+    let last = agentTurnSnapshot();
+    let timer: number | undefined;
+    const compare = () => {
+      timer = undefined;
+      const next = agentTurnSnapshot();
+      for (const edge of agentTurnEdges(last, next)) void reportAgentTurn(edge).catch(() => undefined);
+      last = next;
+    };
+    const unsubscribe = useActivityStore.subscribe(() => {
+      timer ??= window.setTimeout(compare, AGENT_TURN_SETTLE_MS);
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [mobileHostOn]);
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -1833,11 +2286,9 @@ export function MobileBridgeHost() {
           }).catch(() => {});
         }
       };
-      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "close_tab" || request.type === "color_tab" || request.type === "reorder_tab" || request.type === "todo_mutate" || request.type === "alert_resolve" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
-        mutationQueue = mutationQueue.then(run, run);
-      } else {
-        void run();
-      }
+      const domain = mutationDomain(request.type);
+      if (domain) void enqueueMutation(domain, run);
+      else void run();
     }).then((stop) => {
       if (disposed) stop();
       else unlisten = stop;

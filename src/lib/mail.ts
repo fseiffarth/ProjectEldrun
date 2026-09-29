@@ -24,6 +24,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { stripFormatControls } from "./textSafety";
 import { formatBytes } from "./formatBytes";
+import { hashString } from "./theme/categoryColor";
 import type { TranslationKey } from "./i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../stores/settings";
@@ -39,6 +40,10 @@ import type {
   MailAuthMethod,
   MailAuthResults,
   MailBody,
+  MailContact,
+  MailContactList,
+  MailContactsImportReport,
+  MailContactsView,
   MailCryptoInfo,
   MailCryptoState,
   MailDraft,
@@ -49,6 +54,7 @@ import type {
   MailFolder,
   MailHeader,
   MailHeaderPage,
+  MailSearchPage,
   MailNewEvent,
   MailPasswordState,
   MailPreviewBlob,
@@ -177,6 +183,7 @@ export function mailHeaders(
   sort: MailSort = "date",
   desc = true,
   unreadOnly = false,
+  agentOnly = false,
 ): Promise<MailHeaderPage> {
   return invoke<MailHeaderPage>("mail_headers", {
     folderId,
@@ -186,7 +193,65 @@ export function mailHeaders(
     sort,
     desc,
     unreadOnly,
+    agentOnly,
   });
+}
+
+/**
+ * Search one folder's whole mailbox, not just the downloaded tail.
+ *
+ * A sync keeps only a folder's newest headers locally, so `mailHeaders` with
+ * a query can never match an old mail. This command asks the server first and
+ * backfills what it finds, then serves the same page shape — `remote` says
+ * whether the server was reached, and the list renders a local-only answer as
+ * one rather than letting it read as complete.
+ */
+export function mailSearch(
+  folderId: string,
+  offset: number,
+  limit: number,
+  query: string,
+  sort: MailSort = "date",
+  desc = true,
+  unreadOnly = false,
+  agentOnly = false,
+): Promise<MailSearchPage> {
+  return invoke<MailSearchPage>("mail_search", {
+    folderId,
+    query,
+    offset,
+    limit,
+    sort,
+    desc,
+    unreadOnly,
+    agentOnly,
+  });
+}
+
+// ── Marks for agents (`docs/mail_mcp_plan.md` §1, "Marked mails only") ──────
+//
+// Local, like a priority mark: a row in the store and never an IMAP keyword, so
+// "shared with an agent" reaches neither the provider nor another client. Each
+// resolves with how many rows changed.
+
+/** Mark, or with `false` unmark, messages for a contained reader agent. */
+export function mailAgentMark(messageIds: string[], marked: boolean): Promise<number> {
+  return invoke<number>("mail_agent_mark", { messageIds, marked });
+}
+
+/** Mark every message of a folder. */
+export function mailAgentMarkFolder(folderId: string): Promise<number> {
+  return invoke<number>("mail_agent_mark_folder", { folderId });
+}
+
+/** Mark every message of an account from one sender address, in any folder. */
+export function mailAgentMarkSender(accountId: string, address: string): Promise<number> {
+  return invoke<number>("mail_agent_mark_sender", { accountId, address });
+}
+
+/** The ids of an account's marked messages that are in the local index. */
+export function mailAgentMarks(accountId: string): Promise<string[]> {
+  return invoke<string[]>("mail_agent_marks", { accountId });
 }
 
 /**
@@ -394,6 +459,61 @@ export function mailFiltersApply(opts: {
   });
 }
 
+// ── Address book ─────────────────────────────────────────────────────────────
+//
+// Local only, like the filters: the sealed `contacts.json` beside the store.
+// Import and export raise the OS dialog in the backend — no path crosses here.
+
+/** The whole book: cards, lists and the collect-outgoing switch. */
+export function mailContactsGet(): Promise<MailContactsView> {
+  return invoke<MailContactsView>("mail_contacts_get");
+}
+
+/** Insert or replace one card (empty `id` = new). Rejects an invalid address
+ *  with a message naming it. */
+export function mailContactUpsert(contact: MailContact): Promise<MailContact> {
+  return invoke<MailContact>("mail_contact_upsert", { contact });
+}
+
+export function mailContactsDelete(ids: string[]): Promise<number> {
+  return invoke<number>("mail_contacts_delete", { ids });
+}
+
+export function mailContactListUpsert(list: MailContactList): Promise<MailContactList> {
+  return invoke<MailContactList>("mail_contact_list_upsert", { list });
+}
+
+export function mailContactListDelete(id: string): Promise<boolean> {
+  return invoke<boolean>("mail_contact_list_delete", { id });
+}
+
+export function mailContactsSetCollect(enabled: boolean): Promise<void> {
+  return invoke<void>("mail_contacts_set_collect", { enabled });
+}
+
+/** Pick a `.vcf`, `.ldif` or Thunderbird `abook.sqlite` (backend dialog) and
+ *  merge it into the book. */
+export function mailContactsImport(): Promise<MailContactsImportReport> {
+  return invoke<MailContactsImportReport>("mail_contacts_import");
+}
+
+/** Merge every address book of every Thunderbird profile on this machine
+ *  (read-only; Collected Addresses land in Collected). */
+export function mailContactsImportThunderbird(): Promise<MailContactsImportReport> {
+  return invoke<MailContactsImportReport>("mail_contacts_import_thunderbird");
+}
+
+/** Add the senders of all locally indexed Inbox mail as Collected cards. */
+export function mailContactsHarvestInbox(): Promise<MailContactsImportReport> {
+  return invoke<MailContactsImportReport>("mail_contacts_harvest_inbox");
+}
+
+/** Save cards as a `.vcf` (backend dialog): these ids, or every card when
+ *  empty. `null` when the dialog was cancelled, else how many were written. */
+export function mailContactsExport(ids: string[] = []): Promise<number | null> {
+  return invoke<number | null>("mail_contacts_export", { ids });
+}
+
 // ── Local-model mail assistant (Group Q, #204–#208) ──────────────────────────
 //
 // One wrapper per `mail_*` AI command, in this file's usual style. **None takes
@@ -579,10 +699,14 @@ export function mailDraftDiscard(draftId: string): Promise<void> {
  */
 export function mailDraftSend(
   draftId: string,
+  /** The attachment set the user was shown. The backend refuses the send when
+   *  the store's set differs — the reviewed set is exactly what is sent. */
+  stagedIds: string[],
   opts: { sign?: boolean; encrypt?: boolean } = {},
 ): Promise<MailSendResult> {
   return invoke<MailSendResult>("mail_draft_send", {
     draftId,
+    stagedIds,
     sign: opts.sign ?? false,
     encrypt: opts.encrypt ?? false,
   });
@@ -659,6 +783,12 @@ export function mailAttachmentPreview(
   partId: string,
 ): Promise<MailPreviewBlob> {
   return invoke<MailPreviewBlob>("mail_attachment_preview", { messageId, partId });
+}
+
+/** Bounded bytes of a file staged on a draft — the sealed outbox copy, which
+ *  is what a send attaches — for the composer's review. */
+export function mailStagedPreview(draftId: string, stagedId: string): Promise<MailPreviewBlob> {
+  return invoke<MailPreviewBlob>("mail_staged_preview", { draftId, stagedId });
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────
@@ -995,6 +1125,27 @@ export function buildMessageSrcdoc(body: {
 export function formatAddress(addr: { name?: string; address: string }): string {
   const name = stripFormatControls(addr.name ?? "").trim();
   return name && name !== addr.address ? `${name} <${addr.address}>` : addr.address;
+}
+
+/**
+ * The sender badge's colour, hashed from the **addr-spec** — never the display
+ * name. The name is attacker-chosen, so hashing it would hand a spoofer the
+ * real sender's colour along with their name; the address is the part that
+ * has to differ, so the colour differs with it. Same recipe as `autoBoxColor`
+ * (golden-angle spread, `categoryColor`'s saturation/lightness), so it sits in
+ * the app's one family of hashed hues.
+ */
+export function senderColor(address: string): string {
+  const hue = Math.round((hashString(address.trim().toLowerCase()) * 137.508) % 360);
+  return `hsl(${hue} 62% 58%)`;
+}
+
+/** The badge's letter: the first letter or digit of the display name, else of
+ *  the address, else `?`. Code-point aware, so an astral letter is not split. */
+export function senderInitial(addr: { name?: string; address: string }): string {
+  const pick = (s: string) => stripFormatControls(s).match(/[\p{L}\p{N}]/u)?.[0];
+  const ch = pick(addr.name ?? "") ?? pick(addr.address) ?? "?";
+  return ch.toLocaleUpperCase();
 }
 
 /** Remove bidi overrides, isolates and zero-width characters from display text.

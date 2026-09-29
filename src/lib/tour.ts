@@ -5,12 +5,13 @@ import type { TranslationKey } from "./i18n";
  * The guided walkthroughs: ordered, index-driven sequences of spotlight steps
  * that dim the screen and highlight one real control at a time.
  *
- * There are two. `TOUR_STEPS` — "Take a tour" — stays on this machine: root
+ * There are two, and both are run as lessons (`lib/lessons.ts`): `TOUR_STEPS`
+ * — the quick tour, first of the Basics — stays on this machine: root
  * terminal → projects → tabs → files and viewers → models → mail/calendar →
- * apps → time → settings. `ADVANCED_TOUR_STEPS` is the opt-in second pass over
- * everything that reaches another machine (SSH projects, tunnels, compute
- * hosts, containers/VMs, sessions, phone), which used to be one overloaded
- * "work on remote machines" step in the middle of the first-run tour.
+ * apps → time → settings. `ADVANCED_TOUR_STEPS` — first of the Advanced
+ * lessons — covers everything that reaches another machine (SSH projects,
+ * tunnels, compute hosts, containers/VMs, sessions, phone), which used to be
+ * one overloaded "work on remote machines" step in the middle of the tour.
  *
  * This is the deliberate bridge between the static first-run `HowToStart` modal
  * and the passive contextual `HINTS`: it reuses the same anchor-selector model
@@ -125,6 +126,16 @@ const revealFilePanel = () => window.dispatchEvent(new Event("eldrun:reveal-side
  */
 const FILE_PANEL_ANCHOR = '.side-panel.open, [data-hint-anchor="file-tree-edge"]';
 
+/** Both tours end on the gear, and both end by having the user open its menu:
+ *  the Lessons they came from — and every other walkthrough — live there. The
+ *  menu opens on hover; the gear's click opens Settings instead, where Lessons
+ *  sit under Hints & onboarding, so either outcome counts. */
+const GEAR_MENU_TASK: StepTask = {
+  promptKey: "tour.settingsTask",
+  hintKey: "tour.settingsTaskHint",
+  appear: ".global-apps-menu .project-switcher-add-menu, .settings-dialog",
+};
+
 export const TOUR_STEPS: TourStep[] = [
   {
     id: "root-terminal",
@@ -201,13 +212,6 @@ export const TOUR_STEPS: TourStep[] = [
     bodyKey: "tour.mailCalendarBody",
   },
   {
-    id: "global-apps",
-    anchor: '[data-hint-anchor="global-apps"]',
-    placement: "bottom",
-    titleKey: "tour.globalAppsTitle",
-    bodyKey: "tour.globalAppsBody",
-  },
-  {
     id: "time-tracking",
     // The timer readout lives inside the clock's hover menu now, so the clock
     // button is what's on screen to point at.
@@ -223,6 +227,7 @@ export const TOUR_STEPS: TourStep[] = [
     titleKey: "tour.settingsFocusTitle",
     bodyKey: "tour.settingsFocusBody",
     bodyParams: (t) => ({ tip: focusModeTip(t) }),
+    task: GEAR_MENU_TASK,
   },
 ];
 
@@ -231,9 +236,9 @@ export const TOUR_STEPS: TourStep[] = [
  * SSH projects, tunnels, extra compute machines, containers/VMs, long-running
  * sessions, and the phone. Split out of the main tour deliberately: a first-run
  * user working locally has no use for any of it, and one dense "work on remote
- * machines" step could never carry the subject either. Started from the same
- * ⚙ menu and Settings row (`eldrun:start-advanced-tour`), replayable, and
- * nothing about it is persisted — only the main tour sets `tour_completed`.
+ * machines" step could never carry the subject either. It is the first
+ * Advanced lesson, replayable, and nothing about it is persisted — only the
+ * quick tour sets `tour_completed`.
  */
 export const ADVANCED_TOUR_STEPS: TourStep[] = [
   {
@@ -298,6 +303,7 @@ export const ADVANCED_TOUR_STEPS: TourStep[] = [
     placement: "bottom",
     titleKey: "tour.advanced.outroTitle",
     bodyKey: "tour.advanced.outroBody",
+    task: GEAR_MENU_TASK,
   },
 ];
 

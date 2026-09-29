@@ -11,7 +11,10 @@ export type TerminalEvent =
   | { type: "pong" }
   | { type: "window"; cols: number; rows: number }
   | { type: "replay" }
-  | { type: "closing"; reason: string; retry: boolean };
+  | { type: "closing"; reason: string; retry: boolean }
+  /** The phone's `seq`-th binary input frame on this socket reached the
+   * session's PTY. Frames are counted per socket, on both ends alike. */
+  | { type: "ack"; seq: number };
 
 /** The geometry the desktop accepts in a `resize`. Mirrors `MIN_COLS` …
  * `MAX_ROWS` in `protocol.rs`: a size outside these is answered with

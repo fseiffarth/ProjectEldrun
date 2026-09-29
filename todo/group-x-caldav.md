@@ -4,8 +4,7 @@
 typed base URL, username, password — synced on a schedule or on demand. The
 mail-account shape, not the `Calendar.source_url` shape: that one stays exactly
 as it is and is still the right tool for an anonymous read-only feed somebody
-shared with you. Design + phase gating: [`docs/caldav_plan.md`](../docs/caldav_plan.md);
-the invariants that make it worth having: [`docs/context/caldav.md`](../docs/context/caldav.md).*
+shared with you. The invariants that make it worth having: [`docs/context/caldav.md`](../docs/context/caldav.md).*
 
 *Files: new `src-tauri/src/services/caldav.rs`, `src-tauri/src/schema/caldav.rs`,
 `src-tauri/src/commands/caldav.rs`, `merge_caldav_calendar_at` in

@@ -1,18 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, api, normalizeTodoBoard, type TodoBoard, type TodoCard, type TodoColumn, type TodoTaskInput } from "../api";
+import { api, normalizeTodoBoard, type TodoBoard, type TodoCard, type TodoColumn, type TodoTaskInput } from "../api";
+import { describeFailure, failureCode } from "../connection";
+import { useT } from "../../../src/lib/i18n";
+import { isUntested } from "../../../src/lib/untested";
 import { readFlag, readOrder, writeFlag, writeOrder } from "../prefs";
 import { COLUMN_FOLLOWS_DATE, intakeColumn, localDate, moveAccepted } from "../todoDates";
 
 type Editing = TodoCard | "new" | null;
 
-/** A refusal the phone can explain, or the raw code when it cannot. */
+/** A refusal in the reader's words — never the code (`connection.ts`). The
+ * date-governed column keeps its own longer explanation. */
 function boardError(reason: unknown): string {
-  const code = reason instanceof ApiError ? reason.code : String(reason);
-  if (code === "column_follows_date") return COLUMN_FOLLOWS_DATE;
-  if (code === "desktop_unavailable") return "Eldrun is not running on the desktop.";
-  if (code === "task_not_found") return "That card is no longer on the board.";
-  if (code === "invalid_column") return "That column is no longer on the board.";
-  return code;
+  return failureCode(reason) === "column_follows_date" ? COLUMN_FOLLOWS_DATE : describeFailure(reason);
 }
 
 function dayNumber(date: string): number {
@@ -72,6 +71,7 @@ function blankTask(board: TodoBoard): TodoTaskInput {
 }
 
 export function Todo({ card }: { card?: string }) {
+  const t = useT();
   const [board, setBoard] = useState<TodoBoard | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [search, setSearch] = useState("");
@@ -98,7 +98,7 @@ export function Todo({ card }: { card?: string }) {
   const load = useCallback(() => {
     void api<{ board: TodoBoard }>("/api/v1/todo")
       .then(({ board }) => { setBoard(normalizeTodoBoard(board)); setError(""); })
-      .catch((reason) => setError(`Desktop board unavailable: ${boardError(reason)}`));
+      .catch((reason) => setError(boardError(reason)));
   }, []);
   useEffect(load, [load]);
   // An alert that named a card opens that card, and does it exactly once: the
@@ -171,7 +171,7 @@ export function Todo({ card }: { card?: string }) {
     <div className="todo-mobile-filters"><select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">Any project</option><option value="none">No project</option>{board?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}><option value="">Any tag</option>{tags.map((tag) => <option key={tag} value={tag}>#{tag}</option>)}</select><label className="todo-inline-check"><input type="checkbox" checked={hideDone} onChange={(event) => toggleHideDone(event.target.checked)} /> Hide done</label><label className="todo-inline-check"><input type="checkbox" checked={hideArchived} onChange={(event) => toggleHideArchived(event.target.checked)} /> Hide archived</label></div>
     {/* The fold is a gesture with no affordance of its own beyond the caret, so
         it is said once, in the sibling of the two drag hints. */}
-    <p className="reorder-hint">Tap a column’s name to fold it away — the fold is kept on this phone, and the count beside the name still tells you what is behind it. <span className="untested">Untested</span></p>
+    <p className="reorder-hint">Tap a column’s name to fold it away — the fold is kept on this phone, and the count beside the name still tells you what is behind it. {isUntested("mobile.todo.fold") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>
     {/* Adding a column is a structural act, and it used to sit in a bar of its
         own between the filters and the board — a full row of top chrome above
         the first thing anyone came here to read. At the foot of the column list

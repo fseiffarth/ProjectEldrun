@@ -20,6 +20,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 import { DEFAULT_LOOKAHEAD_DAYS } from "../../lib/alerts";
 import type { ProjectEntry, Settings, ViewerPref } from "../../types";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * The file-view filters (which endings/paths a project's tree hides) and the
@@ -353,7 +354,7 @@ export function ProjectFilesSettingsDialog({
             })}
           </div>
         )}
-        {error && <div className="settings-error">{error}</div>}
+        {error && <ErrorNote className="settings-error" error={error} />}
 
         {/* Where the tree puts a project's own scaffold files and everything git
             ignores: their own collapsible sections, or in among the rest. Both

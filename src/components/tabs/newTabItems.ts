@@ -7,6 +7,9 @@ import {
 import type { CustomAgent } from "../../types";
 import type { AddMenuEntry } from "./AddTabMenuList";
 import type { TranslationKey } from "../../lib/i18n";
+import { AGENT_TAB_ACTIONS, type AgentTabAction } from "../../lib/shortcuts/shortcuts";
+import { cloudLaunchesFor, type CloudLaunch } from "../../lib/agents/cloudSessions";
+import type { SignInLaunch } from "../../lib/agents/signInLaunch";
 
 /**
  * A static entry in the "new tab" add menu. Shared by the main-window `TabBar`
@@ -164,6 +167,54 @@ export function buildStaticTabSpec(
   };
 }
 
+/**
+ * The tab payload for a built-in agent's *cloud* session (see
+ * `lib/agents/cloudSessions`). Unlike {@link buildStaticTabSpec} it mints no
+ * session id, no `ELDRUN_TAB_UID` and no session-rename input: the session is
+ * the vendor's, and a tab without an id is one restore drops rather than
+ * relaunching into a second cloud session.
+ */
+export function buildCloudTabSpec(
+  item: StaticMenuItem,
+  launch: CloudLaunch,
+  task: string,
+  projectCwd: string,
+  t: (key: TranslationKey, vars?: Record<string, string>) => string,
+): Omit<TabEntry, "key"> {
+  return {
+    label: t("newTabMenu.cloudTabLabel", { agent: itemLabel(item, t) }),
+    cmd: item.cmd,
+    args: launch.args(task),
+    env: { ...(item.env ?? {}) },
+    cwd: projectCwd,
+    kind: item.kind,
+  };
+}
+
+/**
+ * The tab payload for a built-in agent's *sign-in* tab (see
+ * `lib/agents/signInLaunch`): the CLI's own login command, or a plain launch
+ * for a CLI that signs in when it starts. Like {@link buildCloudTabSpec} it
+ * mints no session id, so restore drops it rather than signing in again.
+ */
+export function buildSignInTabSpec(
+  item: StaticMenuItem,
+  launch: SignInLaunch,
+  projectCwd: string,
+  t: (key: TranslationKey, vars?: Record<string, string>) => string,
+): Omit<TabEntry, "key"> {
+  return {
+    label: launch.exits
+      ? t("newTabMenu.signInTabLabel", { agent: itemLabel(item, t) })
+      : itemLabel(item, t),
+    cmd: item.cmd,
+    args: [...launch.args],
+    env: { ...(item.env ?? {}), ...(launch.env ?? {}) },
+    cwd: projectCwd,
+    kind: item.kind,
+  };
+}
+
 /** Stable empty custom-agent array, so a settings selector's `?? …` fallback
  *  keeps a constant reference (a fresh `[]` each render would loop the probe
  *  effect that depends on it). */
@@ -180,9 +231,15 @@ export function compactAgentMenuEntries(
   compactBins: ReadonlySet<string>,
 ): AddMenuEntry[] {
   return entries.filter(
-    (entry) => compactBins.has(entry.key) || entry.key === "__add_custom_agent__",
+    (entry) =>
+      compactBins.has(entry.key) ||
+      entry.key === "__add_custom_agent__" ||
+      entry.key === CLOUD_SESSION_KEY,
   );
 }
+
+/** The Agents group's "Cloud session" row — kept in the compact menu too. */
+export const CLOUD_SESSION_KEY = "__cloud_session__";
 
 /** The installed built-in commands from the backend's agent registry. Agent
  * ids are not necessarily executable names (Google Antigravity is
@@ -240,6 +297,98 @@ export function customAgentToItem(ca: CustomAgent): StaticMenuItem {
   };
 }
 
+/** One agent the Ctrl+1–9 chords open: its Agents-group row key and item. */
+export interface AgentShortcutSlot {
+  key: string;
+  item: StaticMenuItem;
+}
+
+/**
+ * `rows` in the user's agent order (`Settings.agent_order`, Agents-group row
+ * keys): the keys it names first, in its order, then every other row as given.
+ * No saved order leaves `rows` as they are.
+ */
+export function sortByAgentOrder<T>(
+  rows: readonly T[],
+  keyOf: (row: T) => string,
+  order: readonly string[] | undefined,
+): T[] {
+  if (!order?.length) return [...rows];
+  const rank = new Map(order.map((key, i) => [key, i]));
+  return rows
+    .map((row, i) => ({ row, rank: rank.get(keyOf(row)) ?? order.length + i }))
+    .sort((a, b) => a.rank - b.rank)
+    .map(({ row }) => row);
+}
+
+/**
+ * Every Agents-group row key (`keys`, in menu order) in the order the chords
+ * number them: the saved order when there is one, else the default agent first.
+ * What Manage CLIs lists its installed agents by and rewrites when one moves.
+ */
+export function effectiveAgentOrder(
+  keys: readonly string[],
+  order: readonly string[] | undefined,
+  defaultKey: string,
+): string[] {
+  if (order?.length) return sortByAgentOrder(keys, (key) => key, order);
+  return keys.includes(defaultKey)
+    ? [defaultKey, ...keys.filter((key) => key !== defaultKey)]
+    : [...keys];
+}
+
+/**
+ * `order` with `key` swapped with its next (`delta` 1) or previous (-1)
+ * neighbour among `peers` — the rows the mover can see. Rows between the two
+ * that the mover does not list (custom agents, in Manage CLIs) stay put.
+ */
+export function moveInAgentOrder(
+  order: readonly string[],
+  key: string,
+  delta: 1 | -1,
+  peers: readonly string[],
+): string[] {
+  const visible = order.filter((k) => peers.includes(k));
+  const other = visible[visible.indexOf(key) + delta];
+  const next = [...order];
+  const from = next.indexOf(key);
+  const to = other === undefined ? -1 : next.indexOf(other);
+  if (from < 0 || to < 0) return next;
+  [next[from], next[to]] = [next[to], next[from]];
+  return next;
+}
+
+/**
+ * The agents behind the Ctrl+1–9 chords, index 0 = Ctrl+1. With a saved
+ * `agentOrder` the pickable rows simply follow it. Without one, slot 1 is the
+ * default agent (`defaultAgentBin`), empty when it is not in the menu, and
+ * slots 2–9 are the Agents group's other pickable rows in menu order. Shared by
+ * the rows' chord hints (`agentMenuEntries`), the chord itself (`TabBar`) and
+ * Manage CLIs' list, so the number shown is the agent opened.
+ */
+export function agentShortcutSlots(opts: {
+  installedBuiltins: Set<string> | null;
+  installedCmds: Set<string> | null;
+  customAgents: CustomAgent[];
+  defaultAgentBin: string;
+  agentOrder?: readonly string[];
+}): (AgentShortcutSlot | null)[] {
+  const rows: AgentShortcutSlot[] = [
+    ...AGENT_ITEMS.filter((item) => opts.installedBuiltins?.has(item.cmd)).map((item) => ({
+      key: item.cmd,
+      item,
+    })),
+    ...opts.customAgents
+      .filter((ca) => opts.installedCmds == null || opts.installedCmds.has(ca.cmd))
+      .map((ca) => ({ key: `custom:${ca.id}`, item: customAgentToItem(ca) })),
+  ];
+  if (opts.agentOrder?.length) {
+    return sortByAgentOrder(rows, (row) => row.key, opts.agentOrder).slice(0, AGENT_TAB_ACTIONS.length);
+  }
+  const def = rows.find((row) => row.item.cmd === opts.defaultAgentBin) ?? null;
+  return [def, ...rows.filter((row) => row !== def)].slice(0, AGENT_TAB_ACTIONS.length);
+}
+
 /**
  * Build the "Agents" group's rows for the add-tab menu, shared by the main-window
  * `TabBar` and the popout's `NewTabMenu` so both list agents identically:
@@ -257,41 +406,85 @@ export function agentMenuEntries(opts: {
   installedBuiltins: Set<string> | null;
   installedCmds: Set<string> | null;
   customAgents: CustomAgent[];
-  /** Strict built-in-only surfaces (Trash) must not offer arbitrary commands. */
-  allowCustom?: boolean;
   pick: (item: StaticMenuItem) => void;
+  /** Start one of an installed built-in's cloud launches. Unset → no
+   *  "Cloud session" row (a scope where no cloud session makes sense). */
+  pickCloud?: (item: StaticMenuItem, launch: CloudLaunch) => void;
   onAddCustom: () => void;
-  t: (key: TranslationKey) => string;
+  /** Where the Ctrl+1–9 chords work (the main window's panes), the default
+   *  agent's binary: each numbered row then shows its chord. */
+  defaultAgentBin?: string;
+  /** `Settings.agent_order`: the rows (and their numbers) follow it. */
+  agentOrder?: readonly string[];
+  t: (key: TranslationKey, vars?: Record<string, string>) => string;
 }): AddMenuEntry[] {
-  const builtins = AGENT_ITEMS.filter((item) =>
-    opts.installedBuiltins?.has(item.cmd),
+  const chordByKey = new Map<string, AgentTabAction>();
+  if (opts.defaultAgentBin !== undefined) {
+    agentShortcutSlots({ ...opts, defaultAgentBin: opts.defaultAgentBin }).forEach((slot, i) => {
+      if (slot) chordByKey.set(slot.key, AGENT_TAB_ACTIONS[i]);
+    });
+  }
+  const builtins = sortByAgentOrder(
+    AGENT_ITEMS.filter((item) => opts.installedBuiltins?.has(item.cmd)),
+    (item) => item.cmd,
+    opts.agentOrder,
   ).map((item) => ({
     key: item.cmd,
     label: item.label,
     color: TAB_ACCENT[item.kind],
+    shortcut: chordByKey.get(item.cmd),
     onPick: () => opts.pick(item),
   }));
-  const custom = (opts.allowCustom !== false ? opts.customAgents : []).map((ca) => {
+  // One row whose fly-out holds every installed built-in's cloud launches,
+  // rather than a cloud twin per agent: most agents have none, and the plain
+  // local launch stays the one-click row it always was.
+  const cloudEntries: AddMenuEntry[] = opts.pickCloud
+    ? AGENT_ITEMS.filter((item) => opts.installedBuiltins?.has(item.cmd)).flatMap((item) =>
+        cloudLaunchesFor(item.cmd).map((launch) => ({
+          key: `cloud:${item.cmd}:${launch.action}`,
+          label: opts.t(
+            launch.action === "new" ? "newTabMenu.cloudNew" : "newTabMenu.cloudOpen",
+            { agent: item.label },
+          ),
+          dot: "☁",
+          color: TAB_ACCENT[item.kind],
+          onPick: () => opts.pickCloud?.(item, launch),
+        })),
+      )
+    : [];
+  const cloudLabel = opts.t("newTabMenu.cloudSession");
+  const cloud: AddMenuEntry[] = cloudEntries.length
+    ? [{
+        key: CLOUD_SESSION_KEY,
+        label: cloudLabel,
+        dot: "☁",
+        color: TAB_ACCENT.agent,
+        moreTitle: cloudLabel,
+        moreEntries: cloudEntries,
+        onPick: () => {},
+      }]
+    : [];
+  const custom = sortByAgentOrder(opts.customAgents, (ca) => `custom:${ca.id}`, opts.agentOrder).map((ca) => {
     const missing = opts.installedCmds != null && !opts.installedCmds.has(ca.cmd);
     return {
       key: `custom:${ca.id}`,
       label: missing ? `${ca.label} (${opts.t("globalApps.notFoundPlaceholder")})` : ca.label,
       color: TAB_ACCENT.agent,
       disabled: missing,
+      shortcut: chordByKey.get(`custom:${ca.id}`),
       onPick: () => opts.pick(customAgentToItem(ca)),
     };
   });
   return [
     ...builtins,
+    ...cloud,
     ...custom,
-    ...(opts.allowCustom !== false
-      ? [{
-          key: "__add_custom_agent__",
-          label: opts.t("newTabMenu.addAgent"),
-          dot: "＋",
-          color: "var(--text-muted)",
-          onPick: opts.onAddCustom,
-        }]
-      : []),
+    {
+      key: "__add_custom_agent__",
+      label: opts.t("newTabMenu.addAgent"),
+      dot: "＋",
+      color: "var(--text-muted)",
+      onPick: opts.onAddCustom,
+    },
   ];
 }

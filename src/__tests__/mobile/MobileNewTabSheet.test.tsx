@@ -80,10 +80,51 @@ describe("Mobile project screen — the ＋", () => {
     expect(screen.queryByRole("dialog", { name: "New tab" })).toBeNull();
   });
 
-  it("holds the ＋ while the desktop is away, which is what could answer it", async () => {
+  it("sends a phone file into the project's inbox and shows the reference an agent reads it by", async () => {
+    serve(DETAIL);
+    const base = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => String(url).includes("/inbox")
+      ? Promise.resolve(new Response(JSON.stringify({ attachment: { name: "20260923-120000-notes.pdf", reference: ".eldrun/inbox/20260923-120000-notes.pdf", size: 3 } }), { status: 201 }))
+      : base?.(url, init));
+    render(<Project id="p" back={() => {}} terminal={() => {}} />);
+    await screen.findByText("claude 1");
+    fireEvent.click(screen.getByRole("button", { name: "New tab" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Send a file from this phone/ }));
+    // The picker opened on the tap; the sheet is out of the way of its answer.
+    expect(screen.queryByRole("dialog", { name: "New tab" })).toBeNull();
+
+    const input = screen.getByTestId("project-inbox-input") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [new File(["pdf"], "notes.pdf", { type: "application/pdf" })], configurable: true });
+    fireEvent.change(input);
+
+    expect(await screen.findByText("In the project as @.eldrun/inbox/20260923-120000-notes.pdf")).toBeTruthy();
+    const post = fetchMock.mock.calls.find(([url]) => String(url).includes("/inbox"));
+    expect(String(post?.[0])).toBe("/api/v1/projects/p/inbox?name=notes.pdf");
+    expect((post?.[1] as RequestInit).method).toBe("POST");
+    // A file is not a tab: nothing was created on the desktop.
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/tabs"))).toBe(false);
+  });
+
+  it("opens the ＋ while the desktop is away for a file, holding only the creates", async () => {
     serve({ ...DETAIL, desktop_available: false });
     render(<Project id="p" back={() => {}} terminal={() => {}} />);
     await screen.findByText(/Desktop unavailable/);
-    expect((screen.getByRole("button", { name: "New tab" }) as HTMLButtonElement).disabled).toBe(true);
+    const open = screen.getByRole("button", { name: "New tab" }) as HTMLButtonElement;
+    expect(open.disabled).toBe(false);
+    fireEvent.click(open);
+    expect((screen.getByRole("button", { name: "New shell" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /Send a file from this phone/ }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("puts the phone file under the shell and asks for any file, not just media", async () => {
+    serve(DETAIL);
+    render(<Project id="p" back={() => {}} terminal={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "New tab" }));
+    const shell = screen.getByRole("button", { name: "New shell" });
+    const file = screen.getByRole("button", { name: /Send a file from this phone/ });
+    // Straight after the shell, before any agent tile.
+    expect(shell.nextElementSibling).toBe(file);
+    // A bare input is media-only to Android Chrome: camera and photos, no files.
+    expect(screen.getByTestId("project-inbox-input").getAttribute("accept")).toContain("application/*");
   });
 });

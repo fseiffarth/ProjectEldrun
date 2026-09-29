@@ -55,10 +55,15 @@ pub fn app_build_commit() -> Option<&'static str> {
 
 /// The background "Eldrun (dev)" freeze, for the header's dev-build chip; `None`
 /// when this binary was not built from a checkout (see `services::dev_build`).
-/// Blocking-pool, because it reads a log tail and runs `git rev-list`.
+/// Blocking-pool, because it reads a log tail and runs `git rev-list`. Each
+/// poll also queues a freeze of a HEAD the commit hook could not queue from
+/// inside an agent fence (`dev_build::queue_if_behind`).
 #[tauri::command]
 pub async fn dev_build_status() -> Option<crate::services::dev_build::DevBuildStatus> {
-    tauri::async_runtime::spawn_blocking(crate::services::dev_build::status)
+    tauri::async_runtime::spawn_blocking(|| {
+        crate::services::dev_build::queue_if_behind();
+        crate::services::dev_build::status()
+    })
         .await
         .ok()
         .flatten()

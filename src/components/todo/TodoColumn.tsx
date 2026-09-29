@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { CalendarTask, TaskColumn } from "../../types";
 import { useT } from "../../lib/i18n";
+import { useTodoStore } from "../../stores/todo";
 import { TodoCard } from "./TodoCard";
 
 interface Props {
@@ -35,7 +36,12 @@ interface Props {
 }
 
 /**
- * One column: a header, its cards, and the add-a-card button.
+ * One column: a header, its cards, and the add-a-card button — or, folded, a
+ * narrow strip carrying just its name and count. The strip keeps
+ * `data-column-id`, so a card dropped on it still lands (at the top).
+ *
+ * The done column also carries the board's "Hide done" toggle: that is where
+ * the cards it hides mostly live, so it is where the switch is looked for.
  *
  * **Adding a card opens the full card dialog**, the same editor a card is edited
  * in — not an inline title composer. A title-only composer wrote the card to
@@ -69,6 +75,8 @@ export function TodoColumn({
   canMoveRight,
 }: Props) {
   const t = useT();
+  const collapsed = useTodoStore((s) => !!s.collapsedColumns[column.id]);
+  const hideDone = useTodoStore((s) => s.hideDone);
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(column.name);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -119,12 +127,59 @@ export function TodoColumn({
     rows.push(placeholder);
   }
 
+  const countLabel = column.limit ? `${cardCount}/${column.limit}` : String(cardCount);
+  const countTitle = column.limit
+    ? t("todoBoard.wipLimit", { count: cardCount, limit: column.limit })
+    : t("todoBoard.cardCount", { count: cardCount });
+
+  if (collapsed) {
+    return (
+      <section
+        className={
+          "todo-column todo-column-collapsed" + (dropTarget ? " todo-column-drop" : "")
+        }
+        data-column-id={column.id}
+        style={{ borderTopColor: column.color || undefined }}
+      >
+        <button
+          type="button"
+          className="todo-column-strip"
+          onClick={() => useTodoStore.getState().toggleColumn(column.id, false)}
+          title={t("todoBoard.expandColumn")}
+          aria-label={t("todoBoard.expandColumn")}
+          aria-expanded={false}
+        >
+          <span className="todo-column-strip-chevron" aria-hidden>
+            »
+          </span>
+          <span
+            className={"todo-column-count" + (overLimit ? " todo-column-over" : "")}
+            title={countTitle}
+          >
+            {countLabel}
+          </span>
+          <span className="todo-column-strip-name">{title}</span>
+        </button>
+      </section>
+    );
+  }
+
   return (
     <section
       className={"todo-column" + (dropTarget ? " todo-column-drop" : "")}
       data-column-id={column.id}
     >
       <header className="todo-column-head" style={{ borderTopColor: column.color || undefined }}>
+        <button
+          type="button"
+          className="todo-column-btn todo-column-collapse"
+          onClick={() => useTodoStore.getState().toggleColumn(column.id, true)}
+          title={t("todoBoard.collapseColumn")}
+          aria-label={t("todoBoard.collapseColumn")}
+          aria-expanded
+        >
+          «
+        </button>
         {renaming ? (
           <input
             ref={nameRef}
@@ -164,13 +219,9 @@ export function TodoColumn({
 
         <span
           className={"todo-column-count" + (overLimit ? " todo-column-over" : "")}
-          title={
-            column.limit
-              ? t("todoBoard.wipLimit", { count: cardCount, limit: column.limit })
-              : t("todoBoard.cardCount", { count: cardCount })
-          }
+          title={countTitle}
         >
-          {column.limit ? `${cardCount}/${column.limit}` : cardCount}
+          {countLabel}
         </span>
 
         <span className="todo-column-actions">
@@ -205,6 +256,17 @@ export function TodoColumn({
           </button>
         </span>
       </header>
+
+      {column.done && (
+        <label className="todo-toggle todo-column-toggle">
+          <input
+            type="checkbox"
+            checked={hideDone}
+            onChange={(e) => useTodoStore.getState().setHideDone(e.target.checked)}
+          />
+          {t("todoBoard.hideDone")}
+        </label>
+      )}
 
       <div className="todo-column-body">
         {rows.length === 0 && placeholderIndex === null ? (

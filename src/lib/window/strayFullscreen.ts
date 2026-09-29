@@ -30,8 +30,10 @@
  * window (`let _ = win.set_fullscreen(false)` — no read, no branch).
  *
  * What must NOT be cleared is the fullscreen someone asked for, so the decision
- * is the pure [`mayClearStrayFullscreen`]: the page's own DOM fullscreen (a video,
- * the in-app browser) and a running talk both hold it, and macOS is excluded for
+ * is the pure [`mayClearStrayFullscreen`]: the user's own fullscreen mode (F11 /
+ * the window-controls button, `lib/window/fullscreenMode`), the page's own DOM
+ * fullscreen (a video, the in-app browser) and a running talk all hold it, and
+ * macOS is excluded for
  * the reason it always is — its own Space is the platform-expected behaviour there.
  * A DOM fullscreen whose element is gone leaves `document.fullscreenElement` null,
  * which is exactly the leak this then rescues.
@@ -40,6 +42,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../platform";
 import { usePresentationStore } from "../../stores/viewers/presentation";
+import { useFullscreenMode } from "./fullscreenMode";
 
 /**
  * Is a fullscreen on this window "stray" — nobody's on purpose — and therefore
@@ -52,8 +55,11 @@ export function mayClearStrayFullscreen(input: {
   domFullscreen: boolean;
   /** Deck presenters on screen in this window (`usePresentationStore`). */
   presenting: number;
+  /** The user put this window into fullscreen mode (`useFullscreenMode`). */
+  requested: boolean;
 }): boolean {
   if (input.platform === "macos") return false;
+  if (input.requested) return false;
   if (input.domFullscreen) return false;
   if (input.presenting > 0) return false;
   return true;
@@ -112,6 +118,7 @@ export async function clearStrayFullscreen(): Promise<void> {
       platform: PLATFORM,
       domFullscreen: document.fullscreenElement != null,
       presenting: usePresentationStore.getState().presenting,
+      requested: useFullscreenMode.getState().on,
     })
   ) {
     return;

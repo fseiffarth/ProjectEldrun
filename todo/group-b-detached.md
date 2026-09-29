@@ -1,5 +1,36 @@
 ## Group B — Detached Windows: Parity & Cross-Window Correctness
 
+- [ ] 🖐️ **Switching to one screen keeps popouts separate (2026-09-29).**
+  Still after the 2026-09-24 retry fix: going from several screens to one
+  docked popouts into the main window's subwindow. A compositor may drop a
+  popout at each step of the display switch, and the third death within a
+  minute docked it. Now only a popout that gave up on its own (no seed, so it
+  cannot render: `DETACHED_GAVE_UP`) is ever docked; any other death reopens it
+  from its record, backing off from the third death on, and a failed rebuild
+  retries for ~30 s instead of 3 s. Check: popouts on the external screen,
+  switch to the built-in display only (Super+P or unplug), then back. Expect
+  every popout still its own window. Not run live (`detached.ts` host).
+  - [ ] ✅ Works on Linux (X11)
+  - [ ] ❌ Doesn't work on Linux (X11)
+  - [ ] ✅ Works on Linux (Wayland)
+  - [ ] ❌ Doesn't work on Linux (Wayland)
+  - [ ] ✅ Works on Windows
+  - [ ] ❌ Doesn't work on Windows
+  - [ ] ✅ Works on macOS
+  - [ ] ❌ Doesn't work on macOS
+- [ ] 🖐️ **Wayland popout respawns on its own screen (2026-09-25).** A popout
+  closed by a project switch (no unsaved work) came back on the pointer's
+  screen, while one kept minimized for unsaved work kept its screen — so one
+  project's popouts "worked" and another's didn't. The retire now records the
+  popout's monitor (GDK's output for its surface); the respawn is shown
+  fullscreen on that monitor and dropped out of fullscreen at once, which is
+  where Mutter then places it, and gets its size back. Check: two projects,
+  each with a popout on the second screen and the main window on the first;
+  switch back and forth; also a popout with an unsaved edit. Expect a brief
+  fullscreen flash on the right screen, then the popout at its size there.
+  Not run live (`subwindow.rs` `present_on_monitor`).
+  - [ ] ✅ Works on Linux (Wayland)
+  - [ ] ❌ Doesn't work on Linux (Wayland)
 - [ ] **GNOME Wayland monitor retention (2026-09-17): live verification.**
   Scope switches now minimize popouts and present their existing surfaces on
   return. Hiding destroyed GTK's Wayland toplevel and lost GNOME's monitor
@@ -904,6 +935,84 @@ writes are now forwarded rather than dropped.
        popout's title bar, next to the star. Drag it — the window follows the
        cursor. Double-click it — the window snaps onto its screen (#240), the
        same as double-clicking the bare strip.
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
+
+263. **[Bug] A tab dragged out of a popout could not be dropped into the main
+     window or another popout on native Wayland** (2026-09-22; a recurring
+     report — dropping it back into the SAME popout, e.g. as a split, kept
+     working). The cross-window dock protocol hit-tests a PHYSICAL desktop
+     cursor against every window's desktop frame, and a native Wayland client
+     has neither (`desktopCoordinatesSupported` refuses the dummy `(0,0)`), so
+     the popout never streamed the gesture at all: a release outside itself
+     did nothing. In-popout drops use DOM coordinates, hence the asymmetry.
+     Fix (`lib/window/dropClaim.ts`): the source broadcasts a PROBE at release
+     and the window that receives the pointer next — the compositor moves
+     pointer focus the moment the implicit grab ends, and WebKitGTK turns that
+     crossing into a mouse move — CLAIMS it with the pane under the cursor.
+     Main hosts popout-sourced probes (own DOM → dock into main at that pane;
+     a sibling popout's claim → move the tab there); a main-window tab dragged
+     out probes the popouts the same way before falling back to a new window.
+     No claim within 1.2 s leaves the tab where it was (never a surprise new
+     window). No dock preview during the drag on Wayland: the target sees no
+     pointer until the button is up. X11/Windows/macOS keep the geometric path.
+     - [x] 🤖 Automated test — `DropClaim.test.ts`, `DetachedTabDrag.test.tsx`
+       (probe + claim), `DetachedDropClaimHost.test.tsx` (main host: dock into
+       main / into a sibling / timeout).
+     - [ ] 🖐️ Manual test (Wayland) — pop two tabs out into two popouts. Drag a
+       tab from popout A onto a pane in the main window and release: it lands
+       there (bar → that slot, body edge → split). Drag one from A onto popout
+       B: it lands in B's pane under the cursor. Drag a main-window tab onto a
+       popout: it docks there instead of opening a new window. Release over
+       the desktop or another app: the tab stays where it was. If a drop over
+       a window is ignored until the mouse is nudged, the crossing event did
+       not arrive — say so.
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
+
+264. **[Bug] Switching between two projects that each have a popout showed a
+     third, empty popout on GNOME/Wayland** (2026-09-23). Wayland parking was
+     `minimize()` + a flag GTK can never reconcile there; when the compositor
+     put the other project's popout back on screen, its renderer (told it was
+     parked) blanked every pane. The sync also ran twice per switch, unordered
+     (`setScope` and `project_runtime::switch`'s worker thread). Fix: `setScope`
+     is the one sync authority; on native Wayland a left scope's popouts are
+     CLOSED (after they flush autosave and report no unsaved work — dirty or
+     silent ones fall back to minimize, and then keep rendering), their records
+     kept, and `respawnDetachedForScope` rebuilds them on return at their saved
+     size (the compositor picks the position). X11/Windows/macOS keep hide/show.
+     `detach_subwindow` now reserves its label atomically and waits out a
+     same-label retire (fast A→B→A). A popout that never announced it can
+     answer (`detached_retire_ready` — still loading, or a renderer from before
+     this protocol) holds no work and is closed without asking.
+     Trade-off (Wayland only): a respawned popout is a fresh renderer, so its
+     popout-local view state is gone — scroll position, PDF page, search,
+     selection, undo — and GNOME chooses where it opens; only its size comes back.
+     - [x] 🤖 Automated test — `subwindow.rs` / `window_state.rs` unit tests
+       (sync planner, retire tokens, `Destroyed` disposition, reservation),
+       `DetachedScopeVisibility.test.ts`, `DetachedRetire.test.ts`,
+       `DetachedTwoHeap.test.ts` (retire keeps the record; crash still docks).
+     - [ ] 🖐️ Manual test — open two projects, each with a popout (drag a tab
+       out). Switch back and forth several times, slowly and then fast: at no
+       point is there a blank/empty popout; only the active project's popout is
+       on screen, and on return it reopens with its tabs (terminals keep their
+       scrollback) at the size it had. With autosave off, type into a file in a
+       popout and switch away: the popout is minimized, not closed, and the edit
+       is still there on return. X11: put a popout on the second monitor,
+       switch to another project and back — it returns on the same monitor at
+       the same position and size.
        - [ ] ✅ Works on Linux (X11)
        - [ ] ❌ Doesn't work on Linux (X11)
        - [ ] ✅ Works on Linux (Wayland)

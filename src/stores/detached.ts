@@ -25,6 +25,7 @@ import {
   moveKeyInTree,
   allGroups,
   isPtyTabKind,
+  normalizeTodoId,
   type DetachedGroup,
   type DropEdge,
   type LayoutNode,
@@ -35,6 +36,7 @@ import {
   type WindowBounds,
 } from "./tabs";
 import { useProjectsStore } from "./projects";
+import { noteClosedPopoutTabs, reopenClosedAgentTab } from "./agents/closedAgentTabs";
 import {
   PRIMARY_HOST,
   hostStateOf,
@@ -43,13 +45,15 @@ import {
   type ConnState,
   type HostConnState,
 } from "./remote/remoteStatus";
-import { BOX_SCOPE_PREFIX, useBoxesStore } from "./boxes";
-import { useActivityStore, noteUserInput, type BusyKind } from "./activity";
+import { BOX_SCOPE_PREFIX, boxFolderOfScope, useBoxesStore } from "./boxes";
+import { useActivityStore, noteTurnCutOff, noteUserInput, type AttentionKind, type BusyKind } from "./activity";
 import { bumpUsage } from "./usage";
 import { useRemoteMachinesStore } from "./remote/remoteMachines";
 import { useBigFoldersStore } from "./bigFolders";
-import type { ProjectBox, ProjectEntry } from "../types";
+import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../types";
 import { isTabColor, type TabColor } from "../lib/theme/tabColors";
+import { normalizeStackName } from "../lib/tabStacks";
+import { isTabMark, type TabMark } from "../lib/tabMarks";
 
 /** Parsed `?detached=<scope>:<groupId>` query. */
 export interface DetachedParam {
@@ -114,6 +118,13 @@ export const DETACHED_CLOSE = "detached-close";
  * exactly like a hidden main-window subwindow. Same envelope shape as the dock.
  */
 export const DETACHED_HIDE = "detached-hide";
+/**
+ * Detached → main: the popout's Ctrl+Shift+T. The closed-tab list lives in the
+ * main window (`stores/agents/closedAgentTabs`), so the popout only asks; the
+ * main window reopens the newest agent tab closed there (else in the scope)
+ * into that popout. Same envelope shape as the dock.
+ */
+export const DETACHED_REOPEN = "detached-reopen";
 /** Detached → main: the popout's OS geometry changed (persisted for respawn). */
 export const DETACHED_BOUNDS = "detached-bounds";
 /**
@@ -157,8 +168,9 @@ export interface DetachedActivityEnvelope {
   ptyId: string;
   /** `interrupt` is input that cuts the agent off (a bare Escape, Ctrl+C) —
    *  the one keystroke the classifier reads differently (see
-   *  `activity.noteUserInput`). */
-  kind: "input" | "interrupt" | "seen" | "bell";
+   *  `activity.noteUserInput`). `cutoff` is a spawn that found the tab's
+   *  previous process died mid-turn (`activity.noteTurnCutOff`). */
+  kind: "input" | "interrupt" | "seen" | "bell" | "cutoff";
 }
 
 /**
@@ -175,7 +187,7 @@ export interface DetachedUsageEnvelope {
 
 /**
  * Group B #234 — main → detached: the classified status of THIS popout's tabs
- * (working / needs-decision / finished), namespaced per label like the seed. The
+ * (working / needs-decision / finished / interrupted), namespaced per label like the seed. The
  * popout's own activity store has no PTY history to classify from, so the main
  * window — which sees every PTY's output — mirrors its verdict over, and the
  * popout's strip paints the same lamps `TabBar` does.
@@ -186,7 +198,8 @@ export type DetachedTabStatus =
   | "working-shell"
   | "working-both"
   | "needs-decision"
-  | "finished";
+  | "finished"
+  | "interrupted";
 export interface DetachedStatusPayload {
   scope: string;
   /** tab key → status; a tab with nothing to say is absent. */
@@ -210,11 +223,23 @@ export interface DetachedOpenDialogEnvelope {
  * from the `WindowEvent::Destroyed` hook for every popout death. Legitimate
  * teardowns drop the store record BEFORE the window goes, so the host finds no
  * record and does nothing; a record still standing means the popout died
- * behind the store's back (`xkill`, a renderer crash, a seed timeout) and its
- * tabs are docked back rather than stranded.
+ * behind the store's back (a display change, `xkill`, a renderer crash, a seed
+ * timeout). The popout is reopened from that record; only one that keeps
+ * giving up on its own (DETACHED_GAVE_UP) is docked back rather than stranded.
  */
 export const DETACHED_WINDOW_DESTROYED = "detached-window-destroyed";
 export interface DetachedWindowDestroyedEnvelope {
+  label: string;
+}
+
+/**
+ * Popout → main, right before a popout destroys itself because no seed ever
+ * arrived. Its death is then the window's own failure, which may end in a dock
+ * back; any other death was done TO a working window (a compositor dropping it
+ * while a monitor goes away) and only reopens it.
+ */
+export const DETACHED_GAVE_UP = "detached-gave-up";
+export interface DetachedGaveUpEnvelope {
   label: string;
 }
 
@@ -421,7 +446,16 @@ export type DetachedEdit =
   // lives on the tab payload the MAIN window persists, so the popout forwards it
   // the way it forwards a rename.
   | { kind: "setColor"; key: string; color: TabColor | undefined }
-  | { kind: "close"; key: string }
+  // A tab joining or leaving a tab group (`TabEntry.stack`) — payload-only,
+  // forwarded like the colour.
+  | { kind: "setStack"; key: string; stack: string | undefined }
+  // A tab's Important / Urgent mark and its to-do card link
+  // (`TabEntry.mark` / `.todoId`) — payload-only, forwarded like the colour.
+  | { kind: "setMark"; key: string; mark: TabMark | undefined }
+  | { kind: "setTodo"; key: string; todoId: string | undefined }
+  // `user`: a close the user asked for in the popout (×, Ctrl+W, the tab menu),
+  // remembered for "Reopen closed agent tab"; the experiment sweep leaves it off.
+  | { kind: "close"; key: string; user?: boolean }
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-host: change WHERE a locatable tab runs (local mirror / primary / a
   // worker), chosen from the popout's own locality badge. The detached tab's PTY
@@ -483,6 +517,10 @@ export interface DetachedEditEnvelope {
 export interface DetachedDockEnvelope {
   scope: string;
   groupId: string;
+  /** DETACHED_CLOSE only: the user closed these tabs (the last tab's ×, the
+   *  window close's "Close tabs"), so their agent tabs are remembered for a
+   *  reopen. Absent for the experiment sweep's close. */
+  user?: boolean;
 }
 
 /** Envelope for a detached→main geometry update. */
@@ -599,6 +637,9 @@ export function applyEditToSubtree(
       return subtree;
     case "rename":
     case "setColor":
+    case "setStack":
+    case "setMark":
+    case "setTodo":
     case "setViewerState":
     case "setTmuxName":
     case "setFolder":
@@ -633,6 +674,37 @@ export function applyColorToTabs(
 ): TabEntry[] {
   const next = isTabColor(color) ? color : undefined;
   return tabs.map((t) => (t.key === key && t.color !== next ? { ...t, color: next } : t));
+}
+
+/** Apply a `setStack` edit to a tab payload list (popout-side optimistic
+ *  update, so the chip regroups before the main window re-seeds). Pure. */
+export function applyStackToTabs(
+  tabs: TabEntry[],
+  key: string,
+  stack: string | undefined,
+): TabEntry[] {
+  const next = normalizeStackName(stack);
+  return tabs.map((t) => (t.key === key && t.stack !== next ? { ...t, stack: next } : t));
+}
+
+/** Apply a `setMark` / `setTodo` edit to a tab payload list (popout-side
+ *  optimistic update, so the tab's glyph flips before the re-seed). Pure. */
+export function applyMarkToTabs(
+  tabs: TabEntry[],
+  key: string,
+  mark: TabMark | undefined,
+): TabEntry[] {
+  const next = isTabMark(mark) ? mark : undefined;
+  return tabs.map((t) => (t.key === key && t.mark !== next ? { ...t, mark: next } : t));
+}
+
+export function applyTodoToTabs(
+  tabs: TabEntry[],
+  key: string,
+  todoId: string | undefined,
+): TabEntry[] {
+  const next = normalizeTodoId(todoId);
+  return tabs.map((t) => (t.key === key && t.todoId !== next ? { ...t, todoId: next } : t));
 }
 
 /** Apply a `setLocation` edit to a tab payload list (popout-side optimistic
@@ -834,6 +906,28 @@ export function projectInfoForScope(scope: string): DetachedRemoteInfo | undefin
 }
 
 /**
+ * The folder a tab opened from a popout's "+" menu starts in — the same one the
+ * main window's `CenterPanel` `newTabCwd` resolves: the box folder, else the
+ * project directory, both from the streamed project context. A tab's own cwd
+ * (the active tab's, then any) is only the fallback when the seed has none: a
+ * viewer tab's cwd is its FILE's folder, so a Claude tab opened beside
+ * `talk/main.pdf` used to start in `talk/` from a popout and in the project root
+ * from the main window.
+ */
+export function detachedNewTabCwd(
+  scope: string,
+  info: DetachedRemoteInfo | undefined,
+  groupTabCwds: (string | undefined)[],
+): string {
+  return (
+    (info?.box ? boxFolderOfScope(scope, [info.box]) : "") ||
+    resolveProjectDirectory(info?.project) ||
+    groupTabCwds.find(Boolean) ||
+    ""
+  );
+}
+
+/**
  * Re-seed one popout from the main store's current record. `landedKey` tags the
  * seed so the popout plays the drop-in landing for a freshly-docked tab. THE one
  * reseed path (#230): the tab-drop, file-drop, delete/rename-retarget and host
@@ -869,6 +963,18 @@ function persistScopeNow(scope: string): Promise<void> {
 /** Set while `shutdownDetachedWindows` destroys popouts on quit, so their
  *  `Destroyed` events are not mistaken for crashes and docked back. */
 let shuttingDown = false;
+/** Per label: when its popout's recent unexpected deaths happened. */
+const unexpectedWindowDeaths = new Map<string, number[]>();
+/** Labels whose popout announced DETACHED_GAVE_UP and has not died yet. */
+const gaveUpWindows = new Set<string>();
+
+/** How long to wait before reopening a popout that died `deaths` times in the
+ *  last minute. The first two come back at once; after that a window something
+ *  keeps killing backs off, so a display that takes a while to settle is waited
+ *  out instead of fought. Pure. */
+export function detachedRespawnDelay(deaths: number): number {
+  return deaths <= 2 ? 0 : Math.min(30_000, 1000 * 2 ** (deaths - 3));
+}
 
 /** The `DetachedTabStatus` map for one popout's keys, from the main window's
  *  classified activity — the same three states `TabBar` derives per tab. Pure. */
@@ -877,7 +983,7 @@ export function statusForEntry(
   entry: DetachedGroup,
   tabs: TabEntry[],
   busyByTab: Record<string, boolean>,
-  attentionByTab: Record<string, "decision" | "done">,
+  attentionByTab: Record<string, AttentionKind>,
   busyKindByTab: Record<string, BusyKind> = {},
 ): Record<string, DetachedTabStatus> {
   const out: Record<string, DetachedTabStatus> = {};
@@ -897,6 +1003,7 @@ export function statusForEntry(
     const attn = attentionByTab[ptyId];
     if (attn === "decision") out[key] = "needs-decision";
     else if (attn === "done") out[key] = "finished";
+    else if (attn === "interrupted") out[key] = "interrupted";
   }
   return out;
 }
@@ -967,6 +1074,7 @@ export async function listenDetachedHost(): Promise<() => void> {
       store.addTabToScope(edit.scope, edit.tab);
       return;
     }
+    if (edit.kind === "close" && edit.user) noteClosedPopoutTabs(scope, groupId, [edit.key]);
     store.applyDetachedEdit(scope, groupId, edit);
   });
 
@@ -1001,8 +1109,12 @@ export async function listenDetachedHost(): Promise<() => void> {
   });
 
   const unClose = await listen<DetachedDockEnvelope>(DETACHED_CLOSE, (ev) => {
-    const { scope, groupId } = ev.payload;
+    const { scope, groupId, user } = ev.payload;
     const store = useTabsStore.getState();
+    if (user) {
+      const entry = store.detachedGroupsByScope[scope]?.find((d) => d.id === groupId);
+      if (entry) noteClosedPopoutTabs(scope, groupId, orderedTabKeys(entry.subtree));
+    }
     // Closing the popout closes ITS tabs for good (no dock-back, no restore).
     store.closeDetachedGroup(scope, groupId);
     // Persist so the dropped tabs don't come back on next launch. For the active
@@ -1010,6 +1122,12 @@ export async function listenDetachedHost(): Promise<() => void> {
     // (inactive) scope has nothing else to write its session — persist it
     // explicitly, for EVERY scope (root and box scopes persist too; #229).
     void persistScopeNow(scope);
+  });
+
+  const unReopen = await listen<DetachedDockEnvelope>(DETACHED_REOPEN, (ev) => {
+    const { scope, groupId } = ev.payload;
+    // A parked scope has nothing else to write the new tab (see the close handler).
+    if (reopenClosedAgentTab(scope, undefined, groupId)) void persistScopeNow(scope);
   });
 
   const unHide = await listen<DetachedDockEnvelope>(DETACHED_HIDE, (ev) => {
@@ -1031,6 +1149,7 @@ export async function listenDetachedHost(): Promise<() => void> {
     else if (kind === "interrupt") noteUserInput(ptyId, true);
     else if (kind === "seen") useActivityStore.getState().clearAttention(ptyId);
     else if (kind === "bell") useActivityStore.getState().noteBell(ptyId);
+    else if (kind === "cutoff") noteTurnCutOff(ptyId);
   });
 
   // #234: a popout's usage counters land in the one accumulator that is flushed.
@@ -1052,21 +1171,50 @@ export async function listenDetachedHost(): Promise<() => void> {
     }
   });
 
-  // #224: a popout that died with its record still standing — nothing in the
-  // store tore it down first — is docked back instead of leaving its tabs in a
-  // `detached:true` record with no window. Quit teardown destroys popouts with
-  // their records deliberately intact (they respawn next launch), hence the flag.
+  const unGaveUp = await listen<DetachedGaveUpEnvelope>(DETACHED_GAVE_UP, (ev) => {
+    gaveUpWindows.add(ev.payload.label);
+  });
+
+  // A compositor can discard a popout during a monitor change — once per step
+  // of it, and switching to one screen takes several. Reopen it from its
+  // existing detached record instead of docking it into the main window and
+  // persisting that as the new layout. Only a popout that keeps giving up on
+  // its own (no seed, so it cannot render) is docked, after bounded retries, so
+  // its tabs stay reachable. Quit teardown destroys popouts with their records
+  // intact, hence the flag.
   const unDestroyed = await listen<DetachedWindowDestroyedEnvelope>(
     DETACHED_WINDOW_DESTROYED,
     (ev) => {
       if (shuttingDown) return;
       const { label } = ev.payload;
+      const gaveUp = gaveUpWindows.delete(label);
       const store = useTabsStore.getState();
       for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
         const entry = entries?.find((d) => d.label === label);
         if (!entry) continue;
-        store.recoverDetachedGroup(scope, entry.id);
-        void persistScopeNow(scope);
+        // An inactive scope will recreate its popouts on the next setScope.
+        // Opening one now could expose a parked project's tabs on screen.
+        if (store.scope !== scope) return;
+        const now = Date.now();
+        const recent = (unexpectedWindowDeaths.get(label) ?? [])
+          .filter((time) => now - time < 60_000);
+        recent.push(now);
+        if (gaveUp && recent.length > 2) {
+          unexpectedWindowDeaths.delete(label);
+          store.recoverDetachedGroup(scope, entry.id);
+          void persistScopeNow(scope);
+          return;
+        }
+        unexpectedWindowDeaths.set(label, recent);
+        const delay = detachedRespawnDelay(recent.length);
+        if (delay === 0) {
+          store.respawnDetachedForScope(scope);
+        } else {
+          setTimeout(() => {
+            const latest = useTabsStore.getState();
+            if (latest.scope === scope) latest.respawnDetachedForScope(scope);
+          }, delay);
+        }
         return;
       }
     },
@@ -1225,9 +1373,11 @@ export async function listenDetachedHost(): Promise<() => void> {
     unDock();
     unClose();
     unHide();
+    unReopen();
     unActivity();
     unUsage();
     unDialog();
+    unGaveUp();
     unDestroyed();
     unTabsSync();
     unProjectsSync();

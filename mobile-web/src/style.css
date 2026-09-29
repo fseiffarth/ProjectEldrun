@@ -1,14 +1,12 @@
 :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background:#0b0d13; color:#e7e9f2; }
 * { box-sizing:border-box; }
-body { margin:0; min-height:100dvh; background:radial-gradient(circle at 80% 0,#262143 0,transparent 42%),#11131a; }
+body { margin:0; min-height:100dvh; background:#000; }
 button,input,textarea,select { font:inherit; }
 button { color:inherit; }
 .screen { max-width:720px; min-height:100dvh; margin:auto; padding:max(22px,env(safe-area-inset-top)) 18px max(24px,env(safe-area-inset-bottom)); }
-header,.brand,.card,.settings-row,.agent-create,.mobile-build,.card-trailing { display:flex; align-items:center; gap:12px; }
+header,.card,.settings-row,.agent-create,.card-trailing { display:flex; align-items:center; gap:12px; }
 header { min-height:52px; justify-content:space-between; }
-.mobile-build { gap:8px; white-space:nowrap; }
 h1 { margin:0; font-size:1.35rem; }
-.spark { color:#f4c95d; font-size:1.8rem; }
 .pair { display:grid; align-content:center; gap:18px; max-width:440px; }
 label { display:grid; gap:7px; color:#b7bac8; }
 input { width:100%; border:1px solid #3a3e50; border-radius:12px; padding:13px; background:#171a24; color:#fff; }
@@ -40,24 +38,36 @@ nav button,.keys button { flex:1; }
 .activity-sort.in-header { flex:0 1 auto; min-width:0; margin:0; }
 .activity-sort.in-header select { flex:0 1 auto; max-width:11rem; }
 @media (max-width:420px) { .activity-sort.in-header > span { display:none; } }
-/* The project screen's header runs on two rows: the chevron and the name on the
-   first, the gallery, the sort and ＋ on the second, so the name keeps the width. */
-.project-header { flex-wrap:wrap; row-gap:6px; }
+/* Keep the project name readable above the controls on narrow phones. */
+.project-header { flex-wrap:wrap; row-gap:10px; }
 .project-header-tools { flex:1 0 100%; display:flex; align-items:center; gap:10px; min-width:0; }
 .project-header-tools .activity-sort.in-header { flex:1 1 auto; }
 .project-header-tools .activity-sort.in-header > span { display:inline; }
 .project-header-tools .activity-sort.in-header select { flex:1 1 auto; max-width:none; }
 .project-header-tools .new-tab { margin-left:auto; }
+/* The sticky bar and cards share a softer surface, while the controls remain
+   visible as the tab list scrolls. */
+.project-screen { padding-top:0; background:radial-gradient(ellipse 85% 300px at 50% 0, #1c2034 0, #0e111b 72%, #0e111b 100%); }
+.project-header { position:sticky; top:0; z-index:5; margin:0 -18px 16px; padding:max(8px,env(safe-area-inset-top)) 18px 14px; border-bottom:1px solid #2b3040; background:rgba(15,18,29,.96); box-shadow:0 8px 24px rgba(0,0,0,.16); }
+.project-header > .back { display:grid; place-items:center; width:44px; height:44px; margin-left:-8px; padding:0; border-radius:12px; background:#222637; color:#d9dcf0; font-size:1.7rem; }
+.project-header > .terminal-title { min-width:0; flex:1; min-height:44px; align-content:center; }
+.project-header h1 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:1.3rem; letter-spacing:-.025em; }
+.project-header-tools > * { height:42px; }
+.project-header-tools .terminal-gallery { padding:0 12px; border-color:#3d435a; background:#242a3c; }
+.project-header-tools .activity-sort.in-header { gap:8px; margin:0; }
+.project-header-tools .activity-sort.in-header select { height:42px; padding-block:0; border-color:#3d435a; border-radius:12px; background-color:#242838; }
+.project-header-tools .new-tab { display:grid; place-items:center; width:44px; padding:0; border-radius:12px; box-shadow:0 4px 14px rgba(108,92,231,.25); font-size:1.5rem; }
+@media (max-width:390px) { .project-header-tools .activity-sort.in-header > span { display:none; } }
 .cards { display:grid; gap:10px; }
+.project-screen .cards { gap:12px; }
 .card { width:100%; text-align:left; justify-content:space-between; padding:16px; background:rgba(28,31,43,.92); }
 .card span:first-child { display:grid; gap:4px; }
 .card-trailing { flex:0 0 auto; gap:10px; }
-/* An agent tab reads as one block: the card opens the session (its name
-   renames it), and under it a foot says what is scheduled and carries the
-   controls that need no session — the scheduled prompts, and close. It is the desktop Agents view's
-   tab row, stacked for a 360px phone: a bare ◷ in the row's gutter never said
-   that scheduling had moved out here. */
+/* Project rows also use this shell for their reorder grip. The layered card
+   treatment below belongs to the project screen's agent tab overview only. */
 .tab-card { position:relative; display:grid; border:1px solid #383c4d; border-radius:11px; background:rgba(28,31,43,.92); }
+.project-screen .tab-card { border-color:#363c50; border-radius:18px; background:linear-gradient(155deg, #222637, #1a1d2b 76%); box-shadow:0 8px 24px rgba(0,0,0,.15); }
+.project-screen .tab-card:focus-within { border-color:#8578ed; }
 .tab-card .card { border:0; background:transparent; }
 /* #264 — a tab the user has coloured. The desktop spends the tab's bottom rule
    on the colour; a card has no such edge, so it spends its left border, which
@@ -84,38 +94,43 @@ nav button,.keys button { flex:1; }
    keeps it once it has started. */
 .tab-card-head { display:flex; align-items:stretch; min-width:0; }
 .tab-card-head .card { flex:1 1 auto; min-width:0; }
+.project-screen .tab-card-head { min-height:64px; }
+.project-screen .tab-card-head .card { padding:16px 4px 12px; }
 /* The colour chooser: a small dot in the card's upper-left corner. The button
    is wider than the dot so a thumb can hit it, and the card's own left padding
    closes up so the label does not drift right. */
-.tab-card-dot { position:relative; z-index:1; flex:0 0 auto; align-self:flex-start; width:34px; padding:21px 0 12px 8px; border:0; border-radius:11px 0 0 0; background:transparent; line-height:0; }
-.tab-card-dot span { display:block; width:11px; height:11px; margin:0 auto; border:1px solid #6f7488; border-radius:50%; }
+.tab-card-dot { position:relative; z-index:1; flex:0 0 auto; align-self:flex-start; display:grid; place-items:center; width:44px; height:60px; padding:0; border:0; border-radius:18px 0 0 0; background:transparent; line-height:0; }
+.tab-card-dot span { display:block; width:14px; height:14px; border:2px solid #747c97; border-radius:50%; }
 .tab-card.has-tab-color .tab-card-dot span { border-color:var(--tab-color); background:var(--tab-color); }
-.tab-card-head .tab-card-dot + .card { padding-left:6px; }
+.tab-card-head .tab-card-dot + .card { padding-left:2px; }
 /* The opener is stretched over the whole card — head, prompts and foot — so
    the mark that says so can sit on the foot's right end rather than beside the
    ✕. Everything that is its own control (the dot, the name, ✕, the grip, ◷)
    lifts itself above it; the rest of the card is the opener's. */
 .tab-card-main { position:relative; }
 .tab-card-main.unavailable > span { opacity:.45; }
-.tab-card-open { position:absolute; inset:0; padding:0; border:0; border-radius:11px; background:transparent; }
+.tab-card-open { position:absolute; inset:0; padding:0; border:0; border-radius:18px; background:transparent; }
 .tab-card-open:disabled { opacity:1; }
-.tab-card-name { position:relative; z-index:1; justify-self:start; min-width:0; margin:-4px -6px; padding:4px 6px; border:0; border-radius:6px; background:transparent; text-align:left; }
-.tab-card-name strong { text-decoration:underline dotted #6f7488; text-underline-offset:4px; overflow-wrap:anywhere; }
-/* The name and the model tag share one row: the tag is the fact one scans a
-   list of tabs for, and a line of its own would push every card's prompts down.
-   The name keeps the row's spare width (a long one wraps within it) and the tag
-   its own, so it is never the thing that gets cut. The stronger selector is
-   what beats `.card span:first-child`, which would otherwise stack the two. */
-.tab-card-head .tab-card-main .tab-card-title { display:flex; align-items:baseline; gap:8px; min-width:0; }
-/* Plain muted words beside the name, in no box at all: the status pill's
-   outline is how a *state* is marked, and wearing it made a fact that never
-   changes look like one more thing to read. It says what the session's own
-   status line says (`agentModel.screenModelTag`), so the tag and the chip over
-   the keyboard are one reading in two places. The name keeps the row's spare
-   width; it is the tag that gets cut. */
-.tab-card-main .tab-card-model { position:relative; z-index:1; display:inline-block; flex:0 1 auto; max-width:45%; margin:-4px -6px -4px 0; padding:4px 6px 4px 0; border:0; border-radius:6px; background:transparent; color:#9498aa; font-size:.72rem; font-weight:600; text-align:left; text-transform:none; text-decoration:underline dotted #6f7488; text-underline-offset:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.tab-card-main .tab-card-model:disabled { opacity:1; text-decoration:none; }
+.tab-card-name { position:relative; z-index:1; justify-self:start; min-width:0; margin:0 -6px; padding:4px 6px; border:0; border-radius:6px; background:transparent; line-height:20px; text-align:left; }
+.tab-card-name strong { font-size:1.02rem; letter-spacing:-.02em; overflow-wrap:anywhere; }
+.tab-card-name:active,.tab-card-model:active { background:#343a52; }
+/* The name and model share a row when there is room, then wrap without
+   truncating the tab name. The stronger selector overrides the generic card. */
+.tab-card-head .tab-card-main .tab-card-title { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-width:0; }
+/* The head's top row — dot, name, ✕ — shares one centre line, 30px down: the
+   dot is 60px tall from the top, the ✕ 40px under a 10px margin, and the name's
+   first line is a 28px box (the name's 20px line plus its 4px tap padding, the
+   model pill 16px plus its 5px padding and border) under the card's 16px top
+   padding. So the body sits at the top rather than centred in the head, and a
+   name that wraps grows downward from that line instead of dropping below it. */
+.tab-card-head .tab-card-main { align-items:flex-start; }
+.tab-card-head .tab-card-main .tab-card-title > strong { line-height:28px; }
+/* The model is a quiet button: it still opens the picker, but the session name
+   and live state carry the stronger visual weight. */
+.tab-card-main .tab-card-model { position:relative; z-index:1; display:inline-block; flex:0 1 auto; max-width:100%; margin:0; padding:5px 8px; border:1px solid #414861; border-radius:8px; background:#2b3145; color:#b6bdd8; font-size:.72rem; font-weight:600; line-height:16px; text-align:left; text-transform:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tab-card-main .tab-card-model:disabled { opacity:1; }
 .tab-card-grip { position:relative; z-index:1; flex:0 0 auto; width:44px; padding:0; border:0; border-left:1px solid #2d3040; border-radius:0 11px 0 0; background:transparent; color:#6f7488; font-size:1.05rem; touch-action:none; cursor:grab; }
+.project-screen .tab-card-grip { border-left-color:#34394d; border-radius:0 18px 0 0; color:#848ba4; }
 .tab-card-grip:active { cursor:grabbing; color:#d3d6e4; }
 /* A card that is only its head — the home screen's project rows, which wear the
    same row so their grip sits beside the opener rather than on it. With no
@@ -129,34 +144,42 @@ nav button,.keys button { flex:1; }
 .tab-card.drop-before { box-shadow:inset 0 3px 0 0 #7c6cff; }
 .tab-card.drop-after { box-shadow:inset 0 -3px 0 0 #7c6cff; }
 .reorder-hint { margin:-4px 0 12px; color:#9aa0b4; font-size:.84rem; }
-.tab-card-foot { display:flex; align-items:center; gap:4px; padding:0 16px 8px 8px; }
-.tab-card-when { min-width:0; flex:1 1 auto; }
-/* The state and the ›, on the foot's right end. The foot's own right padding is
-   the gap to the card's edge, so the cluster keeps the ✕'s column without
-   sitting under it. */
-.tab-card-foot .card-trailing { margin-left:auto; color:#9498aa; }
-/* The card's icon-only controls: the ✕ in its top-right corner and the ◷ that
-   leads the schedule line. A 36px hit box around a small glyph, borderless
-   like `.sheet-close`, so they read as controls without shouting over the tab. */
-.tab-card-icon { position:relative; z-index:1; flex:0 0 auto; display:grid; place-items:center; width:36px; height:36px; padding:0; border:0; border-radius:9px; background:transparent; color:#9498aa; font-size:1rem; line-height:1; }
+/* A project's pending git state (`GitMark`), in the desktop pill's colours. */
+.git-mark { display:inline-flex; align-items:center; gap:5px; font-style:normal; font-weight:600; }
+small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-weight:400; }
+.git-mark > i { width:8px; height:8px; border-radius:50%; background:currentColor; flex:0 0 auto; }
+.git-mark.git-dirty { color:#f85149; }
+.git-mark.git-staged { color:#d29922; }
+.git-mark.git-unpushed { color:#3fb950; }
+.git-mark.git-broken { color:#8b949e; }
+.git-mark.git-broken > i { background:none; border:1px dashed currentColor; box-sizing:border-box; }
+.project-git { margin:-4px 0 12px; font-size:.86rem; }
+.tab-card-foot { display:flex; align-items:center; gap:8px; min-height:56px; padding:8px 14px 9px 10px; border-top:1px solid #303549; }
+.tab-card-when { min-width:0; flex:1 1 auto; color:#a9b0c6; font-size:.78rem; line-height:1.3; }
+.tab-card .agent-status { padding:5px 9px; border-radius:999px; font-size:.72rem; line-height:1; white-space:nowrap; }
+/* The ✕ and ◷ retain separate, comfortable touch targets. */
+.tab-card-icon { position:relative; z-index:1; flex:0 0 auto; display:grid; place-items:center; width:40px; height:40px; padding:0; border:0; border-radius:11px; background:transparent; color:#a3aac0; font-size:1rem; line-height:1; }
 .tab-card-icon:active { background:rgba(56,60,80,.8); color:#d3d6e4; }
-.tab-card-icon.accent { color:#a99cff; font-size:1.15rem; }
-.tab-card-close { align-self:flex-start; margin:6px 6px 0 0; font-size:.9rem; }
+.tab-card-icon.accent { background:#2e2b48; color:#bcb0ff; font-size:1.15rem; }
+/* The ◷ beside the model pill takes the pill's 28px row height. */
+.tab-card-title .tab-card-schedule { width:28px; height:28px; border-radius:8px; font-size:.95rem; }
+.tab-card-close { align-self:flex-start; margin:10px 8px 0 0; font-size:.9rem; }
 .tab-card-close:active { color:#ff9aa6; }
 .tab-card-head .tab-card-main { padding-right:4px; }
 /* The same pill the sheets' headings wear (`.option-sheet h2 small`), as a
    class, for the places that mark an unverified feature outside a heading. */
 .untested { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
-/* What each agent session was last asked, between the card and its foot. Always
-   drawn, never behind a disclosure: it is what tells two "claude" tabs apart.
-   The newest prompt wraps to three lines, the ones behind it are one each, so a
-   card's height is bounded whatever the prompts were. */
-.tab-card-prompts { display:grid; gap:4px; padding:0 16px 12px; min-width:0; }
-.tab-card-prompts-label { font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:#6f7488; }
-.tab-card-prompt { display:flex; gap:8px; margin:0; min-width:0; color:#9498aa; font-size:.86rem; }
-.tab-card-prompt.latest { color:#d3d6e4; }
-.tab-card-prompt.empty { color:#6f7488; font-style:italic; }
-.tab-card-prompt-when { flex:0 0 auto; color:#6f7488; font-variant-numeric:tabular-nums; }
+/* The newest prompt is the primary preview; older ones form a quiet history.
+   Flat on the card, no inner surface: indented to the tab name (the 44px dot
+   column plus the head's 2px) so it reads as that tab's, not as its own box. */
+.tab-card-prompts { display:grid; gap:0; min-width:0; margin:0 14px 10px 46px; }
+.tab-card-prompts-label, .reopen-closed-label { margin:0 0 3px; font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.09em; color:#929cba; }
+.tab-card-prompt { display:flex; gap:8px; min-width:0; margin:0; padding:2px 0; color:#a3abc2; font-size:.82rem; line-height:1.35; }
+.tab-card-prompt.latest { display:grid; gap:1px; color:#ecedfa; font-size:.88rem; }
+.tab-card-prompt.empty { color:#8992ad; font-style:italic; }
+.tab-card-prompt.scheduled .tab-card-prompt-when { color:#bcb0ff; }
+.tab-card-prompt-when { flex:0 0 auto; color:#858fac; font-size:.75rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.tab-card-prompt.latest .tab-card-prompt-when { color:#afa5f4; font-size:.7rem; font-weight:700; }
 .tab-card-prompt-text { min-width:0; overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow-wrap:anywhere; }
 .tab-card-prompt.latest .tab-card-prompt-text { -webkit-line-clamp:3; }
 /* The same reading on the flat Agents list, where a row is one tap tall: two
@@ -170,6 +193,13 @@ nav button,.keys button { flex:1; }
    ? and ✓, so it is set smaller — the same correction the desktop makes. */
 .agent-status-glyph { font-size:.85em; line-height:1; }
 .agent-status.working .agent-status-glyph { font-size:.7em; }
+/* The project screen's tab cards carry the glyph alone, as a disc centred on
+   the card's left border, half over the page gutter. The card no longer clips
+   (`overflow` was only rounding what its own radii already round), so the disc
+   can stand out past the edge; its dark ring parts it from the border line and
+   the tab colour running through it. Taps pass through to the card. */
+.tab-card > .tab-card-status { position:absolute; top:50%; left:-12px; z-index:2; display:grid; place-items:center; width:22px; height:22px; padding:0; border:1.5px solid currentColor; border-radius:50%; box-shadow:0 0 0 2px #000; font-size:.72rem; line-height:1; transform:translateY(-50%); pointer-events:none; }
+.tab-card > .tab-card-status.working { font-size:.56rem; }
 small { color:#9498aa; }
 .count { min-width:34px; text-align:center; padding:6px; border-radius:0; background:#312a57; }
 .notice,.error { padding:12px; border-radius:10px; }
@@ -182,18 +212,50 @@ small { color:#9498aa; }
 .lamp { width:10px; height:10px; border-radius:50%; background:#55d187; box-shadow:0 0 10px #55d187; }
 .lamp.off { background:#d15b66; box-shadow:none; }
 .create { display:grid; gap:9px; margin-top:22px; }
+.reopen-closed > button { text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .agent-create > button:first-child { flex:1; text-align:left; }
 .mode { text-transform:capitalize; }
-/* The same rows inside the ＋ sheet, where the heading and the note above them
-   are the space the margin used to buy. */
-.new-tab-sheet .create { margin-top:4px; }
+/* The shell remains a clear first action; the agents fit two across without
+   forcing a long sheet. Modes stay with their agent, inside the same tile. */
+.new-tab-sheet .create { margin-top:4px; gap:10px; }
+.new-tab-sheet .create > .primary { min-height:48px; }
+.new-tab-agents { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.new-tab-agents .agent-create { flex-wrap:wrap; align-content:start; gap:6px; min-width:0; padding:6px; border:1px solid #383c4d; border-radius:12px; background:#1b1e29; }
+.new-tab-agents .agent-create > button:first-child { flex:1 0 100%; min-width:0; min-height:44px; padding:6px 8px; border:0; background:transparent; overflow-wrap:anywhere; }
+.new-tab-sheet .new-tab-file { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:52px; padding:8px 12px; text-align:left; }
+.new-tab-sheet .new-tab-file > span { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.new-tab-sheet .new-tab-file small { color:#aeb4c8; font-size:.76rem; }
+.new-tab-sheet .new-tab-file svg { flex:0 0 20px; width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.new-tab-agents .agent-create > .mode { flex:1 1 auto; min-height:36px; padding:6px 8px; font-size:.8rem; }
+.new-tab-where { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.new-tab-where > small { flex:1 0 100%; padding:0 6px; color:#9da3b6; font-size:.8rem; }
+.new-tab-where > button { min-height:36px; padding:6px 10px; font-size:.8rem; overflow-wrap:anywhere; }
+/* The local-model group: the agents grid under a label worded like "Agents start in". */
+.new-tab-local { display:flex; flex-direction:column; gap:6px; }
+.new-tab-local > small { padding:0 6px; color:#9da3b6; font-size:.8rem; overflow-wrap:anywhere; }
+.new-tab-local > .sheet-note { margin:0; }
 /* The ＋ at the end of the project header. Square against the back chevron
    opposite it, and it never shrinks: the project's name is what gives way. */
 .new-tab { flex:0 0 auto; min-width:44px; padding:8px 12px; font-size:1.25rem; line-height:1.1; }
-.home-header { gap:10px; }
+.home-screen { background:radial-gradient(ellipse 90% 250px at 50% 0,rgba(97,82,174,.16),transparent 78%); }
+.home-header { position:relative; gap:10px; min-height:70px; padding:9px 12px; border:1px solid #3a3c58; border-radius:18px; background:linear-gradient(125deg,rgba(50,44,76,.92),rgba(27,31,46,.95) 62%,rgba(25,37,54,.94)); box-shadow:0 10px 25px rgba(3,5,12,.2); }
 .home-brand { display:flex; flex:1; align-items:center; gap:8px; min-width:0; }
-.home-brand strong { font-size:1.05rem; letter-spacing:.01em; }
-.home-logo { width:36px; height:36px; flex:0 0 auto; }
+.home-brand-copy { display:grid; gap:2px; min-width:0; }
+.home-brand strong { font-size:1.05rem; letter-spacing:.01em; white-space:nowrap; }
+.home-brand-copy small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.home-logo-frame { position:relative; display:grid; place-items:center; width:50px; height:47px; flex:0 0 auto; }
+.home-logo { position:relative; width:35px; height:35px; color:#f0efff; }
+.home-header > .lamp { flex:0 0 auto; }
+.home-project-card { border-color:#3b4055; border-radius:14px; background:linear-gradient(115deg,rgba(54,49,85,.42),rgba(28,31,43,.96) 38%); }
+.home-project-card:focus-within { border-color:#8d80ee; }
+.home-project-card .card { min-height:62px; }
+.home-project-card .count { border-radius:8px; background:#38305f; color:#ebe6ff; font-variant-numeric:tabular-nums; }
+.tab-card.one-row.home-project-card .tab-card-grip { border-radius:0 14px 14px 0; }
+@media (max-width:380px) {
+  .home-brand strong { font-size:.9rem; }
+  .home-logo-frame { width:43px; height:41px; }
+  .home-logo { width:30px; height:30px; }
+}
 /* The four top-level sections. Fixed to the bottom edge so it survives the long
    scroll of a board or a month, centered on wide screens with the same 720px
    measure as `.screen`, and kept under the modal backdrops (z-index 10/12) so an
@@ -201,7 +263,7 @@ small { color:#9498aa; }
    out of the viewport; without it the last card sits under the bar. */
 .mobile-tabbar { position:fixed; inset:auto 0 0 0; z-index:8; margin:0; gap:2px; padding:6px max(8px,calc((100vw - 720px) / 2)) max(6px,env(safe-area-inset-bottom)); border-top:1px solid #2b2f3f; background:rgba(13,15,21,.96); backdrop-filter:blur(10px); }
 .mobile-tab { flex:1; display:grid; justify-items:center; gap:3px; padding:7px 4px; border:0; border-radius:10px; background:transparent; color:#9498aa; font-size:.72rem; line-height:1.1; }
-.mobile-tab span { font-size:1.2rem; line-height:1.15; }
+.mobile-tab span { display:grid; place-items:center; width:35px; height:31px; font-size:1.2rem; line-height:1.15; }
 .mobile-tab.active { background:rgba(108,92,231,.18); color:#d7cffd; }
 .tabbed > .screen { padding-bottom:calc(76px + max(24px,env(safe-area-inset-bottom))); }
 .projects-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:17px; }
@@ -400,7 +462,7 @@ button.mobile-alert-row { cursor:pointer; }
 .mobile-calendar-agenda article span { color:#aeb2c2; font-size:.86rem; }
 .mobile-calendar-agenda article.cancelled { opacity:.58; }
 .mobile-calendar-agenda article.cancelled strong { text-decoration:line-through; }
-@media (max-width:480px) { .mobile-build small { font-size:.72rem; } .mail-mobile-row > div { display:grid; gap:3px; } .mail-mobile-pager button { padding-inline:9px; } }
+@media (max-width:480px) { .mail-mobile-row > div { display:grid; gap:3px; } .mail-mobile-pager button { padding-inline:9px; } }
 @media (max-width:360px) { .projects-row { margin-top:14px; } .mobile-calendar-day { min-height:48px; } .mobile-tab { font-size:.68rem; } }
 /* While the full-bleed terminal is up: no document scroll to lose the header
    down (see the `terminal-open` effect in screens/Terminal.tsx). */
@@ -527,6 +589,13 @@ body.terminal-open { min-height:0; overflow:hidden; }
    text rather than a prompt of its own. */
 .readable-turn.user.command-args { border:1px solid #7a6ad8; }
 .readable-lines.transcript .readable-turn.agent.answer { border:1px solid #2a2e42; }
+/* A plan put up for approval (Claude's `ExitPlanMode`) is the agent's
+   answer too, but the one waiting on a yes: full width, headed "Plan" and
+   outlined in plan mode's violet, so it stands apart from the answers
+   around it. */
+.readable-lines.transcript .readable-turn.agent.answer.plan { width:100%; max-width:100%; border-color:#7a6ad8; background:#1f1b36; box-shadow:inset 3px 0 0 #8c7df4; }
+.transcript-plan-head { display:block; margin-bottom:6px; color:#b6aaf7; font:600 .72rem/1.3 Inter,ui-sans-serif,system-ui,sans-serif; letter-spacing:.06em; text-transform:uppercase; }
+.transcript-plan-head em { font-style:normal; opacity:.75; text-transform:none; letter-spacing:0; }
 .transcript-text { margin:0; min-width:0; white-space:pre-wrap; overflow-wrap:break-word; }
 /* An answer's Markdown (`answerHtml`): formatting only, in the chat's own
    palette — nothing in it is a link or loads anything. */
@@ -570,10 +639,47 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .transcript-md .tok-tag { color:#f47868; }
 .transcript-md .tok-arg { font-style:italic; }
 .transcript-cut { display:block; margin-top:4px; color:#9298aa; font-size:.72rem; }
+/* A messenger's time in the bubble's bottom corner, and its day chip centred
+   across the chat where the day changes (`chatTimes`). */
+.transcript-time { display:block; margin:2px -4px -3px 0; text-align:right; color:#8d93a8; font:400 .68rem/1.2 Inter,ui-sans-serif,system-ui,sans-serif; font-variant-numeric:tabular-nums; }
+.readable-turn.user .transcript-time { color:#a69fd4; }
+.transcript-day { display:flex; justify-content:center; width:100%; margin:4px 0; }
+.transcript-day span { padding:2px 10px; border-radius:10px; background:#1a1d2b; color:#9aa1b8; font:500 .72rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
+.transcript-day em { font-style:normal; opacity:.8; }
+.readable-lines.transcript > .transcript-day + .readable-turn.user { margin-top:0; }
+/* A subagent the agent spawned (`SubagentCard`): on the agent's side, but a
+   card rather than a bubble — the agent did not say it — in the working
+   row's blue, with a chevron when it opens its own conversation. */
+.transcript-agent { justify-self:start; display:flex; align-items:center; gap:10px; max-width:92%; min-width:0; padding:8px 10px; border:1px solid #2c3a55; border-radius:12px; background:#131926; color:#dbe4f6; font:inherit; text-align:left; }
+.transcript-agent:not(:disabled):active { background:#1a2233; }
+.transcript-agent:disabled { opacity:.7; }
+.transcript-agent svg { flex:0 0 auto; width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.transcript-agent-icon { color:#8fb8ff; }
+.transcript-agent-chevron { color:#6f7890; }
+.transcript-agent-body { display:grid; gap:1px; min-width:0; }
+.transcript-agent-body small { color:#8fb8ff; font-size:.66rem; text-transform:uppercase; letter-spacing:.05em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.transcript-agent-body small em { font-style:normal; }
+.transcript-agent-body > span { font-size:.86rem; line-height:1.35; overflow-wrap:break-word; }
+/* Over a subagent's conversation: back up, its task, and ‹ n of m › through
+   the subagents beside it. Sticks to the top of the reading view, over its
+   padding, so the way back never scrolls away. */
+.subagent-bar { position:sticky; top:-12px; z-index:2; display:flex; align-items:center; gap:8px; margin:-12px -14px 12px; padding:8px 10px; border-bottom:1px solid #262a3a; background:#10131b; }
+.subagent-bar button { display:grid; place-items:center; width:32px; height:32px; padding:0; border:1px solid #34384a; border-radius:9px; background:#151823; color:#c8cdda; }
+.subagent-bar button:disabled { opacity:.35; }
+.subagent-bar svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.subagent-title { display:grid; flex:1 1 auto; min-width:0; }
+.subagent-title small { color:#8fb8ff; font-size:.64rem; text-transform:uppercase; letter-spacing:.05em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.subagent-title small em { font-style:normal; }
+.subagent-title strong { color:#e7e9f2; font:600 .86rem/1.3 Inter,ui-sans-serif,system-ui,sans-serif; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.subagent-steps { display:flex; flex:0 0 auto; align-items:center; gap:6px; color:#9da3b6; font-size:.72rem; font-variant-numeric:tabular-nums; }
+.subagent-bar + .readable-empty { min-height:calc(100% - 56px); }
+.readable-empty button { margin-top:6px; }
 /* What the screen is drawing right now, under the stored session: shown only
    while it holds a choice the session is waiting on. */
-.transcript-screen { display:grid; gap:6px; padding:8px 10px; border-left:3px solid #8fb8ff; border-radius:8px; background:#14161e; }
-.transcript-screen small { color:#8fb8ff; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
+.transcript-screen { display:grid; gap:11px; padding:10px 10px 12px; border:1px solid #383c4d; border-radius:20px; background:#171a24; }
+/* Its own label only: a bare `small` also caught every option's note in the
+   list below and set it in tiny blue capitals. */
+.transcript-screen > small { padding:0 4px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
 /* Under the stored session while the live screen shows the agent mid-turn. */
 .transcript-working { display:flex; align-items:center; gap:8px; padding:6px 10px; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; }
 .transcript-working-dots { display:inline-flex; gap:3px; }
@@ -609,6 +715,12 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .focus-statusline-empty { color:#9298aa; }
 @keyframes focus-statusline-in { from { opacity:0; transform:translateX(-14px); } to { opacity:1; transform:none; } }
 @media (prefers-reduced-motion:reduce) { .focus-statusline { animation:none; } }
+/* The newest prompt, pinned over the top of Focus once its bubble has
+   scrolled away: the bubble's own colours, two lines at most, a tap scrolls
+   back to the whole of it. */
+.readable-pinned-prompt { position:absolute; top:6px; right:14px; z-index:1; display:flex; align-items:baseline; gap:8px; max-width:min(88%, calc(100% - 28px)); padding:6px 12px; border:1px solid #4a3f8a; border-radius:14px 14px 4px 14px; background:#2b2650; color:#e9e4ff; font:400 .82rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; text-align:left; box-shadow:0 4px 14px rgba(0,0,0,.45); }
+.readable-pinned-prompt-text { display:-webkit-box; min-width:0; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; white-space:pre-wrap; overflow-wrap:anywhere; }
+.readable-pinned-prompt em { flex:0 0 auto; color:#a99cf0; font-size:.68rem; font-style:normal; }
 .readable-jump { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); padding:8px 14px; border:1px solid #4c5165; border-radius:999px; background:rgba(23,26,36,.94); color:#e7e9f2; font-size:.78rem; box-shadow:0 6px 18px rgba(0,0,0,.35); }
 .terminal-controls { min-height:0; overflow:auto; }
 .last-sent { display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px; align-items:start; margin:6px 7px 0; padding:8px 10px; border-radius:9px; background:#211d35; color:#dcd6ff; font-size:.78rem; }
@@ -628,6 +740,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .fact-action { display:flex; align-items:center; gap:5px; flex:0 0 auto; max-width:14em; margin:0 -4px; padding:5px 4px; border:0; border-radius:6px; background:transparent; color:#b9bed0; font:inherit; }
 .fact-action:active { background:rgba(255,255,255,.08); }
 .fact-action:disabled { color:#8b90a5; opacity:.6; }
+.fact-action-plan { box-shadow:inset 0 0 0 1px #8c7df4; background:rgba(120,104,217,.28); color:#fff; }
 .fact-action-label { min-width:0; overflow:hidden; text-overflow:ellipsis; text-decoration:underline dotted rgba(185,190,208,.45); text-underline-offset:3px; }
 /* The same lamp the tab row shows, so the state reads without opening the
    sheet. `idle` is dim rather than absent: a missing lamp reads as broken. */
@@ -637,26 +750,51 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .fact-lamp.done { background:#91e6a9; }
 .prompt-composer { display:flex; flex-direction:column; gap:2px; margin:7px 7px 2px; padding:6px 8px 8px 12px; border:1px solid #454a60; border-radius:16px; background:#171a24; box-shadow:0 6px 20px rgba(0,0,0,.18); }
 .prompt-composer:focus-within { border-color:#8c7df4; box-shadow:0 0 0 2px rgba(120,104,217,.4),0 6px 20px rgba(0,0,0,.18); }
-.prompt-composer textarea { width:100%; min-height:42px; max-height:116px; resize:none; border:0; padding:8px 0; appearance:none; -webkit-appearance:none; background-color:#171a24 !important; color:#fff !important; -webkit-text-fill-color:#fff; caret-color:#fff; line-height:1.35; }
+.prompt-composer textarea { width:100%; min-height:42px; max-height:min(200px,32vh); resize:none; border:0; padding:8px 0; appearance:none; -webkit-appearance:none; background-color:#171a24 !important; color:#fff !important; -webkit-text-fill-color:#fff; caret-color:#fff; line-height:1.35; }
 .prompt-composer textarea:focus { outline:0; }
 .prompt-composer textarea:disabled { opacity:1; color:#9fa4b6 !important; -webkit-text-fill-color:#9fa4b6; }
 .composer-bar { display:flex; align-items:center; gap:6px; }
-.composer-bar svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
-.composer-bar .composer-dictate,.composer-bar .send-icon { display:grid; place-items:center; width:40px; min-width:40px; height:40px; padding:0; border:0; border-radius:10px; }
+.composer-bar svg,.composer-dictate svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+.composer-dictate,.composer-bar .send-icon { display:grid; place-items:center; width:40px; min-width:40px; height:40px; padding:0; border:0; border-radius:10px; }
 .composer-add { display:grid; place-items:center; flex:0 0 auto; width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:#c8cdda; }
 .composer-spacer { flex:1 0 0; }
-/* The draft row: the textarea and, while there is a draft, a ✕ that empties
-   it — a phone keyboard has no select-all, and a long dictated draft was
-   otherwise deleted a character at a time. */
+/* Folds the key row under the composer in and out; lit while it shows. */
+.composer-keys { display:grid; place-items:center; flex:0 0 auto; width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:#c8cdda; }
+.composer-keys.open { color:#8c7df4; }
+.keys-untested { align-self:center; flex:0 0 auto; }
+.composer-chips { display:flex; flex:1 1 0; min-width:0; align-items:center; justify-content:space-evenly; }
+/* Plan / Goal: lead the draft with `/plan` or `/goal`; lit while it does.
+   Clear, right of them, sends `/clear` at once. */
+.composer-prefix { flex:0 0 auto; height:30px; padding:0 11px; border:1px solid #3a3f55; border-radius:15px; background:transparent; color:#c8cdda; font:inherit; font-size:.8rem; }
+.composer-prefix.active { border-color:#8c7df4; background:rgba(120,104,217,.28); color:#fff; }
+.composer-prefix:disabled { opacity:.5; }
+.composer-untested { color:#ffd36b; font-size:.7rem; font-style:normal; }
+/* The draft row: the textarea, while there is a draft a ✕ that empties it —
+   a phone keyboard has no select-all, and a long dictated draft was otherwise
+   deleted a character at a time — and the mic, right above Send. */
 .composer-field { display:flex; align-items:flex-start; gap:4px; }
 .composer-field textarea { flex:1 1 auto; min-width:0; }
 .composer-clear { display:grid; place-items:center; flex:0 0 auto; width:32px; height:32px; margin-top:5px; padding:0; border:0; border-radius:50%; background:#2a2e3e; color:#c8cdda; }
 .composer-clear svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+/* The `/` menu: the slash commands that continue a draft, drawn inside the
+   composer above the field because the CLI's own menu only ever opens in the
+   session's input line, which a phone draft does not reach until Send. Capped
+   so a long list scrolls rather than pushing the field off the screen. */
+.slash-menu { display:flex; flex-direction:column; max-height:min(40vh,260px); overflow-y:auto; overscroll-behavior:contain; margin:0 -4px 4px -8px; padding-bottom:4px; border-bottom:1px solid #2b2f3f; }
+.slash-menu-head { padding:2px 8px 4px; color:#767a8b; font-size:.7rem; letter-spacing:.06em; text-transform:uppercase; }
+.slash-menu-head em { font-style:normal; color:#ffd36b; letter-spacing:0; text-transform:none; }
+.slash-row { display:flex; align-items:center; gap:4px; }
+.slash-pick { flex:1 1 auto; min-width:0; display:flex; align-items:baseline; gap:8px; padding:8px; border:0; border-radius:9px; background:transparent; color:#e7e9f2; text-align:left; }
+.slash-pick:active { background:#262a3a; }
+.slash-pick strong { flex:0 0 auto; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.86rem; font-weight:600; color:#dcd6ff; }
+.slash-pick small { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#9498aa; font-size:.76rem; }
+.slash-row.used .slash-pick small { color:#b3a9f5; }
+.slash-forget { flex:0 0 auto; width:32px; height:32px; padding:0; border:0; border-radius:50%; background:transparent; color:#767a8b; }
 .composer-dictate { color:#dcd6ff; background:transparent; }
 .composer-dictate.listening { color:#fff; background:#7a3151; box-shadow:0 0 0 2px rgba(227,107,154,.22); }
 .composer-dictate.listening svg rect { fill:currentColor; stroke:none; }
 /* The level ring: a static ring scaled by the measured level, never an animated shadow. */
-.composer-dictate { position:relative; }
+.composer-dictate { position:relative; flex:0 0 auto; margin-top:1px; }
 .composer-dictate.listening::after { content:""; position:absolute; inset:0; border-radius:inherit; border:2px solid #e36b9a; opacity:calc(.15 + var(--mic-level, 0) * .75); transform:scale(calc(1 + var(--mic-level, 0) * .35)); transition:transform 80ms linear, opacity 80ms linear; pointer-events:none; }
 .send-icon { color:#fff; background:#6c5ce7; }
 .send-icon svg { fill:currentColor; stroke:#fff; }
@@ -729,6 +867,8 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .sheet-close { width:42px; flex:0 0 auto; padding:7px 0; border:0; border-radius:10px; background:transparent; color:#c9cddb; font-size:1.05rem; }
 .sheet-note { margin:0; padding:2px 6px 4px; color:#9da3b6; font-size:.84rem; overflow-wrap:anywhere; }
 .sheet-note.error { color:#ffb4c0; }
+.notifications-group { display:grid; gap:6px; }
+.notifications-group h3 { margin:4px 6px 0; color:#9da3b6; font-size:.78rem; font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
 .option-list { display:grid; gap:3px; margin:0; padding:0; list-style:none; }
 .option-list button { display:flex; align-items:center; gap:12px; width:100%; padding:13px 14px; border:0; border-radius:13px; background:#1e2230; text-align:left; }
 .option-list button.current { color:#8fb6ff; background:#1c2336; }
@@ -737,19 +877,39 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .option-list small { color:#98a0b4; font-size:.82rem; overflow-wrap:anywhere; }
 .option-list button.current small { color:#7ea3dd; }
 .option-list svg { width:21px; height:21px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+/* The files drawer (`ProjectFiles`): the sheet's own look, stood up along the
+   left edge instead of the bottom, slid in by transform + opacity only. */
+.files-drawer-backdrop { align-items:stretch; justify-content:flex-start; }
+.project-files { align-content:start; width:min(88vw, 420px); max-height:none; height:100%; padding:calc(10px + env(safe-area-inset-top)) 10px calc(16px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left)); border-top:0; border-right:1px solid #383c4d; border-radius:0 20px 20px 0; animation:files-drawer-in .18s ease-out; }
+@keyframes files-drawer-in { from { opacity:0; transform:translateX(-24px); } to { opacity:1; transform:none; } }
+@media (prefers-reduced-motion:reduce) { .project-files { animation:none; } }
+.files-trail { display:flex; flex-wrap:wrap; gap:5px; padding:0 4px; }
+.files-trail button { max-width:100%; padding:5px 10px; overflow:hidden; border:1px solid #34384a; border-radius:999px; background:#1b2333; color:#8fb8ff; font-size:.8rem; text-overflow:ellipsis; white-space:nowrap; }
+.files-trail button:disabled { color:#d8e2f5; opacity:1; }
+/* Select text (`MessageMenu`): the message again, as plain text the phone's
+   own selection handles and callout work on — the bubble's hold is the menu,
+   so it cannot be selected in place. */
+.message-select-text { max-height:52dvh; overflow:auto; overscroll-behavior:contain; padding:10px 12px; border-radius:13px; background:#1e2230; color:#e3e6f2; font:400 .92rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif; white-space:pre-wrap; overflow-wrap:anywhere; -webkit-user-select:text; user-select:text; -webkit-touch-callout:default; }
 .sheet-pending { flex:0 0 auto; color:#c8cdda; font-size:.78rem; }
 /* The same list, inline in the reading view: the choice an agent is waiting on
-   (`QuestionList`). It carries the number the dialog printed beside each row,
-   so the list on the phone reads as the one on the screen — and a row the
-   session highlights is the one Enter would take, not an answer given. */
+   (`QuestionList`). It is the model and mode sheets' list (`OptionSheet`) —
+   label, note, one treatment for every row — and the row the session
+   highlights is the one Enter would take, not an answer given. */
 /* Its heading: the dialog's own question, in the reading view's own type
    rather than the colours the TUI painted its card with (`ReadableRow`
-   `plain`). Flush left — the rows below it carry the indent. */
-.question-ask { display:grid; gap:2px; padding:0 2px 2px; }
-.question-ask .readable-line { padding-left:0; text-indent:0; }
+   `plain`). Flush left, like the rows below it. */
+.question-ask { display:grid; gap:6px; padding:0 4px 2px; }
+.question-ask .readable-line { padding-left:0; text-indent:0; color:#e7e9f2; font:500 .95rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
+.question-ask .readable-line .b { font-weight:600; }
+/* The headers of the questions an agent asks, as Claude Code's tab row names
+   them (`readQuestionTabs`): the sheet's title, and an answered one ticked
+   and quieter. */
+.question-tabs { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; padding:0 4px; }
+.question-tabs span { color:#e7e9f2; font:600 1.02rem/1.3 Inter,ui-sans-serif,system-ui,sans-serif; }
+.question-tabs span.answered { color:#7d8499; font-size:.84rem; font-weight:500; }
 .question-list button:disabled { opacity:.6; }
-.question-list button > .question-number { flex:0 0 auto; display:grid; place-items:center; width:22px; height:22px; border-radius:7px; background:#2a3044; color:#9da3b6; font:600 .76rem/1 Inter,ui-sans-serif,system-ui,sans-serif; }
-.question-list button.current > .question-number { background:#2b3550; color:#8fb6ff; }
+/* The pill the sheets' headings wear (`.option-sheet h2 small`). */
+.question-recommended { margin-left:6px; color:#8fb8ff; font-size:.62rem; font-style:normal; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
 /* Launch curtain — the desktop app's `.startup-splash` ported (see base.css):
    the Eldrun mark inside two counter-rotating orbit rings, over the brand name,
    the state, and a sweeping progress hairline. The colours are literals rather
@@ -767,8 +927,14 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .splash-failed .splash-message { color:#ffb4c0; font-size:.98rem; font-weight:640; letter-spacing:0; }
 .splash-hint { max-width:34ch; color:#c8ccdb; font-size:.82rem; line-height:1.5; }
 .splash-hint.muted { color:#767a8b; font-size:.76rem; }
+/* "Open Tailscale": the one way out of a stuck tunnel, so it reads as an action. */
+.splash-link { color:#b7acff; font-weight:600; text-decoration:underline; text-underline-offset:3px; }
 /* The status/code pair, for reading back into a bug report. */
 .splash-detail { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.7rem; color:#6a6e7f; letter-spacing:.04em; }
+.connect-trace { max-width:100%; margin:0; white-space:pre-wrap; text-align:left; letter-spacing:0; }
+/* The running bundle's version and build time, to check the phone is on the
+   desktop's current bundle. */
+.splash-version { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.72rem; color:#767a8b; letter-spacing:.04em; }
 .splash-progress { width:148px; height:2px; overflow:hidden; border-radius:999px; background:rgba(56,60,77,.8); }
 .splash-progress span { display:block; width:48%; height:100%; border-radius:inherit; background:linear-gradient(90deg,transparent,#7c6cff,#c79a45,transparent); animation:splash-progress 1.25s ease-in-out infinite; }
 @keyframes splash-arrive { from { opacity:0; transform:translateY(10px) scale(.96); } to { opacity:1; transform:none; } }
@@ -777,10 +943,115 @@ body.terminal-open { min-height:0; overflow:hidden; }
 @media (prefers-reduced-motion:reduce) {
   .splash-mark,.splash-name,.splash-message,.splash-orbit,.splash-progress span { animation:none; }
 }
+/* Pairing and the local lock (`BrandHead`): the splash's mark and wordmark
+   over a centred form. The glow behind the mark is a static gradient. */
+.brand-screen { text-align:center; }
+.brand-head { position:relative; display:flex; flex-direction:column; align-items:center; gap:10px; margin-bottom:6px; }
+.brand-head::before { content:""; position:absolute; top:-28px; left:50%; width:260px; height:220px; transform:translateX(-50%); background:radial-gradient(closest-side,rgba(124,108,255,.2),rgba(199,154,69,.06) 60%,transparent); pointer-events:none; }
+.brand-head-mark .splash-orbit { animation-play-state:paused; }
+.brand-head h1 { position:relative; color:#9498aa; font-size:.95rem; font-weight:500; letter-spacing:.02em; }
+.brand-screen > p { margin:0; color:#b7bac8; line-height:1.5; }
+.brand-screen label { text-align:center; }
+.brand-screen input { border-color:#2d3142; background:#11131b; }
+.brand-screen input:focus { outline:none; border-color:#7c6cff; }
+.brand-screen input:not(.code) { text-align:center; }
+.brand-screen .error { text-align:left; }
+.brand-screen > .primary { min-height:48px; }
+/* The lock's fingerprint is a round target rather than a full-width bar; its
+   only motion is the waiting pulse, which animates transform/opacity on a
+   pseudo-element, never a blur. */
+.local-unlock-biometric { justify-self:center; display:flex; flex-direction:column; align-items:center; gap:10px; border:0; background:transparent; padding:6px 12px; color:#cfc8ff; font-weight:600; }
+.local-unlock-biometric:disabled { opacity:1; }
+.local-unlock-print { position:relative; display:grid; place-items:center; width:80px; height:80px; border:1px solid rgba(124,108,255,.5); border-radius:50%; background:radial-gradient(circle at 50% 35%,rgba(124,108,255,.28),rgba(108,92,231,.1)); box-shadow:0 8px 24px rgba(40,30,120,.35); transition:transform 160ms ease; }
+.local-unlock-print svg { width:44px; height:44px; color:#e4e0ff; }
+.local-unlock-biometric:active .local-unlock-print { transform:scale(.94); }
+.local-unlock-print::after { content:""; position:absolute; inset:-1px; border:2px solid rgba(124,108,255,.7); border-radius:50%; opacity:0; pointer-events:none; }
+.local-unlock-biometric.waiting .local-unlock-print::after { animation:local-unlock-pulse 1.4s ease-out infinite; }
+.local-unlock-biometric.waiting { color:#9498aa; }
+@keyframes local-unlock-pulse { from { opacity:.85; transform:scale(1); } to { opacity:0; transform:scale(1.45); } }
+.local-unlock .local-unlock-note { color:#6f7385; font-size:.76rem; line-height:1.5; }
+/* Fingerprint sheet up (`.verifying`): Android draws it over the lower part of
+   the screen, so the form steps aside and the mark lifts into the half above
+   it, larger, rings turning. Unlocked (`.unlocked`): the mark flares gold and
+   lifts away before the app takes over. The flare is a gradient pseudo-element
+   animated by opacity — never a blurred shadow. */
+.local-unlock .local-unlock-status { min-height:1.4em; margin:0; color:#cfc8ff; font-weight:600; letter-spacing:.02em; }
+.local-unlock-status:empty { display:none; }
+.local-unlock-use-pin { justify-self:center; margin-top:8px; border:1px solid #383c4d; border-radius:999px; background:transparent; padding:9px 18px; color:#cfc8ff; font-weight:600; }
+.local-unlock.verifying,.local-unlock.unlocked { align-content:start; padding-top:max(12dvh,env(safe-area-inset-top)); }
+/* The lock sheet (`LocalUnlock` over `LockedHomeShell`) rises to the full
+   screen for both: left at the bottom, the collapsed sheet sat exactly under
+   Android's fingerprint sheet and the reader saw only the dimmed, black Home
+   shell above it — the launch read as the logo and then a black screen. */
+.lock-sheet-backdrop.verifying,.lock-sheet-backdrop.unlocked { align-items:stretch; background:#000; }
+.lock-sheet-backdrop.verifying .local-unlock-sheet,.lock-sheet-backdrop.unlocked .local-unlock-sheet { max-height:none; border-top:0; border-radius:0; background:transparent; }
+.local-unlock.verifying > :not(.brand-head):not(.local-unlock-status):not(.local-unlock-use-pin),
+.local-unlock.unlocked > :not(.brand-head):not(.local-unlock-status) { display:none; }
+.local-unlock.verifying .brand-head,.local-unlock.unlocked .brand-head { animation:local-unlock-lift 420ms cubic-bezier(.22,1,.36,1) both; }
+.local-unlock .brand-head-mark { transition:transform 420ms cubic-bezier(.22,1,.36,1); }
+.local-unlock.verifying .brand-head-mark,.local-unlock.unlocked .brand-head-mark { animation:none; transform:scale(1.35); margin-block:18px; }
+.local-unlock.verifying .brand-head-mark .splash-orbit { animation-play-state:running; }
+.local-unlock.verifying .local-unlock-status { animation:local-unlock-breathe 1.8s ease-in-out infinite; }
+.brand-head-mark::after { content:""; position:absolute; inset:-30%; border-radius:50%; background:radial-gradient(closest-side,rgba(231,179,105,.55),rgba(199,154,69,.18) 55%,transparent); opacity:0; pointer-events:none; }
+.local-unlock.unlocked .brand-head-mark::after { animation:local-unlock-flare 520ms ease-out both; }
+.local-unlock.unlocked .brand-head { animation:local-unlock-away 520ms cubic-bezier(.4,0,.2,1) both; }
+.local-unlock.unlocked .local-unlock-status { color:#e7b369; animation:local-unlock-away 520ms cubic-bezier(.4,0,.2,1) both; }
+@keyframes local-unlock-lift { from { opacity:.4; transform:translateY(28px); } to { opacity:1; transform:none; } }
+@keyframes local-unlock-breathe { 0%,100% { opacity:.55; } 50% { opacity:1; } }
+@keyframes local-unlock-flare { 0% { opacity:0; } 35% { opacity:1; } 100% { opacity:0; } }
+@keyframes local-unlock-away { 0%,30% { opacity:1; transform:none; } 100% { opacity:0; transform:translateY(-18px) scale(1.04); } }
+@media (prefers-reduced-motion:reduce) {
+  .local-unlock-biometric.waiting .local-unlock-print::after { animation:none; opacity:.6; }
+  .local-unlock.verifying .brand-head,.local-unlock.unlocked .brand-head,.local-unlock .local-unlock-status,.local-unlock.unlocked .brand-head-mark::after { animation:none; }
+  .local-unlock.verifying .brand-head-mark .splash-orbit { animation-play-state:paused; }
+  .local-unlock .brand-head-mark { transition:none; }
+}
 @media (max-width:480px) { .terminal-title small { display:none; } .terminal-screen header { padding-inline:6px; } .terminal-view-switch button { padding-inline:7px; } }
 /* A phone file on its way into the project inbox (composer + → From this
    phone), or one that did not arrive. Delivered ones leave the list: the `@`
    reference in the draft is the record. */
+/* An agent waiting for a browser sign-in (`signIn.ts`): the notice over the
+   composer, in the upload notices' shape, and the sheet it opens. The page
+   opens from a real link, so the phone hands it to the browser on the tap. */
+.sign-in-notice { display:flex; align-items:center; gap:8px; margin:6px 7px 0; padding:6px 6px 6px 11px; border-radius:9px; background:#29253d; color:#e8e3ff; font-size:.84rem; }
+.sign-in-notice span { flex:1 1 auto; min-width:0; overflow-wrap:anywhere; }
+.sign-in-notice button { flex:0 0 auto; padding:7px 12px; }
+.sign-in-notice .sign-in-hide { padding:7px 10px; border:0; background:transparent; }
+.sign-in-open { display:flex; gap:8px; align-items:stretch; }
+.sign-in-open a { display:grid; flex:1; gap:2px; min-width:0; padding:12px 14px; border:1px solid #8c7df4; border-radius:11px; color:#fff; text-align:center; text-decoration:none; }
+.sign-in-open small { color:#dcd6ff; font-weight:400; font-size:.78rem; overflow-wrap:anywhere; }
+.sign-in-open button { flex:0 0 auto; }
+.sign-in-code { display:flex; gap:8px; align-items:center; padding:10px 12px; border:1px solid #383c4d; border-radius:12px; background:#11141c; }
+.sign-in-code code { flex:1; font:700 1.45rem ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.14em; text-align:center; -webkit-user-select:all; user-select:all; }
+.sign-in-answer { padding-top:0; border-top:0; }
+/* The sheet as numbered steps: a round number, then what that step takes. */
+.sign-in-steps { display:grid; gap:14px; margin:0; padding:0; list-style:none; }
+.sign-in-steps > li { display:grid; grid-template-columns:28px minmax(0,1fr); gap:10px; align-items:start; }
+.sign-in-steps > li > div, .sign-in-steps > li > form { display:grid; gap:8px; min-width:0; }
+.sign-in-steps > li > p { margin:3px 0 0; color:#dfe3f0; font-size:.9rem; line-height:1.4; }
+.sign-in-step { display:grid; place-items:center; width:28px; height:28px; border-radius:50%; background:#29253d; color:#dcd6ff; font-weight:700; font-size:.85rem; }
+.sign-in-paste { min-height:48px; font-size:1rem; }
+.sign-in-more { color:#aeb4c8; font-size:.84rem; }
+.sign-in-more summary { padding:6px 0; cursor:pointer; }
+.sign-in-more button { margin-top:4px; }
+.sign-in-done { display:grid; justify-items:center; gap:8px; padding:12px 0 4px; text-align:center; }
+.sign-in-done strong { font-size:1.1rem; }
+.sign-in-tick { display:grid; place-items:center; width:52px; height:52px; border-radius:50%; background:#1d3a2c; color:#8ff0b8; font-size:1.7rem; font-weight:700; }
+.sign-in-waiting { display:grid; justify-items:center; gap:6px; padding:10px 0; text-align:center; }
+.sign-in-waiting p { margin:0; }
+.sign-in-waiting .sign-in-choice { justify-self:stretch; margin:4px 0; text-align:left; }
+.sign-in-spinner { width:26px; height:26px; border:3px solid #383c4d; border-top-color:#8c7df4; border-radius:50%; animation:sign-in-spin .9s linear infinite; }
+@keyframes sign-in-spin { to { transform:rotate(360deg); } }
+.sign-in-alternate { justify-self:center; border:0; background:transparent; color:#b9b0ff; font-size:.84rem; text-decoration:underline; }
+/* The ＋ sheet's sign-in list: one row per agent, its login state under it. */
+.sign-in-list { display:grid; gap:10px; }
+.sign-in-list h3 { margin:0; }
+.sign-in-agent { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 12px; border:1px solid #383c4d; border-radius:12px; background:#11141c; }
+.sign-in-agent > span { display:grid; flex:1 1 auto; gap:2px; min-width:0; }
+.sign-in-agent small { font-size:.76rem; overflow-wrap:anywhere; }
+.sign-in-agent small.signed-in { color:#8ff0b8; }
+.sign-in-agent small.signed-out { color:#ffb4c0; }
+.sign-in-agent .sign-in-alternate { flex-basis:100%; justify-self:start; padding:2px 0; text-align:left; }
 .inbox-upload { display:flex; align-items:center; gap:8px; margin:6px 7px 0; padding:8px 10px; border-radius:9px; background:#211d35; color:#dcd6ff; font-size:.78rem; }
 .inbox-upload.error { background:#3b2027; color:#ffb4c0; }
 .inbox-upload strong { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
@@ -792,18 +1063,60 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .terminal-gallery small { color:#8fb8ff; font-size:.72rem; font-weight:650; }
 .outbox-gallery-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(112px,1fr)); gap:10px; padding:0 4px 4px; }
 .outbox-gallery-grid .outbox-thumb,.outbox-gallery-grid .outbox-file { width:100%; }
-.outbox-gallery-grid .outbox-thumb img { width:100%; height:84px; }
+/* A picture tile is the picture, cropped to one shape so the grid keeps its
+   rows, with the name and age under it — no button chrome around it. */
+.outbox-thumb { display:grid; gap:3px; min-width:0; padding:0; border:0; background:transparent; color:#95a6c8; font-size:.68rem; text-align:left; }
+.outbox-thumb img { display:block; width:100%; aspect-ratio:4 / 3; object-fit:cover; border:1px solid #34384a; border-radius:7px; background:#0f131c; }
+.outbox-thumb span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .outbox-gallery-grid .outbox-thumb strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#d8e2f5; font-size:.72rem; font-weight:600; }
-.outbox-viewer { position:fixed; inset:0; z-index:13; display:grid; grid-template-rows:auto minmax(0,1fr); background:rgba(4,5,9,.94); color:#e6e9f2; }
-.outbox-viewer-head { display:flex; align-items:center; gap:8px; min-height:0; padding:calc(8px + env(safe-area-inset-top)) 10px 8px; }
-.outbox-viewer-head h2 { flex:1; margin:0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.95rem; }
-.outbox-viewer-head small { flex:0 0 auto; color:#95a6c8; font-size:.72rem; }
-.outbox-viewer img { justify-self:center; align-self:center; max-width:100%; max-height:100%; object-fit:contain; }
+/* One column pinned to the screen's width: an auto column grew to the head's
+   widest line and letterboxed the picture into a box wider than the phone. */
+.outbox-viewer { position:fixed; inset:0; z-index:13; display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); background:rgba(4,5,9,.97); color:#e6e9f2; }
+.outbox-viewer-head { display:flex; align-items:center; gap:8px; min-width:0; min-height:0; padding:calc(8px + env(safe-area-inset-top)) 10px 8px; }
+.outbox-viewer-head > a, .outbox-viewer-head > button { flex:0 0 auto; }
+/* The name over its position and size, so neither squeezes the other. */
+.outbox-viewer-title { display:grid; flex:1; min-width:0; }
+.outbox-viewer-head h2 { margin:0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.95rem; }
+.outbox-viewer-head small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#95a6c8; font-size:.72rem; }
+/* The picture fills the stage and is letterboxed in it; ‹ › sit on its edges
+   as tall strips a thumb finds without aiming. Every gesture is the stage's
+   (pinch, drag, double tap, swipe) — the browser's own pinch zooms the whole
+   page and then cannot pan it. */
+.outbox-viewer-stage { position:relative; min-height:0; overflow:hidden; touch-action:none; user-select:none; -webkit-user-select:none; }
+.outbox-viewer-stage img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; transform-origin:center; -webkit-user-drag:none; }
+.outbox-viewer-stage.zoomed { cursor:grab; }
+.outbox-viewer-stage.zoomed img { will-change:transform; }
+.outbox-step { position:absolute; top:50%; display:grid; place-items:center; width:44px; height:72px; margin-top:-36px; padding:0; border:0; border-radius:10px; background:rgba(15,19,28,.55); color:#e6e9f2; font-size:1.9rem; line-height:1; }
+.outbox-step-previous { left:6px; }
+.outbox-step-next { right:6px; }
 
 .outbox-entry { display:grid; gap:2px; min-width:0; }
 .outbox-file { display:grid; gap:5px; width:160px; padding:9px; border:1px solid #34384a; border-radius:7px; background:#0f131c; color:#d8e2f5; text-align:left; text-decoration:none; font-size:.75rem; }
 .outbox-file strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .outbox-file span { color:#95a6c8; }
+/* The agent's files in the Focus chat (`OutboxPost`), drawn as WhatsApp draws
+   a picture: the picture is the bubble, inside a 3px rim of the agent's
+   bubble colour, with the time laid over its bottom corner on a shade. An
+   album is a grid of cropped tiles; a file that is no picture is a slim card
+   in the same bubble, with the time under it. */
+.readable-turn.agent.outbox-post { position:relative; width:min(78%,300px); padding:3px; border-radius:14px 14px 14px 4px; background:#1d2030; color:#e3e6f2; -webkit-touch-callout:none; gap:3px; }
+.outbox-post-album { display:grid; gap:2px; overflow:hidden; border-radius:11px 11px 11px 2px; background:#0f131c; }
+.outbox-post-album.tiles-1 { aspect-ratio:4 / 3; }
+.outbox-post-album.tiles-2 { grid-template-columns:1fr 1fr; aspect-ratio:2 / 1; }
+.outbox-post-album.tiles-3 { grid-template-columns:1fr 1fr; grid-template-rows:3fr 2fr; aspect-ratio:1; }
+.outbox-post-album.tiles-3 .outbox-post-picture:first-child { grid-column:1 / -1; }
+.outbox-post-album.tiles-4 { grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; aspect-ratio:1; }
+.outbox-post:not(.pictures-only) .outbox-post-album { border-radius:11px; }
+.outbox-post-picture { position:relative; display:block; min-width:0; min-height:0; padding:0; border:0; background:transparent; overflow:hidden; }
+.outbox-post-picture img { display:block; width:100%; height:100%; object-fit:cover; }
+.outbox-post-more { position:absolute; inset:0; display:grid; place-items:center; background:rgba(8,10,16,.55); color:#fff; font:600 1.5rem/1 Inter,ui-sans-serif,system-ui,sans-serif; }
+.outbox-post-file { display:grid; grid-template-columns:auto 1fr; grid-template-rows:auto auto; column-gap:10px; align-items:center; min-width:0; padding:8px 10px; border:0; border-radius:11px; background:#161927; color:#e3e6f2; text-align:left; text-decoration:none; font:400 .82rem/1.3 Inter,ui-sans-serif,system-ui,sans-serif; }
+.outbox-post-file > span { grid-row:1 / 3; display:grid; place-items:center; width:36px; height:36px; border-radius:8px; background:#2b2f45; color:#b9c4e0; font-size:.72rem; font-weight:700; }
+.outbox-post-file strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.outbox-post-file small { color:#95a6c8; font-size:.72rem; }
+.outbox-post-meta { justify-self:end; padding:0 8px 2px; color:#95a6c8; font-size:.68rem; }
+.outbox-post-meta em { font-style:normal; opacity:.8; }
+.outbox-post.pictures-only .outbox-post-meta { position:absolute; right:10px; bottom:8px; padding:1px 7px; border-radius:9px; background:rgba(8,10,16,.55); color:#f1f3fa; pointer-events:none; }
 .outbox-entry-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0; }
 .outbox-details,.outbox-save { border:0; background:transparent; color:#8fb8ff; font-size:.7rem; padding:5px 0; text-decoration:none; }
 .outbox-save { display:inline-flex; align-items:center; gap:3px; }
@@ -817,14 +1130,18 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .outbox-confirm .outbox-delete-yes { border-color:#6b2f33; background:#2a1416; color:#f2b8b5; }
 .outbox-entry-error { padding:0 2px; color:#f2b8b5; font-size:.7rem; }
 .outbox-viewer-head a, .outbox-text-body a, .outbox-viewer > a { color:#8fb8ff; }
+/* Opens in the browser's tab through a ticket (`openOutside`), so a button —
+   drawn as the link it replaced. */
+.outbox-open { border:0; background:transparent; color:#8fb8ff; font:inherit; padding:0; text-decoration:underline; text-align:left; }
 .outbox-text-body { overflow:auto; padding:12px; }
 .outbox-text-body pre { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; }
 .outbox-viewer:has(> [role=alert]) { grid-template-rows:auto auto minmax(0,1fr); }
-/* The same tiles on the project screen, under the tab cards: what the desktop
-   sent this project rather than one of its sessions. The grid is the gallery
-   sheet's own, so a file reads the same wherever it is met. */
-.outbox-shelf { display:grid; gap:8px; margin-top:20px; }
-.outbox-shelf-head { display:flex; align-items:baseline; gap:6px; padding:0 4px; }
-.outbox-shelf-head h2 { margin:0; font-size:.92rem; font-weight:650; }
-.outbox-shelf-head small { margin-left:auto; color:#9aa0b4; font-size:.74rem; }
-.outbox-shelf-all { justify-self:start; margin-left:4px; padding:6px 11px; border:1px solid #34384a; border-radius:999px; background:#141a26; color:#8fb8ff; font-size:.8rem; }
+
+/* A prompt bubble the link lost (Terminal · `TranscriptTurns`): the bubble
+   stays exactly where it was; the state line sits inside it, under the text,
+   with the resend beside the words. */
+.readable-turn.user .transcript-send-state { display: block; margin-top: 0.35rem; font-size: 0.78rem; color: var(--muted, #9aa3b5); }
+.readable-turn.user .transcript-send-state.failed { color: var(--danger, #ff6b6b); }
+.readable-turn.user .transcript-send-state button { margin-left: 0.5rem; padding: 0.1rem 0.55rem; font-size: 0.78rem; border-radius: 999px; border: 1px solid currentColor; background: transparent; color: inherit; }
+.readable-turn.user .transcript-send-state em { margin-left: 0.4rem; font-style: normal; opacity: 0.7; }
+.readable-turn.user[data-send-failed] { outline: 1px dashed var(--danger, #ff6b6b); outline-offset: 2px; }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MIN_NEW_PIN, nextLockout, validPin } from "../../../mobile-web/src/localLock";
+import { BIOMETRIC_HINTS, BIOMETRIC_SELECTION, MIN_NEW_PIN, nextLockout, validPin } from "../../../mobile-web/src/localLock";
 
 describe("Eldrun Mobile local app lock", () => {
   it("accepts only a four to twelve digit PIN", () => {
@@ -29,5 +29,15 @@ describe("Eldrun Mobile local app lock", () => {
     expect(second - now).toBe((first - now) * 2);
     // Capped rather than growing without bound.
     expect(nextLockout(99, now)! - now).toBe(15 * 60_000);
+  });
+
+  it("enrolls the fingerprint as a device-bound credential, not a synced passkey", () => {
+    // A discoverable credential lands in Google Password Manager on Android,
+    // which puts a "Use passkey?" sheet in front of every fingerprint unlock.
+    expect(BIOMETRIC_SELECTION.residentKey).toBe("discouraged");
+    expect(BIOMETRIC_SELECTION.requireResidentKey).toBe(false);
+    expect(BIOMETRIC_SELECTION.authenticatorAttachment).toBe("platform");
+    expect(BIOMETRIC_SELECTION.userVerification).toBe("required");
+    expect(BIOMETRIC_HINTS).toEqual(["client-device"]);
   });
 });

@@ -16,6 +16,13 @@ bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/h
 bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/host.rs:generic-api-key:1396
 bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/host.rs:generic-api-key:1657
 bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/host.rs:generic-api-key:1668
+6e91414578ff4b408266b71e4a9b4a98d497e198:src-tauri/src/services/mobile_control/host.rs:generic-api-key:3663
+# src/__tests__/mobile/*.test.tsx: the same "0123456789abcdef" idempotency_key fixture
+e6696f9027558c775c38ecc16de42184330dcc02:src/__tests__/mobile/MobileLocalAgents.test.tsx:generic-api-key:48
+6e91414578ff4b408266b71e4a9b4a98d497e198:src/__tests__/mobile/MobileSignInCreate.test.tsx:generic-api-key:47
+# src/__tests__/mobile/MobileSignIn.test.tsx: a captured Mistral Vibe sign-in URL's
+# single-use complete_token, dead once that sign-in finished; replaced by a fake since
+6e91414578ff4b408266b71e4a9b4a98d497e198:src/__tests__/mobile/MobileSignIn.test.tsx:generic-api-key:95
 # src-tauri/src/services/openvpn.rs: test fixture: fake encrypted-key header with "base64==" body
 b9c4584fbcba4e241ff402ce7b3ff21a06baed2e:src-tauri/src/services/openvpn.rs:private-key:1862
 b9c4584fbcba4e241ff402ce7b3ff21a06baed2e:src-tauri/src/services/openvpn.rs:private-key:1873
@@ -28,3 +35,9 @@ b74a3124594fd0376a2c699cfed9b910a929edde:src-tauri/src/services/ssh_common.rs:pr
 b74a3124594fd0376a2c699cfed9b910a929edde:src-tauri/src/services/ssh_common.rs:private-key:1985
 # tests/test_remote_repo.py: fake GitHub-token fixture in a settings test
 8eb58b5cea1411a5a5748d2c54585a78a859dfb3:tests/test_remote_repo.py:generic-api-key:329
+# src-tauri/src/services/agent_transcript.rs: test fixture (malformed subagent handles that must be refused); rewritten since
+963c3477b973921c19380e06995762219d8623f2:src-tauri/src/services/agent_transcript.rs:generic-api-key:1170
+# src-tauri/src/services/mobile_control/protocol.rs: dummy "0123456789abcdef" key in a request-shape test
+caf5ffb95803b60dbf33b7b73aa02154c77f9a22:src-tauri/src/services/mobile_control/protocol.rs:generic-api-key:1820
+# src-tauri/src/services/tmux_local.rs: fake "…-s3cret" token env values in a test that asserts tokens never reach tmux args
+71d0575f1f5f94abb79d69005e77902db95ba6f9:src-tauri/src/services/tmux_local.rs:generic-api-key:832

@@ -22,7 +22,9 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 check="$ROOT/scripts/backend-stale.sh"
-if [ -x "$check" ]; then
+# Not for the version bump pre-push commits mid-push: the phone's staleness is
+# independent of the push, and printed there it reads as the push failing.
+if [ -x "$check" ] && [ -z "${ELDRUN_VERSION_BUMP:-}" ]; then
   # Before the rebuild below is queued, so this reports the drift the commit
   # was made against rather than the one the queued build is already fixing.
   if ! report="$("$check" --mobile-only 2>/dev/null)"; then

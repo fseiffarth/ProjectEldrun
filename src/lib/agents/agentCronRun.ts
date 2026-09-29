@@ -13,9 +13,9 @@ import { AGENT_CRON_MESSAGE } from "./agentCron";
  * to the registry that knows where the binary is; the frontend never supplies
  * executable text, only the agent's id and the fixed message.
  *
- * It used to type into an agent tab in the Trash project. That worked, but it
- * meant a visible tab per agent per day, a PTY that had to boot a TUI just to
- * be typed at, and a dependency on Trash's sandbox container being up at 06:00.
+ * It used to type into an agent tab in a dedicated workspace. That worked, but
+ * it meant a visible tab per agent per day, a PTY that had to boot a TUI just
+ * to be typed at, and a dependency on a sandbox container being up at 06:00.
  * The print mode opens the usage window exactly as a keystroke would — the
  * allowance counts the request, not the terminal — and leaves nothing behind
  * but a session file under `<state_dir>/agent-cron/`.

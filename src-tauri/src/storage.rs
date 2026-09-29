@@ -19,11 +19,32 @@ pub fn write_json<T>(path: &Path, value: &T) -> Result<(), Box<dyn std::error::E
 where
     T: serde::Serialize,
 {
+    // A state file is created owner-only; a file in a project folder keeps the
+    // umask, so a shared project dir stays readable to its group.
+    write_json_file(path, value, path.starts_with(state_dir()))
+}
+
+/// [`write_json`] with the new-file mode decided by the caller. An existing
+/// file keeps whatever mode it has — the 0700 state dir is the real barrier
+/// (see [`ensure_private_state_dir`]).
+fn write_json_file<T>(path: &Path, value: &T, private: bool) -> Result<(), Box<dyn std::error::Error>>
+where
+    T: serde::Serialize,
+{
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(value)?;
-    fs::write(path, json)?;
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    opts.open(path)?.write_all(json.as_bytes())?;
     Ok(())
 }
 
@@ -96,6 +117,31 @@ where
     staged.as_file_mut().sync_all()?;
     staged.persist(path)?;
     Ok(())
+}
+
+/// Create the state dir if missing and make it owner-only (0700).
+///
+/// It holds settings, session state, MCP audit logs and the agent-hook
+/// scripts, and was created with the umask (typically 0775). That was safe only
+/// while `$HOME` itself is 0700, which many distros don't default to. Called
+/// once at startup, before anything writes into it; tightening the directory
+/// covers the files already in it without touching each one. Best effort: a
+/// failure (a state dir someone else owns) must not stop the app.
+pub fn ensure_private_state_dir() {
+    make_private_dir(&state_dir());
+}
+
+fn make_private_dir(dir: &Path) {
+    let _ = fs::create_dir_all(dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(dir) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
 }
 
 /// State directory for Eldrun's JSON files.
@@ -508,6 +554,56 @@ mod tests {
         let dir = state_dir();
         let last = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
         assert_eq!(last, "eldrun", "state_dir must end in 'eldrun': {:?}", dir);
+    }
+
+    // ── private state files ───────────────────────────────────────────────
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn make_private_dir_creates_and_tightens_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let fresh = tmp.path().join("a").join("eldrun");
+        make_private_dir(&fresh);
+        assert_eq!(mode_of(&fresh), 0o700);
+
+        let loose = tmp.path().join("loose");
+        fs::create_dir(&loose).unwrap();
+        fs::set_permissions(&loose, fs::Permissions::from_mode(0o775)).unwrap();
+        make_private_dir(&loose);
+        assert_eq!(mode_of(&loose), 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_json_file_creates_private_files_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let private = tmp.path().join("settings.json");
+        write_json_file(&private, &serde_json::json!({"a": 1}), true).unwrap();
+        assert_eq!(mode_of(&private), 0o600);
+        let back: serde_json::Value = read_json(&private).unwrap();
+        assert_eq!(back["a"], 1);
+
+        // A project-folder file keeps the umask, like any plain `fs::write`.
+        let shared = tmp.path().join("project.json");
+        write_json_file(&shared, &serde_json::json!({}), false).unwrap();
+        let plain = tmp.path().join("plain");
+        fs::write(&plain, "").unwrap();
+        assert_eq!(mode_of(&shared), mode_of(&plain));
+
+        // Rewriting an existing file truncates it and leaves its mode alone.
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o640)).unwrap();
+        write_json_file(&shared, &serde_json::json!({"b": 2}), true).unwrap();
+        assert_eq!(mode_of(&shared), 0o640);
+        let back: serde_json::Value = read_json(&shared).unwrap();
+        assert_eq!(back, serde_json::json!({"b": 2}));
     }
 
     // ── root_work_dir ─────────────────────────────────────────────────────

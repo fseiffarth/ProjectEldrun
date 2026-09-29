@@ -66,8 +66,7 @@ across boots even though the host-side port does.
 
 `VmSpec.mail_reader` (trusted from `projects.json` → `extra["vm"]` only; the
 in-folder `project.json` grants nothing) makes this VM the one place an agent
-may *read* mail through the root MCP (`docs/mail_mcp_plan.md`,
-`docs/context/root_console.md` §Mail). The local fence cannot substitute:
+may *read* mail through the root MCP (`docs/context/root_console.md` §Mail). The local fence cannot substitute:
 `bwrap --unshare-net` cannot reach a host-loopback proxy, and an env-offered
 proxy is one the agent can unset.
 

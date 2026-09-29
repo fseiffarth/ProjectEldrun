@@ -106,6 +106,26 @@ describe("tabs store — detach / attach subwindow (#42)", () => {
     });
   });
 
+  it("keeps a popout separate when its first OS window build fails", async () => {
+    const { right } = twoGroups();
+    invokeMock.mockClear();
+    invokeMock.mockRejectedValueOnce(new Error("display still changing"));
+    vi.useFakeTimers();
+    try {
+      useTabsStore.getState().detachGroup(right.id);
+      await Promise.resolve();
+      expect(useTabsStore.getState().detachedGroupsByScope.p).toHaveLength(1);
+      expect(findDetachedGroup(useTabsStore.getState().snapshotScopeForSwitch("p").tabGroups))
+        .toMatchObject({ detached: true });
+
+      await vi.advanceTimersByTimeAsync(300);
+      expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "detach_subwindow")).toHaveLength(2);
+      expect(useTabsStore.getState().detachedGroupsByScope.p).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("flags a detached group's PTY ids so the main pane's unmount skips pty_kill", () => {
     const { b, right } = twoGroups();
     const ptyId = `p:${b.key}`;

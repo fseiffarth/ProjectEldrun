@@ -15,7 +15,10 @@ import { Dropdown } from "../common/Dropdown";
 import { MarkdownPromptField } from "../common/MarkdownPromptField";
 import { AgentScheduleDialog } from "./AgentScheduleDialog";
 import { AgentScheduleProposal } from "./AgentScheduleProposal";
+import { GitPushProposals } from "./GitPushMcp";
 import { isPromptTargetTab } from "./PromptChartTab";
+import { ArrowUpRightIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface Props { scope: string; active: boolean }
 const EMPTY_TABS: TabEntry[] = [];
@@ -67,7 +70,7 @@ function AgentTabComposer({ scope, tab, offered, models }: { scope: string; tab:
       {preface.length > 0 && <small className="agent-composer-preview">{t("agentPrompts.prefixPreview", { commands: preface.join(" · ") })}</small>}
       <div className="agent-schedule-form-actions"><button className="settings-btn sm primary" type="button" disabled={busy || !draft.trim()} title={t("agentPrompts.composerSendTitle")} onClick={() => void submit()}>{t("agentPrompts.composerSend")}</button></div>
       {notice && <div className="agent-prompts-notice" data-testid="agent-composer-notice">{notice}</div>}
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
     </div>
   );
 }
@@ -88,7 +91,9 @@ export function AgentSchedulesView({ scope, active }: Props) {
   const lastDoneByTab = useActivityStore((state) => state.lastDoneByTab);
   const modelByTab = useAgentModelsStore((state) => state.byTab);
   const promptByTab = useAgentModelsStore((state) => state.promptByTab);
+  const screenModelByTab = useAgentModelsStore((state) => state.screenByTab);
   const refreshModel = useAgentModelsStore((state) => state.refresh);
+  const refreshScreen = useAgentModelsStore((state) => state.refreshScreen);
   const settings = useSettingsStore((state) => state.settings);
   const renameTabInScope = useTabsStore((state) => state.renameTabInScope);
   const setAutoContinue = useTabsStore((state) => state.setAutoContinueInScope);
@@ -175,8 +180,11 @@ export function AgentSchedulesView({ scope, active }: Props) {
     // The model tag: read on show and on the 30-second tick (throttled in the
     // store); the store itself re-reads a tab the moment it finishes a turn.
     if (!active) return;
-    for (const tab of agentTabs) void refreshModel(scope, tab);
-  }, [active, agentTabs, now, refreshModel, scope]);
+    for (const tab of agentTabs) {
+      void refreshModel(scope, tab);
+      void refreshScreen(scope, tab);
+    }
+  }, [active, agentTabs, now, refreshModel, refreshScreen, scope]);
   useEffect(() => {
     for (const tab of agentTabs) if (tab.scheduleTargetId && !schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId)]) void loadSchedules(scope, tab.scheduleTargetId).catch(() => []);
   }, [agentTabs, loadSchedules, schedulesByTarget, scope]);
@@ -231,17 +239,19 @@ export function AgentSchedulesView({ scope, active }: Props) {
           <Dropdown value={sort} title={t("agentPrompts.sort.title")} options={AGENT_SORTS.map((value) => ({ value, label: t(`agentPrompts.sort.${value}`) }))} onChange={(value) => { if (isAgentSort(value)) chooseSort(value); }} />
         </div>}
       </div>
+      {/* Agent push requests for this scope (`services::git_push_mcp`). */}
+      <GitPushProposals projectId={scope} />
       {agentTabs.length === 0 ? <div className="file-tree-empty">{t("agentPrompts.noTabs")}</div> : sortedTabs.map((tab) => {
         const schedules = schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId!)] ?? EMPTY_SCHEDULES;
         const summary = scheduleSummary(schedules, now);
         const queued = schedules.filter((schedule) => scheduleStatus(schedule, now).kind === "due");
         const state = stateOf(tab);
-        // The session's own status line, read off the pane, with the
-        // transcript's shortened id behind it (`agentTabModelTag`). Read here
-        // rather than held in the store: a `/model` typed into the session
+        // The session's own status line, read off the live pane, with the
+        // transcript's shortened id behind it (`agentTabModelTag`). Composed
+        // here rather than held in the store: a `/model` typed into the session
         // changes the screen and nothing else, and this row is re-rendered on
         // the 30-second tick and on every edge the activity store reports.
-        const model = agentTabModelTag(scope, tab, modelByTab);
+        const model = agentTabModelTag(scope, tab, modelByTab, screenModelByTab);
         const open = unfolded.includes(tab.key);
         const slot = drop?.anchor === tab.key ? ` drop-${drop.place}` : "";
         return <div
@@ -267,7 +277,7 @@ export function AgentSchedulesView({ scope, active }: Props) {
             {open && <AgentTabComposer scope={scope} tab={tab} offered={prefaceCommandsFor(tab.cmd, settings?.agent_preface_commands)} models={agentModelsFor(tab.cmd, settings?.agent_models)} />}
           </div>
           <div className="agent-prompts-tab-actions">
-            <button className="agent-composer-chip" type="button" onClick={() => jumpToTab(scope, tab.key)}>↗ {t("agentPrompts.jump")}</button>
+            <button className="agent-composer-chip" type="button" onClick={() => jumpToTab(scope, tab.key)}><ArrowUpRightIcon /> {t("agentPrompts.jump")}</button>
             <button className={`agent-composer-chip${open ? " active" : ""}`} type="button" aria-pressed={open} onClick={() => setUnfolded((keys) => keys.includes(tab.key) ? keys.filter((key) => key !== tab.key) : [...keys, tab.key])}>{t("agentPrompts.composerToggle")}</button>
             <button className={`agent-composer-chip${tab.autoContinue ? " active" : ""}`} type="button" aria-pressed={!!tab.autoContinue} data-testid="agent-continue-toggle" onClick={() => { setAutoContinue(scope, tab.key, !tab.autoContinue); void persistScopeLayout(scope); }}>⟳ {t("agentContinue.toggle")}</button>
             {schedules.filter((s) => s.origin).map((schedule) => <div key={schedule.id}>

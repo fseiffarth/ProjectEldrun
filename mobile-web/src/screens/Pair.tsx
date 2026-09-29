@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ApiError } from "../api";
 import { pair } from "../auth";
 import { classifyUnavailable, describeUnavailable } from "../connection";
+import { BrandHead } from "../components/BrandHead";
 
 /**
  * What to say when pairing fails. The sidecar answers a bad or expired code
@@ -25,8 +26,8 @@ export function Pair({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState(navigator.userAgent.includes("iPhone") ? "iPhone" : "Mobile device");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  return <main className="pair screen">
-    <div className="brand"><span className="spark">✦</span><h1>Eldrun Mobile</h1></div>
+  return <main className="pair screen brand-screen">
+    <BrandHead>Pair this phone</BrandHead>
     <p>Enter the one-time code shown in Eldrun Settings. This device receives keyboard-level access only to projects you explicitly enable.</p>
     <label>Device name<input value={name} maxLength={64} onChange={(event) => setName(event.target.value)} /></label>
     <label>Pairing code<input className="code" value={code} inputMode="numeric" autoComplete="one-time-code" maxLength={8} onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))} /></label>

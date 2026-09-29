@@ -42,6 +42,10 @@ export interface AddTabMenuData {
    *  In the root scope, further narrowed to the agents whose 🧠 "Root" chip is
    *  on (`rootAllowedAgentBins`). */
   enabledAgents: Set<string> | null;
+  /** The default agent's (`default_agent_cmd`, "claude" when unset) binary —
+   *  the setting holds a registry id, which is not always the command
+   *  (`antigravity` launches `agy`). What Ctrl+1 opens (`agentShortcutSlots`). */
+  defaultAgentBin: string;
   /** Mistral/vibe is installed and not turned off in "Manage Agents" — the
    *  gate for the local-model group's Mistral row. Deliberately NOT narrowed
    *  by the root "Root" agent chips: local models are opt-out in the root
@@ -52,6 +56,8 @@ export interface AddTabMenuData {
   compactAgentBins: Set<string>;
   /** User-defined custom agents (Settings.custom_agents). */
   customAgents: CustomAgent[];
+  /** Settings.agent_order: the Agents rows' order and Ctrl+1–9 numbers. */
+  agentOrder: string[] | undefined;
   /** Installed *custom*-agent commands, probed separately (they aren't in the
    *  built-in registry). `null` until resolved — custom agents render enabled
    *  until a probe proves one missing. */
@@ -129,6 +135,10 @@ export function useAddTabMenuData(scope: string): AddTabMenuData {
       : installedEnabled;
   }, [installedEnabled, agentStatuses, isRoot, rootAgentIds]);
   const vibeForLocalModel = installedEnabled?.has("vibe") ?? false;
+  const defaultAgentCmd = useSettingsStore((s) => s.settings?.default_agent_cmd || "claude");
+  const defaultAgentBin =
+    (agentStatuses ? agentStatuses.find((a) => a.id === defaultAgentCmd)?.bin : undefined) ??
+    defaultAgentCmd;
   const compactAgentBins = useMemo(() => {
     if (!agentStatuses) return new Set<string>();
     const compactIds = new Set(compactAgentIds);
@@ -142,6 +152,7 @@ export function useAddTabMenuData(scope: string): AddTabMenuData {
   const customAgents = useSettingsStore(
     (s) => s.settings?.custom_agents ?? EMPTY_CUSTOM_AGENTS,
   );
+  const agentOrder = useSettingsStore((s) => s.settings?.agent_order);
   const [installedCustom, setInstalledCustom] = useState<Set<string> | null>(null);
   // Re-probe custom commands whenever the set changes (adding one in the dialog).
   useEffect(() => {
@@ -167,9 +178,11 @@ export function useAddTabMenuData(scope: string): AddTabMenuData {
     localModelOffInRoot,
     localDrivers,
     enabledAgents,
+    defaultAgentBin,
     vibeForLocalModel,
     compactAgentBins,
     customAgents,
+    agentOrder,
     installedCustom,
     boxMembers,
   };

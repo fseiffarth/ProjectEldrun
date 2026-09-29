@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   effectiveTabLocation,
   remoteHostIdOf,
@@ -14,6 +14,10 @@ import { useRunHostPrefStore } from "../../stores/remote/runHostPref";
 import { UntestedTag } from "../common/UntestedTag";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useT } from "../../lib/i18n";
+import { CloudIcon, HomeIcon } from "../common/icons/Icon";
+import { useAgentModelsStore, agentTabLabel } from "../../stores/agents/agentModels";
+import { screenModeMarks } from "../../lib/agents/agentModel";
+import { terminalFor } from "../../lib/terminal/terminalRegistry";
 
 /**
  * The two per-tab local/remote badges + the locality menu, factored out so the
@@ -66,7 +70,7 @@ export function TabSourceBadge({ tabKey }: { tabKey: string }) {
           ctl.set(onRemote ? "local" : "remote");
         }}
       >
-        {onRemote ? "☁" : "⌂"}
+        {onRemote ? <CloudIcon /> : <HomeIcon />}
       </button>
     );
   }
@@ -80,7 +84,7 @@ export function TabSourceBadge({ tabKey }: { tabKey: string }) {
           : t("tabLocality.localMirrorTitle")
       }
     >
-      {src === "remote" ? "☁" : "⌂"}
+      {src === "remote" ? <CloudIcon /> : <HomeIcon />}
     </span>
   );
 }
@@ -171,7 +175,7 @@ export function TabLocalityBadge({
         onOpen((e.currentTarget as HTMLElement).getBoundingClientRect(), hostId !== null);
       }}
     >
-      {hostId === null ? "⌂" : "☁"}
+      {hostId === null ? <HomeIcon /> : <CloudIcon />}
     </button>
   );
 }
@@ -208,7 +212,7 @@ export function LocalityMenu({
   };
   const machineItem = (
     loc: TabLocation,
-    glyph: string,
+    glyph: ReactNode,
     text: string,
     opts?: { disabled?: boolean; note?: string; title?: string },
   ) => (
@@ -235,13 +239,13 @@ export function LocalityMenu({
     >
         {menu.view === "root" ? (
           <>
-            {machineItem("local", "⌂", t("tabLocality.localMirrorItem"))}
+            {machineItem("local", <HomeIcon />, t("tabLocality.localMirrorItem"))}
             <button
               className="tab-new-menu-item"
               onClick={() => onChangeView("machines")}
             >
               <span className="tab-new-menu-dot tab-new-menu-dot--accent">
-                {onRemoteNow ? "●" : "☁"}
+                {onRemoteNow ? "●" : <CloudIcon />}
               </span>
               {t("tabLocality.remoteEllipsis")}
               <span className="tab-menu-hint">{t("tabLocality.chooseMachineHint")}</span>
@@ -259,13 +263,13 @@ export function LocalityMenu({
             </button>
             {machineItem(
               "remote",
-              "☁",
+              <CloudIcon />,
               primaryHost ? t("tabLocality.primaryWithHost", { host: primaryHost }) : t("tabLocality.primary"),
             )}
             {(computeHosts ?? []).map((h) =>
               machineItem(
                 `host:${h.id}`,
-                "☁",
+                <CloudIcon />,
                 h.label || h.host || h.id,
                 workerRunnable(h)
                   ? undefined
@@ -328,7 +332,7 @@ export function RunHostPicker({
           });
         }}
       >
-        <span aria-hidden="true">{onRemote ? "☁" : "⌂"}</span>
+        <span aria-hidden="true">{onRemote ? <CloudIcon /> : <HomeIcon />}</span>
         <span className="run-host-label">{t("tabLocality.runLabel", { label })}</span>
       </button>
       {menu && (
@@ -367,15 +371,23 @@ export function TabStatusMark({ stateClass }: { stateClass: string }) {
       ? "decision"
       : stateClass.includes("finished")
         ? "done"
-        : null;
+        : stateClass.includes("interrupted")
+          ? "interrupted"
+          : null;
   if (!state) return null;
-  const glyph = state === "working" ? "▶" : state === "decision" ? "?" : "✓";
+  // ▶ is emoji-capable: pinned to text presentation (U+FE0E) so no window's
+  // font fallback swaps it for a colour emoji that ignores the ring's colour.
+  // ■ (the stop square) is not, so it needs no pin.
+  const glyph =
+    state === "working" ? "▶\uFE0E" : state === "decision" ? "?" : state === "interrupted" ? "■" : "✓";
   const label = t(
     state === "working"
       ? "tabBar.statusWorking"
       : state === "decision"
         ? "tabBar.statusDecision"
-        : "tabBar.statusDone",
+        : state === "interrupted"
+          ? "tabBar.statusInterrupted"
+          : "tabBar.statusDone",
   );
   const shellLabel = t("tabBar.statusRunning");
   // `shell` alone: the command IS what the tab is doing, so the one mark is the
@@ -388,7 +400,7 @@ export function TabStatusMark({ stateClass }: { stateClass: string }) {
       title={shellLabel}
       aria-label={shellLabel}
     >
-      ▶
+      {"▶\uFE0E"}
     </span>
   );
   if (commandOnly) return shellMark;
@@ -398,6 +410,66 @@ export function TabStatusMark({ stateClass }: { stateClass: string }) {
         {glyph}
       </span>
       {alsoCommand && shellMark}
+    </>
+  );
+}
+
+/** How often the tab in front has its own screen re-read for the marks. The
+ *  xterm is local and the read is the footer's few rows, so this is cheap;
+ *  it is what makes a Shift+Tab into plan mode show without waiting for a turn. */
+const MODE_TICK_MS = 2_000;
+
+/** The plan / goal marks on an agent tab: PLAN while the session's own status
+ *  line says plan mode, GOAL while it says a `/goal` is running. Read-only — the
+ *  mode is the agent CLI's to set (see the note in `TabBar` about the removed
+ *  Plan/Auto toggle); this only shows what the session prints, with the parser
+ *  the phone's Mode chip uses (`lib/agents/agentModel.screenModeMarks`).
+ *
+ *  The tab in front reads its xterm every `MODE_TICK_MS` and records it in the
+ *  models store, so the reading it leaves behind when the user switches away is
+ *  current. A tab behind is re-read off its live tmux pane at each turn's start
+ *  and end (`agentModels`' activity edges) — the only moments the agent itself
+ *  changes either mode — and once on mount; a tab with no local tmux pane (a
+ *  remote one) keeps what its xterm last said. Shared with the popout strip. */
+export function TabAgentModeMarks({ scope, tab, isActive }: { scope: string; tab: TabEntry; isActive: boolean }) {
+  const t = useT();
+  const agent = tab.kind === "agent" || tab.kind === "local_agent";
+  const ptyId = `${scope}:${tab.key}`;
+  const marks = useAgentModelsStore((state) => state.modeByTab[ptyId]);
+  useEffect(() => {
+    if (!agent) return;
+    const readXterm = () => {
+      const term = terminalFor(ptyId);
+      const read = term && screenModeMarks(term.buffer.active, agentTabLabel(tab));
+      if (read) useAgentModelsStore.getState().noteModes(ptyId, read);
+    };
+    if (!isActive) {
+      if (tab.tmuxSession) void useAgentModelsStore.getState().refreshScreen(scope, tab);
+      else if (!useAgentModelsStore.getState().modeByTab[ptyId]) readXterm();
+      return;
+    }
+    readXterm();
+    const timer = window.setInterval(readXterm, MODE_TICK_MS);
+    return () => window.clearInterval(timer);
+    // `tab` is read for its cmd/label/tmux session, which a respawn changes
+    // along with the key; re-running on every new tab object would restart
+    // the timer on each store write.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent, isActive, ptyId, scope, tab.tmuxSession]);
+  if (!agent || !marks || (!marks.plan && !marks.goal)) return null;
+  return (
+    <>
+      {marks.plan && (
+        <span className="tab-mode-mark plan" title={t("tabBar.modePlanTitle")}>
+          {t("tabBar.modePlan")}
+        </span>
+      )}
+      {marks.goal && (
+        <span className="tab-mode-mark goal" title={t("tabBar.modeGoalTitle")}>
+          {t("tabBar.modeGoal")}
+        </span>
+      )}
+      <UntestedTag id="tabBar.modeMarks" />
     </>
   );
 }

@@ -293,6 +293,52 @@
       - [ ] ❌ Doesn't work on Windows
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
+    > **Phase 12 — every box is a pill, in colour (2026-09-22, 🤖 covered,
+    > untested live).** The user found the box feature unfriendly: switching
+    > between boxes was a hover, a wait and a click each way (only the
+    > *selected* box had a pill; the rest lived in the dropdown), adding a
+    > project to a box meant finding a project pill's menu or dragging into a
+    > sprung-open list, boxed projects were marked by one grey ▣ that said
+    > nothing about *which* box, and the selected box's pill (accent-filled
+    > member-count badge, 4px inset) looked squashed and off-style. Now: (1)
+    > every box stands beside the chip as a small pill of its own, up to
+    > `MAX_BOX_PILLS` (6; the rest stay in the dropdown and the chip shows
+    > "+N", always seating the selected box), on the project pill's own inset,
+    > with no count badge (count in the tooltip); (2) each box has a stable
+    > colour hashed from its id (`lib/theme/boxColor`) worn by its pill's mark
+    > and active line, by one square swatch per box on each member's project
+    > pill (replacing the grey ▣), and by the dropdown / Boxes-menu rows; (3)
+    > every box pill is a drop target, and its context menu carries a
+    > *Members* checklist (open projects, members first, capped at 12 before
+    > "Edit box…") that toggles on the spot and stays open; the pill's "Delete
+    > box" now asks the editor's dissolve question first; (4) `cycleBox` /
+    > `cycleBoxBack` chords (Ctrl+Shift+PageDown/PageUp, rebindable) walk the
+    > pills' row order and step into the boxes from a project. The dropdown
+    > springs open under a drag only while some boxes have no pill.
+    - [x] 🤖 Automated test — vitest `BoxRendering` (every box gets a pill in
+      row order with its colour inline and no count badge; MAX_BOX_PILLS cap +
+      "+N" + selected box seated; member swatches per box; box pill Members
+      checklist toggles add/remove and stays open; drop on a box pill adds with
+      no list sprung; overflow springs the list and its rows are targets; each
+      pill reports its own bars), `BoxCycle` (ring order, entry from outside,
+      no-op cases, chords collide with nothing).
+    - [ ] 🖐️ Manual test — with three boxes: click each box pill in turn (tabs
+      follow, the clicked pill lights in its colour, the strip slices); the
+      member pills show a square in the box's colour, several when in several
+      boxes, tooltip naming them; drag a project pill onto a non-selected box
+      pill (tinted while over, added on drop); right-click a box pill → Members:
+      tick two projects without the menu closing, untick one, Esc; Ctrl+Shift+
+      PageDown from a project lands in the first box, again → second, PageUp →
+      back; create 7 boxes → six pills + "+1" on the chip, pick the seventh in
+      the list → it takes the last slot; "Delete box" on a pill asks first.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 

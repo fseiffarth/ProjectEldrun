@@ -169,14 +169,15 @@ The active layout is a single fullscreen orchestration surface:
 +------------------------------------------------------------------+  either edge)
 ```
 
-The global app bar (left) and the file panel appear on pointer hover and
-auto-close after the pointer leaves; the file panel can also be pinned open,
+The file panel appears on pointer hover and
+auto-closes after the pointer leaves; it can also be pinned open,
 resized, and moved to the left edge. The project switcher lives in the top
 header bar. `Super` hides the panels simultaneously; `F11` toggles fullscreen.
 
 Some surfaces are **overlays over the whole window** rather than tabs — mail
 (`MailOverlay`), the calendar (`CalendarOverlay`), the to-do board
-(`TodoOverlay`), the Skills library (`SkillsOverlay`), and the presenter
+(`TodoOverlay`), models & agents with the machine-level Skills library
+(`ModelsOverlay`), and the presenter
 (`PresentationOverlay`) — opened from their header indicator or the `+` menu.
 Mail is the settled example: it was built as a tab *and* an overlay, and the tab
 was retired (`RETIRED_TAB_CMDS`) because the mail store is global, so a
@@ -204,35 +205,13 @@ contains:
 `network_conn_type` is polled (10 s, stretched under the power saver) for the
 LAN/WiFi distinction.
 
-### Global App Toolbar
+### Global Apps
 
-`GlobalAppBar.tsx` is a thin hover-revealed strip on the left side of the app
-body. When the pointer enters the strip, the toolbar opens; it closes when the
-pointer leaves.
-
-Supported roles (`GLOBAL_APP_ROLES` in `GlobalAppBar.tsx`):
-
-| Role | Key |
-|------|-----|
-| Browser | `browser` |
-| Password Manager | `password_manager` |
-| Video Conferencing | `video_conf` |
-| Media Player | `media_player` |
-| Notes | `notes` |
-| Screenshot | `screenshot` |
-| Screen Recorder | `screen_recorder` |
-| Chat | `chat` |
-
-**Retired roles.** `mail`, `calendar`, `file_manager`, `print_manager` and
-`system_monitor` are in `RETIRED_GLOBAL_APP_ROLES`, because Eldrun renders each
-of them itself now. Dropping a role from `GLOBAL_APP_ROLES` alone is not enough:
-an existing `settings.json` (or a seeded platform default) still holds the entry,
-and `orderedGlobalApps` deliberately renders *unknown* roles so a hand-added one
-isn't swallowed — so a retired role would come back as an unnamed "●" button.
-They are filtered rather than deleted from settings, so a role that is re-added
-later still finds its configured command. `GlobalAppRoles.test.ts` pins the two
-lists together: `print_manager` was named as retired in the comment and missing
-from the set, which is exactly the stray button the set exists to prevent.
+The header's ▦ launcher is gone. **Settings → Global apps** still records one
+command per role (`settings.json["global_apps"]`, listed by `GLOBAL_APP_ROLES`
+in `SettingsSubPanels.tsx`); the `browser` entry is what PDF links open in
+(`lib/linkTarget.ts`). Entries for roles no longer listed stay in settings
+untouched.
 
 Toolbar behavior:
 
@@ -359,13 +338,10 @@ Contents:
   including backgrounded projects. Clicking switches to the project; the × button
   closes it. The pill's menu exposes the container toggle, remote actions, and
   **Publish to GitHub / GitLab** (see below).
-- **The Trash pill** — the permanent disposable-agent workspace
-  (`trash-project-pill`, `lib/projects/trashProject.ts`). It renders without the ordinary
-  pill affordances and cannot be closed or archived.
 - **The scope chip and the box pill** — `BoxScopeChip.tsx` is the row's fixed
   leading segment: one control standing for every scope that is not a project
-  pill. Its dropdown is the only list of boxes (with Root, the Trash workspace
-  and "All projects" above them); picking a box **slices** the strip to that
+  pill. Its dropdown is the only list of boxes (with Root and "All projects"
+  above them); picking a box **slices** the strip to that
   box's members. The selected box then stands beside the chip as a pill of its
   own (`.box-scope-pill`) with a member-count badge: click it to enter the box
   scope, drop a project pill on it (same pointer drag as pill reorder) to add a
@@ -396,14 +372,14 @@ or `glab`) installed and authenticated, or a token under Settings → Git hostin
 Settings dialog (`SettingsPanel.tsx` + `SettingsSubPanels.tsx`) covers the main
 page — default agent command, theme, workspace management, experimental flags,
 the daily-recap toggle, and the Eldrun Mobile opt-in (`MobileSettings`) — plus
-these sub-panels: **Global apps** (role visibility and commands), **File types**
+these sub-panels: **Global apps** (per-role commands, e.g. the browser for PDF links), **File types**
 (per-type viewer behaviour, autocomplete and spelling defaults, autosave),
 **Ollama** (model management, when the binary is installed), **Agents**,
 **Shortcuts**, **Git hosting** (provider tokens), **VPN auto-connect**, **Remote
 hosts**, **Archived projects**, **Scaffold repair**, and **Help**.
 
-Themes are `THEMES` in `src/types/index.ts` — Fancy Dark (the default), Plain
-Dark, Plain Light, Fancy Light, and Light Lavender.
+Themes are `THEMES` in `src/types/index.ts` — Fancy Dark, Plain Dark (the
+default), Plain Light, Fancy Light, and Light Lavender.
 
 **Experimental flags** (`src/lib/experimental.ts`) gate surfaces that are not
 finished: `mail_client`, `web_browser`, `deck_presenter`, `python_run_debug`,
@@ -431,8 +407,8 @@ The sidecar derives opaque browser ids from trusted Eldrun state and revalidates
 the project, tab, tmux session, device session, and canonical project directory
 throughout an attachment. Mobile creation goes through the running desktop and
 accepts only a typed shell or cataloged resumable-agent request; it does not
-accept paths, commands, argv, or tmux names. See
-`docs/eldrun_mobile_agent_plan.md` for the protocol and acceptance matrix.
+accept paths, commands, argv, or tmux names. The protocol lives in
+`src-tauri/src/services/mobile_control/`.
 
 ### Workspace Apps
 
@@ -449,7 +425,7 @@ list. Where a link still needs an app, `src/lib/linkTarget.ts::routeUri` decides
 | To-do board | `components/todo/`, `stores/todo.ts` | shares `calendar.json` | Cards **are** calendar tasks — one store, not a second one. |
 | Browser | `components/browser/`, `stores/browser.ts` | `commands/browser.rs`, `services/browser_engine.rs`, `services/web_safety.rs` | Reader mode, no scripts. Behind `web_browser`. |
 | Print manager | `components/printing/PrintManagerPane.tsx` | `commands/printing.rs` | CUPS on Linux/macOS, PowerShell on Windows. |
-| Skills library | `components/skills/`, `stores/skills.ts` | `commands/skills.rs`, `services/skills.rs` | Claude-only; no manifest or versioning by design. |
+| Skills library | `components/skills/` (+ the `ModelsOverlay` Skills tab) | `commands/skills.rs`, `services/skills.rs` | Claude-only; no manifest or versioning by design. |
 | Deck presenter | `components/embed/deck/`, `lib/viewers/deck/` | `commands/presenter.rs` | Behind `deck_presenter`. |
 | Daily recap | `components/stats/` | `commands/usage_stats.rs`, `services/usage_stats.rs` | Local-only counters. |
 | System monitor | `components/monitoring/` | `commands/monitor.rs`, `gpustat.rs`, `sysstat.rs` | Local and remote hosts through the same parsers. |
@@ -514,7 +490,10 @@ Viewer state — editor/PDF scroll position, PDF/image zoom, image pan — persi
 per tab. Editable text/LaTeX/Markdown viewers carry opt-in, entirely local Ollama
 **autocomplete** (`Ctrl+Space`) and a dictionary **spell check**, both off by
 default with a per-tab header toggle; if Ollama is not running autocomplete fails
-silently, and nothing is ever sent off the machine.
+silently, and nothing is ever sent off the machine. While spelling is on, the header shows
+the dictionary language beside the toggle and a **＋ Language** menu that
+downloads another Hunspell dictionary (wooorm/dictionaries) and switches to it —
+the same download as Project Settings › Native viewers.
 
 ### Lessons, Tour, and i18n
 
@@ -608,8 +587,8 @@ keeps global `~/.vibe/config.toml` untouched.
 
 | Key | Behavior |
 |-----|----------|
-| `F11` | Toggle fullscreen. |
-| `Super` | Toggle all panels (file panel, switcher, global app bar). Only while Eldrun is focused. |
+| `F11` | Toggle fullscreen for the focused window (main or popout); also the fullscreen button in the window controls. |
+| `Super` | Toggle all panels (file panel, switcher). Only while Eldrun is focused. |
 | `Escape` | Close dialogs. |
 | `Enter` | Confirm create/import dialogs; activate a unique search result. |
 
@@ -711,22 +690,27 @@ merges across members, and box-rooted agent tabs (`BoxScopeChip.tsx`,
   retired; a stale persisted key is stripped in-memory on load and dropped from
   disk by the next ordinary `save_projects`. `get_boxes` reconciles away member
   ids that no longer reference a known project.
-- **Switcher (overlay model).** Member pills always render individually (with a
-  small ▣ badge naming their boxes); no box takes width in the scrolling strip.
-  Boxes are listed in the scope chip's dropdown, and the box picked there gets a
-  pill of its own in the fixed leading segment beside the chip. Empty and
-  one-member boxes survive and are still listed — the ONLY way a box disappears
-  is the box editor's explicit, confirmed **Dissolve** (the folder and agent
-  docs stay on disk).
-- **Box/unbox gestures.** Four ways in/out: the pill context menu's *Boxes*
-  group (checkbox row per box, additive toggle), Ctrl/Cmd-click multi-select →
-  "Box these (N)…", the box editor dialog (rename, full member list, dissolve;
-  opened from the box pill's menu, the pill menu, multi-select, or the switcher
-  "+"), and drag-and-drop (plain or Alt drop on the box pill — or on a row of
-  the chip's list, which springs open under a drag — = additive add; Alt-drop
-  one pill on another = new box of the two). While a box slice is selected the
-  switcher's "+" lists non-members to add, and each member pill's ✕ removes only
-  that membership.
+- **Switcher (overlay model).** Member pills always render individually, with
+  one colour swatch per box they are in (`lib/theme/boxColor`, a stable hue per
+  box id); no box takes width in the scrolling strip. Every box stands as a
+  small pill of its own in the fixed leading segment beside the scope chip —
+  its mark in the box's colour, one click into the box, a standing drop
+  target, right-click for rename / a Members checklist / edit / delete — up to
+  `MAX_BOX_PILLS`; the rest stay in the chip's dropdown (which always lists
+  every box) and the chip shows "+N". `Ctrl+Shift+PageDown/PageUp` cycle the
+  boxes. Empty and one-member boxes survive and are still listed — the ONLY way
+  a box disappears is an explicit, confirmed **Dissolve** / **Delete box** (the
+  folder and agent docs stay on disk).
+- **Box/unbox gestures.** Five ways in/out: the pill context menu's *Boxes*
+  group (checkbox row per box, additive toggle), the box pill's context menu's
+  *Members* checklist (toggles on the spot, stays open), Ctrl/Cmd-click
+  multi-select → "Box these (N)…", the box editor dialog (rename, full member
+  list, dissolve; opened from the box pill's menu, the pill menu, multi-select,
+  or the switcher "+"), and drag-and-drop (plain or Alt drop on any box pill —
+  or, when boxes overflow the row, on a row of the chip's list, which springs
+  open under a drag — = additive add; Alt-drop one pill on another = new box of
+  the two). While a box slice is selected the switcher's "+" lists non-members
+  to add, and each member pill's ✕ removes only that membership.
 - **Box folder, agent docs + member symlinks.** Opening a box (`openBox` →
   `ensure_box_folder`) lazily creates a folder under `~/eldrun/boxes/<name>/`
   (unique name resolved against other boxes and existing dirs) and
@@ -780,13 +764,6 @@ the project; nothing else about working in it changes.
   then on an ordinary `RemoteSpec { host: "127.0.0.1", port, vm: true }`.
   Mirrorless, locality pinned, with a CONNECT-proxy egress switch. Implemented;
   never live-booted.
-- **The Trash workspace** (`commands/projects.rs::ensure_trash_project`). A
-  permanent built-in project pill for disposable agents. It is created or
-  repaired before *every* project-list save and at startup, so ordinary project
-  operations cannot deactivate, archive, or weaken it, and `remove_all_owned`
-  spares it. Its sandbox spec is `SandboxScope::All` — every PTY is contained,
-  not just recognised agent CLIs — as defence in depth, so a stale shell tab in
-  it can never become a host escape.
 
 **Agent authority** has three axes that compose: the project container sandbox
 (OS containment), the tab's `location` (local / primary host / `host:<id>`
@@ -854,7 +831,7 @@ Tauri v2 Application
 +-- Rust backend (src-tauri/src/)
 |   +-- commands/         Tauri command handlers (~55 modules)
 |   |   +-- terminal.rs   PTY lifecycle, spawn/resize/kill/write
-|   |   +-- projects.rs   Project CRUD, scaffold + repair, Trash project, file tree
+|   |   +-- projects.rs   Project CRUD, scaffold + repair, file tree
 |   |   +-- fs.rs         Host-aware file read/write (local + SFTP paths)
 |   |   +-- git.rs / git_peer.rs / git_publish.rs / git_fork.rs
 |   |   +-- ssh.rs / remote.rs / sync.rs / vm.rs   Remote tiers and transports
@@ -924,7 +901,7 @@ All global data is under `~/.local/share/eldrun/`.
 
 | File | Purpose |
 |------|---------|
-| `projects.json` | Lightweight index of known projects (including the Trash entry). |
+| `projects.json` | Lightweight index of known projects. The retired built-in Trash workspace's `eldrun-trash` entry is dropped on every read/write. |
 | `boxes.json` | Project-box definitions (id, name, ordered `member_ids`, `folder?`, relations). |
 | `settings.json` | User settings: agent command, theme, workspace management, global apps, experimental flags, shortcut overrides, window state. |
 | `default_apps.json` | Global file-extension → app command map. |
@@ -1053,7 +1030,7 @@ remote git at all.
 - `default_agent_cmd` drives the default tab type and project terminal respawn.
   UI choices are `claude`, `codex`, `gemini`, `vibe`, plus any custom agent
   registered from "＋ Add agent…".
-- `color_scheme` supports `fancy_dark` (default), `dark`, `light`,
+- `color_scheme` supports `fancy_dark`, `dark` (default), `light`,
   `fancy_light`, `light_lavender`.
 - `global_apps` stores one entry per role with `exec` and `visible`; retired
   roles keep their entries but are filtered out of the bar.
@@ -1122,12 +1099,11 @@ startup. (The former `active_session.json` sentinel file is gone.)
 3. Projects marked `current` or `active` appear as project-switcher pills.
 4. The project marked `current` is the initial active scope; if none, root.
 5. Workspace management (if enabled) allocates desktops for visible projects.
-6. `ensure_trash_project` creates or repairs the permanent Trash pill.
-7. The daily recap opens on the first launch of each day (`daily_stats_recap`,
+6. The daily recap opens on the first launch of each day (`daily_stats_recap`,
    default on).
-8. If Eldrun Mobile is enabled, the loopback sidecar starts; the header's
+7. If Eldrun Mobile is enabled, the loopback sidecar starts; the header's
    `MobileIndicator` reports its status.
-9. Connection lamps fill in. Keychain reads are **bounded**
+8. Connection lamps fill in. Keychain reads are **bounded**
    (`remote_credentials::read_timed`, 4 s): a locked Secret Service collection
    reads identically to "nothing saved" and can otherwise block forever, which is
    what once left every lamp permanently amber.
@@ -1292,10 +1268,15 @@ pass:
 git add -A && scripts/privacy-check.sh          # or: scripts/privacy-check.sh <base> <head>
 ```
 
-`.githooks/pre-push` runs it over the outgoing commits and a `privacy` CI job
-repeats it. Enable the hooks once per clone with
-`git config core.hooksPath .githooks`; that arms both the privacy scan and the
-automatic patch-version bump. Never hardcode institution or lab hostnames, and
+`.githooks/pre-commit` (and `pre-merge-commit`) runs it over what each commit
+records, so a leak never enters history; `.githooks/pre-push` runs it over the
+outgoing commits — the authoritative gate, since rebases, cherry-picks,
+plumbing commits and `--no-verify` skip pre-commit — and a `privacy` CI job
+repeats it. With [gitleaks](https://github.com/gitleaks/gitleaks) on `PATH`
+both hooks also run it (it knows far more token formats; CI runs it over the
+whole history either way, but only after the push is public). Enable the hooks
+once per clone with `git config core.hooksPath .githooks`; that arms the
+privacy scans and the automatic patch-version bump. Never hardcode institution or lab hostnames, and
 commits must use the GitHub `noreply` author email.
 
 Notable suites beyond schema round-trips: hostile-input fixtures for mail

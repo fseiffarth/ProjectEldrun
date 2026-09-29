@@ -1,0 +1,140 @@
+/**
+ * The new-tab chords land through the focused pane's `TabBar`: a shell, the
+ * System Monitor and the numbered agents open there as the active tab (which
+ * is what hands a terminal the keyboard), an unused number is left alone, and
+ * the + menu shows each chord beside its row.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, act, cleanup, fireEvent } from "@testing-library/react";
+
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+  emit: vi.fn(() => Promise.resolve()),
+}));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    scaleFactor: () => Promise.resolve(1),
+    innerPosition: () => Promise.resolve({ toLogical: () => ({ x: 0, y: 0 }) }),
+    onMoved: () => Promise.resolve(() => {}),
+    onResized: () => Promise.resolve(() => {}),
+  }),
+  cursorPosition: () => Promise.resolve({ x: 0, y: 0 }),
+}));
+
+import { TabBar } from "../../components/tabs/TabBar";
+import { findGroup, useTabsStore } from "../../stores/tabs";
+import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
+import { requestNewTab } from "../../lib/shortcuts/newTabChord";
+import type { ProjectEntry, Settings } from "../../types";
+
+const proj: ProjectEntry = {
+  id: "p1",
+  name: "p1",
+  status: "active",
+  position: 10,
+  local_file: "/p/p1/project.json",
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockInvoke.mockImplementation((cmd: string) => {
+    if (cmd === "list_agents") {
+      return Promise.resolve([
+        { id: "claude", bin: "claude", installed: true },
+        { id: "codex", bin: "codex", installed: true },
+      ]);
+    }
+    // No linked worktrees, so an agent opens without the worktree question.
+    if (cmd === "git_worktree_list") return Promise.resolve([]);
+    return Promise.resolve(null);
+  });
+  useProjectsStore.setState({ projects: [proj], activeId: "p1", loaded: true });
+  useSettingsStore.setState({ settings: { default_agent_cmd: "codex" } as Settings });
+  useTabsStore.setState({
+    scope: "p1",
+    tabsByScope: {},
+    layoutByScope: {},
+    focusedGroupByScope: {},
+    tabs: [],
+    layout: null,
+    focusedGroupId: null,
+    activeKey: null,
+  });
+});
+afterEach(() => cleanup());
+
+async function renderBar() {
+  useTabsStore.getState().setScope("p1");
+  useTabsStore
+    .getState()
+    .addTab({ label: "Files", cmd: "", args: [], env: {}, cwd: "/p/p1", kind: "shell" });
+  const groupId = useTabsStore.getState().focusedGroupId!;
+  let container!: HTMLElement;
+  await act(async () => {
+    ({ container } = render(<TabBar groupId={groupId} projectCwd="/p/p1" showGroupClose={false} />));
+  });
+  return { groupId, container };
+}
+
+function activeTab(groupId: string) {
+  const s = useTabsStore.getState();
+  const key = findGroup(s.layout, groupId)?.activeKey;
+  return s.tabs.find((t) => t.key === key);
+}
+
+describe("new-tab chords", () => {
+  it("opens a shell and the monitor as the focused pane's active tab", async () => {
+    const { groupId } = await renderBar();
+    let took = false;
+    await act(async () => {
+      took = requestNewTab({ kind: "shell" });
+    });
+    expect(took).toBe(true);
+    expect(useTabsStore.getState().tabs).toHaveLength(2);
+    expect(activeTab(groupId)?.kind).toBe("shell");
+    await act(async () => {
+      requestNewTab({ kind: "monitor" });
+    });
+    expect(activeTab(groupId)?.kind).toBe("monitor");
+  });
+
+  it("opens the default agent on Ctrl+1 and the next one on Ctrl+2", async () => {
+    const { groupId } = await renderBar();
+    await act(async () => {
+      requestNewTab({ kind: "agent", slot: 0 });
+    });
+    expect(activeTab(groupId)?.cmd).toBe("codex");
+    await act(async () => {
+      requestNewTab({ kind: "agent", slot: 1 });
+    });
+    expect(activeTab(groupId)?.cmd).toBe("claude");
+  });
+
+  it("passes an agent number with nothing behind it", async () => {
+    await renderBar();
+    let took = true;
+    await act(async () => {
+      took = requestNewTab({ kind: "agent", slot: 5 });
+    });
+    expect(took).toBe(false);
+    expect(useTabsStore.getState().tabs).toHaveLength(1);
+  });
+
+  it("shows the chords in the + menu", async () => {
+    const { container } = await renderBar();
+    await act(async () => {
+      fireEvent.click(container.querySelector(".tab-new-btn")!);
+    });
+    const hint = (label: string) =>
+      [...document.querySelectorAll(".tab-new-menu button")]
+        .find((el) => el.querySelector(".tab-new-menu-dot")?.nextSibling?.textContent === label)
+        ?.querySelector(".menu-shortcut")?.textContent;
+    expect(hint("Codex")).toBe("Ctrl+1");
+    expect(hint("Claude")).toBe("Ctrl+2");
+    expect(hint("Shell")).toBe("Ctrl+Shift+N");
+    expect(hint("System Monitor")).toBe("Ctrl+Shift+M");
+  });
+});

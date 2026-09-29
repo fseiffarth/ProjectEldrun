@@ -1,4 +1,7 @@
-use crate::schema::{agent_prompts::ProjectAgentPrompt, AgentScheduleRule, ScheduledAgentPrompt};
+use crate::schema::{
+    agent_prompts::ProjectAgentPrompt, AgentScheduleLastRun, AgentScheduleRule,
+    ScheduledAgentPrompt,
+};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_CONTROL_MESSAGE: usize = 64 * 1024;
@@ -70,17 +73,225 @@ pub struct CreateTabRequest {
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// An agent started in a linked worktree: the opaque id a
+    /// [`DesktopResponse::LaunchOptions`] listed. The path never crosses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
+    /// A cloud session instead of a local agent: `"new"` or `"open"`
+    /// (`src/lib/agents/cloudSessions.ts`). Never together with `worktree`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<String>,
+    /// The task a `"new"` cloud session starts on, for CLIs that take it on
+    /// their command line. Bounded by [`MAX_CLOUD_TASK`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// A sign-in tab instead of a session: the CLI's own login command, in
+    /// the flow a phone can finish (`src/lib/agents/signInLaunch.ts`).
+    /// `"default"`, or `"alternate"` for the CLI's other way in (Claude's
+    /// Console account, Codex's browser redirect). Never with a worktree,
+    /// cloud or task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in: Option<String>,
+    /// The agent tab whose CLI a sign-in is for, by tmux name, in place of
+    /// `agent_id`. Set by the sidecar alone (`POST /api/v1/tabs/{id}/sign-in`);
+    /// the phone's create route refuses a body carrying it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub like_tab: Option<String>,
+    /// A local-model agent (#31bl): the opaque id [`MobileLocalLaunch`]
+    /// listed, in place of `agent_id`. Alone — no mode, worktree, cloud or
+    /// sign-in rides with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<String>,
     pub idempotency_key: String,
 }
 
-/// Phone-editable schedule fields. Receipts are desktop-owned and therefore are
-/// not accepted in a mutation body.
+/// Longest cloud-session task a phone may send (characters) — the desktop's
+/// `MAX_CLOUD_TASK` in `src/lib/agents/cloudSessions.ts`.
+pub const MAX_CLOUD_TASK: usize = 4000;
+
+impl CreateTabRequest {
+    /// The shape rules the sidecar can check without the desktop: worktree
+    /// and cloud are agent-only and exclusive, the action is a known one, and
+    /// a task is plain text of bounded length that only a cloud launch carries.
+    /// Whether the agent *has* that launch, and whether the worktree id is
+    /// one the desktop listed, stays the desktop's to answer.
+    pub fn launch_shape_ok(&self) -> bool {
+        let agent = matches!(self.kind, CreateTabKind::Agent);
+        if (self.worktree.is_some() || self.cloud.is_some()) && !agent {
+            return false;
+        }
+        if self.worktree.is_some() && self.cloud.is_some() {
+            return false;
+        }
+        if let Some(way) = &self.sign_in {
+            if !agent
+                || (way != "default" && way != "alternate")
+                || self.worktree.is_some()
+                || self.cloud.is_some()
+                || self.task.is_some()
+            {
+                return false;
+            }
+        }
+        if self.like_tab.is_some() && (self.sign_in.is_none() || self.agent_id.is_some()) {
+            return false;
+        }
+        if let Some(id) = &self.local {
+            if !agent
+                || id.is_empty()
+                || id.len() > 128
+                || self.agent_id.is_some()
+                || self.mode.is_some()
+                || self.worktree.is_some()
+                || self.cloud.is_some()
+                || self.task.is_some()
+                || self.sign_in.is_some()
+                || self.like_tab.is_some()
+            {
+                return false;
+            }
+        }
+        if let Some(id) = &self.worktree {
+            if id.is_empty() || id.len() > 128 {
+                return false;
+            }
+        }
+        if let Some(action) = &self.cloud {
+            if action != "new" && action != "open" {
+                return false;
+            }
+        }
+        if let Some(task) = &self.task {
+            if self.cloud.is_none()
+                || task.trim().is_empty()
+                || task.chars().count() > MAX_CLOUD_TASK
+                || task
+                    .chars()
+                    .any(|c| (c.is_control() && c != '\n' && c != '\t') || c == '\u{7f}')
+            {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// One place an agent can start on the phone's ＋: a linked worktree, named
+/// by its directory and branch. `id` is opaque; the path stays on the desktop.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MobileWorktree {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub main: bool,
+}
+
+/// One cloud launch an agent offers on the phone's ＋ (`agent_id` is the
+/// catalog's opaque agent id). `task` → the phone asks for the task first.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MobileCloudLaunch {
+    pub agent_id: String,
+    pub action: String,
+    #[serde(default)]
+    pub task: bool,
+}
+
+/// The ＋ sheet's local-model group (#31bl): the model the desktop's "+"
+/// drives and the agents it offers for it, under opaque ids. `ready` is false
+/// until the model sits on the GPU; a start then loads it first. `caution`
+/// marks an agent built for frontier models (`LocalDriverInfo::heavy_harness`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MobileLocalLaunch {
+    pub model: String,
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub agents: Vec<MobileLocalAgent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MobileLocalAgent {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub caution: bool,
+}
+
+/// One agent the phone's ＋ can sign in to (`agent_id` is the catalog's
+/// opaque agent id). `signed_in` is `None` where Eldrun cannot tell (a CLI
+/// whose login it does not keep); `account` is the account the shared login
+/// names, when it names one; `alternate` names the CLI's other way in
+/// (`"console"`, `"browser"`) when it has one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MobileSignInOption {
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_in: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alternate: Option<String>,
+}
+
+/// Phone-editable schedule fields. Receipts and prefix commands are desktop-owned
+/// and therefore are not accepted in a mutation body. The desktop bridge keeps
+/// existing prefix commands when applying a phone update.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MobileScheduleInput {
     pub enabled: bool,
     pub message: String,
     pub rule: AgentScheduleRule,
+}
+
+/// Only the schedule fields the phone uses. The stored row's prefix commands
+/// and agent session attribution stay in the desktop-control protocol.
+#[derive(Debug, Clone, Serialize)]
+pub struct MobileSchedule {
+    pub id: String,
+    pub enabled: bool,
+    pub message: String,
+    pub rule: AgentScheduleRule,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last: Option<AgentScheduleLastRun>,
+}
+
+impl From<ScheduledAgentPrompt> for MobileSchedule {
+    fn from(schedule: ScheduledAgentPrompt) -> Self {
+        Self {
+            id: schedule.id,
+            enabled: schedule.enabled,
+            message: schedule.message,
+            rule: schedule.rule,
+            last: schedule.last,
+        }
+    }
+}
+
+/// A collected prompt's public fields. Its target is a desktop schedule
+/// handle, never an id the browser API needs or accepts.
+#[derive(Debug, Clone, Serialize)]
+pub struct MobileCollectedPrompt {
+    pub id: String,
+    pub message: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl From<ProjectAgentPrompt> for MobileCollectedPrompt {
+    fn from(prompt: ProjectAgentPrompt) -> Self {
+        Self {
+            id: prompt.id,
+            message: prompt.message,
+            created_at: prompt.created_at,
+            updated_at: prompt.updated_at,
+            tags: prompt.tags,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,8 +539,11 @@ pub struct MobileCalendarInfo {
     pub color: String,
     pub visible: bool,
     pub readonly: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_url: Option<String>,
+    /// A subscribed (ICS feed) calendar. Only the fact crosses: the feed URL
+    /// routinely embeds a private token, and the phone only ever asked whether
+    /// there was one.
+    #[serde(default)]
+    pub subscribed: bool,
     pub caldav: bool,
 }
 
@@ -552,6 +766,14 @@ pub enum DesktopRequest {
     Activity {
         request_id: String,
     },
+    /// The desktop's git dot for every mobile-eligible project — unstaged,
+    /// staged-not-committed, committed-not-pushed — for the phone's project
+    /// list. Read from what the desktop's own pills already probed, so the
+    /// answer costs no git spawn; a project the desktop has not probed is left
+    /// out and the phone shows no dot, as the desktop does.
+    GitStates {
+        request_id: String,
+    },
     Activate {
         request_id: String,
         project_id: String,
@@ -559,6 +781,14 @@ pub enum DesktopRequest {
     Create {
         request_id: String,
         request: CreateTabRequest,
+    },
+    /// What the phone's ＋ can start an agent *in* for one project: its
+    /// linked worktrees and its agents' cloud launches. Asked when the sheet
+    /// opens rather than carried on every catalog poll — listing worktrees is
+    /// a git call.
+    LaunchOptions {
+        request_id: String,
+        project_id: String,
     },
     Todo {
         request_id: String,
@@ -680,6 +910,16 @@ pub enum DesktopRequest {
         project_id: String,
         tmux_session: String,
     },
+    /// Reopen an agent tab closed in this project — the newest, or the one
+    /// `closed_id` names (an opaque id from `Catalog::closed`) — on the resume
+    /// args a restart would give it. Answered with `Created`, like a create;
+    /// `nothing_to_reopen` when the desktop no longer holds it.
+    ReopenTab {
+        request_id: String,
+        project_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        closed_id: Option<String>,
+    },
     Prompts {
         request_id: String,
         project_id: String,
@@ -722,6 +962,15 @@ pub enum DesktopRequest {
         tmux_session: String,
         message: String,
     },
+    /// Take back the last `/clear` of this agent tab: the desktop types the
+    /// CLI's resume of the conversation that clear ended into the tab
+    /// (`agent_tab_undo_clear`). The session id stays on the desktop; the
+    /// answer is `Seen`, or `nothing_to_undo` once the session has moved on.
+    UndoClear {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+    },
     /// What one agent tab is doing, and what its CLI says about its own quota.
     /// Addressed by the same `project_id` + `tmux_session` pair the schedule and
     /// rename requests use, so no key, path or command crosses the boundary.
@@ -739,10 +988,14 @@ pub enum DesktopRequest {
     /// the phone's Focus view. Addressed like `AgentStatus`. `version` is the
     /// fingerprint the phone last saw, answered `unchanged` while the file has
     /// not moved; `limit` is how many of the newest turns to carry.
+    /// `subagent` is the handle on one of its `agent` entries: that
+    /// subagent's conversation is read instead.
     AgentTranscript {
         request_id: String,
         project_id: String,
         tmux_session: String,
+        #[serde(default)]
+        subagent: Option<String>,
         #[serde(default)]
         version: Option<String>,
         #[serde(default)]
@@ -773,8 +1026,10 @@ impl DesktopRequest {
         match self {
             Self::Catalog { request_id, .. }
             | Self::Activity { request_id }
+            | Self::GitStates { request_id }
             | Self::Activate { request_id, .. }
             | Self::Create { request_id, .. }
+            | Self::LaunchOptions { request_id, .. }
             | Self::Todo { request_id }
             | Self::Alerts { request_id }
             | Self::AlertResolve { request_id, .. }
@@ -792,11 +1047,13 @@ impl DesktopRequest {
             | Self::ColorTab { request_id, .. }
             | Self::ReorderTab { request_id, .. }
             | Self::CloseTab { request_id, .. }
+            | Self::ReopenTab { request_id, .. }
             | Self::Prompts { request_id, .. }
             | Self::PromptMutate { request_id, .. }
             | Self::TabSeen { request_id, .. }
             | Self::TabInput { request_id, .. }
             | Self::TabPrompt { request_id, .. }
+            | Self::UndoClear { request_id, .. }
             | Self::AgentStatus { request_id, .. }
             | Self::AgentTranscript { request_id, .. }
             | Self::DesktopImages { request_id, .. }
@@ -817,6 +1074,9 @@ impl DesktopRequest {
             Self::MailMessage { .. } | Self::MailMark { .. } => 35,
             Self::MailReply { .. } => 65,
             Self::AgentStatus { .. } => 25,
+            // Rides on the project list, which answers without the desktop:
+            // a wedged window must not hold that list up for long.
+            Self::GitStates { .. } => 3,
             _ => 10,
         })
     }
@@ -829,6 +1089,7 @@ impl DesktopRequest {
             Self::MailMessage { .. } | Self::MailMark { .. } => 30,
             Self::MailReply { .. } => 60,
             Self::AgentStatus { .. } => 20,
+            Self::GitStates { .. } => 2,
             _ => 8,
         })
     }
@@ -873,10 +1134,26 @@ pub struct AgentTabStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTabTiming {
     pub tmux_session: String,
+    /// The quiet tab's model, composed as `AgentTabStatus::model`: a session
+    /// with no status still shows which model it will answer with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done_at: Option<u64>,
+}
+
+/// An agent tab closed in the project, as the desktop remembers it for a
+/// reopen: an opaque id minted at close (never the session id), the tab's label
+/// and its agent CLI, and when it closed (desktop ms since the epoch).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClosedAgentTab {
+    pub id: String,
+    pub label: String,
+    pub agent: String,
+    #[serde(default)]
+    pub closed_at: u64,
 }
 
 /// One agent tab's scheduled-prompt summary, already computed by the desktop
@@ -891,6 +1168,10 @@ pub struct AgentTabSchedules {
     /// Desktop-local `YYYY-MM-DDTHH:MM` of the next run, when one is due.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
+    /// The soonest enabled schedules still to fire: their message, and `at`
+    /// as the same desktop-local key as `next`. Absent from an older desktop.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upcoming: Vec<AgentTabPrompt>,
 }
 
 /// One prompt an agent tab was given, read off the agent's own transcript by
@@ -987,6 +1268,28 @@ pub struct MobileInboxAttachment {
     pub size: u64,
 }
 
+/// One project's git dot (`stores/gitDirty.ts`). `state` stays a string on
+/// the wire so a desktop that learns another level cannot fail the whole
+/// answer; [`git_dot`] keeps only the levels the phone knows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectGitState {
+    pub project_id: String,
+    pub state: String,
+}
+
+/// The phone-facing spelling of a desktop git dot: untracked or unstaged
+/// changes ▸ staged, not committed ▸ committed, not pushed ▸ a repo whose
+/// `.git` went missing. Clean and anything unknown read as no dot.
+pub fn git_dot(state: &str) -> Option<&'static str> {
+    match state {
+        "dirty" => Some("dirty"),
+        "staged" => Some("staged"),
+        "unpushed" => Some("unpushed"),
+        "broken" => Some("broken"),
+        _ => None,
+    }
+}
+
 /// What the desktop answers a [`DesktopRequest`] with.
 ///
 /// **This enum and everything it carries are deliberately NOT
@@ -1028,6 +1331,15 @@ pub enum DesktopResponse {
         /// ordering them. Defaulted like the rest.
         #[serde(default)]
         timings: Vec<AgentTabTiming>,
+        /// The project's agent tabs closed this desktop session, newest first,
+        /// for the phone's "Recently closed" row. Defaulted like the rest.
+        #[serde(default)]
+        closed: Vec<ClosedAgentTab>,
+        /// The project's git dot, as [`ProjectGitState::state`] spells it;
+        /// absent when clean, not a repo, or never probed. Defaulted like the
+        /// rest.
+        #[serde(default)]
+        git: Option<String>,
     },
     /// Answer to [`DesktopRequest::Activity`]: the agent tabs of every eligible
     /// project that are working, waiting on a decision, or done. Keyed by tmux
@@ -1041,9 +1353,27 @@ pub enum DesktopResponse {
         #[serde(default)]
         prompts: Vec<AgentTabPrompts>,
     },
+    /// Answer to [`DesktopRequest::GitStates`], keyed by the desktop's raw
+    /// project id; the sidecar maps each onto its opaque public id.
+    GitStates {
+        #[serde(default)]
+        states: Vec<ProjectGitState>,
+    },
     Activated,
     Created {
         tmux_session: String,
+    },
+    /// Answers [`DesktopRequest::LaunchOptions`]. Both lists default, so an
+    /// empty answer reads as "project folder only, no cloud".
+    LaunchOptions {
+        #[serde(default)]
+        worktrees: Vec<MobileWorktree>,
+        #[serde(default)]
+        cloud: Vec<MobileCloudLaunch>,
+        #[serde(default)]
+        sign_in: Vec<MobileSignInOption>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        local: Option<MobileLocalLaunch>,
     },
     Todo {
         board: TodoBoardSnapshot,
@@ -1120,6 +1450,27 @@ pub enum AdminRequest {
     Revoke { device_id: String },
     ForgetAll,
     Shutdown,
+    /// A calendar reminder for every subscribed phone (`push.rs`). Answered
+    /// `Ok` as soon as it is queued; delivery happens after, off the admin
+    /// plane.
+    Notify {
+        kind: super::push::NoticeKind,
+        title: String,
+        body: String,
+        tag: String,
+    },
+    /// An agent tab's turn edge, seen by the desktop. The sidecar resolves the
+    /// tmux name through its own catalog — the name never reaches a phone —
+    /// and stays quiet for a tab a phone is attached to.
+    AgentTurn {
+        tmux_session: String,
+        status: super::push::AgentTurn,
+        /// The prompt a finished turn answered, when the desktop could read
+        /// it. Left out when absent, so a sidecar predating it still takes the
+        /// edge.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1163,12 +1514,17 @@ pub enum TerminalControl {
     Detached,
 }
 
-/// Server → client control frames. The phone needs three things it cannot infer
+/// Server → client control frames. The phone needs four things it cannot infer
 /// from the byte stream: the tmux window geometry it must adopt (otherwise tmux
 /// pans a narrow client across a wide window and silently crops every line),
 /// an explicit replay boundary (so a reattach replaces the screen instead of
-/// appending a second copy of it), and the reason a socket is closing (so a
-/// revoked device is told that, not "reconnecting…").
+/// appending a second copy of it), the reason a socket is closing (so a
+/// revoked device is told that, not "reconnecting…"), and an acknowledgement
+/// per input frame: `Ack { seq }` says the phone's `seq`-th binary frame on
+/// this socket has been written to the session's PTY. A half-open cellular
+/// link keeps a socket OPEN while every byte sent into it is lost; the phone
+/// marks a prompt whose frames were never acked as not delivered instead of
+/// showing it as sent forever.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TerminalEvent {
@@ -1176,6 +1532,7 @@ pub enum TerminalEvent {
     Window { cols: u16, rows: u16 },
     Replay,
     Closing { reason: String, retry: bool },
+    Ack { seq: u64 },
 }
 
 impl TerminalEvent {
@@ -1187,12 +1544,13 @@ impl TerminalEvent {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentTabPrompt, AgentTabPrompts, AgentTabSchedules, AgentTabStatus, AgentTabTiming, DesktopRequest,
-        DesktopResponse, MobileAlertItem,
+        AgentTabPrompt, AgentTabPrompts, AgentTabSchedules, AgentTabStatus, AgentTabTiming, ClosedAgentTab, DesktopRequest,
+        DesktopResponse, git_dot, MobileAlertItem,
         MobileAlertsSnapshot,
         MobileMailView, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
     };
     use crate::schema::AgentScheduleRule;
+    use serde_json::json;
 
     #[test]
     fn catalog_statuses_stay_on_the_internal_control_plane() {
@@ -1217,6 +1575,10 @@ mod tests {
                 total: 3,
                 enabled: 2,
                 next: Some("2026-09-03T09:00".into()),
+                upcoming: vec![AgentTabPrompt {
+                    text: "run the nightly benchmark".into(),
+                    at: Some("2026-09-03T09:00".into()),
+                }],
             }],
             prompts: vec![AgentTabPrompts {
                 tmux_session: "eldrun-project-0--agent-123456789".into(),
@@ -1227,17 +1589,30 @@ mod tests {
             }],
             timings: vec![AgentTabTiming {
                 tmux_session: "eldrun-project-0--agent-987654321".into(),
+                model: None,
                 working_at: None,
                 done_at: Some(1_700_000_100_000),
             }],
+            closed: vec![ClosedAgentTab {
+                id: "0b8f6c1e-closed".into(),
+                label: "claude 2".into(),
+                agent: "claude".into(),
+                closed_at: 1_700_000_200_000,
+            }],
+            git: Some("unpushed".into()),
         };
         let response_json = serde_json::to_value(response).expect("serialize catalog response");
+        assert_eq!(response_json["git"], "unpushed");
+        // A closed tab crosses by its opaque id and label only.
+        assert_eq!(response_json["closed"][0]["id"], "0b8f6c1e-closed");
+        assert_eq!(response_json["closed"][0]["label"], "claude 2");
         assert_eq!(response_json["statuses"][0]["status"], "question");
         assert_eq!(response_json["statuses"][0]["model"], "opus-4-1");
         assert_eq!(response_json["statuses"][0]["working_at"], 1_700_000_000_000u64);
         assert!(response_json["statuses"][0].get("done_at").is_none());
         assert_eq!(response_json["schedules"][0]["enabled"], 2);
         assert_eq!(response_json["schedules"][0]["next"], "2026-09-03T09:00");
+        assert_eq!(response_json["schedules"][0]["upcoming"][0]["text"], "run the nightly benchmark");
         // The prompt rows are keyed the same way and carry no id of their own:
         // the sidecar is what turns the tmux name into the phone's tab id.
         assert_eq!(
@@ -1283,6 +1658,66 @@ mod tests {
         assert_eq!(agents.len(), 1, "the agent menu survives the unknown field");
         assert_eq!(statuses[0].status, "working");
         assert_eq!(statuses[0].working_at, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn git_states_keep_only_the_levels_the_phone_knows() {
+        let request = serde_json::to_value(DesktopRequest::GitStates {
+            request_id: "request-2".into(),
+        })
+        .expect("serialize git states request");
+        assert_eq!(request["type"], "git_states");
+        // A newer desktop may name a level this sidecar never heard of; the
+        // answer still decodes, and the phone gets no dot for that row.
+        let response: DesktopResponse = serde_json::from_value(serde_json::json!({
+            "status": "git_states",
+            "states": [
+                { "project_id": "a", "state": "dirty" },
+                { "project_id": "b", "state": "diverged" },
+                { "project_id": "c", "state": "clean" },
+            ],
+        }))
+        .expect("decode git states");
+        let DesktopResponse::GitStates { states } = response else {
+            panic!("git states must decode as such");
+        };
+        let dots = states
+            .iter()
+            .map(|row| git_dot(&row.state))
+            .collect::<Vec<_>>();
+        assert_eq!(dots, vec![Some("dirty"), None, None]);
+        for level in ["dirty", "staged", "unpushed", "broken"] {
+            assert_eq!(git_dot(level), Some(level));
+        }
+        // A catalog from a desktop that predates the field has no dot.
+        let older: DesktopResponse =
+            serde_json::from_value(serde_json::json!({ "status": "catalog", "agents": [] }))
+                .expect("decode an older catalog");
+        assert!(matches!(older, DesktopResponse::Catalog { git: None, .. }));
+    }
+
+    #[test]
+    fn a_reopen_names_its_closed_tab_or_takes_the_newest() {
+        let newest = DesktopRequest::ReopenTab {
+            request_id: "request-1".into(),
+            project_id: "project-0".into(),
+            closed_id: None,
+        };
+        let json = serde_json::to_value(&newest).expect("serialize reopen");
+        assert_eq!(json["type"], "reopen_tab");
+        assert!(json.get("closed_id").is_none());
+        assert_eq!(newest.request_id(), "request-1");
+        let named: DesktopRequest = serde_json::from_value(json!({
+            "type": "reopen_tab",
+            "request_id": "request-2",
+            "project_id": "project-0",
+            "closed_id": "0b8f6c1e-closed",
+        }))
+        .expect("decode a named reopen");
+        let DesktopRequest::ReopenTab { closed_id, .. } = named else {
+            panic!("a reopen decodes as one");
+        };
+        assert_eq!(closed_id.as_deref(), Some("0b8f6c1e-closed"));
     }
 
     /// The other half of the bargain: what the *phone* sends stays strict, so
@@ -1545,7 +1980,7 @@ mod tests {
                     color: "#7c6cff".into(),
                     visible: true,
                     readonly: false,
-                    source_url: None,
+                    subscribed: false,
                     caldav: false,
                 }],
                 events: vec![super::MobileCalendarEvent {
@@ -1576,6 +2011,28 @@ mod tests {
     /// The terminal control plane, byte for byte as `mobile-web/src/terminal/
     /// protocol.ts` shapes it: every frame the phone sends decodes, nothing it
     /// does not name is accepted, and every server frame survives a round trip.
+    #[test]
+    fn a_calendar_row_says_subscribed_and_never_carries_its_feed_url() {
+        let row = super::MobileCalendarInfo {
+            id: "opaque-calendar".into(),
+            name: "Holidays".into(),
+            color: "#00aa88".into(),
+            visible: true,
+            readonly: true,
+            subscribed: true,
+            caldav: false,
+        };
+        let json = serde_json::to_string(&row).expect("serialize");
+        assert!(json.contains("\"subscribed\":true"));
+        assert!(!json.contains("source_url"));
+        // A bridge that predates the flag still parses: the flag defaults off.
+        let older: super::MobileCalendarInfo = serde_json::from_str(
+            r##"{"id":"x","name":"Local","color":"#000","visible":true,"readonly":false,"caldav":false}"##,
+        )
+        .expect("older row");
+        assert!(!older.subscribed);
+    }
+
     #[test]
     fn terminal_frames_match_the_phones_wire_shapes_exactly() {
         use super::{TerminalControl, TerminalEvent};
@@ -1627,5 +2084,76 @@ mod tests {
                 serde_json::from_str(&event.to_frame()).expect("server frame round trip");
             assert_eq!(restored, event);
         }
+    }
+
+    fn create(body: serde_json::Value) -> super::CreateTabRequest {
+        serde_json::from_value(body).expect("create request")
+    }
+
+    #[test]
+    fn create_request_launch_shape() {
+        let key = "0123456789abcdef";
+        let ok = |body: serde_json::Value| create(body).launch_shape_ok();
+        // Older phones send none of the new fields.
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "idempotency_key": key})));
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "worktree": "w1", "idempotency_key": key})));
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "open", "idempotency_key": key})));
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "new", "task": "fix the\nbuild\tnow", "idempotency_key": key})));
+        // A shell has no worktree or cloud; the two are exclusive.
+        assert!(!ok(json!({"project_id": "p", "kind": "shell", "cloud": "new", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "shell", "worktree": "w1", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "open", "worktree": "w1", "idempotency_key": key})));
+        // Unknown action, a stray task, a blank, control-laden or overlong one.
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "rm", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "task": "hi", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "new", "task": "  ", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "new", "task": "a\u{1b}[2Jb", "idempotency_key": key})));
+        let long = "x".repeat(super::MAX_CLOUD_TASK + 1);
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "new", "task": long, "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "worktree": "", "idempotency_key": key})));
+        // A sign-in tab: agent only, a known way, alone; `like_tab` only with it
+        // and in place of `agent_id`.
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "sign_in": "default", "idempotency_key": key})));
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "sign_in": "alternate", "idempotency_key": key})));
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "like_tab": "t", "sign_in": "default", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "shell", "sign_in": "default", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "sign_in": "token", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "sign_in": "default", "cloud": "open", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "sign_in": "default", "worktree": "w1", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "like_tab": "t", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "like_tab": "t", "sign_in": "default", "idempotency_key": key})));
+        // A local-model agent: agent kind, a bounded id, and nothing else.
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "local": "l1", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "shell", "local": "l1", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "local": "", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "local": "x".repeat(129), "idempotency_key": key})));
+        for extra in [
+            json!({"agent_id": "a"}),
+            json!({"mode": "plan"}),
+            json!({"worktree": "w1"}),
+            json!({"cloud": "open"}),
+            json!({"sign_in": "default"}),
+        ] {
+            let mut body = json!({"project_id": "p", "kind": "agent", "local": "l1", "idempotency_key": key});
+            body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            assert!(!ok(body), "{extra}");
+        }
+    }
+
+    #[test]
+    fn launch_options_round_trip_and_default() {
+        let response: DesktopResponse = serde_json::from_value(json!({"status": "launch_options"}))
+            .expect("empty launch options");
+        let DesktopResponse::LaunchOptions { worktrees, cloud, sign_in, local } = response else {
+            panic!("launch options");
+        };
+        assert!(worktrees.is_empty() && cloud.is_empty() && sign_in.is_empty() && local.is_none());
+        let request = DesktopRequest::LaunchOptions {
+            request_id: "r".into(),
+            project_id: "p".into(),
+        };
+        let value = serde_json::to_value(&request).expect("serialize");
+        assert_eq!(value, json!({"type": "launch_options", "request_id": "r", "project_id": "p"}));
+        assert_eq!(request.request_id(), "r");
     }
 }

@@ -71,6 +71,7 @@ import { InterstitialView, PresentedSlide } from "./DeckSlideView";
 import { useT } from "../../../lib/i18n";
 import { useUse24h } from "../../../lib/timeFormat";
 import { PauseIcon, PlayIcon, TimerIcon } from "../../common/icons/Icon";
+import { ErrorNote } from "../../common/ErrorNote";
 
 export interface DeckPresenterProps {
   deck: Deck;
@@ -726,7 +727,7 @@ export function DeckPresenter({
               {t("deckPresenter.audienceNotePre")} <kbd>D</kbd> {t("deckPresenter.audienceNotePost")}
             </div>
           )}
-          {linkError && <div className="deck-presenter-audience-note is-error">{linkError}</div>}
+          {linkError && <ErrorNote className="deck-presenter-audience-note is-error" error={linkError} />}
 
           {/* The next slide, still: a preview that re-ran its build entrances
               every time the speaker stepped one on the CURRENT slide would be a

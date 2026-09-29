@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, getAgentStatus, type AgentStatusReport, type TabRow } from "../api";
+import { useT } from "../../../src/lib/i18n";
+import { getAgentStatus, type AgentStatusReport, type TabRow } from "../api";
+import { describeFailure } from "../connection";
 import { limitMeters, noteParts, parseUsageReport, resolveResetAt, type LimitMeters } from "../../../shared/usageReport";
 import type { SessionStatus } from "../terminal/statusLine";
 
@@ -71,14 +73,19 @@ function plural(count: number, one: string, many = `${one}s`): string {
  * (model, mode, context) — free, and about *this* tab, where the quota panel is
  * about the whole account.
  */
-export function StatusSheet({ tab, live, onLimits, onClose }: {
+export function StatusSheet({ tab, live, onLimits, onClose, signIn }: {
   tab: TabRow;
   live: SessionStatus | null;
   /** Hands a fresh panel's 5h/week windows to the facts row, so a Refresh
    * here updates it without waiting for its own poll. */
   onLimits?: (limits: LimitMeters) => void;
   onClose: () => void;
+  /** How this CLI signs in from here — a sign-in tab of its own, or its
+   * slash command typed into the session (`signIn.ts`) — when it can; the
+   * sheet then offers Sign in. */
+  signIn?: { hint: string; start: () => void } | null;
 }) {
+  const t = useT();
   const [view, setView] = useState<"formatted" | "terminal">("formatted");
   const [report, setReport] = useState<AgentStatusReport | null>(null);
   const [busy, setBusy] = useState(true);
@@ -92,11 +99,7 @@ export function StatusSheet({ tab, live, onLimits, onClose }: {
       setReport(next);
       if (next.usage.raw) onLimits?.(limitMeters(parseUsageReport(next.usage.raw)));
     } catch (cause) {
-      setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
-        ? "Open desktop Eldrun to read this session's status."
-        : cause instanceof ApiError && cause.code === "timeout"
-          ? "The agent's CLI did not answer in time. Try again."
-          : "The status could not be read.");
+      setError(describeFailure(cause));
     } finally {
       setBusy(false);
     }
@@ -131,10 +134,14 @@ export function StatusSheet({ tab, live, onLimits, onClose }: {
       {busy && !report && <p className="sheet-note">Reading…</p>}
 
       {view === "formatted" && report && <>
+        {/* `usage.error` is a code (`connection.ts`): the CLI's own stderr
+            stays on the desktop, since it names paths there. */}
         {usage?.supported === false && <p className="sheet-note">
-          {usage.error ?? `${usage.label} has no usage readout Eldrun can ask for without opening a tab.`}
+          {usage.error && usage.error !== "no_usage_readout" && usage.error !== "unknown_agent"
+            ? describeFailure(usage.error)
+            : `${usage.label} has no usage readout Eldrun can ask for without opening a tab.`}
         </p>}
-        {usage?.supported && usage.error && <p className="sheet-note error">{usage.error}</p>}
+        {usage?.supported && usage.error && <p className="sheet-note error">{describeFailure(usage.error)}</p>}
         {panel && panel.meters.map((meter) => <div className="usage-meter" key={meter.label}>
           <div>
             <strong>{meter.label}</strong>
@@ -167,11 +174,12 @@ export function StatusSheet({ tab, live, onLimits, onClose }: {
       </>}
 
       {view === "terminal" && <pre className="usage-raw" aria-label="Usage panel as the CLI printed it">
-        {usage?.raw ?? usage?.error ?? (busy ? "Reading…" : "Nothing was printed.")}
+        {usage?.raw ?? (usage?.error ? describeFailure(usage.error) : busy ? "Reading…" : "Nothing was printed.")}
       </pre>}
 
       <div className="mobile-schedule-actions">
         {usage?.cached && <span className="sheet-pending">Cached</span>}
+        {signIn && <button onClick={signIn.start} title={signIn.hint}>{t("mobile.signIn.start")}</button>}
         <button disabled={busy} onClick={() => void load(true)}>{busy ? "Reading…" : "Refresh"}</button>
         <button className="primary" onClick={onClose}>Done</button>
       </div>

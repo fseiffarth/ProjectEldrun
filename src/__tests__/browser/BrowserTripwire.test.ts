@@ -644,7 +644,9 @@ describe("live pages are opt-in, and stay opt-in", () => {
    */
   it("the settings toggle does not read the experimental gate", () => {
     const src: string = readFileSync("src/components/layout/SettingsPanel.tsx", "utf8");
-    const row = src.slice(src.indexOf("settings.browserLivePages"));
+    // The toggle's label, not the bare key: the settings search index names
+    // the key first, well above the control.
+    const row = src.slice(src.indexOf('label={t("settings.browserLivePages")}'));
     const toggle = row.slice(0, row.indexOf("/>") + 2);
     expect(
       toggle.includes("browser_live_pages: e.target.checked"),

@@ -98,6 +98,11 @@ if [ -f "$BUILT" ] && [ "$BUILT" -nt "$BINARY" ]; then
     # Keep the build-time record beside what was installed, so the next launch
     # can say which commit it is opening without hashing anything.
     if [ -f "$FROZEN" ]; then install -m644 "$FROZEN" "$BINARY.frozen" 2>/dev/null || true; else rm -f "$BINARY.frozen"; fi
+    # Keep the adopted build under dev-builds/eldrun-<commit> for
+    # scripts/crash-symbolize.sh; the next adopt replaces the path.
+    if [ -f "$FROZEN" ]; then
+      "$ROOT/scripts/retain-dev-build.sh" "$BINARY" "$(sed -n 's/^commit=//p' "$FROZEN")" 2>/dev/null || true
+    fi
     # The desktop entry's Comment names the frozen snapshot; keep it honest.
     desktop="$HOME/.local/share/applications/EldrunDev.desktop"
     if [ -f "$desktop" ]; then
@@ -146,6 +151,15 @@ fi
 
 # Same reason as start-eldrun-tauri-hotreload.sh: keep the CSS-themed scrollbar.
 export GTK_OVERLAY_SCROLLING=0
+
+# Let a crash leave a core. The desktop session starts us with a soft core
+# limit of 0, so apport (the kernel's core_pattern here) wrote nothing for any
+# of the main-process heap-corruption aborts of 2026-09-17..23; a backtrace of
+# those names only the victim, while the core holds the overwritten chunk.
+# Apport ignores unpackaged binaries but still writes the core, to
+# /var/lib/apport/coredump/ (newest 5 per user), as long as this path is not
+# replaced under the window — package-dev.sh holds its install back for that.
+ulimit -S -c unlimited 2>/dev/null || true
 
 cd "$HOME"
 exec "$BINARY"

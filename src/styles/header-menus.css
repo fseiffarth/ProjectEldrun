@@ -277,6 +277,19 @@
   color: var(--success);
   font-size: 11px;
 }
+/* An installed agent's head, right side: its Ctrl+N chord, ↑/↓ (the + menu's
+   order, hence the chords') and the Enabled toggle. */
+.agent-list-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.agent-chord-chip {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
 /* Enabled/Disabled toggle on an installed agent's row: hides it from tab-choice
    menus (add-tab Agents group, Local Model drivers) without uninstalling it. */
 .agent-disable-toggle {
@@ -394,7 +407,8 @@
   font-size: 11px;
   color: var(--text-secondary);
 }
-.agent-version-chip {
+.agent-version-chip,
+.agent-chord-chip {
   padding: 1px 6px;
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
@@ -473,7 +487,9 @@
 .local-model-menu {
   max-height: min(80vh, 640px);
 }
-.local-model-menu .tab-new-menu-group-label {
+/* The section bands, in the dropdown and in the Models & agents overlay's
+   Local models tab (the same rows, `models/ModelsHubSections`). */
+:is(.local-model-menu, .models-overlay-models) .tab-new-menu-group-label {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -486,7 +502,7 @@
   border-radius: calc(var(--radius) / 2);
   color: color-mix(in srgb, var(--accent) 85%, var(--text-primary));
 }
-.local-model-menu > .tab-new-menu-group-label:first-child {
+:is(.local-model-menu, .models-overlay-models) > .tab-new-menu-group-label:first-child {
   margin-top: 0;
 }
 /* The pinned line is the menu's TITLE, not one of its sections — it stays put
@@ -511,7 +527,7 @@
    mark a top-level header and reads as a quiet divider indented under it.
    Same element and same class list otherwise, so the flex/gap layout (label +
    any tag) still applies. */
-.local-model-menu .tab-new-menu-group-label.is-sub {
+:is(.local-model-menu, .models-overlay-models) .tab-new-menu-group-label.is-sub {
   margin: 8px 0 2px;
   padding: 2px 8px 2px 0;
   margin-left: 11px;
@@ -2390,6 +2406,39 @@
 }
 .machines-indicator-row {
   cursor: var(--cur-grab, grab);
+}
+/* Inline CPU / GPU utilization under a Detailed machine's head line: two
+   label · meter · value groups side by side, reusing the local-model meter. */
+.machines-util {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 2px 28px;
+}
+.machines-util-item {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.machines-util-label {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.machines-util-meter {
+  flex: 1 1 auto;
+  min-width: 24px;
+}
+.machines-util-meter > .local-model-meter-fill {
+  display: block;
+}
+.machines-util-value {
+  min-width: 28px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .machines-indicator-row:active {
   cursor: var(--cur-grabbing, grabbing);

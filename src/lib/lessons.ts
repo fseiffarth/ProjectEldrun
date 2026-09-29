@@ -1,12 +1,17 @@
-import type { TourStep } from "./tour";
+import { ADVANCED_TOUR_STEPS, TOUR_STEPS, type TourStep } from "./tour";
 import type { TranslationKey } from "./i18n";
 
 /**
  * Task "lessons" — short, replayable narrated walkthroughs for specific jobs
  * (add a project, install an agent, use a local model, …). Each lesson is a
- * step list run through the same engine as the high-level tour (`TourHost` /
+ * step list run through the one tour engine (`TourHost` /
  * `useTourStore.startLesson`), so it reuses the spotlight, click-blocking, and
  * Back/Next navigation. Picked from the `LessonsMenu`.
+ *
+ * The two overview tours are lessons too — the quick tour opens Basics and the
+ * tour of other machines opens Advanced — so there is one place to learn
+ * Eldrun instead of a tour, an advanced tour, and a lesson list side by side.
+ * Only the quick tour counts as onboarding done (`completesOnboarding`).
  *
  * Most steps spotlight a persistent entry-point control (the + button, the gear,
  * the 🧠 menu) by a verified selector; menu/dialog internals — which only exist
@@ -60,7 +65,14 @@ export interface Lesson {
   /** One-line description shown under the title in the picker. */
   blurbKey: TranslationKey;
   steps: TourStep[];
+  /** Finishing (or skipping) it sets `tour_completed` and stops the hints it
+   *  taught — the quick tour only; every other lesson is replayable as is. */
+  completesOnboarding?: true;
 }
+
+/** The quick tour's lesson id — what the wizard's "Take a tour" and the
+ *  `eldrun:start-tour` event start. */
+export const TOUR_LESSON_ID = "tour";
 
 /** Reveal the right-side file panel so a step's anchor exists to spotlight.
  *  AppShell listens for this (the panel is otherwise hover-revealed). */
@@ -68,6 +80,14 @@ const revealFilePanel = () => window.dispatchEvent(new Event("eldrun:reveal-side
 
 export const LESSONS: Lesson[] = [
   // ── Basics ──────────────────────────────────────────────────────────────
+  {
+    id: TOUR_LESSON_ID,
+    category: "basics",
+    titleKey: "lessons.tour.title",
+    blurbKey: "lessons.tour.blurb",
+    steps: TOUR_STEPS,
+    completesOnboarding: true,
+  },
   {
     id: "add-project",
     category: "basics",
@@ -1240,6 +1260,13 @@ export const LESSONS: Lesson[] = [
         bodyKey: "lessons.skillsLesson.uninstallBody",
       },
     ],
+  },
+  {
+    id: "tour-remote",
+    category: "advanced",
+    titleKey: "lessons.tourRemote.title",
+    blurbKey: "lessons.tourRemote.blurb",
+    steps: ADVANCED_TOUR_STEPS,
   },
   {
     id: "project-boxes",

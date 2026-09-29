@@ -17,9 +17,11 @@
 
 use crate::schema::settings::WindowState;
 
-/// Wayland cannot restore desktop coordinates after an unmap. Keep the surface
-/// alive by minimizing, and remember our requests: GTK's minimized flag is not
-/// reliably reported by Wayland, and scope sync runs from two callers.
+/// Native Wayland's fallback park: a popout of an inactive scope that still
+/// holds unsaved work (or never answered the retire request) is minimized
+/// instead of closed. GTK never reports minimization there, so this set is the
+/// only record of our requests — and what `sync_detached_scope` presents again
+/// when the scope returns.
 #[derive(Default)]
 pub struct DetachedParking {
     parked: std::collections::HashSet<String>,
@@ -41,6 +43,129 @@ impl DetachedParking {
 
     pub fn forget(&mut self, label: &str) {
         self.parked.remove(label);
+    }
+}
+
+/// Native Wayland: an inactive scope's popout is CLOSED, not minimized, and
+/// respawned from its kept store record when the scope comes back. A minimized
+/// popout could not be tracked there (GTK never reports the state), so any way
+/// the compositor put it back on screen — ignoring the request, Alt+Tab, the
+/// overview — left a blank window over the other project (the renderer hides a
+/// parked popout's panes).
+///
+/// A retire runs in two steps, and this is the bookkeeping for both:
+/// - **pending**: the popout was asked to flush its unsaved work
+///   (`detached-retire-request-<label>`) and has not answered. Tokened, so a
+///   scope that comes back first cancels it, and an answer to an older request
+///   is ignored.
+/// - **retiring**: `destroy()` has been issued. The `Destroyed` hook reads this
+///   to tell an intended close (keep the record; it will respawn) from a crash
+///   (dock the tabs back, #224), and a respawn of the same label waits for it.
+///
+/// AppHandle-free, so every transition is unit-tested.
+#[derive(Default)]
+pub struct DetachedRetire {
+    next_token: u64,
+    pending: std::collections::HashMap<String, u64>,
+    retiring: std::collections::HashSet<String>,
+    acks: std::collections::HashMap<String, (u64, std::sync::mpsc::Sender<bool>)>,
+    /// Popouts whose renderer has attached its retire listener. One that has
+    /// not (still loading, or a renderer from before this protocol) can hold
+    /// no unsaved work and could not answer anyway, so it is closed directly.
+    ready: std::collections::HashSet<String>,
+}
+
+impl DetachedRetire {
+    /// Open a retire handshake for `label`. `None` when one is already running
+    /// or the window is already on its way out — a repeated sync never asks twice.
+    pub fn begin(&mut self, label: &str) -> Option<u64> {
+        if self.pending.contains_key(label) || self.retiring.contains(label) {
+            return None;
+        }
+        self.next_token += 1;
+        self.pending.insert(label.to_owned(), self.next_token);
+        Some(self.next_token)
+    }
+
+    /// The popout's scope is active again before it answered: keep the window.
+    pub fn cancel(&mut self, label: &str) -> bool {
+        self.acks.remove(label);
+        self.pending.remove(label).is_some()
+    }
+
+    /// Close the handshake `token` opened. True only while it is still the live
+    /// request for `label` — false once cancelled or superseded.
+    pub fn take(&mut self, label: &str, token: u64) -> bool {
+        if self.pending.get(label) == Some(&token) {
+            self.pending.remove(label);
+            if self.acks.get(label).is_some_and(|(t, _)| *t == token) {
+                self.acks.remove(label);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The popout's renderer can now answer a retire request.
+    pub fn mark_ready(&mut self, label: &str) {
+        self.ready.insert(label.to_owned());
+    }
+
+    pub fn is_ready(&self, label: &str) -> bool {
+        self.ready.contains(label)
+    }
+
+    /// Drop everything but an issued retire (whose `Destroyed` must still be
+    /// recognised): the label's window is being released.
+    pub fn forget(&mut self, label: &str) {
+        self.cancel(label);
+        self.ready.remove(label);
+    }
+
+    pub fn is_pending(&self, label: &str) -> bool {
+        self.pending.contains_key(label)
+    }
+
+    /// Where the popout's answer goes for request `token`.
+    pub fn await_ack(&mut self, label: &str, token: u64, tx: std::sync::mpsc::Sender<bool>) {
+        if self.pending.get(label) == Some(&token) {
+            self.acks.insert(label.to_owned(), (token, tx));
+        }
+    }
+
+    /// Deliver the popout's answer (`clean` = nothing unsaved is left in it).
+    pub fn ack(&mut self, label: &str, clean: bool) -> bool {
+        match self.acks.remove(label) {
+            Some((_, tx)) => tx.send(clean).is_ok(),
+            None => false,
+        }
+    }
+
+    pub fn mark_retiring(&mut self, label: &str) {
+        self.pending.remove(label);
+        self.acks.remove(label);
+        self.retiring.insert(label.to_owned());
+    }
+
+    pub fn is_retiring(&self, label: &str) -> bool {
+        self.retiring.contains(label)
+    }
+
+    /// An issued retire is taken back and the window KEPT (its scope came back
+    /// before the destroy, or the destroy failed). Only the retiring mark goes:
+    /// the popout's renderer is still attached and can still answer, so it
+    /// stays ready — forgetting that would close it unasked, unsaved work and
+    /// all, at the next scope-out.
+    pub fn withdraw(&mut self, label: &str) -> bool {
+        self.retiring.remove(label)
+    }
+
+    /// The window died. True when it was an intended retire (and clears it);
+    /// false for every other death, which must still dock its tabs back.
+    pub fn finish(&mut self, label: &str) -> bool {
+        self.forget(label);
+        self.retiring.remove(label)
     }
 }
 
@@ -280,6 +405,84 @@ mod tests {
         }
         assert!(parking.is_parked("detached-box:b1-g1"));
         assert!(parking.transition("detached-p1-g1", false));
+    }
+
+    #[test]
+    fn a_retire_handshake_is_asked_once_and_a_returning_scope_cancels_it() {
+        let mut r = DetachedRetire::default();
+        let t = r.begin("detached-p1-g1").expect("first sync asks");
+        // A second sync away from the same scope does not ask again.
+        assert_eq!(r.begin("detached-p1-g1"), None);
+        assert!(r.is_pending("detached-p1-g1"));
+        // The scope comes back before the popout answered.
+        assert!(r.cancel("detached-p1-g1"));
+        // The late answer finds nothing to act on.
+        assert!(!r.take("detached-p1-g1", t));
+        // A fresh switch away opens a NEW request; the old token stays dead.
+        let t2 = r.begin("detached-p1-g1").unwrap();
+        assert_ne!(t, t2);
+        assert!(!r.take("detached-p1-g1", t));
+        assert!(r.take("detached-p1-g1", t2));
+        assert!(!r.is_pending("detached-p1-g1"));
+    }
+
+    #[test]
+    fn the_popouts_answer_reaches_only_the_live_request() {
+        let mut r = DetachedRetire::default();
+        let t = r.begin("detached-p1-g1").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        r.await_ack("detached-p1-g1", t, tx);
+        assert!(r.ack("detached-p1-g1", false));
+        assert!(!rx.recv().unwrap());
+        // Nothing waits any more: a duplicate answer is dropped.
+        assert!(!r.ack("detached-p1-g1", true));
+        // A stale token cannot install a waiter.
+        let (tx2, _rx2) = std::sync::mpsc::channel();
+        r.await_ack("detached-p1-g1", t + 99, tx2);
+        assert!(!r.ack("detached-p1-g1", true));
+    }
+
+    #[test]
+    fn readiness_is_per_window_life() {
+        let mut r = DetachedRetire::default();
+        assert!(!r.is_ready("detached-p1-g1"));
+        r.mark_ready("detached-p1-g1");
+        assert!(r.is_ready("detached-p1-g1"));
+        // A released or destroyed window's successor must announce itself anew.
+        r.forget("detached-p1-g1");
+        assert!(!r.is_ready("detached-p1-g1"));
+        r.mark_ready("detached-p1-g1");
+        r.mark_retiring("detached-p1-g1");
+        assert!(r.finish("detached-p1-g1"));
+        assert!(!r.is_ready("detached-p1-g1"));
+    }
+
+    #[test]
+    fn a_withdrawn_retire_keeps_the_popout_ready() {
+        let mut r = DetachedRetire::default();
+        r.mark_ready("detached-p1-g1");
+        r.mark_retiring("detached-p1-g1");
+        assert!(r.withdraw("detached-p1-g1"));
+        assert!(!r.is_retiring("detached-p1-g1"));
+        // The kept window can still answer: the next scope-out asks it.
+        assert!(r.is_ready("detached-p1-g1"));
+        assert!(r.begin("detached-p1-g1").is_some());
+    }
+
+    #[test]
+    fn only_an_intended_retire_is_kept_out_of_crash_recovery() {
+        let mut r = DetachedRetire::default();
+        r.begin("detached-p1-g1").unwrap();
+        r.mark_retiring("detached-p1-g1");
+        assert!(r.is_retiring("detached-p1-g1"));
+        assert!(!r.is_pending("detached-p1-g1"));
+        // Retiring windows are not asked again by a repeated sync.
+        assert_eq!(r.begin("detached-p1-g1"), None);
+        // Its Destroyed: a planned close, cleared exactly once.
+        assert!(r.finish("detached-p1-g1"));
+        assert!(!r.finish("detached-p1-g1"));
+        // Any other death (crash, seed timeout) is not a retire.
+        assert!(!r.finish("detached-p2-g1"));
     }
 
     #[test]

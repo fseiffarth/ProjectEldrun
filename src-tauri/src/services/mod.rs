@@ -10,6 +10,12 @@ pub mod agent_transcript;
 pub mod agent_bin;
 pub mod agent_tasks;
 pub mod schedule_mcp;
+// Agent-requested pushes: the `/mcp/git` lane, its policy, the fenced
+// tokenless preflight and the hooks-off host transport.
+pub mod git_push_mcp;
+pub mod git_release;
+pub mod git_ci;
+pub mod help_mcp;
 pub mod schedule_usage;
 // One agent CLI's own usage panel (Claude's `/usage`), read in print mode
 // without a tab: recipe table, envelope parsing, and the short-lived cache
@@ -24,11 +30,22 @@ pub mod agent_versions;
 // decision and root computation stay AppHandle-free; terminal spawn only applies
 // the resulting bubblewrap argv.
 pub mod agent_fence;
+// Landlock's abstract-socket scope (X11, D-Bus) the fence enters before bwrap.
+#[cfg(target_os = "linux")]
+pub mod fence_scope;
 // The Claude credential mirror: one Eldrun-owned inode mounted into every
 // fenced/contained tab in place of `~/.claude/.credentials.json`, kept in step
 // with the host file by in-place writes — a file bind mount pins an inode, and
 // Claude rotates that file by rename.
-pub mod agent_creds;
+pub mod agent_auth;
+pub mod agent_global;
+pub mod agent_home;
+pub mod agent_install;
+pub mod agent_shim;
+// Copilot CLI sign-in for fenced tabs: Eldrun keeps the token in its own
+// keyring entry (the fence hides the keyring) and hands it to each fenced
+// Copilot as COPILOT_GITHUB_TOKEN.
+pub mod copilot_auth;
 // "Check for a new Eldrun" against the GitHub releases page: version compare,
 // per-platform asset pick, staged download, per-platform install.
 pub mod app_update;
@@ -62,6 +79,9 @@ pub mod git_guard;
 // unpublished-`master` rename that runs just before a publish.
 pub mod git_init;
 pub mod git_peer;
+// Directory-handle-relative I/O inside agent-writable homes: what every
+// unfenced write into a scope home goes through.
+pub mod home_io;
 pub mod hpc_mode;
 // Which IDE a project tree belongs to (`.idea/`, `.vs/` + `*.sln`, `.vscode/`)
 // and which installed program opens it — never one named inside the tree.
@@ -70,7 +90,12 @@ pub mod local_loss;
 // Local-model mail assistant (Group Q, #203–#208): the loopback-only /api/chat
 // helper, prompt builders and defensive JSON parsers. AI never touches the net.
 pub mod mail_ai;
+// A root agent's `attach` on a mail draft: project files resolved under the
+// same-roots rule and read without following a link (`docs/mail_mcp_attachments_plan.md`).
+pub mod mail_attach;
 pub mod mail_authres;
+// The mail client's address book: cards, lists, collected addresses, vCard.
+pub mod mail_contacts;
 pub mod mail_crypt;
 pub mod mail_crypto;
 pub mod mail_engine;
@@ -79,6 +104,8 @@ pub mod mail_pgp;
 pub mod mail_reader;
 pub mod mail_sanitize;
 pub mod mail_store;
+// Thunderbird address books (abook/history.sqlite), read from a temp copy.
+pub mod mail_thunderbird;
 pub mod mobile_control;
 pub mod net_usage;
 pub mod opencode_store;

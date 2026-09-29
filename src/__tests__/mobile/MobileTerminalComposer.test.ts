@@ -34,6 +34,12 @@ describe("Eldrun Mobile agent composer writes", () => {
     expect(agentInputWrites("only line\n\n  ")).toEqual([AGENT_LINE_RESET, "only line", "\r"]);
   });
 
+  it("drops blank lines before the first words, so the first write after the reset is text", () => {
+    expect(agentInputWrites("\nfix it")).toEqual([AGENT_LINE_RESET, "fix it", "\r"]);
+    expect(agentInputWrites("\r\n  \n\n  indented\nnext")).toEqual([AGENT_LINE_RESET, "  indented", "\n", "next", "\r"]);
+    expect(agentInputWrites("\nfix it", true)).toEqual([AGENT_LINE_RESET, `${PASTE_START}fix it${PASTE_END}`, "\r"]);
+  });
+
   it("wraps the draft in bracketed paste markers where the pane has the mode on", () => {
     // The whole message is one write and the submit is another: the closing
     // marker is what keeps a coalesced `text CR` from being read as one paste,
@@ -48,6 +54,14 @@ describe("Eldrun Mobile agent composer writes", () => {
       `${PASTE_START}first line\nsecond line${PASTE_END}`,
       "\r",
     ]);
+  });
+
+  it("types a one-character message as a key press even where the pane pastes", () => {
+    // Codex's pager ("q close") only reads keys; a pasted `q` left the phone
+    // stuck in it (2026-09-27).
+    expect(agentInputWrites("q", true)).toEqual([AGENT_LINE_RESET, "q", "\r"]);
+    expect(agentInputWrites("y\n", true)).toEqual([AGENT_LINE_RESET, "y", "\r"]);
+    expect(agentInputWrites("ok", true)).toEqual([AGENT_LINE_RESET, `${PASTE_START}ok${PASTE_END}`, "\r"]);
   });
 
   it("types a Claude Code message instead of pasting it", () => {

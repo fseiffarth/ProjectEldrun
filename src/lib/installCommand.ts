@@ -1,6 +1,7 @@
 import { useProjectsStore } from "../stores/projects";
-import { openTabInRootConsole } from "../stores/rootOverlay";
+import { openTabInRootConsole, useRootOverlayStore } from "../stores/rootOverlay";
 import { IS_WINDOWS, IS_MAC } from "./platform";
+import type { TranslationKey } from "./i18n";
 
 /** A supported git-hosting provider, as chosen in the fork-import dropdown and
  *  the publish-to-GitHub/GitLab dialog. */
@@ -57,7 +58,9 @@ export function providerAuthLoginCmd(provider: GitHostProvider): string {
  * **root console** (`layout/RootOverlay`), which floats over whatever is open
  * with the install's tab in front, so the user watches the install — and answers
  * its prompts — right where they clicked. The console's panes are attach-only
- * views, so closing it leaves the install running in its root tab.
+ * views, so closing it leaves the install running in its root tab. That tab
+ * pulses in the console's strip until the user clicks it, so it stands out
+ * among the console's other tabs.
  */
 export type InstallShellKind = "bash" | "powershell" | "default";
 
@@ -89,5 +92,45 @@ export function runInstallInTab(
     cwd: rootDir, // empty resolves to ~/eldrun/root on the backend
     kind: "shell",
     initialInput: command,
-  });
+  }, (tab) => useRootOverlayStore.getState().markInstallTab(tab.key));
+}
+
+/**
+ * Per-OS command that installs Node.js (and with it `npm`). Most agent CLIs
+ * install via `npm install -g …`, so when `npm` is missing the Manage Agents
+ * panel (and the intro wizard) offers this first. nvm installs Node without administrator rights and
+ * works identically on Linux and macOS; Windows uses winget (present on Windows
+ * 10/11) and runs in either PowerShell or Command Prompt.
+ */
+export const NODE_INSTALL: Record<
+  "windows" | "macos" | "linux",
+  { command: string; shellKey: TranslationKey; shellKind: InstallShellKind }
+> = {
+  linux: {
+    command:
+      'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
+    shellKey: "install.shellBash",
+    shellKind: "bash",
+  },
+  macos: {
+    command:
+      'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
+    shellKey: "install.shellBash",
+    shellKind: "bash",
+  },
+  windows: {
+    command: "winget install OpenJS.NodeJS.LTS",
+    shellKey: "install.shellPowerShellOrCmd",
+    shellKind: "default",
+  },
+};
+export const NODE_DOWNLOAD_URL = "https://nodejs.org/en/download";
+
+/** Backend `NodeRuntimeStatus` (`node_runtime_status`). */
+export interface NodeRuntimeStatus {
+  npm: boolean;
+  /** `node --version`, e.g. `v22.22.1`; null when Node is absent. */
+  version: string | null;
+  min_major: number;
+  too_old: boolean;
 }

@@ -27,6 +27,7 @@ function boot(held: Record<string, unknown>, fetch: (url: string) => Promise<unk
   const listeners = new Map<string, Listener>();
   const store = new Map(Object.entries(held).map(([path, body]) => [`${ORIGIN}${path}`, body]));
   const added: string[] = [];
+  let puts = 0;
   const self = {
     location: { origin: ORIGIN },
     addEventListener: (name: string, listener: Listener) => listeners.set(name, listener),
@@ -37,7 +38,7 @@ function boot(held: Record<string, unknown>, fetch: (url: string) => Promise<unk
     match: (request: { url: string } | string) => Promise.resolve(store.get(typeof request === "string" ? `${ORIGIN}${request}` : request.url)),
     open: () => Promise.resolve({
       addAll: (paths: string[]) => { added.push(...paths); return Promise.resolve(); },
-      put: () => Promise.resolve(),
+      put: () => { puts += 1; return Promise.resolve(); },
     }),
     keys: () => Promise.resolve([]),
     delete: () => Promise.resolve(true),
@@ -58,7 +59,7 @@ function boot(held: Record<string, unknown>, fetch: (url: string) => Promise<unk
       waitUntil: (work) => void work.then(() => resolve()),
     });
   });
-  return { dispatch, install, added };
+  return { dispatch, install, added, puts: () => puts };
 }
 
 const html = { body: "<!doctype html>", ok: true, headers: new Headers({ "content-type": "text/html" }) };
@@ -84,6 +85,19 @@ describe("Eldrun Mobile service worker", () => {
   it("falls back to the shell for a navigation the network cannot serve", async () => {
     const { dispatch } = boot({ "/": html }, () => Promise.reject(new TypeError("Failed to fetch")));
     await expect(dispatch("/some/deep/link", "navigate")).resolves.toBe(html);
+  });
+
+  it("serves the cached shell for a navigation the proxy answered with an error page", async () => {
+    // The desktop is closed: Tailscale Serve reaches the machine, finds no
+    // sidecar, and answers 502 with its own HTML. That is a miss, not a page.
+    const proxyError = { body: "<html>502 Bad Gateway</html>", ok: false, status: 502, headers: new Headers({ "content-type": "text/html" }) };
+    const { dispatch, puts } = boot({ "/": html }, () => Promise.resolve(proxyError));
+    await expect(dispatch("/", "navigate")).resolves.toBe(html);
+    // …and the proxy's body is never written into the shell cache.
+    expect(puts()).toBe(0);
+    // With nothing cached the proxy's answer is still what there is.
+    const empty = boot({}, () => Promise.resolve(proxyError));
+    await expect(empty.dispatch("/", "navigate")).resolves.toBe(proxyError);
   });
 
   it("leaves API traffic alone", async () => {

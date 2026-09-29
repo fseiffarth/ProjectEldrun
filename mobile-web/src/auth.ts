@@ -1,4 +1,4 @@
-import { ApiError, api } from "./api";
+import { ApiError, api, traceConnect } from "./api";
 import { classifyUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
 
 const DB = "eldrun-mobile-auth";
@@ -40,19 +40,47 @@ async function save(record: AuthRecord): Promise<void> {
   });
 }
 
+/** The lock's best-effort `DELETE /auth/session`, while it is in flight. Its
+ * answer clears the session cookie, so one that lands after the next sign-in
+ * — the lock fires as the phone wakes, the reader unlocks at once, and the
+ * DELETE was stuck behind a tunnel still reconnecting — wiped the fresh
+ * session and the first screen after the unlock met a 401. Sign-in waits for
+ * it to settle instead. */
+let pendingLogout: Promise<void> | null = null;
+/** Short: it is best effort, and a sign-in waits on it. */
+const LOGOUT_TIMEOUT = 3_000;
+
+/** One request of the sign-in exchange, its outcome and time on the trace. */
+async function traced<T>(name: string, request: () => Promise<T>): Promise<T> {
+  const started = performance.now();
+  const took = () => `${Math.round(performance.now() - started)} ms`;
+  try {
+    const answer = await request();
+    traceConnect(`${name} ok after ${took()}`);
+    return answer;
+  } catch (error) {
+    traceConnect(`${name} ${error instanceof ApiError ? `${error.status} ${error.code}` : "failed"} after ${took()}`);
+    throw error;
+  }
+}
+
 async function login(record: AuthRecord): Promise<void> {
-  const challenge = await api<{ nonce: string; payload: string }>("/api/v1/auth/challenge", {
+  if (pendingLogout) {
+    traceConnect("waiting for the lock's logout");
+    await pendingLogout;
+  }
+  const challenge = await traced("challenge", () => api<{ nonce: string; payload: string }>("/api/v1/auth/challenge", {
     method: "POST", body: JSON.stringify({ device_id: record.deviceId }),
-  });
+  }, AUTH_REQUEST_TIMEOUT));
   const signature = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
     record.privateKey,
     new TextEncoder().encode(challenge.payload),
   );
-  await api("/api/v1/auth/session", {
+  await traced("session", () => api("/api/v1/auth/session", {
     method: "POST",
     body: JSON.stringify({ device_id: record.deviceId, nonce: challenge.nonce, signature: b64url(signature) }),
-  });
+  }, AUTH_REQUEST_TIMEOUT));
 }
 
 export type ResumeResult =
@@ -62,11 +90,65 @@ export type ResumeResult =
    * than showing one "Host unavailable" for every possible cause. */
   | { kind: "unavailable"; reason: UnavailableReason; detail?: string };
 
+/** Pauses before each further sign-in attempt. */
+export const RESUME_RETRY_DELAYS = [300, 800, 1_500, 2_500, 4_000];
+/** No new attempt starts once this much has gone by: a phone that really is
+ * off the tailnet should reach the splash that says so. It used to be 12 s
+ * with 10 s attempts, which left room for exactly two: a tunnel still coming
+ * back at the second one meant "Connecting…" for twenty seconds and then the
+ * Retry press anyway. Short attempts inside a longer window keep asking until
+ * the path is back. */
+const RESUME_RETRY_WINDOW = 24_000;
+/** Each request of the sign-in exchange. Both are a few hundred bytes the
+ * sidecar answers in under a millisecond, so one still silent after this is
+ * stalled on a dead path, not slow; the next attempt is worth more than the
+ * rest of `REQUEST_TIMEOUT`. */
+const AUTH_REQUEST_TIMEOUT = 5_000;
+
+/**
+ * A failure that says nothing about the host, only about the path to it. The
+ * sign-in after an unlock is the usual victim: the browser still holds the
+ * HTTP/2 connection it had before the phone slept, the far end dropped it in
+ * the meantime, and the request stalls on it until the browser's own liveness
+ * ping gives up — about ten seconds, the same as `REQUEST_TIMEOUT` — and
+ * closes it (`timeout`, or `offline` when the close wins). The very next
+ * attempt opens a fresh connection and goes through. That was "every second
+ * unlock fails, Retry works", with the Retry press as the second attempt. The
+ * browser also drops what is in flight when the network changes under it,
+ * which is what the Tailscale app bringing its tunnel back looks like. A 5xx
+ * the proxy wrote itself (see `classifyUnavailable`) is the sidecar
+ * restarting behind Tailscale Serve, which also clears within a second or two.
+ */
+function transient(reason: unknown): boolean {
+  if (!(reason instanceof ApiError)) return false;
+  if (reason.status === 0) return true;
+  return reason.status >= 502 && reason.status <= 504 && reason.code === "request_failed";
+}
+
+const pause = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+
+/** `login`, tried again while the failure is `transient` and the window lasts.
+ * The whole exchange repeats, never just its second half: a nonce the host may
+ * already have spent cannot be sent twice. */
+async function loginWithRetry(record: AuthRecord): Promise<void> {
+  const started = Date.now();
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await login(record);
+      return;
+    } catch (reason) {
+      const delay = RESUME_RETRY_DELAYS[attempt];
+      if (delay === undefined || !transient(reason) || Date.now() - started >= RESUME_RETRY_WINDOW) throw reason;
+      await pause(delay);
+    }
+  }
+}
+
 export async function resumeAuth(): Promise<ResumeResult> {
   const record = await load();
   if (!record) return { kind: "unpaired" };
   try {
-    await login(record);
+    await loginWithRetry(record);
     return { kind: "paired" };
   } catch (reason) {
     // Only a rejection of *this device's identity* means "re-pair". A timeout,
@@ -96,8 +178,13 @@ export async function hasPairedDevice(): Promise<boolean> {
 /** End the server-side session when the local app is locked. The paired
  * non-exportable signing key stays in IndexedDB, so a verified local unlock
  * can obtain a fresh session without making the user pair again. */
-export async function logoutAuth(): Promise<void> {
-  await api("/api/v1/auth/session", { method: "DELETE" });
+export function logoutAuth(): Promise<void> {
+  const request = api("/api/v1/auth/session", { method: "DELETE" }, LOGOUT_TIMEOUT).then(() => undefined);
+  const settled: Promise<void> = request.catch(() => undefined).finally(() => {
+    if (pendingLogout === settled) pendingLogout = null;
+  });
+  pendingLogout = settled;
+  return request;
 }
 
 export async function pair(code: string, deviceName: string): Promise<void> {

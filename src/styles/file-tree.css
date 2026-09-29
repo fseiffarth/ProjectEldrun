@@ -1850,6 +1850,8 @@
    selector only because these prompts are short, fixed-size and never scroll,
    so they want none of that rule's overflow/frame machinery. */
 .file-delete-dialog {
+  /* Anchors the shared accent `::before` wash (apps.css). */
+  position: relative;
   width: min(360px, calc(100vw - 32px));
   display: flex;
   flex-direction: column;

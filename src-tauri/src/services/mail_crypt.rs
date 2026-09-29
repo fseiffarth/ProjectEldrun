@@ -268,6 +268,13 @@ pub fn filters_aad() -> Vec<u8> {
     b"file:filters.json".to_vec()
 }
 
+/// The AAD for `contacts.json.enc` — distinct again, for [`filters_aad`]'s
+/// reason. The address book is who the user writes to, which is sealed store
+/// material if anything is.
+pub fn contacts_aad() -> Vec<u8> {
+    b"file:contacts.json".to_vec()
+}
+
 // ── Keyed digests ───────────────────────────────────────────────────────────
 
 type HmacSha256 = Hmac<Sha256>;

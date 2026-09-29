@@ -18,6 +18,7 @@ import {
   cmdToKind,
   isPtyTabKind,
   isRestorableKind,
+  isRelaunchableLocalTab,
   isResumableAgentTab,
   isRestorableTab,
   pruneSavedTree,
@@ -79,6 +80,48 @@ describe("a browser tab round-trips its URL and nothing else", () => {
     // Recovered from a bare persisted cmd, too — a layout written before the
     // `kind` field existed still comes back as a browser tab.
     expect(cmdToKind(BROWSER_TAB_CMD)).toBe("browser");
+  });
+});
+
+describe("a relaunchable local-model tab (#31bl)", () => {
+  const launch = { driver: "claude", model: "qwen3:8b", args: ["launch", "claude", "--model", "qwen3:8b"] };
+
+  it("restores only with a launch line, never an `ollama launch` tab without one", () => {
+    expect(isRelaunchableLocalTab({ kind: "local_agent", localLaunch: launch })).toBe(true);
+    expect(isRestorableTab({ kind: "local_agent", cmd: "ollama", localLaunch: launch })).toBe(true);
+    expect(isRestorableTab({ kind: "local_agent", cmd: "ollama" })).toBe(false);
+    // Only a local-model tab carries one, and only a well-formed one counts.
+    expect(isRelaunchableLocalTab({ kind: "agent", localLaunch: launch })).toBe(false);
+    expect(isRelaunchableLocalTab({ kind: "local_agent", localLaunch: { ...launch, driver: "" } })).toBe(false);
+    expect(isRelaunchableLocalTab({ kind: "local_agent", localLaunch: { ...launch, args: [1] as never } })).toBe(false);
+  });
+
+  it("round-trips save → load, relaunching its line inside an agent tmux session", () => {
+    useTabsStore.setState({
+      scope: "p",
+      tabsByScope: {},
+      layoutByScope: {},
+      focusedGroupByScope: {},
+      detachedGroupsByScope: {},
+      hiddenGroupsByScope: {},
+    });
+    const tab = useTabsStore.getState().addTab({
+      label: "qwen3:8b · Claude Code",
+      cmd: "ollama",
+      args: launch.args,
+      env: { ELDRUN_LOCAL_MODEL: "qwen3:8b" },
+      cwd: "/tmp",
+      kind: "local_agent",
+      localLaunch: launch,
+    });
+    expect(tab.tmuxSession).toMatch(/^eldrun-p--agent-/);
+    const saved = useTabsStore.getState().snapshotScopeForSwitch("p");
+    const savedTab = saved.tabs.find((t) => t.key === tab.key);
+    expect(savedTab?.localLaunch).toEqual(launch);
+
+    useTabsStore.getState().loadFromLayout(saved.tabs, "/tmp", "p", saved.tabGroups ?? undefined);
+    const restored = useTabsStore.getState().tabs.find((t) => t.kind === "local_agent");
+    expect(restored).toMatchObject({ cmd: "ollama", args: launch.args, localLaunch: launch, tmuxSession: tab.tmuxSession });
   });
 });
 

@@ -1,0 +1,162 @@
+/**
+ * The Machines overlay (`header/MachinesOverlay` framing `header/MachinesIndicator`
+ * with `surface="overlay"`): the room a click on the header's Machines button
+ * opens. Locked in here:
+ *
+ *  - closed, it renders nothing; open, it is a labelled dialog whose machines
+ *    are tiles in one grid, each with its target, its state in words, its
+ *    actions and its details (no ▸ fold, no drag grip — those stay the
+ *    dropdown's);
+ *  - the header button's click opens it and puts the hover dropdown away; the
+ *    dropdown's ⤢ door does the same;
+ *  - Escape and a press on the backdrop close it, a press inside does not;
+ *  - it never takes over the header's status report: unmounting it leaves the
+ *    `machines` key the header's own instance published;
+ *  - a hand Check made in it is the header's answer too (shared checks).
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { render, screen, fireEvent, cleanup, act, within } from "@testing-library/react";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve(null)) }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+  emit: vi.fn(() => Promise.resolve()),
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+
+import { invoke } from "@tauri-apps/api/core";
+import { MachinesIndicator, MachinesOverlayHost } from "../../components/header/MachinesIndicator";
+import { useMachinesOverlayStore } from "../../stores/machinesOverlay";
+import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
+import { useSettingsStore } from "../../stores/settings";
+import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { useHeaderStatusStore } from "../../stores/headerStatus";
+
+const invokeMock = vi.mocked(invoke);
+
+const MACHINES = [
+  { id: "m1", user: "ada", host: "gpu1.example.org", label: "GPU box" },
+  { id: "m2", host: "build.example.org", port: 2222 },
+];
+
+beforeEach(() => {
+  invokeMock.mockClear();
+  useSettingsStore.setState({ settings: { machines_enabled: true } as never, loaded: true });
+  useGlobalMachinesStore.setState({
+    machines: MACHINES,
+    status: { m1: "connected" },
+    reachable: {},
+    errors: {},
+    loaded: true,
+    load: vi.fn(async () => {}),
+    probeAll: vi.fn(async () => {}),
+  });
+  useMachinesOverlayStore.setState({ open: false });
+  useHeaderHoverMenuStore.setState({ openId: null });
+  useHeaderStatusStore.setState({ reports: {} });
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+const dialog = () => screen.getByRole("dialog", { name: "Global machines" });
+
+describe("Machines overlay", () => {
+  it("renders nothing while closed", () => {
+    render(<MachinesOverlayHost />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("lays every machine out as a tile with its target, state and actions", () => {
+    useMachinesOverlayStore.setState({ open: true });
+    const { container } = render(<MachinesOverlayHost />);
+    const grid = container.querySelector(".machines-grid");
+    expect(grid).not.toBeNull();
+    const tiles = grid!.querySelectorAll(".machines-tile.models-tile");
+    expect(tiles).toHaveLength(2);
+
+    const first = within(tiles[0] as HTMLElement);
+    expect(first.getByText("GPU box")).toBeTruthy();
+    expect(first.getByText("ada@gpu1.example.org")).toBeTruthy();
+    // A connected machine offers disconnect; details are open without a fold.
+    expect(first.getByRole("button", { name: /disconnect/i })).toBeTruthy();
+    expect(first.getByRole("button", { name: /system monitor/i })).toBeTruthy();
+    expect(tiles[0].querySelector(".machines-row-expand-btn")).toBeNull();
+    expect(tiles[0].querySelector(".machines-row-grip")).toBeNull();
+    // The actions sit at the tile's foot, after the details — not in the head.
+    expect(tiles[0].querySelector(".vpn-indicator-head .machines-row-actions")).toBeNull();
+    expect(tiles[0].lastElementChild?.classList.contains("machines-row-actions")).toBe(true);
+
+    expect(within(tiles[1] as HTMLElement).getByText("build.example.org:2222")).toBeTruthy();
+  });
+
+  it("closes on Escape and on a backdrop press, not on a press inside", () => {
+    useMachinesOverlayStore.setState({ open: true });
+    render(<MachinesOverlayHost />);
+    fireEvent.mouseDown(dialog());
+    expect(useMachinesOverlayStore.getState().open).toBe(true);
+    fireEvent.mouseDown(dialog().parentElement!);
+    expect(useMachinesOverlayStore.getState().open).toBe(false);
+
+    act(() => useMachinesOverlayStore.setState({ open: true }));
+    fireEvent.keyDown(dialog(), { key: "Escape" });
+    expect(useMachinesOverlayStore.getState().open).toBe(false);
+  });
+
+  it("opens from the header button's click and from the dropdown's door", () => {
+    render(<MachinesIndicator />);
+    const button = screen.getByRole("button", { name: /Global machines — click/ });
+    fireEvent.mouseEnter(button.parentElement!);
+    expect(useHeaderHoverMenuStore.getState().openId).toBe("machines");
+    fireEvent.click(button);
+    expect(useMachinesOverlayStore.getState().open).toBe(true);
+    expect(useHeaderHoverMenuStore.getState().openId).toBeNull();
+
+    act(() => {
+      useMachinesOverlayStore.setState({ open: false });
+      useHeaderHoverMenuStore.setState({ openId: "machines" });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open the Machines overview" }));
+    expect(useMachinesOverlayStore.getState().open).toBe(true);
+    expect(useHeaderHoverMenuStore.getState().openId).toBeNull();
+  });
+
+  it("leaves the header's status report alone", () => {
+    render(
+      <>
+        <MachinesIndicator />
+        <MachinesOverlayHost />
+      </>,
+    );
+    expect(useHeaderStatusStore.getState().reports.machines).toBeDefined();
+    act(() => useMachinesOverlayStore.setState({ open: true }));
+    act(() => useMachinesOverlayStore.setState({ open: false }));
+    expect(useHeaderStatusStore.getState().reports.machines).toBeDefined();
+  });
+
+  it("shares a hand Check with the header's lamps", async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "ssh_probe" ? { ok: true, error: "" } : null) as never,
+    );
+    useMachinesOverlayStore.setState({ open: true });
+    render(
+      <>
+        <MachinesIndicator />
+        <MachinesOverlayHost />
+      </>,
+    );
+    const tile = within(dialog().querySelectorAll<HTMLElement>(".machines-tile")[1]);
+    await act(async () => {
+      fireEvent.click(tile.getByRole("button", { name: /check/i }));
+    });
+    // The second machine now reads "up" (reachable, no session) in the header
+    // too: its grey lamp's tooltip names the state the hand check found.
+    const header = document.querySelector(".machines-indicator-btn")!;
+    const labels = [...header.querySelectorAll("[aria-label], [title]")]
+      .map((el) => el.getAttribute("aria-label") ?? el.getAttribute("title") ?? "")
+      .join("\n");
+    expect(labels).toMatch(/up, not connected — build\.example\.org/);
+    expect(labels).not.toMatch(/not checked/i);
+  });
+});

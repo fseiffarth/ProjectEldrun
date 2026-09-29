@@ -73,6 +73,8 @@ function mail(over: Partial<MailHeader> = {}): MailHeader {
     has_attachments: false,
     size: 100,
     preview: "",
+    priority: "urgent",
+    priority_source: "user",
     ...over,
   };
 }
@@ -307,11 +309,15 @@ describe("selectAlerts — what never becomes a row", () => {
     expect(ids(items)).toEqual(["mail:INBOX-1"]);
   });
 
-  it("shows a message only once when it is in both priority lists", () => {
+  it("alerts only on Urgent marks the user made by hand", () => {
     const items = selectAlerts({
       now: NOW,
-      urgentMail: [mail({ id: "INBOX-1" })],
-      importantMail: [mail({ id: "INBOX-1" })],
+      urgentMail: [
+        mail({ id: "INBOX-1", priority_source: "user" }),
+        mail({ id: "INBOX-2", priority_source: "filter" }),
+        mail({ id: "INBOX-3", priority_source: "model" }),
+        mail({ id: "INBOX-4", priority_source: undefined }),
+      ],
     });
     expect(ids(items)).toEqual(["mail:INBOX-1"]);
   });
@@ -441,20 +447,11 @@ describe("selectAlerts — mail rows", () => {
     // A skewed sender clock must not demote a mark the user applied by hand.
     const urgent = one(selectAlerts({ now: NOW, urgentMail: [mail({ date: "2026-07-20T08:00:00" })] }));
     expect(urgent.severity).toBe("now");
-    // An *important* one is classified plainly.
-    const important = one(
-      selectAlerts({ now: NOW, importantMail: [mail({ date: "2026-07-20T08:00:00" })] }),
-    );
-    expect(important.severity).toBe("upcoming");
   });
 
-  it("records which list a message came from", () => {
-    const items = selectAlerts({
-      now: NOW,
-      urgentMail: [mail({ id: "INBOX-1" })],
-      importantMail: [mail({ id: "INBOX-2" })],
-    });
-    expect(items.map((i) => i.source.mailPriority).sort()).toEqual(["important", "urgent"]);
+  it("records the message as urgent", () => {
+    const item = one(selectAlerts({ now: NOW, urgentMail: [mail()] }));
+    expect(item.source.mailPriority).toBe("urgent");
   });
 });
 

@@ -64,6 +64,19 @@ describe("header settings menu", () => {
     expect(container.querySelector(".project-switcher-add-menu")).toBeNull();
   });
 
+  it("clicking the gear itself opens the settings dialog on the main panel", () => {
+    const seen: unknown[] = [];
+    const onOpen = (e: Event) => seen.push((e as CustomEvent).detail);
+    window.addEventListener("eldrun:open-settings", onOpen);
+    const { container, btn } = renderMenu();
+    act(() => {
+      fireEvent.click(btn);
+    });
+    window.removeEventListener("eldrun:open-settings", onOpen);
+    expect(seen).toEqual(["main"]);
+    expect(container.querySelector(".project-switcher-add-menu")).toBeNull();
+  });
+
   it("opens the settings dialog on the help panel", () => {
     const seen: unknown[] = [];
     const onOpen = (e: Event) => seen.push((e as CustomEvent).detail);
@@ -76,11 +89,24 @@ describe("header settings menu", () => {
     expect(seen).toEqual(["help"]);
   });
 
-  it("fires the how-to-start, tour, advanced-tour and lessons events", () => {
+  it("opens the settings dialog on the updates panel, as the last row", () => {
+    const seen: unknown[] = [];
+    const onOpen = (e: Event) => seen.push((e as CustomEvent).detail);
+    window.addEventListener("eldrun:open-settings", onOpen);
+    const { container } = renderMenu();
+    const rows = container.querySelectorAll(".project-switcher-add-menu button");
+    const row = rows[rows.length - 1] as HTMLElement;
+    expect(row.textContent).toBe("Check for updates");
+    act(() => {
+      fireEvent.click(row);
+    });
+    window.removeEventListener("eldrun:open-settings", onOpen);
+    expect(seen).toEqual(["updates"]);
+  });
+
+  it("fires the how-to-start and lessons events", () => {
     const rows: [string, string][] = [
       ["How to start", "eldrun:open-how-to-start"],
-      ["Take a tour", "eldrun:start-tour"],
-      ["Advanced tour", "eldrun:start-advanced-tour"],
       ["Lessons", "eldrun:open-lessons"],
     ];
     for (const [label, event] of rows) {

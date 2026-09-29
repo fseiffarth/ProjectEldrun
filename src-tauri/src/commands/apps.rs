@@ -68,12 +68,17 @@ pub struct TrackedWindow {
 /// placement, so no per-monitor scale conversion is needed on re-apply.
 /// Transient (not persisted): the *restart* path restores popouts from the
 /// frontend's saved bounds instead.
+///
+/// Native Wayland has no position to capture, so a retired popout records the
+/// screen it was on instead (`monitor`, GDK's own logical rect for it) and is
+/// rebuilt onto that screen when its scope returns.
 #[derive(Debug, Clone, Copy)]
 pub struct DetachedBounds {
     pub x: i32,
     pub y: i32,
     pub w: u32,
     pub h: u32,
+    pub monitor: Option<crate::services::window_state::MonitorRect>,
 }
 
 /// Called with the changed row's `project_id` whenever the registry mutates
@@ -98,7 +103,20 @@ pub struct WindowRegistry {
     /// popout; read just after switch-back re-shows it, to restore its monitor.
     pub detached_bounds: HashMap<String, DetachedBounds>,
     /// Wayland popouts parked without unmapping their compositor-owned surfaces.
+    /// Only the fallback now: a popout holding unsaved work (or one that never
+    /// answered the retire request) is minimized instead of closed.
     pub detached_parking: crate::services::window_state::DetachedParking,
+    /// Wayland retire bookkeeping (close on scope-out, respawn on scope-in).
+    pub detached_retire: crate::services::window_state::DetachedRetire,
+    /// Labels a `detach_subwindow` call is building right now. Reserved under
+    /// this lock before `build()`, so a second call for the same label returns
+    /// instead of racing the build — and a failed build releases only its own
+    /// reservation, never a live window's entry.
+    pub detached_building: std::collections::HashSet<String>,
+    /// The tab scope the main window shows, as last told by
+    /// `sync_detached_scope` (`None` until the first scope change). A popout
+    /// built for another scope retires as soon as its build completes.
+    pub detached_active_scope: Option<String>,
 }
 
 pub type WindowRegistryState = Arc<Mutex<WindowRegistry>>;

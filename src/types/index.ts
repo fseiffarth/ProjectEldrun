@@ -150,6 +150,9 @@ export interface Settings {
      * sidecar also holds it closed while root-agent writes are not staged
      * behind the fence (`docs/context/root_console.md`, "On the phone"). */
     root_access?: boolean;
+    /** A paired phone may browse and read (never change) its Mobile projects'
+     * files. Unset is off; read by the sidecar per request. */
+    project_files?: boolean;
   };
   /** Show Eldrun Mobile's host-connection control in the desktop header. This
    * defaults to on when Mobile itself is enabled; an explicit false hides it. */
@@ -158,6 +161,10 @@ export interface Settings {
    * Machines, CPU/RAM/GPU) expanded into the bar? Unset means collapsed to a
    * single summary lamp; anything non-nominal shows itself regardless. */
   header_status_expanded?: boolean;
+  /** Default printer per network, keyed by `networkKey()` in
+   *  `lib/window/printerNetworkDefaults`. Joining a keyed network makes that
+   *  printer the user's default. Unset/empty → nothing is ever switched. */
+  printer_network_defaults?: Record<string, { printer: string; label: string }>;
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
@@ -165,10 +172,10 @@ export interface Settings {
    *  Applied live via `lib/i18n` (`applyLanguage`); the backend round-trips it. */
   language?: "en" | "de" | "es" | "fr" | "it";
   /** App-wide clock: `true` = 24-hour, `false` = 12-hour AM/PM. **Unset is not
-   *  `false`** — it means "not chosen", and the clock is then derived from
-   *  `language` (English → 12-hour, the rest → 24-hour). Read through
-   *  `lib/timeFormat`'s `useUse24h()`, never off `settings` directly, or the
-   *  language default is what gets missed. */
+   *  `false`** — it means "not chosen", and the clock then follows the OS's
+   *  12/24-hour setting (`lib/osClock`), or `language` when the OS has no
+   *  opinion. Read through `lib/timeFormat`'s `useUse24h()`, never off
+   *  `settings` directly, or the default is what gets missed. */
   time_format_24h?: boolean;
   /** The MAIN window's UI zoom factor (helps on high-DPI/4K monitors). `1` (or
    *  unset) is 100% — the default look; applied as the webview's native zoom.
@@ -246,6 +253,11 @@ export interface Settings {
    *  root agents no endpoint and refuses the ones already holding the token. */
   root_mcp?: boolean;
   schedule_mcp?: boolean;
+  /** Agent-requested pushes (`services::git_push_mcp`). Absent means off. */
+  git_push_mcp?: boolean;
+  /** The read-only "Ask Eldrun" help MCP (`eldrun-help`) in local agent tabs.
+   *  **Default true** — absent means on. Switched in the intro wizard. */
+  help_mcp?: boolean;
   root_mcp_review?: "all" | "destructive" | "off";
   /** Root console: serve the MCP tools to local-model tabs only. Absent means
    *  off. On, cloud agent CLIs get no endpoint and running ones are refused. */
@@ -254,6 +266,13 @@ export interface Settings {
    *  switched on separately from `root_mcp`, and above every per-account
    *  `agent_access`. */
   root_mcp_mail?: boolean;
+  /** Root console: keep the mail tools to local-model tabs. Absent means off.
+   *  On, cloud agent CLIs are neither listed nor served a mail tool and a
+   *  contained reader is refused; the rest of the tools are untouched. */
+  root_mcp_mail_local_only?: boolean;
+  /** Root console: a local-model tab may read the mails shared with agents —
+   *  marked messages only, and only while Ollama is loopback. Absent means off. */
+  root_mcp_mail_local_read?: boolean;
   /** Side panel: the **Alerts** group in the file viewer — urgent mail, the
    *  calendar entries about to start, and the to-do cards whose due date is here
    *  or past, merged into one time-ordered strip. **Default true.**
@@ -399,10 +418,16 @@ export interface Settings {
    *  uninstalling the CLI. Round-trips through the backend settings `extra`
    *  catch-all — no Rust field needed. Unset/empty = nothing hidden. */
   disabled_agents?: string[];
+  /** The order of the Agents group's rows, which is the order Ctrl+1–9 number
+   *  them: row keys (a built-in's command, `"claude"`; a custom agent's
+   *  `"custom:<id>"`). Set by Manage CLIs' ↑/↓. Unset = the default agent
+   *  first, then menu order (`agentShortcutSlots`); keys it lacks follow the
+   *  ones it names. Round-trips through the backend settings `extra`. */
+  agent_order?: string[];
   /** The scheduled agent warm-up (Manage CLIs → Scheduled warm-up): at each
-   *  configured local time, one short message is sent to that agent in the Trash
-   *  project, so its usage window starts *then* rather than whenever the first
-   *  real prompt happens to be typed. A global time list with per-agent
+   *  configured local time, one short message is sent to that agent (in its
+   *  one-shot print mode), so its usage window starts *then* rather than
+   *  whenever the first real prompt happens to be typed. A global time list with per-agent
    *  participation and per-agent overrides; read through `lib/agents/agentCron.ts`,
    *  which is also where the semantics of every field live. Round-trips through
    *  the backend settings `extra` catch-all — no Rust field needed, since
@@ -512,14 +537,21 @@ export interface Settings {
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
   agent_remote_control?: boolean;
-  /** Default-on filesystem fence: bubblewrap on Linux, Seatbelt on macOS.
-   * Remote-host and Windows tabs are not fenced. Applies on spawn. */
+  /** Round-trip only: the fence used to be switchable. It is the only mode
+   *  now (`services::agent_fence`); the backend never reads this. */
   agent_fence?: boolean;
   /** Extra host toolchain/config paths exposed read-only inside the fence.
    * Unset uses the backend defaults; an explicit empty list exposes none. */
   agent_fence_paths?: string[];
   /** Opt-in access to Cargo registry credential files in exposed toolchains. */
   agent_fence_cargo_credentials?: boolean;
+  /** Accepted once: agents on a platform with no fence (Windows) run with the
+   *  user's full rights. Backend-enforced (`agent_fence::platform_accepted`). */
+  agent_fence_platform_accepted?: boolean;
+  /** A fenced root-console agent sees every project, box folder and remote
+   *  mirror read-only (default off: a widening). The mail `attach` argument
+   *  needs it; recorded per root tab at spawn. */
+  root_fence_projects_readable?: boolean;
   /** When true (the default), the usage recap opens by itself on the first launch
    *  of each day. Turning it off stops the popup, not the counting — the recap
    *  stays reachable from Settings. */
@@ -683,6 +715,12 @@ export interface Settings {
    * original hard-coded behaviour.
    */
   keyboard_shortcuts?: Record<string, KeyboardChord>;
+  /**
+   * User overrides for the keys inside keyboard steering mode, keyed by
+   * `SteeringAction` id (see `src/lib/shortcuts/steeringBindings.ts`): the
+   * action's whole key list, replacing its defaults; `[]` unbinds it.
+   */
+  steering_keys?: Record<string, string[]>;
   /** Download *source* folders scanned by the side-panel Downloads section
    *  (fast-copy of freshly downloaded files into a project). Machine-wide,
    *  read-only. Unset/empty → the frontend falls back to the OS Downloads dir. */
@@ -1031,8 +1069,60 @@ export interface SshTooling {
   rsync: boolean;
 }
 
+export type GitPushMcpLevel = "off" | "propose" | "apply";
+/** The trusted per-project agent-push policy (`services::git_push_mcp`). */
+export interface GitPushMcpPolicy {
+  level?: GitPushMcpLevel;
+  protected?: string[];
+  confirmed_url?: string;
+}
+/** One agent push or release request as the backend reports it (`git_push_mcp_proposals`). */
+export interface GitPushProposal {
+  id: string;
+  session: string;
+  tab: string;
+  project: string;
+  /** A branch push, or a release tag on a pushed tip (`services::git_release`). */
+  kind: "push" | "release";
+  /** The release tag (`kind === "release"`). */
+  tag: string | null;
+  branch: string | null;
+  remote: string | null;
+  url: string | null;
+  head: string | null;
+  remote_sha: string | null;
+  commits: string[];
+  diffstat: string;
+  note: string;
+  needs_url_confirm: boolean;
+  created_at: string;
+  status: "running" | "pending" | "pushed" | "failed" | "dismissed" | "expired";
+  category: string | null;
+  message: string;
+  output: string;
+  preflight_output: string;
+  /** The user closed the finished card (`git_push_mcp_clear`). */
+  cleared: boolean;
+  state: { branch: string | null; head: string | null; remote: string | null; upstream: string | null; url: string | null; remote_sha: string | null; ahead: number; behind: number };
+}
+
+/** The git bar's Release dialog state (`git_release_preview`). */
+export interface GitReleasePreview {
+  suggested: string;
+  /** The manifest the version came from; null when counted up from the latest tag. */
+  source: string | null;
+  branch: string | null;
+  head: string | null;
+  subject: string | null;
+  url: string | null;
+  /** Why a release cannot go out right now (push first, tag exists, …). */
+  problem: string | null;
+  category: string | null;
+}
+
 export interface ProjectEntry {
   schedule_mcp?: "off" | "propose" | "apply";
+  git_push_mcp?: GitPushMcpPolicy;
   id: string;
   name: string;
   /** "current" | "active" | "inactive" */
@@ -1062,8 +1152,8 @@ export interface ProjectEntry {
    *  tabs; absent inherits the global setting (`settings.agent_remote_control`,
    *  default ON). Set from the pill's "Remote control" menu item. */
   remote_control?: boolean;
-  /** Per-project override of the global default-on agent filesystem fence.
-   * Absent inherits `settings.agent_fence`. */
+  /** Round-trip only: the per-project fence override of older versions. The
+   *  fence is the only mode now and this is never read. */
   agent_fence?: boolean;
   /** Which machine shells launched from this project run on — the persisted
    *  `RunHostPicker` choice (a `TabLocation`: "local" | "remote" | "host:<id>").
@@ -1095,8 +1185,6 @@ export interface ProjectEntry {
   categories?: string[];
   /** Explicit trusted-state opt-in for phone/tablet terminal access. */
   eldrun_mobile_access?: boolean;
-  /** Built-in permanent workspace for disposable, strictly-contained agents. */
-  eldrun_trash?: boolean;
   [key: string]: unknown;
 }
 
@@ -1162,7 +1250,7 @@ export interface ExportPreview {
   tabs: number;
   boxNames: string[];
   suggestedFileName: string;
-  /** Machine token (`"vm"` / `"trash"`) when this project cannot be exported. */
+  /** Machine token (`"vm"`) when this project cannot be exported. */
   blocked?: string;
 }
 
@@ -1282,6 +1370,12 @@ export interface ProjectBox {
   /** Eldrun Mobile reach (#31aa): the box's `box:<id>` scope is listed on a
    *  paired phone. Off/absent by default, like a project's switch. */
   eldrun_mobile_access?: boolean;
+  /** User-picked colour (`#rrggbb`); absent = hashed from the id
+   *  (`lib/theme/boxColor`). Rides the Rust struct's flattened `extra`. */
+  color?: string;
+  /** The box has no pill of its own on the header row — only a row in the
+   *  scope chip's list. Absent = shown. Rides `extra` too. */
+  hide_pill?: boolean;
 }
 
 /**

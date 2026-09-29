@@ -68,6 +68,7 @@ import { scrollIntoPdfBox } from "./scrollBox";
 import { isHighlight } from "../../../lib/viewers/pdfNotes";
 import type { PdfNote } from "../../../lib/viewers/pageModel";
 import { CommentIcon } from "../../common/icons/Icon";
+import { useUnsavedWork } from "../../../lib/window/unsavedWork";
 
 /** The right-click menu's position: where on screen it opens, where on the page it
  *  was asked for (big points), and the remark it was asked over, if any. */
@@ -251,6 +252,7 @@ export function PdfNoteLayer({
       ? text !== (open?.text ?? "") || who.trim() !== (open?.author ?? "")
       : text.trim() !== ""
     : false;
+  useUnsavedWork(dirty);
 
   // Put the card away, keeping whatever was written. Held in a ref so the window
   // listener below is bound once per open card rather than re-bound on every

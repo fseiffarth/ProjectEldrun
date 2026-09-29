@@ -18,7 +18,7 @@ describe("Mobile scope caption", () => {
   it("names a box and the root console instead of a status, and counts root's waiting proposals", () => {
     expect(scopeCaption({ kind: "project", status: "active" })).toBe("active");
     expect(scopeCaption({ status: "paused" })).toBe("paused");
-    expect(scopeCaption({ kind: "box", status: "active" })).toBe("▣ box");
+    expect(scopeCaption({ kind: "box", status: "active" })).toBe("⬡ box");
     expect(scopeCaption({ kind: "root", status: "active", pending_reviews: 0 })).toBe("★ root");
     expect(scopeCaption({ kind: "root", status: "active", pending_reviews: 2 })).toBe("★ root · 2 awaiting approval at the desk");
   });

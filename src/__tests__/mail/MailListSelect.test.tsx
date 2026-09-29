@@ -53,20 +53,20 @@ function header(over: Partial<MailHeader> & { id: string }): MailHeader {
 const HEADERS = ["m1", "m2", "m3"].map((id) => header({ id }));
 
 interface Calls {
-  selected: string[];
+  opened: string[];
   checks: Array<{ id: string; mode: MailCheckMode }>;
   deleted: string[][];
 }
 
-function renderList(over: { checkedIds?: string[]; purged?: number } = {}) {
-  const calls: Calls = { selected: [], checks: [], deleted: [] };
+function renderList(over: { headers?: MailHeader[]; checkedIds?: string[]; purged?: number; query?: string; searchRemote?: boolean; searchPartial?: boolean } = {}) {
+  const calls: Calls = { opened: [], checks: [], deleted: [] };
   render(
     <MailList
-      headers={HEADERS}
+      headers={over.headers ?? HEADERS}
       selectedId={null}
       checkedIds={over.checkedIds ?? []}
       loading={false}
-      onSelect={(id) => calls.selected.push(id)}
+      onOpen={(id) => calls.opened.push(id)}
       onCheck={(h, mode) => calls.checks.push({ id: h.id, mode })}
       onClearChecks={() => {}}
       onDelete={(rows) => calls.deleted.push(rows.map((h) => h.id))}
@@ -83,8 +83,10 @@ function renderList(over: { checkedIds?: string[]; purged?: number } = {}) {
       offset={0}
       pageSize={100}
       total={HEADERS.length}
+      searchRemote={over.searchRemote}
+      searchPartial={over.searchPartial}
       onPage={() => {}}
-      query=""
+      query={over.query ?? ""}
       unreadOnly={false}
       onQuery={() => {}}
       onUnreadOnly={() => {}}
@@ -99,11 +101,58 @@ const row = (id: string) => screen.getByText(`subject ${id}`).closest(".mail-row
 
 beforeEach(() => vi.clearAllMocks());
 
+describe("sender cell", () => {
+  it("prints the name and, quieter, the addr-spec beside it", () => {
+    renderList({
+      headers: [header({ id: "m1", from: { name: "Ada Lovelace", address: "ada@example.com" } })],
+    });
+    const addr = screen.getByText("<ada@example.com>");
+    expect(addr.className).toBe("mail-row-from-addr");
+    expect(screen.getByText("Ada Lovelace").className).toBe("mail-row-from-name");
+  });
+
+  it("does not quieten the real address beside a name posing as one", () => {
+    renderList({
+      headers: [header({ id: "m1", from: { name: "support@bank.example", address: "a@evil.example" } })],
+    });
+    expect(screen.getByText("<a@evil.example>").className).toContain("loud");
+  });
+
+  it("badges the row with the sender's initial, coloured by address not name", () => {
+    renderList({
+      headers: [
+        header({ id: "m1", from: { name: "PayPal", address: "service@paypal.example" } }),
+        header({ id: "m2", from: { name: "PayPal", address: "a@evil.example" } }),
+        header({ id: "m3", from: { name: "Someone else", address: "service@paypal.example" } }),
+      ],
+    });
+    const badge = (id: string) => row(id).querySelector(".mail-row-badge") as HTMLElement;
+    expect(badge("m1").textContent).toBe("P");
+    expect(badge("m3").textContent).toBe("S");
+    const color = (id: string) => badge(id).style.getPropertyValue("--sender-color");
+    expect(color("m1")).toBe(color("m3"));
+    expect(color("m1")).not.toBe(color("m2"));
+  });
+
+  it("prints a bare address once", () => {
+    renderList();
+    expect(row("m1").querySelector(".mail-row-from")?.textContent).toBe("sender@example.com");
+  });
+});
+
+describe("search coverage note", () => {
+  it("says when older server matches may be missing", () => {
+    renderList({ query: "invoice", searchRemote: true, searchPartial: true });
+    expect(screen.getByText(t("mail.searchPartial"))).toBeTruthy();
+    expect(screen.queryByText(t("mail.searchRemote"))).toBeNull();
+  });
+});
+
 describe("clicking a row", () => {
   it("opens the message and makes it the whole selection", async () => {
     const calls = renderList();
     await userEvent.click(row("m2"));
-    expect(calls.selected).toEqual(["m2"]);
+    expect(calls.opened).toEqual(["m2"]);
     expect(calls.checks).toEqual([{ id: "m2", mode: "only" }]);
   });
 
@@ -113,14 +162,14 @@ describe("clicking a row", () => {
   it("ctrl-click picks the row and opens nothing", () => {
     const calls = renderList();
     fireEvent.click(row("m2"), { ctrlKey: true });
-    expect(calls.selected).toEqual([]);
+    expect(calls.opened).toEqual([]);
     expect(calls.checks).toEqual([{ id: "m2", mode: "toggle" }]);
   });
 
   it("shift-click asks for a range and opens nothing", () => {
     const calls = renderList();
     fireEvent.click(row("m3"), { shiftKey: true });
-    expect(calls.selected).toEqual([]);
+    expect(calls.opened).toEqual([]);
     expect(calls.checks).toEqual([{ id: "m3", mode: "range" }]);
   });
 });
@@ -129,7 +178,7 @@ describe("right-clicking a row", () => {
   it("does not open the message", async () => {
     const calls = renderList();
     await userEvent.pointer({ keys: "[MouseRight]", target: row("m2") });
-    expect(calls.selected).toEqual([]);
+    expect(calls.opened).toEqual([]);
     // Ticked instead, so the menu visibly names what it will act on.
     expect(calls.checks).toEqual([{ id: "m2", mode: "only" }]);
   });
@@ -138,7 +187,7 @@ describe("right-clicking a row", () => {
     const calls = renderList({ checkedIds: ["m1", "m2"] });
     await userEvent.pointer({ keys: "[MouseRight]", target: row("m2") });
     expect(calls.checks).toEqual([]);
-    expect(calls.selected).toEqual([]);
+    expect(calls.opened).toEqual([]);
   });
 
   it("names one subject for one row", async () => {
@@ -218,7 +267,7 @@ describe("the row's ✕", () => {
     const calls = renderList();
     await userEvent.click(deleteBtn("m2"));
     expect(calls.deleted).toEqual([["m2"]]);
-    expect(calls.selected).toEqual([]);
+    expect(calls.opened).toEqual([]);
     expect(calls.checks).toEqual([]);
   });
 

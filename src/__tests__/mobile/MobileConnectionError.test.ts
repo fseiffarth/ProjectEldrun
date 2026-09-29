@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../../../mobile-web/src/api";
+import { ApiError, api } from "../../../mobile-web/src/api";
 import {
   classifyUnavailable,
+  describeFailure,
   describeUnavailable,
+  knownFailureCodes,
+  localFailureText,
+  suspectsTunnel,
+  tailscaleAppLink,
   unavailableDetail,
   type UnavailableReason,
 } from "../../../mobile-web/src/connection";
@@ -107,6 +112,49 @@ describe("describeUnavailable", () => {
     expect(hint).toContain("Tailscale");
     expect(hint).toContain("asleep");
   });
+
+  it("asks about Tailscale on a stall, the shape an off tailnet takes", () => {
+    // The desktop's 100.x address routes nowhere with Tailscale off, so the
+    // request times out rather than failing fast.
+    const { title, hint } = describeUnavailable("timeout");
+    expect(title).toContain("Tailscale");
+    expect(hint).toContain("Tailscale");
+    expect(hint).not.toContain("reached the desktop");
+  });
+});
+
+describe("describeFailure", () => {
+  it("turns every known code into a sentence that is not the code", () => {
+    for (const code of knownFailureCodes()) {
+      const text = describeFailure(code);
+      expect(text, code).not.toBe(code);
+      expect(text, code).not.toMatch(/^[a-z_]+$/);
+      expect(text.length, code).toBeGreaterThan(12);
+      // Prose on an ApiError too — the splash's own title where the code is
+      // one `classifyUnavailable` places (a proxy, a limiter, a dead link).
+      const onError = describeFailure(new ApiError(400, code));
+      expect(onError, code).not.toBe(code);
+      expect(onError, code).not.toMatch(/^[a-z_]+$/);
+    }
+  });
+
+  it("never renders a bare code, whatever shape it arrives in", () => {
+    for (const source of ["some_new_code", new ApiError(500, "boom"), new Error("odd_thing"), undefined, 42]) {
+      const text = describeFailure(source);
+      expect(text).toBe("Your desktop reported an error.");
+    }
+    expect(describeFailure(new ApiError(503, "desktop_unavailable"))).toBe("Eldrun isn't running on your desktop.");
+    expect(describeFailure("desktop_unavailable")).toBe("Eldrun isn't running on your desktop.");
+    expect(describeFailure(new ApiError(502, "request_failed"))).toBe("Eldrun Mobile isn't running on your desktop.");
+    expect(describeFailure("session_expired")).toMatch(/lapsed/);
+    expect(describeFailure(new ApiError(0, "offline"))).toMatch(/Can't reach|offline/);
+  });
+
+  it("shows the phone's own lock messages as written, and nothing else raw", () => {
+    expect(localFailureText(new Error("Incorrect PIN."))).toBe("Incorrect PIN.");
+    expect(localFailureText(new Error("not_allowed"))).toBe("That did not work. Try again.");
+    expect(localFailureText("NotAllowedError")).toBe("That did not work. Try again.");
+  });
 });
 
 describe("unavailableDetail", () => {
@@ -114,5 +162,50 @@ describe("unavailableDetail", () => {
     expect(unavailableDetail(new ApiError(0, "offline"))).toBe("offline");
     expect(unavailableDetail(new ApiError(503, "desktop_unavailable"))).toBe("503 desktop_unavailable");
     expect(unavailableDetail(new Error("nope"))).toBeUndefined();
+  });
+});
+
+describe("api deadline", () => {
+  it("reports its own deadline as a timeout whatever the browser rejects with", async () => {
+    // A phone's trace read "warm-up failed after 10000 ms": the deadline fired,
+    // but the rejection was not the DOMException the name test expected, so the
+    // splash said "Can't reach your desktop" for what was a stall.
+    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new TypeError("Load failed")));
+    }));
+    const failure = await api("/api/v1/status", undefined, 20).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).code).toBe("timeout");
+    expect(classifyUnavailable(failure)).toBe("timeout");
+  });
+
+  it("still calls a failure before the deadline offline", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
+    const failure = await api("/api/v1/status", undefined, 5_000).catch((error: unknown) => error);
+    expect((failure as ApiError).code).toBe("offline");
+  });
+});
+
+describe("a stuck tunnel", () => {
+  it("is suspected only where no answer came back", () => {
+    expect(suspectsTunnel("unreachable")).toBe(true);
+    expect(suspectsTunnel("timeout")).toBe(true);
+    for (const reason of ["phone_offline", "host_down", "desktop_down", "busy", "blocked_origin", "server_error", "storage_blocked"] as UnavailableReason[]) {
+      expect(suspectsTunnel(reason), reason).toBe(false);
+    }
+  });
+
+  it("tells the reader to force-stop a connected Tailscale, not toggle it", () => {
+    for (const reason of ["unreachable", "timeout"] as UnavailableReason[]) {
+      expect(describeUnavailable(reason).hint, reason).toMatch(/force-stop it/);
+    }
+  });
+
+  it("links to the Tailscale app on Android only", () => {
+    const android = tailscaleAppLink("Mozilla/5.0 (Linux; Android 15; SM-A146P) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36");
+    expect(android).toMatch(/^intent:\/\/#Intent;package=com\.tailscale\.ipn;/);
+    expect(android).toContain("S.browser_fallback_url=https%3A%2F%2Fplay.google.com");
+    expect(android).toMatch(/;end$/);
+    expect(tailscaleAppLink("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148")).toBeNull();
   });
 });

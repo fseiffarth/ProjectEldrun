@@ -91,29 +91,50 @@ const DIFF_DRIVER_CMDS: &[&str] = &["diff", "log", "show", "blame"];
 ///   [`CONFIG_DENYLIST`]/[`sanitize_repo_git_config`], run by every caller
 ///   that goes through [`hardened_git_command_in`] (which `run_git`'s local
 ///   branch does). Remote git calls are not covered (see `run_git`'s doc).
-/// * **`.git/hooks/*`**. `core.hooksPath` is deliberately NOT pinned here: every
-///   git call goes through this function, `git_commit` included, and a user's own
-///   `pre-commit`/`commit-msg` hooks are the point of that one. It is pinned per
-///   command instead, on the verbs that check out a tree without authoring
-///   anything — see [`NO_HOOKS_CONFIG`] (`git_checkout` and the worktree
-///   verbs). The verbs where the user's hooks *are* the point — Commit, Push,
-///   Reword, Publish — are gated by `services::exec_trust`
-///   (`TrustKind::GitHooks`, see [`require_hook_trust`]): the hook files and
-///   the repo-scope keys that name programs (`core.hooksPath`,
-///   `core.sshCommand`, `credential*.helper`) are fingerprinted and approved
-///   once, and any change asks again. `services::git_guard` additionally
-///   mounts `.git/config` and `.git/hooks` read-only for fenced and contained
-///   agents. What stays open is `git_guard`'s own residual (an agent can
-///   still *create* a `commondir`), which bites a plain `git` in the user's
-///   terminal, not the calls made here.
+/// * **`.git/hooks/*`**. **Closed by default** (#862): this pins
+///   [`NO_HOOKS_CONFIG`] too, unless the call goes through a `hooked` entry
+///   point ([`run_git_hooked`], [`hooked_git_command_in`]). Reads are not
+///   hook-free — `git add`, and `git diff` refreshing the index, fire
+///   `post-index-change` even under `GIT_OPTIONAL_LOCKS=0` — so hooks-off had
+///   to be the default rather than a per-verb opt-in. The hooked entry points
+///   serve only the verbs where the user's hooks *are* the point — Commit,
+///   Reword, Push, Publish, Pull's merge and the merge commit — and each is
+///   gated by `services::exec_trust` first (`TrustKind::GitHooks`, see
+///   [`require_hook_trust`]): the hook files and the repo-scope keys that name
+///   programs (`core.hooksPath`, `core.sshCommand`, `credential*.helper`) are
+///   fingerprinted and approved once, and any change asks again.
+///   `services::git_guard` additionally mounts `.git/config` and `.git/hooks`
+///   read-only for fenced and contained agents; the one redirect it cannot
+///   cover — an agent *creating* a `commondir` in a main `.git`, so git reads
+///   config and hooks from wherever it points — is overridden for every local
+///   call by [`pin_common_dir`]. A plain `git` in the user's terminal still
+///   follows such a file.
 pub(crate) fn hardened_git_args<S: AsRef<str>>(args: &[S]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::with_capacity(args.len() + HARDENED_CONFIG.len() * 2 + 2);
+    git_args(args, Hooks::Off)
+}
+
+/// Whether a git call may run the repo's hooks. `Live` only behind
+/// [`require_hook_trust`] — see [`hardened_git_args`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hooks {
+    Off,
+    Live,
+}
+
+fn git_args<S: AsRef<str>>(args: &[S], hooks: Hooks) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(args.len() + HARDENED_CONFIG.len() * 2 + 4);
     for kv in HARDENED_CONFIG {
         out.push("-c".to_string());
         out.push((*kv).to_string());
     }
+    if hooks == Hooks::Off {
+        for kv in NO_HOOKS_CONFIG {
+            out.push("-c".to_string());
+            out.push((*kv).to_string());
+        }
+    }
     let mut rest = args.iter().map(|a| a.as_ref()).peekable();
-    // A caller may bring its own `-c <key>=<value>` pairs (see `NO_HOOKS_CONFIG`),
+    // A caller may bring its own `-c <key>=<value>` pairs (`scoped_token_config`),
     // and those are git's *pre-subcommand* options — so they are passed through
     // first and the subcommand is whatever follows them. Without this the leading
     // `-c` was mistaken for the subcommand, which happens to still produce a valid
@@ -136,13 +157,15 @@ pub(crate) fn hardened_git_args<S: AsRef<str>>(args: &[S]) -> Vec<String> {
     out
 }
 
-/// `crate::paths::command_no_window("git")` with [`hardened_git_args`] already
-/// applied. For the git spawns that build their own `Command` instead of going
-/// through [`run_git`] but still run inside a project directory
-/// (`commands::usage_stats`, `commands::fs`), so the policy has one definition.
-pub(crate) fn hardened_git_command<S: AsRef<str>>(args: &[S]) -> std::process::Command {
+/// `crate::paths::command_no_window("git")` with [`git_args`] already applied —
+/// the base of [`hardened_git_command_in`] and [`hooked_git_command_in`].
+fn git_command<S: AsRef<str>>(args: &[S], hooks: Hooks) -> std::process::Command {
     let mut cmd = crate::paths::command_no_window("git");
-    cmd.args(hardened_git_args(args));
+    cmd.args(if hooks == Hooks::Off {
+        hardened_git_args(args)
+    } else {
+        git_args(args, hooks)
+    });
     // Read-only commands must not write the repo. `git status` (and everything
     // that runs it: the file tree's per-entry letters, the git bar, the pill's
     // dirty poll) opportunistically REWRITES `.git/index` when stat data looks
@@ -209,10 +232,11 @@ struct DenylistedConfigKey {
 ///
 /// **Deliberately not here**, both distinct, already-documented trade-offs
 /// rather than oversights:
-/// - `.git/hooks/*` — files, not config keys; `core.hooksPath` is left live
-///   for `git_commit`/push, where a user's own hooks are the point (see this
-///   module's header). A planted hook is not this sanitizer's job: the
-///   ask-once `services::exec_trust` gate on those verbs covers it.
+/// - `.git/hooks/*` — files, not config keys; pinned off per call by
+///   [`hardened_git_args`], and left live only for the commit/push verbs,
+///   where a user's own hooks are the point. A planted hook is not this
+///   sanitizer's job: the ask-once `services::exec_trust` gate on those verbs
+///   covers it.
 /// - `alias.*` — not a vector against this codebase at all: every subcommand
 ///   here is a live builtin, and `git help config` states an alias hiding an
 ///   existing command "is ignored except for deprecated commands."
@@ -296,8 +320,13 @@ fn sanitize_repo_git_config(project_dir: &Path) {
 /// - a `.git` *file* is a pointer (`gitdir: <path>`, relative to its folder):
 ///   linked worktrees, submodules, `--separate-git-dir`, and a hostile
 ///   `gitdir: .notgit`. Followed exactly one hop, as git does;
-/// - a git dir with a `commondir` (a linked worktree's) shares the common dir's
-///   `config`;
+/// - a git dir reached through a pointer, with a `commondir` (a linked
+///   worktree's), shares the common dir's `config`. A `commondir` inside a
+///   **main** `.git` directory is never git's own (#862) — it is a redirect a
+///   sandboxed agent can create even with `.git/config` and `.git/hooks` bound
+///   read-only — so it is not followed here: [`pin_common_dir`] makes git
+///   ignore it too, and following it would only strip keys from whatever file
+///   the attacker named;
 /// - `config.worktree` beside each: `extensions.worktreeConfig` makes git read
 ///   it as a second repo-scope file.
 ///
@@ -307,11 +336,13 @@ fn repo_config_files(project_dir: &Path) -> Vec<PathBuf> {
     let Some(git_dir) = discover_git_dir(project_dir) else {
         return Vec::new();
     };
-    let mut dirs = vec![git_dir.clone()];
-    if let Ok(common) = std::fs::read_to_string(git_dir.join("commondir")) {
-        let common = common.trim();
-        if !common.is_empty() {
-            dirs.push(git_dir.join(common)); // an absolute path replaces the base
+    let mut dirs = vec![git_dir.path.clone()];
+    if !git_dir.main {
+        if let Ok(common) = std::fs::read_to_string(git_dir.path.join("commondir")) {
+            let common = common.trim();
+            if !common.is_empty() {
+                dirs.push(git_dir.path.join(common)); // an absolute path replaces the base
+            }
         }
     }
     dirs.iter()
@@ -319,21 +350,56 @@ fn repo_config_files(project_dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The git dir [`discover_git_dir`] found.
+struct GitDir {
+    path: PathBuf,
+    /// A real `.git` directory — not a pointer file, not a symlink. A main
+    /// repo's git dir is its own common dir; only a linked worktree's (always
+    /// reached through a pointer) legitimately names another.
+    main: bool,
+}
+
 /// The git dir for `project_dir`: the nearest ancestor's `.git` directory, or
 /// the target of the nearest `.git` pointer file.
-fn discover_git_dir(project_dir: &Path) -> Option<PathBuf> {
+fn discover_git_dir(project_dir: &Path) -> Option<GitDir> {
     for dir in project_dir.ancestors() {
         let dot_git = dir.join(".git");
         if dot_git.is_dir() {
-            return Some(dot_git);
+            let main = std::fs::symlink_metadata(&dot_git).is_ok_and(|m| m.is_dir());
+            return Some(GitDir { path: dot_git, main });
         }
         if dot_git.is_file() {
             let text = std::fs::read_to_string(&dot_git).ok()?;
             let target = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
-            return (!target.is_empty()).then(|| dir.join(target));
+            return (!target.is_empty()).then(|| GitDir { path: dir.join(target), main: false });
         }
     }
     None
+}
+
+/// Pin `GIT_COMMON_DIR` to the main `.git` directory git will discover for
+/// `project_dir`, so a `commondir` file planted in it is ignored (#862). git
+/// reads config, hooks, refs and objects from the common dir, and an agent
+/// whose fence binds `.git/config` and `.git/hooks` read-only can still create
+/// `.git/commondir` pointing at a directory of its own — verified: git then
+/// runs that directory's `hooks/post-index-change` on a plain `git add`.
+///
+/// Pinned whenever the git dir is a main one, not only when a `commondir` is
+/// present: for a main repo the value is what git would use anyway, and a
+/// check-then-run would leave a window to plant the file in. Not pinned for a
+/// pointer (linked worktree, submodule, `--separate-git-dir`), where a
+/// `commondir` is git's own. git drops the variable for submodule and
+/// local-transport children (`local_repo_env`); hooks the trusted verbs run
+/// inherit it, as they already inherit `GIT_INDEX_FILE`.
+pub(crate) fn pin_common_dir(cmd: &mut std::process::Command, project_dir: &Path) {
+    let Some(git_dir) = discover_git_dir(project_dir).filter(|g| g.main) else {
+        return;
+    };
+    // git cannot parse Windows' `\\?\` form, and `absolute` keeps it when the
+    // caller already canonicalized `project_dir` (the dir-size breakdown does).
+    if let Ok(abs) = std::path::absolute(&git_dir.path) {
+        cmd.env("GIT_COMMON_DIR", crate::commands::fs::display_path(&abs));
+    }
 }
 
 fn sanitize_git_config_file(config_path: &Path) {
@@ -375,33 +441,53 @@ fn sanitize_git_config_file(config_path: &Path) {
     }
 }
 
-/// [`hardened_git_command`] with [`sanitize_repo_git_config`] run first and
-/// `current_dir(project_dir)` already set — the one function every LOCAL git
-/// spawn in this codebase goes through, so "this project's repo config is
-/// untrusted" (Group O #151) has one definition instead of one per call site.
+/// [`git_command`] with [`sanitize_repo_git_config`] run first, `current_dir
+/// (project_dir)` set, [`pin_common_dir`] applied and hooks pinned off — the one
+/// function every LOCAL git spawn in this codebase goes through, so "this
+/// project's repo is untrusted" (Group O #151, #862) has one definition instead
+/// of one per call site. Hooks run only through [`hooked_git_command_in`].
 pub(crate) fn hardened_git_command_in<S: AsRef<str>, P: AsRef<Path>>(
     project_dir: P,
     args: &[S],
 ) -> std::process::Command {
-    sanitize_repo_git_config(project_dir.as_ref());
-    let mut cmd = hardened_git_command(args);
-    cmd.current_dir(project_dir.as_ref());
-    cmd
+    git_command_in(project_dir.as_ref(), args, Hooks::Off)
 }
 
-/// [`hardened_git_command_in`] with hooks pinned off as well — for the git Eldrun
-/// runs on its own (lockstep, the scaffold commit), where no hook in the repo
-/// should ever get to run on the host. A fenced agent can write `.git/hooks/`.
+/// [`hardened_git_command_in`] with the repo's hooks left live — only for a verb
+/// [`require_hook_trust`] has just approved (push, Publish's push). Everything
+/// else about the call is hardened the same.
+pub(crate) fn hooked_git_command_in<S: AsRef<str>, P: AsRef<Path>>(
+    project_dir: P,
+    args: &[S],
+) -> std::process::Command {
+    git_command_in(project_dir.as_ref(), args, Hooks::Live)
+}
+
+/// [`hardened_git_command_in`] under the name the background callers (lockstep,
+/// the scaffold commit, the MCP git tools) were written against: no hook in the
+/// repo may ever run through them. Hooks-off is now the default for every call,
+/// so this is the same command.
 pub(crate) fn hookless_git_command_in<S: AsRef<str>, P: AsRef<Path>>(
     project_dir: P,
     args: &[S],
 ) -> std::process::Command {
-    let mut full: Vec<String> = NO_HOOKS_CONFIG
-        .iter()
-        .flat_map(|kv| ["-c".to_string(), (*kv).to_string()])
-        .collect();
-    full.extend(args.iter().map(|a| a.as_ref().to_string()));
-    hardened_git_command_in(project_dir, &full)
+    hardened_git_command_in(project_dir, args)
+}
+
+fn git_command_in<S: AsRef<str>>(project_dir: &Path, args: &[S], hooks: Hooks) -> std::process::Command {
+    // `init` creates a new repository here. An ancestor may itself be a repo
+    // (including a shared temp root); pinning its common dir would make the
+    // new repository incomplete and send later commands to the ancestor.
+    let initializing = args.first().is_some_and(|arg| arg.as_ref() == "init");
+    if !initializing {
+        sanitize_repo_git_config(project_dir);
+    }
+    let mut cmd = git_command(args, hooks);
+    cmd.current_dir(project_dir);
+    if !initializing {
+        pin_common_dir(&mut cmd, project_dir);
+    }
+    cmd
 }
 
 /// Run `git <args>` for a project, dispatching local-vs-remote on `target`.
@@ -416,17 +502,39 @@ pub(crate) fn hookless_git_command_in<S: AsRef<str>, P: AsRef<Path>>(
 /// so the container→host escalation this exists for has no remote counterpart —
 /// a remote host's own `.git/config` is that host's business, same as any other
 /// file a user's own SSH session could write there.
+///
+/// Hooks are pinned off on both sides; [`run_git_hooked`] is the exception.
 pub(crate) fn run_git(
     target: Option<&RemoteTarget>,
     project_dir: &str,
     args: &[&str],
 ) -> Result<std::process::Output, String> {
+    run_git_as(target, project_dir, args, Hooks::Off)
+}
+
+/// [`run_git`] with the repo's hooks left live — only for a verb
+/// [`require_hook_trust`] has just approved (commit, reword, Pull's merge, the
+/// merge commit).
+pub(crate) fn run_git_hooked(
+    target: Option<&RemoteTarget>,
+    project_dir: &str,
+    args: &[&str],
+) -> Result<std::process::Output, String> {
+    run_git_as(target, project_dir, args, Hooks::Live)
+}
+
+fn run_git_as(
+    target: Option<&RemoteTarget>,
+    project_dir: &str,
+    args: &[&str],
+    hooks: Hooks,
+) -> Result<std::process::Output, String> {
     match target {
         Some(t) => {
-            let args = hardened_git_args(args);
+            let args = git_args(args, hooks);
             crate::services::ssh_exec::run_git_remote(&t.spec, &args)
         }
-        None => hardened_git_command_in(project_dir, args)
+        None => git_command_in(Path::new(project_dir), args, hooks)
             .output()
             .map_err(|e| e.to_string()),
     }
@@ -524,6 +632,10 @@ pub struct GitStatus {
     /// Commits the upstream has that the current branch lacks, as of the last
     /// fetch — the git bar's Pull button. `0` with no upstream.
     pub behind: usize,
+    /// A tag already names `HEAD` — the git bar hides Release, whose only
+    /// target is that commit. Probed only for a local repo with a remote (the
+    /// sole case the button shows); `false` otherwise.
+    pub head_tagged: bool,
 }
 
 #[tauri::command]
@@ -551,6 +663,7 @@ fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus
             has_remote: false,
             is_repo: false,
             behind: 0,
+            head_tagged: false,
         });
     }
 
@@ -592,6 +705,11 @@ fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus
         && run_git(target.as_ref(), &project_dir, &["remote"])
             .map(|o| !o.stdout.is_empty())
             .unwrap_or(false);
+    let head_tagged = has_remote
+        && target.is_none()
+        && run_git(None, &project_dir, &["tag", "--points-at", "HEAD"])
+            .map(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
+            .unwrap_or(false);
 
     Ok(GitStatus {
         staged,
@@ -600,6 +718,7 @@ fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus
         has_remote,
         is_repo: true,
         behind,
+        head_tagged,
     })
 }
 
@@ -815,7 +934,7 @@ pub async fn git_commit(project_dir: String, message: String) -> Result<(), Stri
 fn git_commit_blocking(project_dir: String, message: String) -> Result<(), String> {
     let target = remote_target_for_dir(&project_dir);
     require_hook_trust(target.as_ref(), &project_dir)?;
-    let out = run_git(target.as_ref(), &project_dir, &["commit", "-m", &message])?;
+    let out = run_git_hooked(target.as_ref(), &project_dir, &["commit", "-m", &message])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -999,11 +1118,15 @@ fn git_file_statuses_blocking(
     }
 
     // Files in commits that exist locally but are not on the upstream branch.
-    if let Ok(out) = run_git(
-        target.as_ref(),
-        &project_dir,
-        &["log", "@{u}..", "--name-only", "--pretty=format:"],
-    ) {
+    let unpushed = unpushed_base(target.as_ref(), &project_dir).and_then(|base| {
+        run_git(
+            target.as_ref(),
+            &project_dir,
+            &["log", &format!("{base}.."), "--name-only", "--pretty=format:"],
+        )
+        .ok()
+    });
+    if let Some(out) = unpushed {
         if out.status.success() {
             let committed = String::from_utf8_lossy(&out.stdout).into_owned();
             for line in committed.lines() {
@@ -1074,14 +1197,19 @@ pub async fn git_change_stats(
         return Ok(vec![]);
     }
 
-    let numstat_args: &[&str] = match scope.as_str() {
-        "staged" => &["diff", "--cached", "--numstat", "--"],
-        "unpushed" => &["diff", "@{u}..", "--numstat", "--"],
-        _ => &["diff", "--numstat", "--"],
+    let numstat_args: Option<Vec<String>> = match scope.as_str() {
+        "staged" => Some(vec!["diff".into(), "--cached".into(), "--numstat".into(), "--".into()]),
+        "unpushed" => unpushed_base(target.as_ref(), &project_dir)
+            .map(|base| vec!["diff".into(), format!("{base}.."), "--numstat".into(), "--".into()]),
+        _ => Some(vec!["diff".into(), "--numstat".into(), "--".into()]),
     };
 
     let mut changes: Vec<FileChange> = Vec::new();
-    if let Ok(out) = run_git(target.as_ref(), &project_dir, numstat_args) {
+    let numstat = numstat_args.and_then(|args| {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_git(target.as_ref(), &project_dir, &args).ok()
+    });
+    if let Some(out) = numstat {
         if out.status.success() {
             let text = String::from_utf8_lossy(&out.stdout);
             for line in text.lines() {
@@ -1196,8 +1324,49 @@ async fn count_added_lines_remote(
     }
 }
 
-/// Returns one-line summaries of commits ahead of the upstream (not yet pushed).
-/// Returns an empty vec when there is no upstream or the repo is not git.
+/// The ref every "unpushed" view (tree markers, Push list, pill dot) measures
+/// against: the configured upstream, else the current branch's namesake on a
+/// remote (`origin` first). A branch pushed with an explicit refspec — or by a
+/// tool that never set tracking — has no `@{u}` yet plainly has a pushed copy,
+/// and measuring only `@{u}` left every one of its local commits unmarked.
+/// `None` for a detached HEAD or a branch no remote has.
+fn unpushed_base(target: Option<&RemoteTarget>, project_dir: &str) -> Option<String> {
+    let ok = |args: &[&str]| {
+        run_git(target, project_dir, args)
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    if ok(&["rev-parse", "--verify", "-q", "@{u}"]).is_some() {
+        return Some("@{u}".to_string());
+    }
+    let branch = ok(&["symbolic-ref", "-q", "--short", "HEAD"]).filter(|b| !b.is_empty())?;
+    let refs = ok(&["for-each-ref", "--format=%(refname)", "refs/remotes/"])?;
+    pick_remote_namesake(&refs, &branch)
+}
+
+/// From `for-each-ref refs/remotes/` output, the ref that is `branch` on some
+/// remote — `origin`'s when several remotes carry it.
+fn pick_remote_namesake(refs: &str, branch: &str) -> Option<String> {
+    let suffix = format!("/{branch}");
+    let mut found: Option<&str> = None;
+    for r in refs.lines().map(str::trim) {
+        let Some(rest) = r.strip_prefix("refs/remotes/") else {
+            continue;
+        };
+        if !rest.ends_with(&suffix) || rest.len() == suffix.len() {
+            continue;
+        }
+        if rest == format!("origin{suffix}") {
+            return Some(r.to_string());
+        }
+        found.get_or_insert(r);
+    }
+    found.map(str::to_string)
+}
+
+/// Returns one-line summaries of commits ahead of the upstream (not yet pushed),
+/// measured against [`unpushed_base`]. Empty when there is none or no repo.
 #[tauri::command]
 pub async fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> {
     run_off_thread(move || git_unpushed_commits_blocking(project_dir)).await
@@ -1208,10 +1377,13 @@ fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, Str
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
+    let Some(base) = unpushed_base(target.as_ref(), &project_dir) else {
+        return Ok(vec![]);
+    };
     let out = run_git(
         target.as_ref(),
         &project_dir,
-        &["log", "@{u}..", "--oneline"],
+        &["log", &format!("{base}.."), "--oneline"],
     )?;
     if !out.status.success() {
         return Ok(vec![]);
@@ -1265,6 +1437,60 @@ pub async fn git_push(project_dir: String, project_id: Option<String>) -> Result
     run_off_thread(move || git_push_blocking(project_dir, project_id)).await
 }
 
+/// The git bar's Release dialog: the suggested tag for the checked-out
+/// branch's tip and whether a release could go out now
+/// (`services::git_release`). Local projects only; asks the remote.
+#[tauri::command]
+pub async fn git_release_preview(project_dir: String, project_id: Option<String>) -> Result<crate::services::git_release::Preview, String> {
+    run_off_thread(move || {
+        if remote_target_for_dir(&project_dir).is_some() {
+            return Err("Releases are tagged from local projects only.".to_string());
+        }
+        require_hook_trust(None, &project_dir)?;
+        let (token, origins) = release_creds(project_id.as_deref());
+        Ok(crate::services::git_release::preview(Path::new(&project_dir), token.as_deref(), &origins))
+    })
+    .await
+}
+
+/// The user's Release click: tag the checked-out branch's tip as `tag`
+/// (annotated, unsigned) and push that one tag, hooks off. Refused unless the
+/// tip is exactly what the remote branch holds and the tag is new there. Gated
+/// like Push: with no stored token the user's own credential helpers answer,
+/// and those are part of the approved hook fingerprint.
+#[tauri::command]
+pub async fn git_release_tag(project_dir: String, project_id: Option<String>, tag: String) -> Result<String, String> {
+    run_off_thread(move || {
+        if remote_target_for_dir(&project_dir).is_some() {
+            return Err("Releases are tagged from local projects only.".to_string());
+        }
+        require_hook_trust(None, &project_dir)?;
+        let dir = Path::new(&project_dir);
+        let (token, origins) = release_creds(project_id.as_deref());
+        let plan = crate::services::git_release::plan(dir, tag.trim(), false, token.as_deref(), &origins).map_err(|f| f.message)?;
+        crate::services::git_release::release(dir, &plan, &plan.tag, token.as_deref(), &origins)
+            .map(|_| format!("Tagged {} at {} and pushed it to {}.", plan.tag, &plan.head[..7.min(plan.head.len())], plan.remote))
+            .map_err(|f| if f.output.is_empty() { f.message } else { format!("{}\n{}", f.message, f.output) })
+    })
+    .await
+}
+
+/// The project's effective token and the origins it may go to; no project
+/// (a nested repo) means no token, so the user's own helpers answer.
+fn release_creds(project_id: Option<&str>) -> (Option<String>, Vec<String>) {
+    match project_id {
+        Some(id) => crate::services::git_push_mcp::creds(id),
+        None => (None, Vec::new()),
+    }
+}
+
+/// The push button's `git push`. A branch with no upstream (created locally,
+/// or pushed once with an explicit refspec) would fail with "has no upstream
+/// branch"; `push.autoSetupRemote` pushes it to the same-named branch on the
+/// push remote and records that as its upstream, like `push -u`. A git older
+/// than 2.37 ignores the key and fails as before.
+const PUSH_ARGS: [&str; 3] = ["-c", "push.autoSetupRemote=true", "push"];
+
 /// `git push` in a local directory, authenticating an https remote with `token`
 /// when one is set — scoped to `project_id`'s token origins (see
 /// [`scoped_token_config`]). Hardened like every local git call, and gated on
@@ -1281,8 +1507,8 @@ fn push_local(
         let origins = crate::commands::git_hosting::token_origins(project_id, None);
         args.extend(scoped_token_config(&origins, "x-access-token"));
     }
-    args.push("push".to_string());
-    let mut cmd = hardened_git_command_in(dir, &args);
+    args.extend(PUSH_ARGS.map(str::to_string));
+    let mut cmd = hooked_git_command_in(dir, &args);
     if let Some(tok) = token {
         cmd.env("ELDRUN_GIT_TOKEN", tok);
         cmd.env("GIT_TERMINAL_PROMPT", "0");
@@ -1290,8 +1516,64 @@ fn push_local(
     cmd.output().map_err(|e| e.to_string())
 }
 
+/// The transport half of an agent-requested push (`services::git_push_mcp`):
+/// one explicit `refspec` to one explicit `url`, hooks off. Unlike
+/// [`push_local`] this never runs the repo's `pre-push` — the fenced,
+/// tokenless preflight has already run it — so no project code runs on the
+/// host while `ELDRUN_GIT_TOKEN` is in the environment. `--no-verify` says so
+/// twice: [`hardened_git_command_in`] already pins `core.hooksPath=`, which
+/// also silences `reference-transaction`. The URL goes on the command line, so
+/// `remote.<r>.pushurl` plays no part (a repo-scope `insteadOf` is refused by
+/// the caller before this runs). `token` is offered only to `origins`. The
+/// caller runs it under its own timeout.
+pub(crate) fn push_transport_command(
+    dir: &std::path::Path,
+    url: &str,
+    refspec: &str,
+    token: Option<&str>,
+    origins: &[String],
+) -> std::process::Command {
+    let mut args: Vec<String> = Vec::new();
+    if token.is_some() {
+        args.extend(scoped_token_config(origins, "x-access-token"));
+    }
+    args.extend(["push", "--no-verify", "--porcelain", "--", url, refspec].map(str::to_string));
+    let mut cmd = hardened_git_command_in(dir, &args);
+    if let Some(tok) = token {
+        cmd.env("ELDRUN_GIT_TOKEN", tok);
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd
+}
+
+/// The repo's `pre-push` hook as git would find it for a hooked push: the dir
+/// `rev-parse --git-path hooks` names (honouring `core.hooksPath`, relative to
+/// the repo), if an executable `pre-push` sits there. The lookup
+/// `services::exec_trust` fingerprints against. Neither query runs a hook.
+pub(crate) fn resolve_pre_push_hook(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let out = hooked_git_command_in(dir, &["rev-parse", "--git-path", "hooks"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let hooks = if std::path::Path::new(&rel).is_absolute() { std::path::PathBuf::from(&rel) } else { dir.join(&rel) };
+    let hook = hooks.join("pre-push");
+    let meta = std::fs::metadata(&hook).ok()?;
+    #[cfg(unix)]
+    let executable = {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    };
+    #[cfg(not(unix))]
+    let executable = true;
+    (meta.is_file() && executable).then_some(hook)
+}
+
 fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<String, String> {
-    let out = if let Some(target) = remote_target_for_dir(&project_dir) {
+    // The local repo whose remote-tracking ref this push moves — the mirror
+    // for a mirror-published remote project, none for a push run on the host.
+    let mut local_repo: Option<std::path::PathBuf> = None;
+    let (out, before) = if let Some(target) = remote_target_for_dir(&project_dir) {
         // A remote project published from THIS machine has its `origin` on the
         // lockstep mirror, not on the host (see `commands::git_publish`) — so the
         // push has to run there, where the remote exists and the effective token
@@ -1299,27 +1581,85 @@ fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<
         match crate::commands::git_publish::mirror_origin_repo(&target.project_id) {
             Some(mirror) => {
                 let token = crate::commands::git_hosting::effective_git_creds(&target.project_id).1;
-                push_local(&mirror, token.as_deref(), Some(&target.project_id))?
+                let before = pushed_tip(&mirror);
+                local_repo = Some(mirror.clone());
+                let out = push_local(&mirror, token.as_deref(), Some(&target.project_id))?;
+                (out, before)
             }
             // No mirror-side origin: the repo was published (or wired by hand) on
             // the host, so the push runs there and authenticates with the host's
             // own git credentials/SSH keys. The local effective token does not
             // apply (it would be the wrong machine's secret) and is not forwarded.
-            None => crate::services::ssh_exec::run_git_remote(&target.spec, &["push".to_string()])?,
+            None => (crate::services::ssh_exec::run_git_remote(&target.spec, &PUSH_ARGS.map(str::to_string))?, None),
         }
     } else {
         // Local project: effective per-project → global token (if any).
         let token = project_id
             .as_deref()
             .and_then(|id| crate::commands::git_hosting::effective_git_creds(id).1);
-        push_local(std::path::Path::new(&project_dir), token.as_deref(), project_id.as_deref())?
+        let dir = std::path::PathBuf::from(&project_dir);
+        let before = pushed_tip(&dir);
+        local_repo = Some(dir.clone());
+        (push_local(&dir, token.as_deref(), project_id.as_deref())?, before)
     };
+    push_outcome(&out, local_repo.as_deref(), before)
+}
+
+/// The push's result for the git bar. `repo` is the local repo whose
+/// remote-tracking ref the push moves and `before` that ref's commit ahead of
+/// the push (see [`pushed_tip`]).
+fn push_outcome(out: &std::process::Output, repo: Option<&std::path::Path>, before: Option<String>) -> Result<String, String> {
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
-        return Err(if stderr.is_empty() { stdout } else { stderr });
+        // A pre-push hook that amends the push (this repo's version bump)
+        // re-pushes HEAD itself and then aborts the original, so git reports
+        // failure for a push that landed — with everything the bump commit's
+        // own hooks printed (the phone-staleness advisory) as the "error".
+        // The remote-tracking ref says what actually happened.
+        let landed = repo.is_some_and(|dir| {
+            let after = pushed_tip(dir);
+            after.is_some() && after != before && after == head_sha(dir)
+        });
+        if !landed {
+            return Err(if stderr.is_empty() { stdout } else { stderr });
+        }
+        if let Some(dir) = repo {
+            adopt_pushed_upstream(dir);
+        }
+        return Ok("Pushed — the repository's pre-push hook re-pushed it itself.".to_string());
     }
     Ok(if stdout.is_empty() { stderr } else { stdout })
+}
+
+/// The commit the current branch's pushed copy points at, per the local
+/// remote-tracking ref ([`unpushed_base`]); `None` when there is none.
+fn pushed_tip(dir: &std::path::Path) -> Option<String> {
+    let d = dir.to_string_lossy();
+    let base = unpushed_base(None, &d)?;
+    rev_parse(dir, &base)
+}
+
+/// Record the upstream `push.autoSetupRemote` would have: a push the hook
+/// re-pushed "failed", so git never set one, and a branch without one can't
+/// be released or pushed by an agent (`services::git_release`). Only when
+/// the branch has none; the same-named remote-tracking ref the push moved.
+fn adopt_pushed_upstream(dir: &std::path::Path) {
+    let d = dir.to_string_lossy();
+    if rev_parse(dir, "@{u}").is_some() {
+        return;
+    }
+    let Some(tracking) = unpushed_base(None, &d) else { return };
+    let _ = run_git(None, &d, &["branch", &format!("--set-upstream-to={tracking}")]);
+}
+
+fn head_sha(dir: &std::path::Path) -> Option<String> {
+    rev_parse(dir, "HEAD")
+}
+
+fn rev_parse(dir: &std::path::Path, rev: &str) -> Option<String> {
+    let out = run_git(None, &dir.to_string_lossy(), &["rev-parse", "--verify", "-q", rev]).ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 // ── Clone (import from GitHub/GitLab) ───────────────────────────────────────
@@ -1560,7 +1900,7 @@ fn git_remote_visibility_blocking(url: String) -> Result<String, String> {
 
 // ── Git history & branches ──────────────────────────────────────────────────
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub struct GitCommit {
     pub hash: String,
     pub short: String,
@@ -1620,6 +1960,63 @@ fn git_log_blocking(
         &String::from_utf8_lossy(&out.stdout),
         head.as_deref(),
     ))
+}
+
+/// How far back a history search reads. Bounded so a huge repo cannot turn one
+/// keystroke into an unbounded `git log`; the panel says when a search hit it.
+const GIT_LOG_SEARCH_SCAN: u32 = 20_000;
+
+/// Search the history (newest first) for commits whose hash, subject, author or
+/// ref names contain `query` (case-insensitive). Reads `GIT_LOG_SEARCH_SCAN`
+/// commits at most and returns up to `limit` matches.
+#[tauri::command]
+pub async fn git_log_search(
+    project_dir: String,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitCommit>, String> {
+    run_off_thread(move || git_log_search_blocking(project_dir, query, limit)).await
+}
+
+fn git_log_search_blocking(
+    project_dir: String,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitCommit>, String> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Ok(vec![]);
+    }
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
+        return Ok(vec![]);
+    }
+    let max_count = format!("--max-count={GIT_LOG_SEARCH_SCAN}");
+    let out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["log", &max_count, GIT_LOG_FMT],
+    )?;
+    if !out.status.success() {
+        return Ok(vec![]);
+    }
+    let head = git_head_hash(target.as_ref(), &project_dir);
+    let all = parse_git_log(&String::from_utf8_lossy(&out.stdout), head.as_deref());
+    Ok(filter_commits(all, &needle, limit.unwrap_or(200) as usize))
+}
+
+/// Keep the commits matching the lower-cased `needle`, at most `limit`.
+fn filter_commits(commits: Vec<GitCommit>, needle: &str, limit: usize) -> Vec<GitCommit> {
+    commits
+        .into_iter()
+        .filter(|c| {
+            c.hash.starts_with(needle)
+                || c.subject.to_lowercase().contains(needle)
+                || c.author.to_lowercase().contains(needle)
+                || c.refs.to_lowercase().contains(needle)
+        })
+        .take(limit)
+        .collect()
 }
 
 /// The `--pretty` format shared by `git_log` and `git_file_log`: fields separated
@@ -1792,14 +2189,8 @@ fn git_checkout_blocking(project_dir: String, target: String) -> Result<String, 
     // A checkout fires `post-checkout`, and for a container-toggled project
     // `.git/hooks` is the container's writable mount — so a contained agent
     // writing one would get host execution from a click in Eldrun's Git panel.
-    // Pinned here rather than in `HARDENED_CONFIG` because `git_commit` shares
-    // that path and a user's own commit hooks are the point of it. See the
-    // module header's residuals note and `NO_HOOKS_CONFIG`.
-    let out = run_git(
-        rt.as_ref(),
-        &project_dir,
-        &["-c", NO_HOOKS_CONFIG[0], "checkout", &target],
-    )?;
+    // `run_git` pins hooks off (see `hardened_git_args`); checkout stays there.
+    let out = run_git(rt.as_ref(), &project_dir, &["checkout", &target])?;
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
@@ -1841,7 +2232,7 @@ fn git_reword_head_blocking(project_dir: String, message: String) -> Result<(), 
     }
     let target = remote_target_for_dir(&project_dir);
     require_hook_trust(target.as_ref(), &project_dir)?;
-    let out = run_git(
+    let out = run_git_hooked(
         target.as_ref(),
         &project_dir,
         &["commit", "--amend", "-m", &message],
@@ -2042,16 +2433,17 @@ fn git_blame_blocking(project_dir: String, rel_path: String) -> Result<Vec<GitBl
 // **`worktree add` checks out, and a checkout runs hooks** (I4). `.git/hooks`
 // sits in a container-toggled project's writable rw mount, so a contained agent
 // writing `.git/hooks/post-checkout` would get *host* execution the moment the
-// user clicked Add. `NO_HOOKS_CONFIG` is pinned on the worktree verbs (verified:
-// `-c core.hooksPath=` does suppress the hook) — deliberately not in
-// `HARDENED_CONFIG`, which every call goes through including `git_commit`, where
-// the user's own hooks are the point.
+// user clicked Add. `run_git` pins `NO_HOOKS_CONFIG` on every verb that is not
+// hook-trust gated (#862), the worktree verbs included (verified: `-c
+// core.hooksPath=` does suppress the hook).
 
-/// `-c core.hooksPath=` — pinned on the git verbs Eldrun runs that are *not*
-/// authoring a commit but still check out a tree. An empty value makes git find
-/// no hook to run (verified against git 2.53.0); unlike `diff.external=` it does
-/// not make git try to exec the empty string.
-pub(crate) const NO_HOOKS_CONFIG: &[&str] = &["core.hooksPath="];
+/// `-c core.hooksPath=` — pinned by [`hardened_git_args`] on every git call
+/// except the hook-trust-gated verbs ([`run_git_hooked`],
+/// [`hooked_git_command_in`]). An empty value makes git find no hook to run —
+/// neither in `.git/hooks` nor relative to the cwd (verified against git
+/// 2.53.0); unlike `diff.external=` it does not make git try to exec the empty
+/// string.
+const NO_HOOKS_CONFIG: &[&str] = &["core.hooksPath="];
 
 #[derive(serde::Serialize)]
 pub struct Worktree {
@@ -2335,15 +2727,10 @@ fn same_dir(ctx: &WorktreeCtx, a: &str, b: &str) -> bool {
     path_components(a) == path_components(b)
 }
 
-/// Run a worktree verb on `ctx`'s side, with hooks pinned off (I4).
+/// Run a worktree verb on `ctx`'s side, with hooks pinned off (I4) — as
+/// `run_git` pins them for every verb it runs.
 fn run_worktree_git(ctx: &WorktreeCtx, args: &[&str]) -> Result<std::process::Output, String> {
-    let mut full: Vec<&str> = Vec::with_capacity(args.len() + NO_HOOKS_CONFIG.len() * 2);
-    for kv in NO_HOOKS_CONFIG {
-        full.push("-c");
-        full.push(kv);
-    }
-    full.extend_from_slice(args);
-    run_git(ctx.target.as_ref(), &ctx.cwd, &full)
+    run_git(ctx.target.as_ref(), &ctx.cwd, args)
 }
 
 fn git_err(out: &std::process::Output) -> String {
@@ -2779,6 +3166,37 @@ mod tests {
         run(&["config", "user.name", "Test User"]);
     }
 
+    #[test]
+    fn status_reports_a_tag_on_head_so_release_hides() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping status_reports_a_tag_on_head_so_release_hides");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+        let run = |args: &[&str]| {
+            crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git")
+        };
+        let probe = || git_status_probe(dir.to_string_lossy().into_owned(), true).expect("status");
+        fs::write(dir.join("f.txt"), "a\n").expect("write");
+        run(&["add", "f.txt"]);
+        run(&["commit", "-m", "one"]);
+        run(&["tag", "-a", "v0.1.0", "-m", "v0.1.0"]);
+        // No remote, no Release button: not probed.
+        assert!(!probe().head_tagged);
+        run(&["remote", "add", "origin", "https://git.example.org/owner/repo.git"]);
+        assert!(probe().head_tagged);
+        // A new commit past the tag is releasable again.
+        fs::write(dir.join("f.txt"), "b\n").expect("write");
+        run(&["commit", "-am", "two"]);
+        assert!(!probe().head_tagged);
+    }
+
     // ── Anonymous visibility probe ───────────────────────────────────────────
 
     #[test]
@@ -2827,7 +3245,9 @@ mod tests {
                 "safe.bareRepository=explicit"
             ]
         );
-        assert_eq!(&args[6..], &["status", "--porcelain"]);
+        // Hooks off by default (#862): a read can fire `post-index-change`.
+        assert_eq!(&args[6..8], &["-c", "core.hooksPath="]);
+        assert_eq!(&args[8..], &["status", "--porcelain"]);
         // A subcommand that takes no diff-driver flags gets none.
         assert!(!args.iter().any(|a| a == "--no-ext-diff"));
     }
@@ -2848,13 +3268,14 @@ mod tests {
         }
         // Owned args (the `Vec<String>` call sites) go through the same builder.
         let owned = vec!["log".to_string(), "--numstat".to_string()];
+        let pinned = (HARDENED_CONFIG.len() + NO_HOOKS_CONFIG.len()) * 2;
         assert_eq!(
-            hardened_git_args(&owned)[HARDENED_CONFIG.len() * 2..],
+            hardened_git_args(&owned)[pinned..],
             ["log", "--no-ext-diff", "--no-textconv", "--numstat"]
         );
         // No subcommand at all is just the pinned config (no panic, no stray flag).
         let empty: [&str; 0] = [];
-        assert_eq!(hardened_git_args(&empty).len(), HARDENED_CONFIG.len() * 2);
+        assert_eq!(hardened_git_args(&empty).len(), pinned);
     }
 
     /// The escape this hardening exists for: a project container mounts the
@@ -3351,6 +3772,170 @@ filename note.txt
     }
 
     #[test]
+    fn remote_namesake_prefers_origin_and_needs_the_whole_branch_name() {
+        let refs = "refs/remotes/fork/develop\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/develop\nrefs/remotes/origin/main\n";
+        assert_eq!(pick_remote_namesake(refs, "develop").as_deref(), Some("refs/remotes/origin/develop"));
+        assert_eq!(
+            pick_remote_namesake("refs/remotes/fork/develop\n", "develop").as_deref(),
+            Some("refs/remotes/fork/develop")
+        );
+        // `feature/develop` is not `develop`, and a bare `refs/remotes/develop`
+        // names no remote at all.
+        assert_eq!(pick_remote_namesake("refs/remotes/origin/feature-develop\n", "develop"), None);
+        assert_eq!(pick_remote_namesake("refs/remotes/develop\n", "develop"), None);
+        assert_eq!(
+            pick_remote_namesake("refs/remotes/origin/feature/x\n", "feature/x").as_deref(),
+            Some("refs/remotes/origin/feature/x")
+        );
+    }
+
+    #[test]
+    fn unpushed_commits_count_without_a_configured_upstream() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping unpushed_commits_count_without_a_configured_upstream");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let remote = tmp.path().join("remote.git");
+        let dir = tmp.path().join("work");
+        fs::create_dir(&dir).expect("mkdir work");
+        let git = |cwd: &Path, args: &[&str]| {
+            let ok = crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("git should run")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        git(tmp.path(), &["init", "--bare", "remote.git"]);
+        init_repo(&dir);
+        git(&dir, &["checkout", "-b", "develop"]);
+        fs::write(dir.join("pushed.txt"), "a\n").expect("write");
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "pushed"]);
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        // An explicit refspec and no `-u`: the branch is on the remote, but
+        // `@{u}` stays unset.
+        git(&dir, &["push", "origin", "develop:develop"]);
+        fs::create_dir(dir.join("src")).expect("mkdir src");
+        fs::write(dir.join("src/new.txt"), "b\n").expect("write");
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "local only"]);
+
+        let d = dir.to_string_lossy().to_string();
+        let statuses = git_file_statuses_blocking(d.clone(), String::new()).expect("statuses");
+        assert_eq!(statuses.get("src").map(String::as_str), Some("unpushed"));
+        assert_eq!(statuses.get("pushed.txt"), None);
+        assert_eq!(git_unpushed_commits_blocking(d).expect("unpushed").len(), 1);
+    }
+
+    #[test]
+    fn push_sets_the_upstream_of_a_branch_that_has_none() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping push_sets_the_upstream_of_a_branch_that_has_none");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let remote = tmp.path().join("remote.git");
+        let dir = tmp.path().join("work");
+        fs::create_dir(&dir).expect("mkdir work");
+        let git = |cwd: &Path, args: &[&str]| {
+            crate::paths::command_no_window("git").args(args).current_dir(cwd).output().expect("git should run")
+        };
+        assert!(git(tmp.path(), &["init", "--bare", "remote.git"]).status.success());
+        init_repo(&dir);
+        assert!(git(&dir, &["checkout", "-b", "develop"]).status.success());
+        fs::write(dir.join("a.txt"), "a\n").expect("write");
+        assert!(git(&dir, &["add", "."]).status.success());
+        assert!(git(&dir, &["commit", "-m", "first"]).status.success());
+        assert!(git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]).status.success());
+
+        let d = dir.to_string_lossy().to_string();
+        git_push_blocking(d, None).expect("push without an upstream");
+        let upstream = git(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]);
+        assert_eq!(String::from_utf8_lossy(&upstream.stdout).trim(), "origin/develop");
+        let pushed = git(&remote, &["rev-parse", "develop"]);
+        let head = git(&dir, &["rev-parse", "HEAD"]);
+        assert_eq!(pushed.stdout, head.stdout);
+    }
+
+    #[test]
+    fn a_push_a_pre_push_hook_re_pushed_itself_is_not_an_error() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping a_push_a_pre_push_hook_re_pushed_itself_is_not_an_error");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let remote = tmp.path().join("remote.git");
+        let dir = tmp.path().join("work");
+        fs::create_dir(&dir).expect("mkdir work");
+        let git = |cwd: &Path, args: &[&str]| {
+            crate::paths::command_no_window("git").args(args).current_dir(cwd).output().expect("git should run")
+        };
+        assert!(git(tmp.path(), &["init", "--bare", "remote.git"]).status.success());
+        init_repo(&dir);
+        assert!(git(&dir, &["checkout", "-b", "develop"]).status.success());
+        fs::write(dir.join("a.txt"), "a\n").expect("write");
+        assert!(git(&dir, &["add", "."]).status.success());
+        assert!(git(&dir, &["commit", "-m", "first"]).status.success());
+        assert!(git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]).status.success());
+        // Pushed once without `-u`: every push so far went through the hook's
+        // re-push, so git never recorded an upstream.
+        assert!(git(&dir, &["push", "origin", "develop"]).status.success());
+        assert!(!git(&dir, &["rev-parse", "--verify", "-q", "@{u}"]).status.success());
+        fs::write(dir.join("a.txt"), "b\n").expect("write");
+        assert!(git(&dir, &["commit", "-am", "second"]).status.success());
+
+        // What the version-bump hook leaves behind: HEAD re-pushed by the
+        // hook, the original push aborted with a failure and hook chatter.
+        let before = pushed_tip(&dir);
+        let aborted = git(&dir, &["rev-parse", "--verify", "-q", "no-such-ref"]);
+        assert!(!aborted.status.success());
+        assert!(push_outcome(&aborted, Some(&dir), before.clone()).is_err(), "nothing landed: a real failure");
+        assert!(git(&dir, &["push", "origin", "HEAD"]).status.success());
+        assert!(push_outcome(&aborted, Some(&dir), before).is_ok(), "HEAD landed on the remote");
+        let upstream = git(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]);
+        assert_eq!(String::from_utf8_lossy(&upstream.stdout).trim(), "origin/develop", "the landed push records the upstream");
+        // A failure with the tracking ref already at HEAD is not salvaged.
+        let now = pushed_tip(&dir);
+        assert!(push_outcome(&aborted, Some(&dir), now).is_err());
+    }
+
+    #[test]
+    fn filter_commits_matches_hash_subject_author_and_refs() {
+        let mk = |hash: &str, subject: &str, author: &str, refs: &str| GitCommit {
+            hash: hash.into(),
+            short: hash[..4].into(),
+            subject: subject.into(),
+            author: author.into(),
+            date: String::new(),
+            refs: refs.into(),
+            is_head: false,
+            parents: vec![],
+        };
+        let commits = vec![
+            mk("abcd1234", "Fix the Parser", "Ann", "HEAD -> develop"),
+            mk("ffff0000", "Add tests", "Bob", "tag: v1.0"),
+            mk("12345678", "Docs", "Parsley", ""),
+        ];
+        let subjects = |needle: &str, limit| {
+            filter_commits(commits.clone(), needle, limit)
+                .into_iter()
+                .map(|c| c.subject)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(subjects("parser", 10), vec!["Fix the Parser"]);
+        assert_eq!(subjects("pars", 10), vec!["Fix the Parser", "Docs"]);
+        assert_eq!(subjects("pars", 1), vec!["Fix the Parser"]);
+        assert_eq!(subjects("abcd12", 10), vec!["Fix the Parser"]);
+        assert_eq!(subjects("v1.0", 10), vec!["Add tests"]);
+        assert_eq!(subjects("bob", 10), vec!["Add tests"]);
+        assert!(subjects("nothing", 10).is_empty());
+    }
+
+    #[test]
     fn git_log_pages_the_history_with_skip() {
         if !git_available() {
             eprintln!("git not on PATH — skipping git_log_pages_the_history_with_skip");
@@ -3550,9 +4135,9 @@ filename note.txt
     fn a_worktree_verb_pins_hooks_off_and_keeps_its_subcommand() {
         // I4: `worktree add` checks out, and a checkout runs `post-checkout` — which
         // for a container-toggled project lives in the container's writable mount.
-        // `-c core.hooksPath=` suppresses it (verified against git 2.53.0).
-        let args =
-            hardened_git_args(&["-c", "core.hooksPath=", "worktree", "add", "/p/wt", "feat"]);
+        // `-c core.hooksPath=` suppresses it (verified against git 2.53.0), and
+        // since #862 every non-gated verb carries it without asking.
+        let args = hardened_git_args(&["worktree", "add", "/p/wt", "feat"]);
         assert_eq!(
             args,
             vec![
@@ -3573,7 +4158,7 @@ filename note.txt
         // The caller's own `-c` pair must not be mistaken for the subcommand: a
         // scoped config on a diff-driver command would otherwise silently drop
         // `--no-ext-diff`/`--no-textconv`.
-        let diff = hardened_git_args(&["-c", "core.hooksPath=", "diff", "HEAD"]);
+        let diff = hardened_git_args(&["-c", "user.name=T", "diff", "HEAD"]);
         assert!(diff.contains(&"--no-ext-diff".to_string()));
         assert_eq!(
             diff[diff.len() - 4..],
@@ -3587,14 +4172,7 @@ filename note.txt
         // argv-order regression on the remote path was caught only by the LOCAL
         // roundtrip — which cannot run it.
         use crate::services::ssh_exec::remote_git_command;
-        let args = hardened_git_args(&[
-            "-c",
-            "core.hooksPath=",
-            "worktree",
-            "add",
-            "/s/p/.eldrun/worktrees/a b",
-            "feat",
-        ]);
+        let args = hardened_git_args(&["worktree", "add", "/s/p/.eldrun/worktrees/a b", "feat"]);
         let cmd = remote_git_command("/scratch/proj", &args);
         assert_eq!(
             cmd,
@@ -4068,6 +4646,128 @@ filename note.txt
         .expect("commit");
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         assert!(!marker.exists(), "pre-commit hook ran through hookless_git_command_in");
+    }
+
+    /// #862: the fence binds `.git/config` and `.git/hooks` read-only, but an
+    /// agent can still *create* `.git/commondir` naming a git dir of its own,
+    /// whose `hooks/post-index-change` git runs on anything that rewrites the
+    /// index. Neither the redirect nor any hook may reach the Git panel's reads
+    /// — file diff, commit-message generation, stage, the merge-state probe a
+    /// planted `MERGE_HEAD` leads to — and a hook-trusted verb runs the repo's
+    /// *real* hooks, never the planted ones.
+    #[cfg(unix)]
+    #[test]
+    fn a_commondir_redirected_hook_never_runs_through_eldrun_git() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping a_commondir_redirected_hook_never_runs_through_eldrun_git");
+            return;
+        }
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("proj");
+        fs::create_dir(&dir).expect("mkdir");
+        init_repo(&dir);
+        fs::write(dir.join("f.txt"), "a\n").expect("write");
+        plain_git(&dir, &["add", "f.txt"]);
+        plain_git(&dir, &["commit", "-qm", "init"]);
+        let hook = |hooks: &Path, marker: &Path| {
+            fs::create_dir_all(hooks).expect("hooks dir");
+            let h = hooks.join("post-index-change");
+            fs::write(&h, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).expect("hook");
+            fs::set_permissions(&h, fs::Permissions::from_mode(0o755)).expect("chmod");
+        };
+
+        // The plant: a common dir sharing the real objects, refs and config, with
+        // hooks of its own — nothing in `.git/config` or `.git/hooks` touched.
+        let git = dir.join(".git");
+        let evil = git.join("x");
+        fs::create_dir(&evil).expect("mkdir");
+        for shared in ["objects", "refs", "config"] {
+            symlink(git.join(shared), evil.join(shared)).expect("symlink");
+        }
+        let planted = tmp.path().join("planted-ran");
+        hook(&evil.join("hooks"), &planted);
+        fs::write(git.join("commondir"), "x\n").expect("commondir");
+        fs::write(dir.join("f.txt"), "b\n").expect("edit");
+        plain_git(&dir, &["add", "f.txt"]);
+        assert!(planted.exists(), "setup is stale: plain git no longer follows a planted commondir");
+        fs::remove_file(&planted).expect("clear");
+
+        let d = dir.to_string_lossy().into_owned();
+        fs::write(dir.join("f.txt"), "c\n").expect("edit");
+        let diff = git_diff_file_blocking(d.clone(), "f.txt".into()).expect("file diff");
+        assert!(diff.contains("+c"), "file diff lost its content: {diff}");
+        assert!(!planted.exists(), "planted hook ran on the file diff");
+        git_generate_commit_message_blocking(d.clone()).expect("commit message");
+        assert!(!planted.exists(), "planted hook ran on commit-message generation");
+        git_add_path_blocking(d.clone(), "f.txt".into()).expect("stage");
+        assert!(!planted.exists(), "planted hook ran on stage");
+        let staged = plain_git(&dir, &["diff", "--cached", "--name-only"]);
+        assert_eq!(String::from_utf8_lossy(&staged.stdout).trim(), "f.txt", "stage did not stage");
+
+        // Opening Git history with a planted `MERGE_HEAD` reaches the probe.
+        let head = plain_git(&dir, &["rev-parse", "HEAD"]);
+        fs::write(git.join("MERGE_HEAD"), &head.stdout).expect("MERGE_HEAD");
+        fs::write(dir.join("f.txt"), "d\n").expect("edit");
+        let state = tauri::async_runtime::block_on(crate::commands::git_pull::git_merge_state(d.clone()))
+            .expect("merge state");
+        assert!(state.merging, "setup is stale: MERGE_HEAD not seen");
+        assert!(!planted.exists(), "planted hook ran on the merge-state probe");
+        fs::remove_file(git.join("MERGE_HEAD")).expect("clear MERGE_HEAD");
+
+        // A hook-trusted verb runs hooks — the repo's own, never the planted ones.
+        let real = tmp.path().join("real-ran");
+        hook(&git.join("hooks"), &real);
+        fs::write(dir.join("f.txt"), "e\n").expect("edit");
+        let out = run_git_hooked(None, &d, &["add", "f.txt"]).expect("hooked add");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(real.exists(), "the repo's own hook did not run through run_git_hooked");
+        assert!(!planted.exists(), "planted hook ran through run_git_hooked");
+        // …and the default path runs neither.
+        fs::remove_file(&real).expect("clear");
+        fs::write(dir.join("f.txt"), "f\n").expect("edit");
+        run_git(None, &d, &["add", "f.txt"]).expect("add");
+        assert!(!real.exists() && !planted.exists(), "a hook ran through run_git");
+    }
+
+    /// `GIT_COMMON_DIR` is pinned for a main `.git` only: a linked worktree's
+    /// `commondir` is git's own, and pinning it would point the worktree at its
+    /// private git dir as if it were the shared one.
+    #[cfg(unix)]
+    #[test]
+    fn the_common_dir_pin_spares_linked_worktrees() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping the_common_dir_pin_spares_linked_worktrees");
+            return;
+        }
+        let pinned = |cmd: &std::process::Command| {
+            cmd.get_envs()
+                .find(|(k, _)| *k == "GIT_COMMON_DIR")
+                .and_then(|(_, v)| v.map(PathBuf::from))
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let main = tmp.path().join("main");
+        fs::create_dir(&main).expect("mkdir");
+        init_repo(&main);
+        fs::write(main.join("f.txt"), "a\n").expect("write");
+        plain_git(&main, &["add", "f.txt"]);
+        plain_git(&main, &["commit", "-qm", "init"]);
+        let sub = main.join("sub");
+        fs::create_dir(&sub).expect("mkdir");
+        assert_eq!(pinned(&hardened_git_command_in(&sub, &["status"])), Some(main.join(".git")));
+
+        let wt = tmp.path().join("wt");
+        let out = plain_git(&main, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(pinned(&hardened_git_command_in(&wt, &["status"])), None);
+        let out = run_git(None, wt.to_str().unwrap(), &["rev-parse", "--git-common-dir"]).expect("git");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        assert_eq!(
+            common.canonicalize().unwrap(),
+            main.join(".git").canonicalize().unwrap(),
+            "a linked worktree lost its shared common dir"
+        );
     }
 
     #[test]

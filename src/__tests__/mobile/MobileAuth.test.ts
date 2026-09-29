@@ -152,10 +152,118 @@ describe("Eldrun Mobile auth — resume", () => {
 
   it("reports a transport failure as unavailable rather than unpaired", async () => {
     await seedDevice();
-    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
-    const result = await resumeAuth();
+    const fetchMock = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    const pending = resumeAuth();
+    await vi.advanceTimersByTimeAsync(10_000);
+    vi.useRealTimers();
+    const result = await pending;
     expect(result.kind).toBe("unavailable");
     expect(["unreachable", "phone_offline"]).toContain((result as { reason: string }).reason);
+    // Six whole attempts, then the splash.
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("keeps asking past two stalled attempts while the tunnel comes back", async () => {
+    // Two attempts used to be all there was room for: a path still down at
+    // the second meant the error splash and a Retry press.
+    await seedDevice();
+    let challenges = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const key = `${init?.method ?? "GET"} ${String(input)}`;
+      if (key === "POST /api/v1/auth/challenge") {
+        challenges += 1;
+        if (challenges <= 3) throw new DOMException("signal timed out", "TimeoutError");
+        return json({ nonce: "n-4", payload: "p" })();
+      }
+      if (key === "POST /api/v1/auth/session") return json({ ok: true })();
+      throw new Error(`unexpected ${key}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    const pending = resumeAuth();
+    await vi.advanceTimersByTimeAsync(5_000);
+    vi.useRealTimers();
+    await expect(pending).resolves.toEqual({ kind: "paired" });
+    expect(challenges).toBe(4);
+  });
+
+  it("signs in on a second attempt when the first dies on a stale connection", async () => {
+    // The unlock after the phone slept: the first request stalls on the
+    // connection the browser kept, the next one goes through. That used to be
+    // the error splash plus a Retry press.
+    await seedDevice();
+    let challenges = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const key = `${init?.method ?? "GET"} ${String(input)}`;
+      if (key === "POST /api/v1/auth/challenge") {
+        challenges += 1;
+        if (challenges === 1) throw new DOMException("signal timed out", "TimeoutError");
+        return json({ nonce: "n-2", payload: "p" })();
+      }
+      if (key === "POST /api/v1/auth/session") return json({ ok: true })();
+      throw new Error(`unexpected ${key}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    const pending = resumeAuth();
+    await vi.advanceTimersByTimeAsync(1_000);
+    vi.useRealTimers();
+    await expect(pending).resolves.toEqual({ kind: "paired" });
+    expect(challenges).toBe(2);
+  });
+
+  it("repeats the whole exchange, never a spent nonce, when the session post drops", async () => {
+    await seedDevice();
+    const nonces: string[] = [];
+    let challenges = 0;
+    let sessions = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const key = `${init?.method ?? "GET"} ${String(input)}`;
+      if (key === "POST /api/v1/auth/challenge") {
+        challenges += 1;
+        return json({ nonce: `n-${challenges}`, payload: "p" })();
+      }
+      sessions += 1;
+      nonces.push(JSON.parse(String(init?.body)).nonce);
+      if (sessions === 1) throw new TypeError("Failed to fetch");
+      return json({ ok: true })();
+    }));
+    vi.useFakeTimers();
+    const pending = resumeAuth();
+    await vi.advanceTimersByTimeAsync(1_000);
+    vi.useRealTimers();
+    await expect(pending).resolves.toEqual({ kind: "paired" });
+    expect(nonces).toEqual(["n-1", "n-2"]);
+  });
+
+  it("does not retry an answer that came from the sidecar itself", async () => {
+    await seedDevice();
+    const fetchMock = fetchAnswering({
+      "POST /api/v1/auth/challenge": json({ nonce: "n", payload: "p" }),
+      "POST /api/v1/auth/session": json({ error: "desktop_unavailable" }, 503),
+    });
+    await expect(resumeAuth()).resolves.toMatchObject({ kind: "unavailable", reason: "desktop_down" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a gateway error the proxy wrote while the sidecar restarts", async () => {
+    await seedDevice();
+    let challenges = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const key = `${init?.method ?? "GET"} ${String(input)}`;
+      if (key === "POST /api/v1/auth/challenge") {
+        challenges += 1;
+        return challenges === 1 ? new Response("Bad Gateway", { status: 502 }) : json({ nonce: "n", payload: "p" })();
+      }
+      return json({ ok: true })();
+    }));
+    vi.useFakeTimers();
+    const pending = resumeAuth();
+    await vi.advanceTimersByTimeAsync(1_000);
+    vi.useRealTimers();
+    await expect(pending).resolves.toEqual({ kind: "paired" });
   });
 
   it("reports the sidecar's rate limiter as busy, with the detail carried along", async () => {
@@ -197,6 +305,38 @@ describe("Eldrun Mobile auth — pair and logout", () => {
     fetchAnswering({ "POST /api/v1/pair": json({ error: "invalid_code" }, 400) });
     await expect(pair("000000", "Pixel")).rejects.toBeInstanceOf(ApiError);
     await expect(hasPairedDevice()).resolves.toBe(false);
+  });
+
+  it("holds the next sign-in until the lock's logout has settled", async () => {
+    // The logout's answer clears the session cookie. Landing after the next
+    // sign-in, it wiped the session the unlock had just made.
+    await seedDevice();
+    const order: string[] = [];
+    let finishLogout: (() => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const key = `${init?.method ?? "GET"} ${String(input)}`;
+      order.push(key);
+      if (key === "DELETE /api/v1/auth/session") {
+        await new Promise<void>((resolve) => { finishLogout = resolve; });
+        order.push("logout answered");
+        return json({ ok: true })();
+      }
+      if (key === "POST /api/v1/auth/challenge") return json({ nonce: "n", payload: "p" })();
+      return json({ ok: true })();
+    }));
+    const logout = logoutAuth();
+    const resumed = resumeAuth();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(order).toEqual(["DELETE /api/v1/auth/session"]);
+    finishLogout?.();
+    await logout;
+    await expect(resumed).resolves.toEqual({ kind: "paired" });
+    expect(order).toEqual([
+      "DELETE /api/v1/auth/session",
+      "logout answered",
+      "POST /api/v1/auth/challenge",
+      "POST /api/v1/auth/session",
+    ]);
   });
 
   it("ends the server session on logout and keeps the device key for a later unlock", async () => {

@@ -21,26 +21,40 @@ Two consequences drive the switcher's rendering:
   a stale persisted `box_id` is stripped in-memory on load and falls off disk
   with the next ordinary `save_projects`.
 
-## The chip picks, the pill is the box
+## The chip lists, the pills are the boxes
 
-The leading segment carries **two** controls for boxes, not one (2026-09-04).
-The `BoxScopeChip` dropdown is the list — every box, plus root, Trash and "All
-projects" — and the box it selects then stands beside it as a **pill of its
-own**: named, member-counted, wearing its own status strip, the drop target for
-"into the box I am looking at", and one click into its scope.
+The leading segment carries the `BoxScopeChip` — root, the full boxes
+list, "All projects", the editor doors — and, right of it, **one small pill per
+box** (2026-09-22; up to `MAX_BOX_PILLS`, the rest stay in the list and the
+chip counts them "+N"). Each box pill names its box in the box's colour, wears
+the box's own status strip, is a standing drop target for "add this project to
+that box", hosts rename and the box's context menu, and enters the box's scope
+on one click.
 
-They were one control before, and the two jobs fought: the chip was both the
-menu you open to go somewhere and the label saying where you are, so returning
-to the box you were already looking at meant opening a menu to click the row
-already marked current — while a project's pill, one hairline to the right, is
-always a single click. The split gives a box the same standing destination its
-members have.
+Two earlier models preceded this. First the chip alone: it was both the menu
+you open to go somewhere and the label saying where you are, so returning to
+the box you were looking at meant opening a menu to click the row already
+marked current. Then (2026-09-04) the *selected* box got a pill beside the chip
+— but every other box stayed invisible until the list was open, so switching
+between boxes was still a hover, a wait and a click each way, and adding a
+project to a box that was not the selected one meant dragging into a sprung-open
+menu. Boxes are few by nature (a handful of joinings, never a project list), so
+a pill each costs the strip little, and the pills sit in the *fixed* segment
+where the width argument that retired the original per-box pills (they stood
+*among* the projects, in the scrolling strip) does not apply.
 
-This is not the per-box pills coming back. Only the **one selected box** is
-ever on the row, and it lives in the *fixed* leading segment, so N boxes still
-cost the scrolling strip nothing — which is the whole reason the pills went
-away in the first place. The chip's status strip drops the box the pill is
-already reporting, so nothing on the segment is said twice.
+**Colour is the through-line.** `lib/theme/boxColor` hashes a stable hue from
+the box's *id* (renaming never recolours), and every surface wears it: the box
+pill's mark and active line, the swatch on each member's project pill (one
+square per box — "which box" is read by eye, the tooltip only confirms), and
+the rows of the chip's list and of a pill's Boxes menu.
+
+**Adding members** has one more door: the box pill's context menu carries a
+Members checklist (open projects, members first, capped before deferring to
+the editor) that toggles on the spot and *stays open* across toggles. The
+pill's own Boxes group, the slice-mode `+`, drag-and-drop and the editor all
+remain. Keyboard: `cycleBox` / `cycleBoxBack` (Ctrl+Shift+PageDown/PageUp by
+default) walk the pills' row order and step into the boxes from a project.
 
 ## Why silent dissolve died
 

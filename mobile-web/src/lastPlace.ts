@@ -38,21 +38,27 @@ function validId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 512;
 }
 
-function isSection(value: unknown): value is MobileSection {
+export function isSection(value: unknown): value is MobileSection {
   return MOBILE_SECTIONS.includes(value as MobileSection);
+}
+
+/** A place from untrusted input — storage, or a notification's launch URL —
+ * checked field by field, or null. */
+export function parsePlace(value: unknown): LastPlace | null {
+  if (!value || typeof value !== "object") return null;
+  const place = value as Partial<LastPlace>;
+  // No section at all is the pre-sections shape: a terminal route under Projects.
+  const section = place.section === undefined ? "projects" : place.section;
+  if (!isSection(section)) return null;
+  if (section !== "projects" || !validId(place.projectId)) return { section };
+  return validId(place.tabId)
+    ? { section, projectId: place.projectId, tabId: place.tabId }
+    : { section, projectId: place.projectId };
 }
 
 export function readLastPlace(storage?: LastPlaceStorage): LastPlace | null {
   try {
-    const value = JSON.parse((storage ?? localStorage).getItem(LAST_PLACE_KEY) ?? "null") as Partial<LastPlace> | null;
-    if (!value || typeof value !== "object") return null;
-    // No section at all is the pre-sections shape: a terminal route under Projects.
-    const section = value.section === undefined ? "projects" : value.section;
-    if (!isSection(section)) return null;
-    if (section !== "projects" || !validId(value.projectId)) return { section };
-    return validId(value.tabId)
-      ? { section, projectId: value.projectId, tabId: value.tabId }
-      : { section, projectId: value.projectId };
+    return parsePlace(JSON.parse((storage ?? localStorage).getItem(LAST_PLACE_KEY) ?? "null"));
   } catch {
     return null;
   }
@@ -87,7 +93,12 @@ export function forgetLastPlace(storage?: LastPlaceStorage): void {
  */
 export async function restoreLastPlace(): Promise<RestoredPlace | null> {
   const saved = readLastPlace();
-  if (!saved) return null;
+  return saved ? resolvePlace(saved) : null;
+}
+
+/** `saved`, with its tab re-read from the host — `restoreLastPlace`'s rules,
+ * for a place that came from somewhere else (a tapped notification). */
+export async function resolvePlace(saved: LastPlace): Promise<RestoredPlace> {
   if (saved.section !== "projects" || !saved.projectId) return { section: saved.section };
   const place: RestoredPlace = { section: "projects", projectId: saved.projectId };
   if (!saved.tabId) return place;

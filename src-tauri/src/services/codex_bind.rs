@@ -24,17 +24,16 @@
 //!   when that tab's `/clear` is being rebound.
 //!
 //! Remote (ssh) Codex tabs are out of scope: their rollouts live on the far
-//! host, so `commands::terminal::pty_spawn` never tracks them. Sandboxed tabs
-//! *are* in scope and need no special handling — `services::sandbox` bind-mounts
-//! both `~/.codex` and the project cwd at identical paths inside the container,
-//! so a sandboxed Codex writes host-shaped rollouts to the host's sessions tree.
+//! host, so `commands::terminal::pty_spawn` never tracks them. Every local tab's
+//! Codex — fenced or containerized — lives in its scope's Eldrun-owned agent
+//! home (`services::agent_home`), so each tracked tab carries the sessions
+//! tree of its own scope and the poll walks one tree per scope.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
-use crate::paths;
 use crate::services::agent_session;
 
 /// Rollout first lines inline the full base instructions, so they run ~20 KB.
@@ -67,6 +66,8 @@ struct Tracked {
     uid: String,
     /// The tab's cwd, canonicalized where possible (matched against `meta.cwd`).
     cwd: PathBuf,
+    /// The scope's `.codex/sessions` tree, where this tab's rollouts land.
+    root: PathBuf,
     /// Spawn time, less `SLACK`. Rollouts older than this were not made by us.
     since: SystemTime,
     /// Rollout ids that already existed when this tab spawned, plus every id
@@ -156,8 +157,8 @@ fn binder() -> &'static Mutex<Binder> {
     BINDER.get_or_init(|| Mutex::new(Binder::default()))
 }
 
-fn sessions_root() -> PathBuf {
-    paths::home_dir().join(".codex").join("sessions")
+fn sessions_root_of(scope_id: Option<&str>) -> PathBuf {
+    agent_session::codex_sessions_root(scope_id)
 }
 
 // ── Pure core ───────────────────────────────────────────────────────────────
@@ -289,8 +290,8 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 ///
 /// Idempotent per `pty_id`: a re-spawn replaces the entry and bumps its seq.
 /// Returns that seq, for `untrack`.
-pub fn track(pty_id: &str, uid: &str, cwd: &Path, initial: Option<String>) -> u64 {
-    let root = sessions_root();
+pub fn track(pty_id: &str, uid: &str, cwd: &Path, scope_id: Option<&str>, initial: Option<String>) -> u64 {
+    let root = sessions_root_of(scope_id);
     let mut known = snapshot_ids(&root);
     if let Some(id) = &initial {
         known.insert(id.clone());
@@ -307,6 +308,7 @@ pub fn track(pty_id: &str, uid: &str, cwd: &Path, initial: Option<String>) -> u6
             Tracked {
                 uid: uid.to_string(),
                 cwd,
+                root,
                 since,
                 known,
                 bound: initial,
@@ -354,7 +356,7 @@ fn ensure_poller() {
     }
     tokio::spawn(async move {
         loop {
-            let tick = poll_once(&sessions_root());
+            let tick = poll_once();
             tokio::time::sleep(tick).await;
         }
     });
@@ -371,21 +373,39 @@ struct Snapshot {
     bound: Option<String>,
 }
 
-/// One pass: bind every tracked tab that can be bound. Returns how long to wait
-/// before the next pass.
-fn poll_once(root: &Path) -> Duration {
-    if binder().lock().unwrap().tabs.is_empty() {
+/// One pass: bind every tracked tab that can be bound, one walk per scope's
+/// sessions tree. Returns how long to wait before the next pass.
+fn poll_once() -> Duration {
+    let roots: Vec<PathBuf> = {
+        let b = binder().lock().unwrap();
+        let mut roots: Vec<PathBuf> = b.tabs.values().map(|t| t.root.clone()).collect();
+        roots.sort();
+        roots.dedup();
+        roots
+    };
+    if roots.is_empty() {
         return SLOW_TICK;
     }
-    let store = crate::services::codex_store::state_db();
-    poll_once_in(root, &agent_session::live_sessions_dir(), store.as_deref(), binder())
+    let live = agent_session::live_sessions_dir();
+    roots
+        .iter()
+        .map(|root| {
+            let store = root
+                .parent()
+                .and_then(crate::services::codex_store::state_db_in);
+            poll_once_in(root, &live, store.as_deref(), binder())
+        })
+        .min()
+        .unwrap_or(SLOW_TICK)
 }
 
+/// The pass for the tabs whose rollouts land under `root`.
 fn poll_once_in(root: &Path, live_dir: &Path, store: Option<&Path>, state: &Mutex<Binder>) -> Duration {
     let tabs: Vec<Snapshot> = {
         let b = state.lock().unwrap();
         b.tabs
             .iter()
+            .filter(|(_, t)| t.root == root)
             .map(|(pty, t)| Snapshot {
                 pty: pty.clone(),
                 uid: t.uid.clone(),
@@ -535,7 +555,7 @@ mod tests {
         let state = Mutex::new(Binder::default());
         for (seq, uid) in [A, B].into_iter().enumerate() {
             state.lock().unwrap().tabs.insert(uid.into(), Tracked {
-                uid: uid.into(), cwd: dir.path().into(), since: SystemTime::UNIX_EPOCH,
+                uid: uid.into(), cwd: dir.path().into(), root: root.clone(), since: SystemTime::UNIX_EPOCH,
                 known: HashSet::new(), bound: None, seq: seq as u64,
             });
             let header = serde_json::json!({"type": "session_meta", "payload": {

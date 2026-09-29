@@ -13,7 +13,7 @@
  * and assert the size still renders.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, waitFor } from "@testing-library/react";
+import { render, screen, act, waitFor, fireEvent } from "@testing-library/react";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 
@@ -187,5 +187,42 @@ describe("file tree folder sizes", () => {
 
     expect(await screen.findByText("gitignored (1)")).toBeTruthy();
     expect(screen.queryByText("cache")).toBeNull();
+  });
+
+  it("sorts folders by the walked size their rows show, not the listing's 0", async () => {
+    // Every folder is listed with size 0; sorting on that left "Size" in name
+    // order. `mid`'s ignored bytes come off its shown figure, so it ranks by
+    // 400 (below `big`'s 500), not by its 900 total.
+    const sizes: Record<string, { total: number; ignored: number }> = {
+      small: { total: 10, ignored: 0 },
+      big: { total: 500, ignored: 0 },
+      mid: { total: 900, ignored: 500 },
+    };
+    mockInvoke.mockImplementation((cmd: string, args?: { relPath?: string }) => {
+      if (cmd === "list_dir")
+        return Promise.resolve([dirEntry("big"), dirEntry("mid"), dirEntry("small")]);
+      if (cmd === "git_file_statuses") return Promise.resolve({});
+      if (cmd === "dir_size_breakdown") return Promise.resolve(sizes[args?.relPath ?? ""]);
+      if (cmd === "dir_size") return Promise.resolve(sizes[args?.relPath ?? ""]?.total ?? 0);
+      if (cmd === "git_status")
+        return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
+      if (cmd === "git_unpushed_commits") return Promise.resolve([]);
+      if (cmd === "get_project_panel_prefs") return Promise.resolve({});
+      if (cmd === "list_project_endings") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+
+    const { container } = await act(async () => render(<SidePanel open={true} />));
+    const rowNames = () =>
+      Array.from(container.querySelectorAll(".file-entry .file-name")).map((el) => el.textContent);
+    await waitFor(() => expect(container.querySelectorAll(".file-entry .file-size")).toHaveLength(3));
+
+    const sortKey = container.querySelector(".file-tree-sort-key .dropdown-trigger") as HTMLElement;
+    fireEvent.click(sortKey);
+    fireEvent.click(screen.getByRole("option", { name: "size" }));
+    expect(rowNames()).toEqual(["small", "mid", "big"]);
+
+    fireEvent.click(container.querySelector(".file-tree-sort-dir") as HTMLElement);
+    expect(rowNames()).toEqual(["big", "mid", "small"]);
   });
 });

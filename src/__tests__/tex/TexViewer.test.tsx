@@ -21,10 +21,14 @@ vi.mock("../../stores/windows", () => ({
   useWindowsStore: { getState: () => ({ openFile: () => Promise.resolve() }) },
 }));
 // Settings store: no viewer prefs (preview default OFF — #44), autosave off.
-vi.mock("../../stores/settings", () => ({
-  useSettingsStore: (sel: (s: unknown) => unknown) =>
-    sel({ settings: { autosave: false, viewer_prefs: {} } }),
-}));
+vi.mock("../../stores/settings", () => {
+  const state = { settings: { autosave: false, viewer_prefs: {} } };
+  return {
+    useSettingsStore: Object.assign((sel: (s: unknown) => unknown) => sel(state), {
+      getState: () => state,
+    }),
+  };
+});
 
 const TEX_SOURCE = "\\documentclass{article}\n\\begin{document}\nHi\n\\end{document}\n";
 
@@ -423,6 +427,97 @@ describe("TexView", () => {
     await screen.findByText(/didn't run/i);
     await screen.findByText(/PDF updated/i);
     expect(screen.queryByText(/couldn't locate the cursor/i)).toBeNull();
+  });
+
+  it("a Ctrl+click forward search before any compile says there is no PDF yet", async () => {
+    // setupInvoke's file_mtime rejects for every path: the PDF was never built.
+    setupInvoke(true, ["pdflatex"]);
+    await renderTexView();
+    await screen.findByRole("button", { name: /compile/i });
+    const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe(TEX_SOURCE));
+
+    // Caret in body text ("Hi"), not on a reference, so the click forward-syncs.
+    const at = TEX_SOURCE.indexOf("Hi");
+    textarea.setSelectionRange(at, at);
+    await act(async () => {
+      fireEvent.click(textarea, { ctrlKey: true });
+    });
+
+    await screen.findByText(/hasn't been compiled/i);
+    // Worded as "compile first", not as SyncTeX failing to run.
+    expect(screen.queryByText(/didn't run/i)).toBeNull();
+    expect(mockInvoke).not.toHaveBeenCalledWith("synctex_view", expect.anything());
+  });
+
+  it("Ctrl+click on an \\input path opens that file even before any compile", async () => {
+    // No PDF exists (nothing compiled); only the child file is on disk.
+    const src = "\\documentclass{article}\n\\begin{document}\n\\input{chapters/intro}\n\\end{document}\n";
+    setupInvoke(true, ["pdflatex"]);
+    const base = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "read_file_text") return Promise.resolve(src);
+      if (cmd === "file_mtime") {
+        return args?.path === "/p/chapters/intro.tex"
+          ? Promise.resolve(1)
+          : Promise.reject(new Error("missing"));
+      }
+      return base(cmd, args);
+    });
+    await renderTexView();
+    const { useTabsStore } = await import("../../stores/tabs");
+    await screen.findByRole("button", { name: /compile/i });
+    const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe(src));
+
+    // The layer makes the whole command clickable: the path underlined, the
+    // `\\input{` and `}` around it invisible hit spans pointing at the same ref.
+    await waitFor(() =>
+      expect([...document.querySelectorAll(".file-link-hit")].map((e) => e.textContent)).toEqual([
+        "\\input{",
+        "}",
+      ]),
+    );
+    expect(document.querySelector(".file-link")?.textContent).toBe("chapters/intro");
+
+    // jsdom lays out no link spans, so the click falls back to the caret: put it
+    // on the path, where the underlined link sits.
+    const at = src.indexOf("chapters/intro") + 3;
+    textarea.setSelectionRange(at, at);
+    await act(async () => {
+      fireEvent.click(textarea, { ctrlKey: true });
+    });
+
+    await waitFor(() =>
+      expect(
+        useTabsStore.getState().tabs.some((t) => t.embedPath === "/p/chapters/intro.tex"),
+      ).toBe(true),
+    );
+    expect(screen.queryByText(/hasn't been compiled/i)).toBeNull();
+    expect(mockInvoke).not.toHaveBeenCalledWith("compile_tex", expect.anything());
+  });
+
+  it("Compile forces a latexmk rebuild so an unchanged-looking build still runs", async () => {
+    setupInvoke(true, ["pdflatex"]);
+    const base = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) =>
+      cmd === "tex_capability"
+        ? Promise.resolve({ available: true, engines: ["pdflatex"], bibtex: false, latexmk: true })
+        : base(cmd, args),
+    );
+    await renderTexView();
+
+    const compileBtn = await screen.findByRole("button", { name: /compile/i });
+    await act(async () => {
+      await userEvent.click(compileBtn);
+    });
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "compile_tex",
+        expect.objectContaining({ path: "/p/paper.tex", extraFlags: ["-g"] }),
+      ),
+    );
   });
 
   it("#56: a child file compiles its resolved parent and labels the button", async () => {

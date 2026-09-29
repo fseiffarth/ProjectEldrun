@@ -9,7 +9,7 @@ use std::{
 use axum::{
     body::{Body, Bytes},
     extract::{ws::WebSocketUpgrade, DefaultBodyLimit, Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode, Uri},
     middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post, put},
@@ -25,17 +25,21 @@ use super::{
     admin,
     auth::AuthStore,
     config::{verify_tailscale_serve, HostConfig},
-    discovery::{Catalog, CatalogCache, PublicTab, TabPrompt, TabSchedules},
+    discovery::{Catalog, CatalogCache, PublicTab, ScopeKind, TabPrompt, TabSchedules},
+    files,
     inbox,
     outbox,
     limits,
     protocol::{
-        clean_tab_color, CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse,
-        MailMarkAction, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
+        clean_tab_color, git_dot, CalendarAction, CreateTabKind, CreateTabRequest, DesktopRequest, DesktopResponse,
+        MailMarkAction, MobileCollectedPrompt, MobilePromptInput, MobileSchedule,
+        MobileScheduleInput, PromptMutation, ScheduleMutation,
         TabPlace, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES,
         MAX_TAB_LABEL, TERMINAL_PROTOCOL,
     },
     pty_bridge::{self, TerminalRegistry},
+    push::{AgentTabRef, PushPrefs},
+    sign_in,
     live_pwa, MOBILE_ASSETS,
 };
 
@@ -126,6 +130,25 @@ struct AlertResolveBody {
     alert_id: String,
 }
 
+/// A phone's Web Push subscription: `PushSubscription.toJSON()`'s endpoint and
+/// keys, and what the phone wants to be told (`push::PushPrefs`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PushBody {
+    endpoint: String,
+    p256dh: String,
+    auth: String,
+    #[serde(flatten)]
+    prefs: PushPrefs,
+}
+
+/// A same-origin URL the phone is about to open outside the app.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenTicketBody {
+    url: String,
+}
+
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct CalendarQuery {
@@ -162,8 +185,82 @@ fn authenticate(
         .auth
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .authenticate(token)
+        // Every authenticated request slides the session (`auth::SESSION_IDLE`).
+        .touch(token)
         .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "authentication_required"))
+}
+
+/// What an open ticket is bound to: the path and the query without its own
+/// `ticket` pair, in the order the phone wrote them.
+fn ticket_target(uri: &Uri) -> String {
+    let query: Vec<&str> = uri
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .filter(|pair| !pair.is_empty() && !pair.starts_with("ticket="))
+        .collect();
+    if query.is_empty() {
+        uri.path().to_string()
+    } else {
+        format!("{}?{}", uri.path(), query.join("&"))
+    }
+}
+
+/// `authenticate`, or — for a file's bytes, which the phone opens in the
+/// browser's own tab where the strict cookie does not follow — an open ticket
+/// in the query that was issued for exactly this URL.
+fn authenticate_or_ticket(
+    headers: &HeaderMap,
+    state: &HostState,
+    uri: &Uri,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let cookie = authenticate(headers, state);
+    if cookie.is_ok() {
+        return cookie;
+    }
+    let ticket = uri
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("ticket="));
+    match ticket {
+        Some(ticket) => state
+            .auth
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .redeem_ticket(ticket, &ticket_target(uri))
+            .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "authentication_required")),
+        None => cookie,
+    }
+}
+
+/// `POST /api/v1/open-ticket` `{ url }` — the same URL with a short-lived
+/// `ticket` added (`AuthStore::open_ticket`), for the phone to open a PDF in
+/// the browser's viewer. Only the file routes that call
+/// `authenticate_or_ticket` honour it.
+async fn open_ticket(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Json(body): Json<OpenTicketBody>,
+) -> impl IntoResponse {
+    if let Err(error) = mutation_guard(&headers, &state) {
+        return error;
+    }
+    let Some(token) = cookie_token(&headers) else {
+        return api_error(StatusCode::UNAUTHORIZED, "authentication_required");
+    };
+    let uri = match body.url.parse::<Uri>() {
+        Ok(uri) if uri.scheme().is_none() && uri.authority().is_none() && uri.path().starts_with("/api/v1/") => uri,
+        _ => return api_error(StatusCode::BAD_REQUEST, "invalid_url"),
+    };
+    let target = ticket_target(&uri);
+    match state.auth.lock().unwrap_or_else(PoisonError::into_inner).open_ticket(token, &target) {
+        Ok(ticket) => {
+            let joiner = if target.contains('?') { '&' } else { '?' };
+            (StatusCode::OK, Json(json!({ "url": format!("{target}{joiner}ticket={ticket}") })))
+        }
+        Err(_) => api_error(StatusCode::UNAUTHORIZED, "authentication_required"),
+    }
 }
 
 fn catalog(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::Value>)> {
@@ -342,7 +439,7 @@ async fn projects(
     if view != "active" && view != "search" {
         return api_error(StatusCode::BAD_REQUEST, "invalid_view");
     }
-    let mut rows = catalog
+    let listed = catalog
         .projects
         .into_iter()
         .filter(|p| {
@@ -354,7 +451,31 @@ async fn projects(
                     || p.public.status == "active"
             }
         })
-        .map(|p| p.public)
+        .collect::<Vec<_>>();
+    // Each row's git dot, from the desktop's own pills. Only asked when a
+    // project is listed; a closed or older desktop leaves every row without one.
+    let git = if listed.iter().any(|p| p.public.kind == ScopeKind::Project) {
+        let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+        let request_id = Base64UrlUnpadded::encode_string(&random_16());
+        match admin::desktop_call(&desktop_socket, &DesktopRequest::GitStates { request_id }).await {
+            Ok(DesktopResponse::GitStates { states }) => states
+                .into_iter()
+                .filter_map(|row| git_dot(&row.state).map(|dot| (row.project_id, dot)))
+                .collect::<HashMap<_, _>>(),
+            _ => HashMap::new(),
+        }
+    } else {
+        HashMap::new()
+    };
+    let mut rows = listed
+        .into_iter()
+        .map(|p| {
+            let mut public = p.public;
+            if public.kind == ScopeKind::Project {
+                public.git = git.get(&p.raw_id).copied();
+            }
+            public
+        })
         .collect::<Vec<_>>();
     rows.sort_by_key(|p| {
         (
@@ -486,7 +607,7 @@ async fn project(
     // and on Windows the nominal path is never a file, so it was never told.
     // A closed desktop refuses the connect at once, on both.
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    let (desktop_available, agents, statuses, schedules, prompts, timings) = match admin::desktop_call(
+    let (desktop_available, agents, statuses, schedules, prompts, timings, closed, git) = match admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::Catalog {
             request_id,
@@ -501,9 +622,16 @@ async fn project(
             schedules,
             prompts,
             timings,
-        }) => (true, agents, statuses, schedules, prompts, timings),
-        _ => (false, vec![], vec![], vec![], vec![], vec![]),
+            closed,
+            git,
+        }) => (true, agents, statuses, schedules, prompts, timings, closed, git),
+        _ => (false, vec![], vec![], vec![], vec![], vec![], vec![], None),
     };
+    let mut public = project.public.clone();
+    if public.kind == ScopeKind::Project {
+        public.git = git.as_deref().and_then(git_dot);
+    }
+    let closed = closed_tab_rows(closed);
     let mut timings = timings
         .into_iter()
         .map(|timing| (timing.tmux_session.clone(), timing))
@@ -521,6 +649,14 @@ async fn project(
                     total: row.total,
                     enabled: row.enabled,
                     next: row.next,
+                    upcoming: row
+                        .upcoming
+                        .into_iter()
+                        .map(|prompt| TabPrompt {
+                            text: prompt.text,
+                            at: prompt.at,
+                        })
+                        .collect(),
                 },
             )
         })
@@ -534,7 +670,9 @@ async fn project(
                 tab.working_at = status.working_at;
                 tab.done_at = status.done_at;
             } else if let Some(timing) = timings.remove(&resolved.tmux_name) {
-                // A read turn has no status, but it still sorts by when it ran.
+                // A read turn has no status, but it still sorts by when it ran
+                // and still names its model.
+                tab.agent_model = timing.model;
                 tab.working_at = timing.working_at;
                 tab.done_at = timing.done_at;
             }
@@ -547,9 +685,43 @@ async fn project(
     (
         StatusCode::OK,
         Json(
-            json!({ "project": project.public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents }),
+            json!({ "project": public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents, "closed": closed,
+                // Whether this project's 📁 answers (`files.rs`): the host-wide
+                // switch, and a project rather than a box or the root console.
+                "files": project.public.kind == ScopeKind::Project && files::files_open(&state.config.state_dir) }),
         ),
     )
+}
+
+/// Most closed agent tabs one project lists for a reopen — the desktop keeps
+/// ten; the phone's row shows a handful.
+const MAX_CLOSED_TABS: usize = 10;
+
+/// A closed tab's opaque id as the desktop mints it (a UUID): short and plain,
+/// so it can be echoed back in a reopen without widening what a phone sends.
+fn closed_tab_id_ok(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// The desktop's closed-tab rows, bounded again on the way out like the prompt
+/// rows below: at most `MAX_CLOSED_TABS`, ids of the minted shape only, labels
+/// and agent names cut to what a tab label may be.
+fn closed_tab_rows(rows: Vec<super::protocol::ClosedAgentTab>) -> Vec<serde_json::Value> {
+    rows.into_iter()
+        .filter(|row| closed_tab_id_ok(&row.id))
+        .take(MAX_CLOSED_TABS)
+        .map(|row| {
+            let clean = |text: &str| -> String {
+                text.chars().filter(|c| !c.is_control()).take(MAX_TAB_LABEL).collect()
+            };
+            json!({
+                "id": row.id,
+                "label": clean(&row.label),
+                "agent": clean(&row.agent),
+                "closed_at": row.closed_at,
+            })
+        })
+        .collect()
 }
 
 /// The desktop's per-tab prompt rows, keyed by tmux name and bounded again on
@@ -602,9 +774,13 @@ async fn create_tab(
     let Ok(mut request) = serde_json::from_slice::<CreateTabRequest>(&body) else {
         return api_error(StatusCode::BAD_REQUEST, "invalid_request");
     };
+    // `like_tab` names a tmux session, which only the sidecar may: the tab
+    // route below sets it from an opaque tab id.
     if request.project_id != project_id
         || request.idempotency_key.len() < 16
         || request.idempotency_key.len() > 128
+        || request.like_tab.is_some()
+        || !request.launch_shape_ok()
     {
         return api_error(StatusCode::BAD_REQUEST, "invalid_request");
     }
@@ -615,21 +791,34 @@ async fn create_tab(
         return api_error(StatusCode::NOT_FOUND, "project_not_found");
     };
     request.project_id = project.raw_id.clone();
-    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    create_through_desktop(&state, &project_id, request).await
+}
+
+/// Ask the desktop for the tab `request` describes and answer with its row
+/// once the catalog lists it. `project_id` is the scope's public id, which the
+/// new row is looked up under; the request already carries the raw one.
+async fn create_through_desktop(
+    state: &HostState,
+    project_id: &str,
+    request: CreateTabRequest,
+) -> (StatusCode, Json<serde_json::Value>) {
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
-        &desktop_socket,
-        &DesktopRequest::Create {
-            request_id,
-            request,
-        },
-    )
-    .await
-    {
+    created_through_desktop(state, project_id, &DesktopRequest::Create { request_id, request }).await
+}
+
+/// Send a request the desktop answers with `Created` (a create, a reopen) and
+/// answer with the new tab's row once the catalog lists it.
+async fn created_through_desktop(
+    state: &HostState,
+    project_id: &str,
+    request: &DesktopRequest,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    match admin::desktop_call(&desktop_socket, request).await {
         Ok(DesktopResponse::Created { tmux_session }) => {
             for _ in 0..40 {
-                if let Ok(next) = catalog_fresh(&state) {
-                    if let Some(tab) = next.project(&project_id).and_then(|p| {
+                if let Ok(next) = catalog_fresh(state) {
+                    if let Some(tab) = next.project(project_id).and_then(|p| {
                         p.tabs
                             .iter()
                             .find(|t| t.tmux_name == tmux_session && t.public.available)
@@ -641,6 +830,108 @@ async fn create_tab(
             }
             api_error(StatusCode::GATEWAY_TIMEOUT, "launch_pending")
         }
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                "nothing_to_reopen" => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
+/// What a phone may send with a reopen: nothing (the newest closed tab), or the
+/// opaque id of one row of the project's `closed` list.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReopenTabRequest {
+    #[serde(default)]
+    closed_id: Option<String>,
+}
+
+/// `POST /api/v1/projects/{project_id}/tabs/reopen` — bring back an agent tab
+/// closed in this project (on either surface), on the resume args a restart
+/// would give it. The desktop holds the closed tabs; only the opaque id minted
+/// at close crosses, never a session id. Answers like a create, with the
+/// reopened tab's row; `409 nothing_to_reopen` once it is gone.
+async fn reopen_tab(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = mutation_guard(&headers, &state) {
+        return error;
+    }
+    let request = if body.is_empty() {
+        ReopenTabRequest::default()
+    } else {
+        match serde_json::from_slice::<ReopenTabRequest>(&body) {
+            Ok(request) => request,
+            Err(_) => return api_error(StatusCode::BAD_REQUEST, "invalid_request"),
+        }
+    };
+    if request.closed_id.as_deref().is_some_and(|id| !closed_tab_id_ok(id)) {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let Ok(catalog_snapshot) = catalog(&state) else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+    };
+    let Some(project) = catalog_snapshot.project(&project_id) else {
+        return api_error(StatusCode::NOT_FOUND, "project_not_found");
+    };
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    created_through_desktop(
+        &state,
+        &project_id,
+        &DesktopRequest::ReopenTab {
+            request_id,
+            project_id: project.raw_id.clone(),
+            closed_id: request.closed_id,
+        },
+    )
+    .await
+}
+
+/// `GET /api/v1/projects/{project_id}/launch-options` — what the ＋ sheet can
+/// start an agent in: the project's linked worktrees (opaque ids, directory
+/// and branch names — never a path) and each agent's cloud launches.
+async fn launch_options(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let Ok(catalog_snapshot) = catalog(&state) else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+    };
+    let Some(project) = catalog_snapshot.project(&project_id) else {
+        return api_error(StatusCode::NOT_FOUND, "project_not_found");
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::LaunchOptions {
+            request_id,
+            project_id: project.raw_id.clone(),
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::LaunchOptions {
+            worktrees,
+            cloud,
+            sign_in,
+            local,
+        }) => (
+            StatusCode::OK,
+            Json(json!({ "worktrees": worktrees, "cloud": cloud, "sign_in": sign_in, "local": local })),
+        ),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             if code == "desktop_unavailable" {
                 StatusCode::SERVICE_UNAVAILABLE
@@ -789,6 +1080,102 @@ async fn alerts_resolve(
         ),
         _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
     }
+}
+
+/// This device's push state and the key it must subscribe with. The endpoint
+/// goes back only to the device that registered it, so the phone can tell a
+/// browser-rotated subscription from the one on file.
+fn push_state(state: &HostState, device_id: &str) -> (StatusCode, Json<serde_json::Value>) {
+    let auth = state.auth.lock().unwrap_or_else(PoisonError::into_inner);
+    let push = auth.push();
+    let subscription = push.subscription(device_id);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "vapid_public_key": push.public_key(),
+            "subscribed": subscription.is_some(),
+            "details": subscription.is_some_and(|s| s.details),
+            "calendar": subscription.is_some_and(|s| s.calendar),
+            "agents": subscription.map(|s| s.agents).unwrap_or_default(),
+            "endpoint": subscription.map(|s| s.endpoint.clone()),
+        })),
+    )
+}
+
+async fn push_get(State(state): State<HostState>, headers: HeaderMap) -> impl IntoResponse {
+    match authenticate(&headers, &state) {
+        Ok(device_id) => push_state(&state, &device_id),
+        Err(error) => error,
+    }
+}
+
+/// Subscribe this phone to push notices. The only route that makes the host
+/// talk to anything off the tailnet, so the endpoint must name a push vendor
+/// (`push::endpoint_origin`) before it is stored.
+async fn push_put(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let device_id = match authenticate(&headers, &state) {
+        Ok(device_id) => device_id,
+        Err(error) => return error,
+    };
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let Ok(request) = serde_json::from_slice::<PushBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let stored = state
+        .auth
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push_subscribe(&device_id, &request.endpoint, &request.p256dh, &request.auth, request.prefs);
+    if stored.is_err() {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_push_subscription");
+    }
+    push_state(&state, &device_id)
+}
+
+async fn push_delete(State(state): State<HostState>, headers: HeaderMap) -> impl IntoResponse {
+    let device_id = match authenticate(&headers, &state) {
+        Ok(device_id) => device_id,
+        Err(error) => return error,
+    };
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    if state
+        .auth
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push_unsubscribe(&device_id)
+        .is_err()
+    {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "push_unavailable");
+    }
+    push_state(&state, &device_id)
+}
+
+/// The agent tab a tmux session is, as the phone knows it — for an agent-turn
+/// notice (`AdminRequest::AgentTurn`). Only a tab the catalog already offers a
+/// phone resolves, so a notice can never name one the phone could not open.
+fn agent_tab_ref(state: &HostState, tmux_session: &str) -> Option<AgentTabRef> {
+    let catalog = catalog(state).ok()?;
+    catalog.projects.iter().find_map(|project| {
+        project
+            .tabs
+            .iter()
+            .find(|tab| tab.tmux_name == tmux_session && tab.public.kind == "agent")
+            .map(|tab| AgentTabRef {
+                project_id: project.public.id.clone(),
+                project_label: project.public.label.clone(),
+                tab_id: tab.public.id.clone(),
+                tab_label: tab.public.label.clone(),
+                attached: state.terminal_registry.is_busy(tmux_session),
+            })
+    })
 }
 
 fn valid_calendar_month(value: &str) -> bool {
@@ -1433,6 +1820,100 @@ async fn sent_prompt(
     }
 }
 
+/// `POST /api/v1/tabs/{id}/sign-in-callback` — the address the phone's browser
+/// ended on after an agent CLI's sign-in redirected it to `localhost`, handed
+/// to the listener that CLI is waiting on here (`sign_in`). The tab only
+/// scopes who may ask: the address is checked on its own terms, and the
+/// answer carries the listener's status and nothing it sent.
+async fn sign_in_callback(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct CallbackBody {
+        url: String,
+    }
+    let Ok(request) = serde_json::from_slice::<CallbackBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if let Err(error) = agent_tab_target(&state, &tab_id) {
+        return error;
+    }
+    let callback = match sign_in::parse_callback(&request.url, state.config.host.port) {
+        Ok(callback) => callback,
+        Err(code) => return api_error(StatusCode::BAD_REQUEST, code),
+    };
+    match sign_in::deliver(&callback).await {
+        Ok(status) => (StatusCode::OK, Json(json!({ "delivered": true, "status": status }))),
+        Err(code) => api_error(StatusCode::BAD_GATEWAY, code),
+    }
+}
+
+/// `POST /api/v1/tabs/{id}/sign-in` — open a sign-in tab for the CLI this
+/// agent tab runs, beside it: the CLI's own login command in the flow a phone
+/// can finish (`src/lib/agents/signInLaunch.ts`), chosen by the desktop from
+/// the tab's command. The phone names the tab by opaque id and the way in
+/// (`alternate`); the tmux name it resolves to goes to the desktop alone.
+async fn sign_in_tab(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SignInBody {
+        #[serde(default)]
+        alternate: bool,
+        idempotency_key: String,
+    }
+    let Ok(body) = serde_json::from_slice::<SignInBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if body.idempotency_key.len() < 16 || body.idempotency_key.len() > 128 {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let Ok(catalog_snapshot) = catalog(&state) else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+    };
+    let Some((project, tab)) = catalog_snapshot.tab(&tab_id) else {
+        return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+    };
+    if tab.public.kind != "agent" {
+        return api_error(StatusCode::BAD_REQUEST, "agent_tab_required");
+    }
+    let request = CreateTabRequest {
+        project_id: project.raw_id.clone(),
+        kind: CreateTabKind::Agent,
+        agent_id: None,
+        mode: None,
+        worktree: None,
+        cloud: None,
+        task: None,
+        sign_in: Some(if body.alternate { "alternate" } else { "default" }.to_string()),
+        like_tab: Some(tab.tmux_name.clone()),
+        local: None,
+        idempotency_key: body.idempotency_key,
+    };
+    let project_id = project.public.id.clone();
+    create_through_desktop(&state, &project_id, request).await
+}
+
 /// `PUT /api/v1/tabs/{id}/order` — move one tab next to another, the phone's
 /// half of the desktop Agents view's drag reorder (#264). Both tabs are named
 /// by opaque id and must live in the same scope: the order being permuted is
@@ -1581,7 +2062,10 @@ fn schedule_desktop_error(
         }) => (
             StatusCode::OK,
             Json(json!({
-                "schedules": schedules,
+                "schedules": schedules
+                    .into_iter()
+                    .map(MobileSchedule::from)
+                    .collect::<Vec<_>>(),
                 "time_zone": time_zone,
                 "next_runs": next_runs,
             })),
@@ -1709,12 +2193,14 @@ async fn agent_status(
 }
 
 /// `?version=` is the fingerprint the phone last saw; `?limit=` how many of
-/// the newest turns it wants. Anything else is refused.
+/// the newest turns it wants; `?subagent=` the handle on an `agent` entry,
+/// whose conversation is read instead. Anything else is refused.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct TranscriptQuery {
     version: Option<String>,
     limit: Option<usize>,
+    subagent: Option<String>,
 }
 
 /// `GET /api/v1/tabs/{tab_id}/transcript` — the stored conversation behind
@@ -1731,6 +2217,14 @@ async fn agent_transcript(
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
+    // A handle is a digest the desktop minted; anything else is not one.
+    if query
+        .subagent
+        .as_deref()
+        .is_some_and(|token| !crate::services::agent_transcript::is_subagent_token(token))
+    {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_subagent");
+    }
     let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
         Ok(target) => target,
         Err(error) => return error,
@@ -1743,6 +2237,7 @@ async fn agent_transcript(
             request_id,
             project_id,
             tmux_session,
+            subagent: query.subagent,
             version: query.version,
             limit: query.limit,
         },
@@ -1867,6 +2362,10 @@ fn prompt_desktop_error(
 ) -> (StatusCode, Json<serde_json::Value>) {
     match response {
         Ok(DesktopResponse::Prompts { prompts }) => {
+            let prompts = prompts
+                .into_iter()
+                .map(MobileCollectedPrompt::from)
+                .collect::<Vec<_>>();
             (StatusCode::OK, Json(json!({ "prompts": prompts })))
         }
         Ok(DesktopResponse::Error { code, .. }) => api_error(
@@ -2061,6 +2560,48 @@ async fn prompt_send(
     .await
 }
 
+/// `POST /api/v1/tabs/{id}/undo-clear` — the phone's Undo after a Clear: the
+/// desktop types the resume of the conversation the tab's last `/clear` ended
+/// (`DesktopRequest::UndoClear`). The session id never reaches the phone; a
+/// session that has moved on answers `409 nothing_to_undo`.
+async fn undo_clear(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = mutation_guard(&headers, &state) {
+        return error;
+    }
+    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::UndoClear {
+            request_id,
+            project_id,
+            tmux_session,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::Seen) => (StatusCode::OK, Json(json!({ "undone": true }))),
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "desktop_unavailable" | "tab_not_ready" => StatusCode::SERVICE_UNAVAILABLE,
+                "tab_not_found" => StatusCode::NOT_FOUND,
+                "nothing_to_undo" | "remote_tab" => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
 /// Tell the desktop a phone had this agent tab on screen, so its activity
 /// store marks the tab's output read (see `clearAttention`). Fire-and-forget:
 /// nothing in the terminal path may wait on the desktop, which is why this
@@ -2224,9 +2765,42 @@ async fn inbox_upload(
     };
     let root = project.root.clone();
     drop(catalog);
+    store_in_project_inbox(root, query.name, body).await
+}
+
+/// `POST /api/v1/projects/{project_id}/inbox` — the project screen's
+/// **＋ → Send a file**: the same drop box as `inbox_upload`, named by the
+/// project, because that screen has no tab to name — a project whose tabs are
+/// all closed can still be sent a document for the next session.
+async fn project_inbox_upload(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    Query(query): Query<InboxQuery>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    match project_drop_box_root(&state, &project_id) {
+        Ok(root) => store_in_project_inbox(root, query.name, body).await,
+        Err(error) => error,
+    }
+}
+
+/// One project-inbox write, answered with the stored name, the project-relative
+/// reference and the size — never the root it was written under.
+async fn store_in_project_inbox(
+    root: PathBuf,
+    name: String,
+    body: Bytes,
+) -> (StatusCode, Json<serde_json::Value>) {
     // The write is synchronous filesystem work of up to MAX_INBOX_FILE bytes;
     // keep it off the connection executor.
-    let stored = tokio::task::spawn_blocking(move || inbox::store(&root, &query.name, &body))
+    let stored = tokio::task::spawn_blocking(move || inbox::store(&root, &name, &body))
         .await
         .unwrap_or_else(|error| Err(inbox::InboxError::Io(error.to_string())));
     match stored {
@@ -2414,11 +2988,11 @@ fn outbox_root(
     Ok(project.root.clone())
 }
 
-/// The same root by the project itself, for the project screen's shelf. The
-/// outbox belongs to the project, not to one of its sessions: a project whose
-/// tabs are all closed — or one that never had an agent tab — still has the
-/// files the desktop sent, and the screen that lists them has no tab to name.
-fn project_outbox_root(
+/// The same root by the project itself, for the project screen's outbox and
+/// its ＋ → Send a file. Both drop boxes belong to the project, not to one of
+/// its sessions: a project whose tabs are all closed — or one that never had
+/// an agent tab — still has them, and that screen has no tab to name.
+fn project_drop_box_root(
     state: &HostState,
     project_id: &str,
 ) -> Result<PathBuf, (StatusCode, Json<serde_json::Value>)> {
@@ -2452,10 +3026,16 @@ async fn outbox_list(
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
-    match outbox_root(&state, &tab_id) {
-        Ok(root) => outbox_listing(root).await,
-        Err(error) => error,
-    }
+    let catalog = match catalog(&state) {
+        Ok(catalog) => catalog,
+        Err(error) => return error,
+    };
+    let Some((project, tab)) = catalog.tab(&tab_id) else {
+        return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+    };
+    // Every file is listed — the gallery holds them all — but only what this
+    // tab sent is marked `from_tab`, the files its chat shows.
+    outbox_listing(project.root.clone(), tab.session_id.clone()).await
 }
 
 /// `GET /api/v1/projects/{project_id}/outbox` — the same listing by the
@@ -2468,15 +3048,18 @@ async fn project_outbox_list(
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
-    match project_outbox_root(&state, &project_id) {
-        Ok(root) => outbox_listing(root).await,
+    match project_drop_box_root(&state, &project_id) {
+        Ok(root) => outbox_listing(root, None).await,
         Err(error) => error,
     }
 }
 
-async fn outbox_listing(root: PathBuf) -> (StatusCode, Json<serde_json::Value>) {
+async fn outbox_listing(
+    root: PathBuf,
+    tab: Option<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
     // A directory walk that opens every candidate: off the connection executor.
-    let listed = tokio::task::spawn_blocking(move || outbox::list(&root))
+    let listed = tokio::task::spawn_blocking(move || outbox::list_for(&root, tab.as_deref()))
         .await
         .unwrap_or_else(|error| Err(outbox::OutboxError::Io(error.to_string())));
     match listed {
@@ -2495,10 +3078,11 @@ async fn outbox_listing(root: PathBuf) -> (StatusCode, Json<serde_json::Value>) 
 async fn outbox_file(
     State(state): State<HostState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((tab_id, name)): Path<(String, String)>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response<Body> {
-    if let Err(error) = authenticate(&headers, &state) {
+    if let Err(error) = authenticate_or_ticket(&headers, &state, &uri) {
         return error.into_response();
     }
     let root = match outbox_root(&state, &tab_id) {
@@ -2513,13 +3097,14 @@ async fn outbox_file(
 async fn project_outbox_file(
     State(state): State<HostState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((project_id, name)): Path<(String, String)>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response<Body> {
-    if let Err(error) = authenticate(&headers, &state) {
+    if let Err(error) = authenticate_or_ticket(&headers, &state, &uri) {
         return error.into_response();
     }
-    let root = match project_outbox_root(&state, &project_id) {
+    let root = match project_drop_box_root(&state, &project_id) {
         Ok(root) => root,
         Err(error) => return error.into_response(),
     };
@@ -2566,7 +3151,7 @@ async fn project_outbox_delete(
     if !exact_origin(&headers, &state) {
         return api_error(StatusCode::FORBIDDEN, "invalid_origin");
     }
-    match project_outbox_root(&state, &project_id) {
+    match project_drop_box_root(&state, &project_id) {
         Ok(root) => outbox_removal(root, name).await,
         Err(error) => error,
     }
@@ -2610,6 +3195,152 @@ async fn outbox_bytes(root: PathBuf, name: String, download: bool) -> Response<B
             }),
         Err(error) => outbox_error(error).into_response(),
     }
+}
+
+/// The root and raw id a file-browser request reads by (`files.rs`). Closed —
+/// `files_off` — unless the host-wide switch is on, read per request; a box
+/// or the root console is `files_unavailable`.
+fn files_scope(
+    state: &HostState,
+    project_id: &str,
+) -> Result<(PathBuf, String), (StatusCode, Json<serde_json::Value>)> {
+    if !files::files_open(&state.config.state_dir) {
+        return Err(api_error(StatusCode::NOT_FOUND, "files_off"));
+    }
+    let catalog = catalog(state)?;
+    let Some(project) = catalog.project(project_id) else {
+        return Err(api_error(StatusCode::NOT_FOUND, "project_not_found"));
+    };
+    if project.public.kind != ScopeKind::Project {
+        return Err(api_error(StatusCode::NOT_FOUND, "files_unavailable"));
+    }
+    Ok((project.root.clone(), project.raw_id.clone()))
+}
+
+fn files_error(error: files::FilesError) -> (StatusCode, Json<serde_json::Value>) {
+    api_error(
+        match error {
+            files::FilesError::Unavailable => StatusCode::CONFLICT,
+            files::FilesError::NotFound => StatusCode::NOT_FOUND,
+            files::FilesError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            files::FilesError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        },
+        error.code(),
+    )
+}
+
+/// The relative path a request's token seals, or `file_not_found` — a forged,
+/// replayed or stale token reads exactly like a path that is not there.
+fn files_rel(
+    state: &HostState,
+    raw_id: &str,
+    token: Option<&String>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let Some(token) = token else {
+        return Ok(String::new());
+    };
+    let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
+    files::unseal(&key, raw_id, token).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "file_not_found"))
+}
+
+/// `GET /api/v1/projects/{project_id}/files[?dir=<token>]` — one folder of the
+/// project, read-only: sealed tokens, leaf names, kind, size, mtime. No `dir`
+/// is the project root. No path appears in the answer.
+async fn project_files_list(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let (root, raw_id) = match files_scope(&state, &project_id) {
+        Ok(scope) => scope,
+        Err(error) => return error,
+    };
+    let rel = match files_rel(&state, &raw_id, query.get("dir")) {
+        Ok(rel) => rel,
+        Err(error) => return error,
+    };
+    let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
+    // A directory walk that opens every kept file to type it: off the executor.
+    let listed = tokio::task::spawn_blocking(move || files::list(&root, &rel, &key, &raw_id))
+        .await
+        .unwrap_or_else(|error| Err(files::FilesError::Io(error.to_string())));
+    match listed {
+        Ok(listing) => (StatusCode::OK, Json(json!(listing))),
+        Err(error) => files_error(error),
+    }
+}
+
+/// `GET /api/v1/projects/{project_id}/files/raw?f=<token>[&download=1]` — one
+/// file's bytes, typed by its head as the outbox types them (active formats are
+/// inert text), for the same viewer. Read-only: there is no write route.
+async fn project_files_raw(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Path(project_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response<Body> {
+    if let Err(error) = authenticate_or_ticket(&headers, &state, &uri) {
+        return error.into_response();
+    }
+    let (root, raw_id) = match files_scope(&state, &project_id) {
+        Ok(scope) => scope,
+        Err(error) => return error.into_response(),
+    };
+    let Some(token) = query.get("f") else {
+        return api_error(StatusCode::NOT_FOUND, "file_not_found").into_response();
+    };
+    let rel = match files_rel(&state, &raw_id, Some(token)) {
+        Ok(rel) => rel,
+        Err(error) => return error.into_response(),
+    };
+    let leaf = rel.rsplit('/').next().unwrap_or_default().to_string();
+    let read = tokio::task::spawn_blocking(move || files::read(&root, &rel))
+        .await
+        .unwrap_or_else(|error| Err(files::FilesError::Io(error.to_string())));
+    let download = query.get("download").is_some_and(|v| v == "1");
+    match read {
+        Ok((bytes, kind)) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, kind)
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .header(
+                header::CONTENT_DISPOSITION,
+                if kind == "application/octet-stream" || download {
+                    attachment_disposition(&leaf)
+                } else {
+                    "inline".into()
+                },
+            )
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| {
+                api_error(StatusCode::INTERNAL_SERVER_ERROR, "read_failed").into_response()
+            }),
+        Err(error) => files_error(error).into_response(),
+    }
+}
+
+/// `attachment` with the leaf as the saved name. A project file's name is any
+/// UTF-8 (unlike an outbox leaf), so it goes as RFC 6266's `filename*`, with a
+/// plain-ASCII `filename` beside it for a browser that reads only that.
+fn attachment_disposition(name: &str) -> String {
+    let ascii: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    let mut encoded = String::new();
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
 
 async fn static_asset(Path(path): Path<String>) -> Response<Body> {
@@ -2684,6 +3415,7 @@ fn router(state: HostState) -> Router {
         .route("/api/v1/todo", get(todo).post(todo_mutate))
         .route("/api/v1/alerts", get(alerts).post(alerts_resolve))
         .route("/api/v1/calendar", get(calendar).post(calendar_mutate))
+        .route("/api/v1/push", get(push_get).put(push_put).delete(push_delete))
         .route("/api/v1/mail", get(mail_overview))
         .route("/api/v1/mail/folders/{folder_id}", get(mail_folder))
         .route(
@@ -2706,6 +3438,11 @@ fn router(state: HostState) -> Router {
             post(activate_project),
         )
         .route("/api/v1/projects/{project_id}/tabs", post(create_tab))
+        .route("/api/v1/projects/{project_id}/tabs/reopen", post(reopen_tab))
+        .route(
+            "/api/v1/projects/{project_id}/launch-options",
+            get(launch_options),
+        )
         .route(
             "/api/v1/projects/{project_id}/prompts",
             get(prompts).post(prompt_create),
@@ -2725,6 +3462,9 @@ fn router(state: HostState) -> Router {
         .route("/api/v1/tabs/{tab_id}/color", put(color_tab))
         .route("/api/v1/tabs/{tab_id}/order", put(order_tab))
         .route("/api/v1/tabs/{tab_id}/prompt", post(sent_prompt))
+        .route("/api/v1/tabs/{tab_id}/undo-clear", post(undo_clear))
+        .route("/api/v1/tabs/{tab_id}/sign-in", post(sign_in_tab))
+        .route("/api/v1/tabs/{tab_id}/sign-in-callback", post(sign_in_callback))
         .route(
             "/api/v1/tabs/{tab_id}/schedules",
             get(schedules).post(schedule_create),
@@ -2743,6 +3483,10 @@ fn router(state: HostState) -> Router {
             post(inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
         )
         .route(
+            "/api/v1/projects/{project_id}/inbox",
+            post(project_inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
+        )
+        .route(
             "/api/v1/inbox",
             post(global_inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
         )
@@ -2750,11 +3494,14 @@ fn router(state: HostState) -> Router {
             "/api/v1/tabs/{tab_id}/desktop-images",
             get(desktop_images).post(attach_desktop_image),
         )
+        .route("/api/v1/open-ticket", post(open_ticket))
         .route("/api/v1/tabs/{tab_id}/outbox", get(outbox_list))
         .route(
             "/api/v1/tabs/{tab_id}/outbox/{name}",
             get(outbox_file).delete(outbox_delete),
         )
+        .route("/api/v1/projects/{project_id}/files", get(project_files_list))
+        .route("/api/v1/projects/{project_id}/files/raw", get(project_files_raw))
         .route(
             "/api/v1/projects/{project_id}/outbox",
             get(project_outbox_list),
@@ -2793,9 +3540,16 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
     let admin_path = config.control_dir.join("admin.sock");
     let admin_origin = Some(config.origin.clone());
     let port = config.host.port;
-    let admin_shutdown = shutdown_tx.clone();
+    let lookup_state = state.clone();
+    let admin_context = admin::AdminContext {
+        auth,
+        port,
+        origin: admin_origin,
+        shutdown: shutdown_tx.clone(),
+        agent_tab: Some(Arc::new(move |tmux: &str| agent_tab_ref(&lookup_state, tmux))),
+    };
     tokio::spawn(async move {
-        let _ = admin::serve(&admin_path, auth, port, admin_origin, admin_shutdown).await;
+        let _ = admin::serve(&admin_path, admin_context).await;
     });
     let publisher_shutdown = shutdown_tx.clone();
     let publisher_origin = config.origin.clone();
@@ -3113,6 +3867,7 @@ mod tests {
         "/api/v1/todo",
         "/api/v1/alerts",
         "/api/v1/calendar",
+        "/api/v1/push",
         "/api/v1/mail",
         "/api/v1/mail/folders/anything",
         "/api/v1/mail/folders/anything/messages/anything",
@@ -3174,6 +3929,65 @@ mod tests {
         assert!(!MOBILE_PERMISSIONS_POLICY.contains("microphone=(*"));
     }
 
+    fn push_request(method: &str, origin: &str, cookie: &str, body: &Value) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri("/api/v1/push")
+            .header(header::ORIGIN, origin)
+            .header(header::COOKIE, cookie_pair(cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(body).expect("body")))
+            .expect("request")
+    }
+
+    /// A phone subscribes only from the exact origin, only to a push vendor's
+    /// endpoint, and loses the subscription the moment it is revoked.
+    #[tokio::test]
+    async fn push_subscriptions_are_origin_checked_vendor_only_and_die_with_the_device() {
+        let host = Fixture::bare();
+        let (cookie, device_id) = host.pair_device(&signing_key(44)).await;
+        let (status, _, body) = host.send(get_as("/api/v1/push", &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let state = json(&body);
+        assert_eq!(state["subscribed"], false);
+        let vapid = Base64UrlUnpadded::decode_vec(state["vapid_public_key"].as_str().expect("key"))
+            .expect("base64url key");
+        assert_eq!(vapid.len(), 65);
+
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+        let phone = p256::SecretKey::from_slice(&[5u8; 32]).expect("phone key");
+        let subscription = |endpoint: &str| {
+            serde_json::json!({
+                "endpoint": endpoint,
+                "p256dh": Base64UrlUnpadded::encode_string(
+                    phone.public_key().to_encoded_point(false).as_bytes(),
+                ),
+                "auth": Base64UrlUnpadded::encode_string(&[3u8; 16]),
+                "details": true,
+                "calendar": true,
+                "agents": "questions",
+            })
+        };
+        let good = subscription("https://fcm.googleapis.com/fcm/send/phone");
+        let (status, _, _) = host
+            .send(push_request("PUT", "https://evil.example", &cookie, &good))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = host
+            .send(push_request("PUT", ORIGIN, &cookie, &subscription("https://evil.example/push")))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, _, body) = host.send(push_request("PUT", ORIGIN, &cookie, &good)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(json(&body)["subscribed"], true);
+        assert_eq!(json(&body)["details"], true);
+        assert_eq!(json(&body)["agents"], "questions");
+
+        host.state.auth.lock().unwrap().revoke(&device_id).expect("revoke");
+        assert!(host.state.auth.lock().unwrap().push().subscription(&device_id).is_none());
+    }
+
     #[tokio::test]
     async fn every_data_route_refuses_an_unauthenticated_request() {
         let host = Fixture::with_project();
@@ -3200,9 +4014,12 @@ mod tests {
             "/api/v1/calendar",
             "/api/v1/tabs/anything/schedules",
             "/api/v1/tabs/anything/inbox",
+            "/api/v1/projects/anything/inbox",
             "/api/v1/inbox",
             "/api/v1/tabs/anything/desktop-images",
             "/api/v1/tabs/anything/prompt",
+            "/api/v1/tabs/anything/sign-in-callback",
+            "/api/v1/tabs/anything/sign-in",
             "/api/v1/projects/anything/prompts",
             "/api/v1/projects/anything/prompts/anything/send",
             "/api/v1/mail/folders/anything/messages/anything/mark",
@@ -3252,6 +4069,68 @@ mod tests {
         assert!(!body.contains("scheduleTargetId"));
     }
 
+    #[test]
+    fn successful_schedule_response_exposes_only_phone_fields() {
+        use crate::schema::{AgentScheduleLastRun, AgentScheduleResult, AgentScheduleRule};
+
+        let (status, Json(body)) = schedule_desktop_error(Ok(DesktopResponse::Schedules {
+            schedules: vec![crate::schema::ScheduledAgentPrompt {
+                id: "schedule-1".into(),
+                enabled: true,
+                message: "Review".into(),
+                rule: AgentScheduleRule::Daily { time: "09:00".into() },
+                preface: vec!["/clear".into()],
+                last: Some(AgentScheduleLastRun {
+                    occurrence: "2026-09-24T09:00".into(),
+                    result: AgentScheduleResult::Delivered,
+                    at: "2026-09-24T09:01:00Z".into(),
+                }),
+                origin: Some(crate::schema::agent_tasks::ScheduleOrigin {
+                    by: crate::schema::agent_tasks::ScheduleAuthor::Agent,
+                    session: "raw-session-id".into(),
+                    at: "2026-09-23T08:00:00Z".into(),
+                    from_delivery: None,
+                }),
+            }],
+            time_zone: "Europe/Berlin".into(),
+            next_runs: Default::default(),
+        }));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["schedules"], serde_json::json!([{
+            "id": "schedule-1",
+            "enabled": true,
+            "message": "Review",
+            "rule": { "type": "daily", "time": "09:00" },
+            "last": {
+                "occurrence": "2026-09-24T09:00",
+                "result": "delivered",
+                "at": "2026-09-24T09:01:00Z",
+            },
+        }]));
+    }
+
+    #[test]
+    fn successful_prompt_response_omits_internal_target() {
+        let (status, Json(body)) = prompt_desktop_error(Ok(DesktopResponse::Prompts {
+            prompts: vec![crate::schema::agent_prompts::ProjectAgentPrompt {
+                id: "prompt-1".into(),
+                message: "Review".into(),
+                created_at: "2026-09-23T08:00:00Z".into(),
+                updated_at: "2026-09-24T08:00:00Z".into(),
+                tags: vec!["review".into()],
+                target: Some("raw-schedule-target-id".into()),
+            }],
+        }));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["prompts"], serde_json::json!([{
+            "id": "prompt-1",
+            "message": "Review",
+            "created_at": "2026-09-23T08:00:00Z",
+            "updated_at": "2026-09-24T08:00:00Z",
+            "tags": ["review"],
+        }]));
+    }
+
     #[tokio::test]
     async fn the_activity_list_answers_an_empty_list_when_no_desktop_classifies_tabs() {
         let host = Fixture::with_project();
@@ -3270,6 +4149,29 @@ mod tests {
     fn the_activity_list_puts_a_waiting_session_first_and_a_finished_one_last() {
         assert!(activity_rank("question") < activity_rank("working"));
         assert!(activity_rank("working") < activity_rank("done"));
+    }
+
+    #[test]
+    fn closed_tab_rows_cross_bounded_and_only_with_minted_ids() {
+        use super::super::protocol::ClosedAgentTab;
+        let row = |id: &str, label: &str| ClosedAgentTab {
+            id: id.into(),
+            label: label.into(),
+            agent: "claude".into(),
+            closed_at: 1,
+        };
+        let mut rows = vec![
+            row("../../etc", "bad id"),
+            row("5c1d2f0e-8a1b-4c2d-9e3f-0a1b2c3d4e5f", "claude\u{1b}[2J 1"),
+        ];
+        rows.extend((0..20).map(|i| row(&format!("id-{i}"), "x")));
+        let out = closed_tab_rows(rows);
+        assert_eq!(out.len(), MAX_CLOSED_TABS);
+        assert_eq!(out[0]["id"], "5c1d2f0e-8a1b-4c2d-9e3f-0a1b2c3d4e5f");
+        assert_eq!(out[0]["label"], "claude[2J 1");
+        assert!(out.iter().all(|r| r["id"] != "../../etc"));
+        assert!(!closed_tab_id_ok(&"a".repeat(65)));
+        assert!(!closed_tab_id_ok(""));
     }
 
     #[test]
@@ -3301,6 +4203,122 @@ mod tests {
         assert!(clean_tab_color(Some("#ff0000")).is_err());
         assert!(clean_tab_color(Some("red; background:url(x)")).is_err());
         assert!(clean_tab_color(Some("Red")).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_callback_reaches_only_a_local_listener_for_a_known_agent_tab() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(31)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"].as_str().expect("project id").to_string();
+        let (_, _, project_body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        let tab_id = json(&project_body)["tabs"][0]["id"].as_str().expect("tab id").to_string();
+        let press = |tab: &str, origin: &'static str, url: &str| {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/tabs/{tab}/sign-in-callback"))
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&json!({ "url": url })).expect("body")))
+                .expect("request")
+        };
+        let good = "http://localhost:1455/auth/callback?code=c&state=s";
+
+        let (status, _, _) = host.send(press(&tab_id, "https://evil.example", good)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, body) = host.send(press("not-a-tab", ORIGIN, good)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        let (status, _, body) = host
+            .send(press(&tab_id, ORIGIN, "http://example.com:1455/cb?code=c&state=s"))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "callback_not_local");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = vec![0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            let _ = socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsecret")
+                .await;
+        });
+        let (status, _, body) = host
+            .send(press(&tab_id, ORIGIN, &format!("http://127.0.0.1:{port}/cb?code=c&state=s")))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["delivered"], true);
+        assert!(!body.contains("secret"), "the listener's page stays on the desktop: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_tab_is_asked_for_by_tab_id_and_never_names_a_session() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(32)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"].as_str().expect("project id").to_string();
+        let (_, _, project_body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        let tab_id = json(&project_body)["tabs"][0]["id"].as_str().expect("tab id").to_string();
+        let press = |uri: String, origin: &'static str, body: Value| {
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).expect("body")))
+                .expect("request")
+        };
+        let route = format!("/api/v1/tabs/{tab_id}/sign-in");
+        let key = "0123456789abcdef";
+
+        let (status, _, _) = host
+            .send(press(route.clone(), "https://evil.example", json!({ "idempotency_key": key })))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, body) = host
+            .send(press("/api/v1/tabs/not-a-tab/sign-in".into(), ORIGIN, json!({ "idempotency_key": key })))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        // The phone names the tab and the way in, nothing else.
+        let (status, _, body) = host
+            .send(press(route.clone(), ORIGIN, json!({ "idempotency_key": key, "cmd": "sh" })))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        let (status, _, body) = host
+            .send(press(route.clone(), ORIGIN, json!({ "idempotency_key": "short" })))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+
+        // Well formed, with no desktop window: unavailable, and nothing the
+        // desktop is addressed by comes back.
+        let (status, _, body) = host
+            .send(press(route, ORIGIN, json!({ "idempotency_key": key, "alternate": true })))
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains("eldrun-"));
+
+        // The create route will not take the session name from the phone.
+        let (status, _, body) = host
+            .send(press(
+                format!("/api/v1/projects/{project_id}/tabs"),
+                ORIGIN,
+                json!({
+                    "project_id": project_id,
+                    "kind": "agent",
+                    "like_tab": "eldrun-anything",
+                    "sign_in": "default",
+                    "idempotency_key": key,
+                }),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "invalid_request");
     }
 
     #[tokio::test]
@@ -4304,6 +5322,139 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_file_browser_is_off_by_default_and_reads_by_sealed_token_only() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(35)).await.0;
+        let (_, _, body) = host
+            .send(get_as("/api/v1/projects?view=search&q=aurora", &cookie))
+            .await;
+        let project_id = json(&body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque project id")
+            .to_string();
+        let base = format!("/api/v1/projects/{project_id}/files");
+        std::fs::create_dir_all(host.root.join("src")).unwrap();
+        std::fs::write(host.root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(host.root.join(".env"), "HIDDEN=1").unwrap();
+
+        // The switch is off: the detail says so and both routes are closed.
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        assert_eq!(json(&body)["files"], false);
+        let (status, _, body) = host.send(get_as(&base, &cookie)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        assert_eq!(json(&body)["error"], "files_off");
+
+        std::fs::write(
+            host.state.config.state_dir.join("settings.json"),
+            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }).to_string(),
+        )
+        .unwrap();
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        assert_eq!(json(&body)["files"], true);
+
+        let (status, _, body) = host.send(get_as(&base, &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let root = json(&body);
+        assert_eq!(root["entries"][0]["name"], "src");
+        assert_eq!(root["entries"][0]["kind"], "dir");
+        assert!(!body.contains(".env"), "hidden names are not listed: {body}");
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains(host.root.to_str().unwrap()));
+        let src = root["entries"][0]["token"].as_str().unwrap().to_string();
+
+        let (status, _, body) = host.send(get_as(&format!("{base}?dir={src}"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert!(!body.contains("src/"), "no path in the answer: {body}");
+        let file = json(&body)["entries"][0].clone();
+        assert_eq!(file["name"], "main.rs");
+        let token = file["token"].as_str().unwrap().to_string();
+
+        let (status, headers, body) = host.send(get_as(&format!("{base}/raw?f={token}"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(body, "fn main() {}\n");
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/plain; charset=utf-8");
+        assert_eq!(headers.get(header::CONTENT_DISPOSITION).unwrap(), "inline");
+        let (_, headers, _) = host.send(get_as(&format!("{base}/raw?f={token}&download=1"), &cookie)).await;
+        assert_eq!(
+            headers.get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"main.rs\"; filename*=UTF-8''main.rs"
+        );
+
+        // A folder's token is not a file, a forged token is not a path, and
+        // there is nothing to write with.
+        for refused in [format!("{base}/raw?f={src}"), format!("{base}/raw?f=AAAA"), format!("{base}/raw"), format!("{base}?dir=AAAA")] {
+            let (status, _, body) = host.send(get_as(&refused, &cookie)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{refused} answered: {body}");
+            assert_eq!(json(&body)["error"], "file_not_found");
+        }
+        let (status, _, _) = host.send(get_as(&base, "not-a-session")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _, _) = host.send(get_as("/api/v1/projects/not-a-project/files", &cookie)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// The browser's own PDF viewer fetches without the strict session cookie;
+    /// a ticket minted over the session opens that one URL and nothing else.
+    #[tokio::test]
+    async fn an_open_ticket_reads_its_one_file_without_the_cookie() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(36)).await.0;
+        let (_, _, body) = host
+            .send(get_as("/api/v1/projects?view=search&q=aurora", &cookie))
+            .await;
+        let project_id = json(&body)["projects"][0]["id"].as_str().unwrap().to_string();
+        let base = format!("/api/v1/projects/{project_id}/files");
+        std::fs::write(host.root.join("paper.pdf"), "%PDF-1.7\n%%EOF\n").unwrap();
+        std::fs::write(host.root.join("other.pdf"), "%PDF-1.7\n%%EOF\n").unwrap();
+        std::fs::write(
+            host.state.config.state_dir.join("settings.json"),
+            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }).to_string(),
+        )
+        .unwrap();
+        let (_, _, body) = host.send(get_as(&base, &cookie)).await;
+        let token_of = |name: &str| {
+            json(&body)["entries"].as_array().unwrap().iter()
+                .find(|entry| entry["name"] == name).unwrap()["token"].as_str().unwrap().to_string()
+        };
+        let (paper, other) = (token_of("paper.pdf"), token_of("other.pdf"));
+        let url = format!("{base}/raw?f={paper}");
+        let mint = |origin: &str, cookie: &str, url: &str| Request::builder()
+            .method("POST")
+            .uri("/api/v1/open-ticket")
+            .header(header::ORIGIN, origin)
+            .header(header::COOKIE, cookie_pair(cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::json!({ "url": url }).to_string()))
+            .unwrap();
+
+        let (status, _, body) = host.send(mint(ORIGIN, &cookie, &url)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let opened = json(&body)["url"].as_str().unwrap().to_string();
+        assert!(opened.starts_with(&format!("{url}&ticket=")), "{opened}");
+        let anonymous = |uri: &str| Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let (status, headers, body) = host.send(anonymous(&opened)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "application/pdf");
+        let (status, _, _) = host.send(anonymous(&format!("{opened}&download=1"))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "the ticket names the exact URL");
+        let ticket = opened.rsplit("ticket=").next().unwrap();
+        let (status, _, _) = host.send(anonymous(&format!("{base}/raw?f={other}&ticket={ticket}"))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "not another file");
+        let (status, _, _) = host.send(anonymous(&format!("{base}?ticket={ticket}"))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "not the listing");
+
+        // Minting needs the session and the exact origin, and only for the API.
+        let (status, _, _) = host.send(mint(ORIGIN, "not-a-session", &url)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _, _) = host.send(mint("https://evil.example", &cookie, &url)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        for refused in ["https://evil.example/api/v1/x", "/index.html"] {
+            let (status, _, _) = host.send(mint(ORIGIN, &cookie, refused)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_phone_file_lands_in_the_project_inbox_and_only_a_relative_reference_returns() {
         let host = Fixture::with_project();
         let cookie = host.pair_device(&signing_key(43)).await.0;
@@ -4360,6 +5511,57 @@ mod tests {
         let (status, ..) = host.send(request).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(!host.root.join(inbox::INBOX_DIR).exists(), "a refused upload wrote to disk");
+    }
+
+    #[tokio::test]
+    async fn a_file_sent_from_the_project_screen_lands_in_that_projects_inbox() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(61)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque project id")
+            .to_string();
+        let send = |project: &str, origin: &str, bytes: Vec<u8>| {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/projects/{project}/inbox?name=notes.pdf"))
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .body(Body::from(bytes))
+                .expect("request")
+        };
+
+        // Wrong origin: refused before anything is written.
+        let (status, ..) = host
+            .send(send(&project_id, "https://elsewhere.example", b"x".to_vec()))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(!host.root.join(inbox::INBOX_DIR).exists(), "a refused upload wrote to disk");
+
+        let (status, _, body) = host.send(send("not-a-project", ORIGIN, b"x".to_vec())).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+
+        // Larger than a control message: the route carries the inbox's limit.
+        let bytes = vec![0xEF; MAX_CONTROL_MESSAGE * 4];
+        let (status, _, body) = host.send(send(&project_id, ORIGIN, bytes.clone())).await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        let reference = json(&body)["attachment"]["reference"]
+            .as_str()
+            .expect("reference")
+            .to_string();
+        assert!(reference.starts_with(".eldrun/inbox/"), "{reference}");
+        assert!(reference.ends_with("-notes.pdf"), "{reference}");
+        assert!(
+            !body.contains(&host.root.to_string_lossy().to_string()),
+            "a filesystem path leaked: {body}"
+        );
+        assert_eq!(std::fs::read(host.root.join(&reference)).unwrap(), bytes);
+
+        let (status, ..) = host
+            .send(send(&project_id, ORIGIN, vec![0; inbox::MAX_INBOX_FILE + 1]))
+            .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
@@ -4433,6 +5635,53 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "answered: {body}");
         assert_eq!(json(&body)["desktop_available"], true, "{body}");
         drop(listener);
+    }
+
+    /// The desktop pill's git dot reaches the list row and the project screen
+    /// under the opaque id; the desktop's raw id and any level the phone does
+    /// not know stay behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_projects_git_dot_crosses_by_opaque_id_and_known_levels_only() {
+        use crate::services::mobile_control::protocol::ProjectGitState;
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(54)).await.0;
+        let socket = host.state.config.control_dir.join("desktop-control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let desktop = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let request: DesktopRequest = admin::read_frame(&mut stream).await.expect("request");
+                let response = match request {
+                    DesktopRequest::GitStates { .. } => DesktopResponse::GitStates {
+                        states: vec![
+                            ProjectGitState { project_id: RAW_PROJECT.into(), state: "unpushed".into() },
+                            ProjectGitState { project_id: "not-listed".into(), state: "dirty".into() },
+                        ],
+                    },
+                    DesktopRequest::Catalog { .. } => serde_json::from_value(json!({
+                        "status": "catalog", "agents": [], "git": "a-level-from-the-future",
+                    }))
+                    .expect("catalog"),
+                    other => panic!("unexpected request {other:?}"),
+                };
+                admin::write_frame(&mut stream, &response).await.expect("answer");
+            }
+        });
+
+        let (status, _, body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let row = &json(&body)["projects"][0];
+        assert_eq!(row["git"], "unpushed", "{body}");
+        assert!(!body.contains(RAW_PROJECT) && !body.contains("not-listed"), "{body}");
+
+        let opaque = row["id"].as_str().unwrap().to_string();
+        let (status, _, body) = host
+            .send(get_as(&format!("/api/v1/projects/{opaque}"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert!(json(&body)["project"].get("git").is_none(), "unknown level dropped: {body}");
+        desktop.await.expect("fake desktop");
     }
 }
 

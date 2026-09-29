@@ -11,8 +11,8 @@ import { InboxIndicator } from "../header/InboxIndicator";
 import { SettingsMenu } from "../header/SettingsMenu";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
-import { GlobalAppMenu } from "./GlobalAppMenu";
 import { LocalModelMenu } from "./LocalModelMenu";
+import { LogoIcon } from "./LogoIcon";
 import { useT } from "../../lib/i18n";
 
 const NON_DRAG_SELECTOR = [
@@ -68,7 +68,8 @@ export function HeaderBar() {
           title={t("header.dragToMove")}
           aria-hidden="true"
         >
-          ⠿
+          <span className="app-drag-grip-mark"><LogoIcon /></span>
+          <span className="app-drag-grip-dots">⠿</span>
         </span>
         <Clock />
         <span className="project-switcher-separator" aria-hidden="true" />
@@ -100,7 +101,6 @@ export function HeaderBar() {
         <InboxIndicator />
         <span className="header-right-gap" aria-hidden="true" />
         <LocalModelMenu />
-        <GlobalAppMenu />
         {/* Settings belong to the machine, not to a project, so the gear stays
             with the other global buttons rather than at the head of the project
             strip, where it put the switcher's own controls on both sides of a

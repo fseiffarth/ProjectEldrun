@@ -6,7 +6,8 @@
  * KDE do not — they answer it themselves and forward a lone "Meta" keydown
  * ahead of every Super+<key> shell shortcut, which silently toggled the panels
  * (and with them the reveal handle) out of the window. The gate is therefore a
- * backend answer about the running desktop, with F9 always available.
+ * backend answer about the running desktop, with F9 always available while
+ * the toggle is at its default (a rebind replaces both).
  *
  * Covered here: the binding follows the probe in both directions, an
  * unanswered probe keeps the pre-existing behavior (a frontend routinely runs
@@ -26,7 +27,8 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 import { SUPER_RELEASE_SETTLE_MS, useKeyboard } from "../../hooks/useKeyboard";
-import { FIXED_KEYS } from "../../lib/shortcuts/shortcuts";
+import { livePanelToggleLabel } from "../../lib/shortcuts/shortcutHint";
+import { useSettingsStore } from "../../stores/settings";
 import {
   desktopOwnsSuperKey,
   probeSuperKeyOwnership,
@@ -77,7 +79,7 @@ async function mountAndSettle() {
 }
 
 function panelKeys(): string {
-  return FIXED_KEYS.find((k) => k.labelKey === "fixedKeys.panels.label")!.keys;
+  return livePanelToggleLabel();
 }
 
 describe("lone Super key ownership", () => {
@@ -87,6 +89,7 @@ describe("lone Super key ownership", () => {
     resetSuperKeyOwnership();
     invoke.mockReset();
     toggles = 0;
+    useSettingsStore.setState({ settings: null } as never);
   });
 
   it("leaves the key alone on a desktop that claims it (GNOME, KDE)", async () => {
@@ -114,6 +117,30 @@ describe("lone Super key ownership", () => {
     key("Super");
     expect(toggles).toBe(2);
     expect(panelKeys()).toBe("Super");
+  });
+
+  it("follows a rebind of the panel toggle, lone Super included", async () => {
+    invoke.mockResolvedValue(false);
+    // Rebound to F10: neither the lone Super nor the F9 alias toggles now.
+    useSettingsStore.setState({ settings: { keyboard_shortcuts: { togglePanels: { key: "F10" } } } } as never);
+    await mountAndSettle();
+    key("Meta");
+    key("F9");
+    expect(toggles).toBe(0);
+    key("F10");
+    expect(toggles).toBe(1);
+    expect(panelKeys()).toBe("F10");
+
+    // Bound to the lone Super explicitly on a desktop that claims the key:
+    // the user's choice stands.
+    invoke.mockResolvedValue(true);
+    resetSuperKeyOwnership();
+    await act(async () => {
+      await probeSuperKeyOwnership();
+    });
+    useSettingsStore.setState({ settings: { keyboard_shortcuts: { togglePanels: { key: "Super" } } } } as never);
+    key("Meta");
+    expect(toggles).toBe(2);
   });
 
   it("keeps the binding when the backend cannot answer", async () => {

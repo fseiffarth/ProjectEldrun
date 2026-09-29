@@ -87,7 +87,7 @@ describe("pill menu — Boxes group (3a)", () => {
       fireEvent.contextMenu(findPill(container, "p1"));
     });
     const row = menuButton("boxA")!;
-    expect(row.textContent).toContain("☐");
+    expect(row.querySelectorAll(".context-menu-checkmark svg path").length).toBe(0);
     await act(async () => {
       fireEvent.click(row);
     });
@@ -104,7 +104,7 @@ describe("pill menu — Boxes group (3a)", () => {
       fireEvent.contextMenu(findPill(container, "p1"));
     });
     const row = menuButton("boxA")!;
-    expect(row.textContent).toContain("☑");
+    expect(row.querySelector(".context-menu-checkmark svg")).toBeTruthy();
     await act(async () => {
       fireEvent.click(row);
     });

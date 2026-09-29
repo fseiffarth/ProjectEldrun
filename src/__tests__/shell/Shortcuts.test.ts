@@ -19,11 +19,13 @@ import {
   chordLabel,
   chordMatches,
   chordsEqual,
+  LONE_SUPER,
+  UNBOUND,
   findConflicts,
-  isFixedChord,
   isLoneModifier,
   normalizeKey,
   resolveChord,
+  zoomFor,
 } from "../../lib/shortcuts/shortcuts";
 
 describe("#62 shortcut helpers", () => {
@@ -139,22 +141,37 @@ describe("chordsEqual / findConflicts", () => {
   });
 });
 
-describe("isFixedChord", () => {
-  it("flags the keys useKeyboard consumes before the chord table", () => {
-    // F11/F9/Escape are matched there on `e.key` alone — modifiers included.
-    expect(isFixedChord({ key: "F11" })).toBe(true);
-    expect(isFixedChord({ key: "F11", shift: true })).toBe(true);
-    expect(isFixedChord({ key: "F9" })).toBe(true);
-    expect(isFixedChord({ key: "Escape", ctrl: true })).toBe(true);
+describe("the former fixed keys", () => {
+  const key = (init: KeyboardEventInit) => new KeyboardEvent("keydown", init);
+
+  it("keeps the zoom defaults layout-tolerant until rebound", () => {
+    expect(zoomFor(key({ key: "+", ctrlKey: true, shiftKey: true }), null)).toBe("in");
+    expect(zoomFor(key({ key: "=", code: "Equal", ctrlKey: true }), null)).toBe("in");
+    expect(zoomFor(key({ key: "ß", code: "Minus", ctrlKey: true }), null)).toBe("out");
+    expect(zoomFor(key({ key: "0", ctrlKey: true }), null)).toBe("reset");
+    expect(zoomFor(key({ key: "0" }), null)).toBeNull();
+    // Rebound: the new chord zooms, the old one no longer does.
+    const map = { zoomIn: { key: "i", ctrl: true, alt: true } };
+    expect(zoomFor(key({ key: "i", ctrlKey: true, altKey: true }), map)).toBe("in");
+    expect(zoomFor(key({ key: "+", ctrlKey: true }), map)).toBeNull();
+    expect(zoomFor(key({ key: "-", ctrlKey: true }), map)).toBe("out");
   });
 
-  it("passes ordinary chords, F1 included (rebindable shortcutHelp)", () => {
-    expect(isFixedChord({ key: "F1" })).toBe(false);
-    expect(isFixedChord({ key: "w", ctrl: true })).toBe(false);
-    expect(isFixedChord({ key: " ", ctrl: true, shift: true })).toBe(false);
-    // No default chord may sit on a fixed key.
-    for (const def of SHORTCUT_DEFS) {
-      expect(isFixedChord(def.default), `${def.action} defaults to a fixed key`).toBe(false);
-    }
+  it("makes F11, the panel toggle and Escape ordinary rebindable chords", () => {
+    expect(resolveChord("osFullscreen", null)).toEqual({ key: "F11" });
+    expect(resolveChord("exitFullscreen", null)).toEqual({ key: "Escape" });
+    expect(chordMatches(resolveChord("osFullscreen", { osFullscreen: { key: "F10" } }), key({ key: "F10" }))).toBe(
+      true,
+    );
+    // The panel toggle's default is the desktop's key (vitest: no Linux Super).
+    expect(["F9", "Super"]).toContain(resolveChord("togglePanels", null).key);
+  });
+
+  it("never fires an unbound chord or a lone-Super one from a keydown", () => {
+    expect(chordMatches(UNBOUND, key({ key: "" }))).toBe(false);
+    expect(chordLabel(UNBOUND)).toBe("—");
+    expect(chordMatches(LONE_SUPER, key({ key: "Super" }))).toBe(false);
+    // Two switched-off actions are no conflict.
+    expect(findConflicts({ closeTab: UNBOUND, prevTab: UNBOUND }).size).toBe(0);
   });
 });

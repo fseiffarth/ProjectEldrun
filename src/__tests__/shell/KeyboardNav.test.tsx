@@ -5,8 +5,8 @@ import { ConfirmDialog } from "../../components/common/PromptDialogs";
  * Mounts the real useKeyboard hook and dispatches real keydown events on
  * `window`, asserting each chord drives the right store action:
  *   - Shift+Tab cycles tabs within the focused subwindow (wraps);
- *   - Shift+Left/Right cycle the active tab within the focused subwindow;
- *   - Shift+Up/Down preview a subwindow; focus commits on Shift release;
+ *   - Ctrl+Shift+Left/Right cycle the active tab within the focused subwindow;
+ *   - Ctrl+Shift+Up/Down preview a subwindow; focus commits on Shift release;
  *   - Ctrl+Enter toggles fullscreen, Escape exits it;
  *   - Ctrl+W closes the active tab; Shift+Ctrl+W closes the subwindow;
  *   - Shift+Ctrl+Tab cycles to the next active project;
@@ -76,7 +76,7 @@ describe("#62 keyboard nav wiring", () => {
     const dialog = render(<ConfirmDialog title="Question" body="Confirm" onCancel={() => {}} onConfirm={() => {}} />);
     const start = useTabsStore.getState().activeKey;
     key({ key: "Tab", shiftKey: true });
-    key({ key: "ArrowRight", shiftKey: true });
+    key({ key: "ArrowRight", ctrlKey: true, shiftKey: true });
     expect(useTabsStore.getState().activeKey).toBe(start);
     dialog.unmount();
     key({ key: "Tab", shiftKey: true });
@@ -101,7 +101,7 @@ describe("#62 keyboard nav wiring", () => {
     expect(useTabsStore.getState().activeKey).toBe(group.tabKeys[1]);
   });
 
-  it("Shift+Left/Right cycle the active tab within the focused subwindow", () => {
+  it("Ctrl+Shift+Left/Right cycle the active tab within the focused subwindow", () => {
     const store = useTabsStore.getState();
     store.addTab({ label: "t1", cmd: "bash", cwd: "/p", kind: "shell" });
     store.addTab({ label: "t2", cmd: "bash", cwd: "/p", kind: "shell" });
@@ -112,14 +112,27 @@ describe("#62 keyboard nav wiring", () => {
 
     // Active is t3 (index 2). Right → next, wraps to index 0.
     expect(useTabsStore.getState().activeKey).toBe(group.tabKeys[2]);
-    key({ key: "ArrowRight", shiftKey: true });
+    key({ key: "ArrowRight", ctrlKey: true, shiftKey: true });
     expect(useTabsStore.getState().activeKey).toBe(group.tabKeys[0]);
     // Left → previous, wraps back to index 2.
-    key({ key: "ArrowLeft", shiftKey: true });
+    key({ key: "ArrowLeft", ctrlKey: true, shiftKey: true });
     expect(useTabsStore.getState().activeKey).toBe(group.tabKeys[2]);
   });
 
-  it("Shift+Down previews a subwindow and commits focus on Shift release", () => {
+  it("plain Shift+Left/Right do nothing (left to an agent CLI's own chord)", () => {
+    const store = useTabsStore.getState();
+    store.addTab({ label: "t1", cmd: "bash", cwd: "/p", kind: "shell" });
+    store.addTab({ label: "t2", cmd: "bash", cwd: "/p", kind: "shell" });
+    const group = allGroups(useTabsStore.getState().layout)[0];
+    useTabsStore.getState().focusGroup(group.id);
+    render(<Harness />);
+
+    const start = useTabsStore.getState().activeKey;
+    key({ key: "ArrowRight", shiftKey: true });
+    expect(useTabsStore.getState().activeKey).toBe(start);
+  });
+
+  it("Ctrl+Shift+Down previews a subwindow and commits focus on Shift release", () => {
     const store = useTabsStore.getState();
     store.addTab({ label: "a", cmd: "bash", cwd: "/p", kind: "shell" });
     const b = store.addTab({ label: "b", cmd: "bash", cwd: "/p", kind: "shell" });
@@ -131,8 +144,8 @@ describe("#62 keyboard nav wiring", () => {
     useTabsStore.getState().focusGroup(aGroup.id);
     render(<Harness />);
 
-    // Shift+Down enters nav preview on the next subwindow, WITHOUT moving focus.
-    key({ key: "ArrowDown", shiftKey: true });
+    // Ctrl+Shift+Down enters nav preview on the next subwindow, WITHOUT moving focus.
+    key({ key: "ArrowDown", ctrlKey: true, shiftKey: true });
     expect(useSubwindowNavStore.getState().active).toBe(true);
     expect(useSubwindowNavStore.getState().previewGroupId).toBe(bGroup.id);
     expect(useTabsStore.getState().focusedGroupId).toBe(aGroup.id);

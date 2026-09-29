@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { restoredAgentCwd } from "../lib/agents/agentWorktrees";
 import { isTabColor, type TabColor } from "../lib/theme/tabColors";
+import { normalizeStackName, stackJoinOrder } from "../lib/tabStacks";
+import { isTabMark, type TabMark } from "../lib/tabMarks";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
@@ -23,7 +25,9 @@ import { getDetachedWindowContext } from "./detachedContext";
  *  composes with `--resume`: `tmux new-session -A` reattaches the live agent when the
  *  host session survives, else creates a fresh one that runs the resume. The name is
  *  inert until `shouldPersistTab` decides to pass it, so minting it on a local agent
- *  costs nothing. Tabs that already carry a name (or an explicit attach), and pane
+ *  costs nothing. A local-model tab (`local_agent`) gets one too, with the `agent`
+ *  token: in a Mobile-access scope it is tmux-wrapped like any agent
+ *  (`shouldPersistLocalTab`), which is how the phone reaches it. Tabs that already carry a name (or an explicit attach), and pane
  *  kinds with no PTY, are left untouched. */
 function withTmuxSession(
   tab: Omit<TabEntry, "key">,
@@ -33,8 +37,12 @@ function withTmuxSession(
   if ((next.kind === "agent" || next.kind === "local_agent") && !next.scheduleTargetId) {
     next = { ...next, scheduleTargetId: crypto.randomUUID() };
   }
-  if ((next.kind === "shell" || next.kind === "agent") && !next.tmuxSession && !next.tmuxAttach) {
-    return { ...next, tmuxSession: newTmuxSessionName(scope, next.kind === "agent" ? "agent" : "shell") };
+  if (
+    (next.kind === "shell" || next.kind === "agent" || next.kind === "local_agent") &&
+    !next.tmuxSession &&
+    !next.tmuxAttach
+  ) {
+    return { ...next, tmuxSession: newTmuxSessionName(scope, next.kind === "shell" ? "shell" : "agent") };
   }
   return next;
 }
@@ -55,6 +63,12 @@ function withRunHostDefault(
   if (tab.kind !== "shell" || tab.location !== undefined) return tab;
   const pref = useRunHostPrefStore.getState().byProject[scope];
   return pref ? { ...tab, location: pref } : tab;
+}
+
+/** A persisted `todoId` as a usable card id, or `undefined`. The layout file is
+ *  on disk, so it is capped and must look like the backend's ids. */
+export function normalizeTodoId(value: unknown): string | undefined {
+  return typeof value === "string" && /^[A-Za-z0-9_.@-]{1,128}$/.test(value) ? value : undefined;
 }
 
 /**
@@ -80,6 +94,8 @@ function withRunHostDefault(
  *   against a specific uid; the caller re-registers one and passes it back in
  *   (a store action cannot await). Without it the copy simply runs inside the
  *   project's container, which is the safe direction (`lib/remote/hostBound.ts`).
+ * - `mark` and `todoId` are dropped: the card is the original's, and a copied
+ *   Urgent would double what the project pill says needs attention.
  */
 export function duplicateSpec(tab: TabEntry): Omit<TabEntry, "key"> {
   const {
@@ -89,6 +105,8 @@ export function duplicateSpec(tab: TabEntry): Omit<TabEntry, "key"> {
     tmuxAttach: _attach,
     hostBoundUid: _hostBound,
     scheduleTargetId: _scheduleTarget,
+    mark: _mark,
+    todoId: _todo,
     ...rest
   } = tab;
   if (!sessionId) return rest;
@@ -262,8 +280,8 @@ export const MAIL_TAB_CMD = "__eldrun_mail__";
 
 /**
  * Sentinel commands of tab kinds Eldrun no longer has, dropped unconditionally
- * on restore. The twin of `RETIRED_GLOBAL_APP_ROLES` in `layout/GlobalAppBar.tsx`
- * and there for the same reason: removing a feature does not remove it from the
+ * on restore. Here for the same reason the removed global-app launcher kept a list of
+ * retired roles: removing a feature does not remove it from the
  * state already written to disk, and the fall-through for an unrecognized `cmd`
  * is `"shell"` — a spawned terminal, not a no-op.
  *
@@ -309,7 +327,7 @@ export const BROWSER_TAB_CMD = "__eldrun_browser__";
  *
  * It is what the `print_manager` **global app** slot used to launch an external
  * GUI for, brought in-window the way mail, the calendar and the file manager
- * were before it (see `RETIRED_GLOBAL_APP_ROLES` in `layout/GlobalAppBar.tsx`).
+ * were before it.
  *
  *  - **It carries no PTY**, like the calendar and mail panes, which is why it is
  *    identified by this command (so `cmdToKind` recovers its kind from a bare
@@ -596,6 +614,15 @@ export interface TabEntry {
   // the static RESUMABLE_AGENTS map (see isResumableAgentTab / loadFromLayout).
   // Persisted, since args are rebuilt from scratch on restore.
   resumeArgs?: string[];
+  // Epoch ms this tab was opened in this run (addTab / duplicate). Never
+  // persisted: a restored tab relaunches on its continue flag instead, and it
+  // is only missing there. Tells a fresh OpenCode tab's own session from the
+  // folder's older ones (`services::opencode_store`).
+  launchedAt?: number;
+  // Runtime only: bumped by `relaunchTabInScope` so the pane respawns its PTY
+  // even when the args it respawns with are the ones it already had. Never
+  // persisted — a restored tab spawns anyway.
+  relaunchSeq?: number;
   // Absolute path of the script this terminal tab was launched to run (Python
   // Run/Debug, or a foreground shell-script run). Lets the activity store pulse
   // the file's run button while the tab is producing output. Busy-gated on read,
@@ -613,6 +640,8 @@ export interface TabEntry {
   // of any external default app. These embeds re-render from `embedPath` on
   // relaunch (see isRestorableEmbedTab). See FileViewerPane.
   viewer?: InternalViewer;
+  /** Session-only return path for a new markdown tab opened from a link graph. */
+  mdGraphOriginKey?: string;
   // For in-app `viewer` embeds: the reader's last scroll/zoom/pan, so reopening
   // the file (or restarting) restores the position instead of jumping to the top
   // (see ViewerState). Written by the viewer panes, persisted in project.json.
@@ -673,6 +702,34 @@ export interface TabEntry {
   // verbatim by `duplicateSpec`, since a colour DESCRIBES a tab rather than
   // identifying it.
   color?: TabColor;
+  // The tab group (in this bar) this tab belongs to, by name — see
+  // `lib/tabStacks`. Every tab of a bar carrying the same name collapses into
+  // one chip that lists them on hover. Absent = an ordinary tab. Persisted (a
+  // grouping that a relaunch forgets is no grouping), copied by
+  // `duplicateSpec` (a copy lands beside its original), and normalized on the
+  // way in from disk, where it is attacker-controlled text.
+  stack?: string;
+  // Important / Urgent, from the tab's right-click menu (`lib/tabMarks`):
+  // shown on the tab and summed up on its project's pill. Persisted, validated
+  // on the way in from disk, and dropped by `duplicateSpec` — a copy is a new
+  // tab, and doubling the pill's count would overstate what needs attention.
+  mark?: TabMark;
+  // The to-do board card this tab was linked to by its menu's "Create to-do
+  // card" (a `CalendarTask.id`). The link lives here rather than on the card
+  // because a tab's key is re-minted on every restore; the card finds its tab
+  // by searching for this id. Persisted; dropped by `duplicateSpec` (one card,
+  // one tab).
+  todoId?: string;
+  // The root console's **Host session** (`docs/context/agent_authority.md`):
+  // this agent tab runs unfenced, with the user's full rights, in Eldrun's
+  // `host` agent home. Only ever set by the console's own "Host session" menu
+  // entry, never a project default, never from the phone. Persisted so the
+  // tab comes back after a restart — paused (`hostSessionPaused`), never
+  // auto-resumed.
+  hostSession?: boolean;
+  // Runtime only: a restored Host session waits for an explicit Resume before
+  // anything is spawned (see TabPane's HostSessionHold).
+  hostSessionPaused?: boolean;
   // Idempotency key of the request that created this tab, for the callers that
   // create one without a click behind them: a Mobile create (a keyed hash — it
   // contains no client token) whose timed-out retry must resolve to this exact
@@ -681,6 +738,22 @@ export interface TabEntry {
   // inside the grace window. Named for its first caller; read only by
   // `hydrateThenCreateInScope`, which is what both go through.
   mobileRequestHash?: string;
+  // A local-model tab driven through another agent CLI (`ollama launch claude
+  // --model m`, `codex --oss -m m`, …): the driver, the model and the resolved
+  // argv, so the tab restores by relaunching that line (`isRelaunchableLocalTab`).
+  // Set only on a tab started in a Mobile-access scope (`lib/agents/localTabSpec`),
+  // which is what lets the phone come back to it; the backend re-validates the
+  // line on every load and drops one it would not have built.
+  localLaunch?: LocalLaunch;
+}
+
+/** See `TabEntry.localLaunch`. */
+export interface LocalLaunch {
+  /** A `list_local_drivers` id (`claude`, `codex`, `opencode`, …). */
+  driver: string;
+  model: string;
+  /** The `prepare_local_launch` args for the tab's `cmd`. */
+  args: string[];
 }
 
 export type SplitDir = "row" | "column";
@@ -787,10 +860,17 @@ export type DetachedEditPayload =
   // like the rename beside it rather than applied locally: a popout's store
   // holds no tabs, and the colour lives on the payload the MAIN window persists.
   | { kind: "setColor"; key: string; color: TabColor | undefined }
+  // Join a tab to the named tab group in its bar, or leave it (`undefined`).
+  // Forwarded for the same reason as the colour above.
+  | { kind: "setStack"; key: string; stack: string | undefined }
+  | { kind: "setMark"; key: string; mark: TabMark | undefined }
+  | { kind: "setTodo"; key: string; todoId: string | undefined }
   // Multi-host: change where a locatable tab runs; applied to the payload here so
   // the main window's flat pane layer (which owns the popout's PTY) respawns it.
   | { kind: "setLocation"; key: string; location: TabLocation }
-  | { kind: "close"; key: string }
+  // `user`: the popout's ×/Ctrl+W, which a reopen may take back
+  // (`stores/agents/closedAgentTabs`); a sweep or file-follow close leaves it off.
+  | { kind: "close"; key: string; user?: boolean }
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-pane popouts: split `key` out into a new pane at `edge` of
   // `targetGroupId` (a group within the popout's subtree). `newGroupId` /
@@ -880,7 +960,17 @@ export interface SavedTabEntry {
   hostBoundUid?: string;
   // Persisted user-chosen tab colour (see TabEntry.color).
   color?: TabColor;
+  // Persisted tab-group name (see TabEntry.stack).
+  stack?: string;
+  // Persisted Important / Urgent mark (see TabEntry.mark).
+  mark?: TabMark;
+  // Persisted to-do card link (see TabEntry.todoId).
+  todoId?: string;
   mobileRequestHash?: string;
+  // Persisted Host session marker (see TabEntry.hostSession).
+  hostSession?: boolean;
+  // Persisted local-model launch line (see TabEntry.localLaunch).
+  localLaunch?: LocalLaunch;
 }
 
 /**
@@ -932,6 +1022,11 @@ export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
     ephemeral: t.ephemeral,
     autoContinue: t.autoContinue,
     color: t.color,
+    stack: t.stack,
+    mark: t.mark,
+    todoId: t.todoId,
+    hostSession: t.hostSession || undefined,
+    localLaunch: t.localLaunch,
   };
 }
 
@@ -1089,10 +1184,23 @@ interface TabsStore {
   // through, since the project it is looking at need not be the one the window
   // is showing. Falls through to `setTabColor` when they are the same scope.
   setTabColorInScope: (scope: string, key: string, color: TabColor | undefined) => void;
+  // Put one tab into the named tab group of its bar, or take it out with
+  // `undefined` (see TabEntry.stack). A tab joining a group that already has
+  // members is moved to sit right after them. Forwards from a popout like the
+  // colour above.
+  setTabStack: (key: string, stack: string | undefined) => void;
+  // Mark one tab Important / Urgent, or clear it with `undefined` (see
+  // TabEntry.mark). Writes the scope that owns the tab; forwards from a popout.
+  setTabMark: (key: string, mark: TabMark | undefined) => void;
+  // Link one tab to a to-do card, or unlink it with `undefined` (see
+  // TabEntry.todoId). Same scope and popout rules as `setTabMark`.
+  setTabTodo: (key: string, todoId: string | undefined) => void;
   // Turn auto-continue on or off for ONE agent tab in `scope` (see
   // TabEntry.autoContinue). Scoped like the rename above, because the Agents
   // view is rendered for a scope that need not be the active one.
   setAutoContinueInScope: (scope: string, key: string, on: boolean) => void;
+  // Let a restored Host session spawn (see TabEntry.hostSessionPaused).
+  resumeHostSession: (scope: string, key: string) => void;
   // Move one tab next to another inside `scope`, as the Agents view's drag
   // reorder does. Permutes `tabsByScope[scope]` — the order the "native" sort
   // reads — and, when both tabs sit in the same layout group, that group's
@@ -1166,6 +1274,10 @@ interface TabsStore {
   // remote project). No-op when unchanged. The CenterPanel's localOnly/cwd
   // computation reads the result so the next mount spawns on the chosen side.
   setTabLocation: (key: string, location: TabLocation) => void;
+  // Respawn a tab's PTY in place with `args` — same tab, key and position.
+  // The caller ends a tmux session the tab owns first, or the respawn would
+  // just reattach to it ("Undo clear", `stores/agents/agentClearUndo`).
+  relaunchTabInScope: (scope: string, key: string, args: string[]) => void;
   // Swap the built-in viewer an embed tab renders its file with, in place — same
   // tab, same key, same position in the layout. `viewer` is persisted, so a tab
   // saved under a viewer choice the app has since revised comes back under the
@@ -1447,6 +1559,13 @@ interface TabsStore {
   // Never invokes the backend: the window is already gone, and the two
   // dock paths' `attach_subwindow` is idempotent anyway.
   recoverDetachedGroup: (scope: string, groupId: string) => void;
+  // #42: ask the backend for every popout of `scope` — called by `setScope`
+  // right after the scope sync. A live popout makes each call a no-op (X11,
+  // Windows, macOS park by hiding, so theirs always are); native Wayland closes
+  // an inactive scope's popouts and keeps their records, so this is where they
+  // come back, at their saved size. A rebuild docks the record back only after
+  // bounded retries have failed (`recoverDetachedGroup`).
+  respawnDetachedForScope: (scope: string) => void;
   // #42: WM-close of a popout closes its tabs for good instead of docking them
   // back: kills each tab's PTY (the popout's panes are NOT mounted in the main
   // window and the detached viewer is attach-only, so nothing else tears them
@@ -2289,8 +2408,17 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // so this is the one call that covers all of them. Never from a popout's own
     // heap (`getDetachedWindowContext`): its store mirrors ONE group and its idea
     // of "the scope" must not drive which windows the main window shows.
+    //
+    // Then the incoming scope's popouts are asked for (after the sync, so a
+    // Wayland retire of the same label is already known to the backend, which
+    // waits it out) — unless the scope moved on meanwhile: its own setScope
+    // asks for its own.
     if (prev !== scope && !getDetachedWindowContext()) {
-      void invoke("sync_detached_scope", { scope }).catch(() => {});
+      void invoke("sync_detached_scope", { scope })
+        .catch(() => {})
+        .then(() => {
+          if (get().scope === scope) get().respawnDetachedForScope(scope);
+        });
     }
     set((s) => {
       const tabs = s.tabsByScope[scope] ?? [];
@@ -2385,8 +2513,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 
   // The current-scope variant of `addTabToScope`. One implementation: the two
   // were near-identical copies and had already drifted (only this one threaded
-  // `seeded` through).
-  addTab: (tab, opts) => get().addTabToScope(get().scope, tab, opts),
+  // `seeded` through). In a popout the "current scope" is the popout's own
+  // (`ctx.scope`): its heap's `scope` never leaves the store default `"root"`,
+  // so every plain `addTab` there — a Ctrl+clicked `\input`, a followed link —
+  // used to be shipped as an add-to-ROOT, one fresh copy per click.
+  addTab: (tab, opts) =>
+    get().addTabToScope(getDetachedWindowContext()?.scope ?? get().scope, tab, opts),
 
   addTabToScope: (scope, tab, opts) => {
     // Popout heap (#231): this store owns no layout, so a tab minted here would
@@ -2411,6 +2543,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       ...withTmuxSession(withRunHostDefault(scope, tab), scope),
       key,
       scope,
+      launchedAt: Date.now(),
     };
     if (!opts?.seeded) countTabOpen(scope, entry);
     set((s) => {
@@ -2457,6 +2590,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         get().scope,
       ),
       key: nextKeyValue,
+      launchedAt: Date.now(),
     };
     countTabOpen(get().scope, entry);
     set((s) => {
@@ -2552,6 +2686,71 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  setTabStack: (key, stack) => {
+    const next = normalizeStackName(stack);
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "setStack", key, stack: next });
+      return;
+    }
+    const owner = scopeOfTab(get(), key);
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
+      if (!tabs.some((t) => t.key === key && t.stack !== next)) return {};
+      const nextTabs = tabs.map((t) => (t.key === key ? { ...t, stack: next } : t));
+      let nextLayout = layout;
+      const home = next ? findGroupOfTab(layout, key) : null;
+      if (next && home && layout) {
+        const stackOf = (k: string) => nextTabs.find((t) => t.key === k)?.stack;
+        const order = stackJoinOrder(home.group.tabKeys, key, next, stackOf);
+        if (order) nextLayout = mapGroup(layout, home.group.id, (g) => ({ ...g, tabKeys: order }));
+      }
+      return writeScope(s, owner, nextTabs, nextLayout, focusedGroupId);
+    });
+  },
+
+  setTabMark: (key, mark) => {
+    const next = isTabMark(mark) ? mark : undefined;
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "setMark", key, mark: next });
+      return;
+    }
+    const owner = scopeOfTab(get(), key);
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
+      if (!tabs.some((t) => t.key === key && t.mark !== next)) return {};
+      return writeScope(
+        s,
+        owner,
+        tabs.map((t) => (t.key === key ? { ...t, mark: next } : t)),
+        layout,
+        focusedGroupId,
+      );
+    });
+  },
+
+  setTabTodo: (key, todoId) => {
+    const next = normalizeTodoId(todoId);
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "setTodo", key, todoId: next });
+      return;
+    }
+    const owner = scopeOfTab(get(), key);
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
+      if (!tabs.some((t) => t.key === key && t.todoId !== next)) return {};
+      return writeScope(
+        s,
+        owner,
+        tabs.map((t) => (t.key === key ? { ...t, todoId: next } : t)),
+        layout,
+        focusedGroupId,
+      );
+    });
+  },
+
   setTabColorInScope: (scope, key, color) => {
     if (scope === get().scope) {
       get().setTabColor(key, color);
@@ -2565,6 +2764,20 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         s,
         scope,
         tabs.map((t) => (t.key === key ? { ...t, color: next } : t)),
+        s.layoutByScope[scope] ?? null,
+        s.focusedGroupByScope[scope] ?? null,
+      );
+    });
+  },
+
+  resumeHostSession: (scope, key) => {
+    set((s) => {
+      const tabs = s.tabsByScope[scope];
+      if (!tabs?.some((t) => t.key === key && t.hostSessionPaused)) return {};
+      return writeScope(
+        s,
+        scope,
+        tabs.map((t) => (t.key === key ? { ...t, hostSessionPaused: false } : t)),
         s.layoutByScope[scope] ?? null,
         s.focusedGroupByScope[scope] ?? null,
       );
@@ -2962,6 +3175,17 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // doesn't churn the tabs array / wake the saveLayout debounce.
       if (!changed) return {};
       return writeScope(s, owner, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  relaunchTabInScope: (scope, key, args) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = scopeState(s, scope);
+      if (!tabs.some((t) => t.key === key)) return {};
+      const nextTabs = tabs.map((t) =>
+        t.key === key ? { ...t, args, relaunchSeq: (t.relaunchSeq ?? 0) + 1 } : t,
+      );
+      return writeScope(s, scope, nextTabs, layout, focusedGroupId);
     });
   },
 
@@ -3367,21 +3591,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // Spawn the detached OS window. The store mutation + IPC live in one
       // action so they can't drift. `bounds` (when restoring a popout on
       // restart) reopens it at its prior place/size. A backend failure (#224)
-      // must NOT leave the group recorded as detached — there is no window to
-      // dock it back from, and the record would persist `detached:true` and
-      // repeat the failure at every launch — so the record is re-docked into the
-      // layout it just left.
-      const b = opts?.bounds;
-      invoke("detach_subwindow", {
-        projectId: scope,
-        groupId,
-        x: b?.x ?? null,
-        y: b?.y ?? null,
-        width: b?.w ?? null,
-        height: b?.h ?? null,
-      }).catch(() => {
-        get().recoverDetachedGroup(scope, groupId);
-      });
+      // retries while the display/retire state settles. If every attempt fails,
+      // the group is re-docked so its tabs remain reachable.
+      void openDetachedWindow(scope, groupId);
     }
     return label;
   },
@@ -3430,14 +3642,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -3473,14 +3678,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -3840,14 +4038,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -3889,14 +4080,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -4024,6 +4208,35 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           if (nextTabs) {
             nextTabs = nextTabs.map((t) =>
               t.key === edit.key && t.color !== color ? { ...t, color } : t,
+            );
+          }
+          break;
+        }
+        case "setStack": {
+          // From the popout channel: normalized here, not trusted as sent.
+          const stack = normalizeStackName(edit.stack);
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && t.stack !== stack ? { ...t, stack } : t,
+            );
+          }
+          break;
+        }
+        case "setMark": {
+          // From the popout channel: validated, not trusted as sent.
+          const mark = isTabMark(edit.mark) ? edit.mark : undefined;
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && t.mark !== mark ? { ...t, mark } : t,
+            );
+          }
+          break;
+        }
+        case "setTodo": {
+          const todoId = normalizeTodoId(edit.todoId);
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && t.todoId !== todoId ? { ...t, todoId } : t,
             );
           }
           break;
@@ -4308,6 +4521,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       get().attachGroup(groupId, { skipBackend: true });
     } else {
       get().dropDetachedGroup(scope, groupId, { skipBackend: true });
+    }
+  },
+
+  respawnDetachedForScope: (scope) => {
+    if (getDetachedWindowContext()) return;
+    for (const entry of get().detachedGroupsByScope[scope] ?? []) {
+      void openDetachedWindow(scope, entry.id);
     }
   },
 
@@ -4626,12 +4846,20 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // the table produces the same args anyway, so preferring it costs nothing.
       // A custom agent's flag is re-derived from `settings.json` by the backend
       // sanitizer (`terminal_service::sanitize_tab_layout`) before it reaches here.
+      // A relaunchable local-model tab runs its launch line again: the backend
+      // re-validated it against the driver table on load (`localLaunch`).
+      const localLaunch =
+        kind === "local_agent" && isRelaunchableLocalTab({ kind, localLaunch: t.localLaunch })
+          ? t.localLaunch
+          : undefined;
       const base =
         isResumableAgentTab(tabShape) && t.sessionId
           ? t.cmd in RESUMABLE_AGENTS
             ? RESUMABLE_AGENTS[t.cmd](t.sessionId)
             : (t.resumeArgs ?? [])
-          : [];
+          : localLaunch
+            ? [...localLaunch.args]
+            : [];
       // No permission-mode flag is folded in here, and a layout written before
       // that toggle was removed carries an `agentMode` this ignores. An agent
       // restores on the plain resume command and picks its mode up where it
@@ -4648,7 +4876,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // from the durable sessionId, just as `buildStaticTabSpec` does for a new
       // tab; it is not a user-configurable environment override.
       const env = { ...(t.env ?? {}) };
-      if (t.cmd === "codex" && t.sessionId) {
+      if ((t.cmd === "codex" || t.cmd === "vibe") && t.sessionId) {
         env.ELDRUN_TAB_UID = t.sessionId;
       }
       return {
@@ -4689,8 +4917,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // subsequent restart).
         tmuxSession:
           t.tmuxSession ??
-          ((kind === "shell" || kind === "agent") && !t.tmuxAttach
-            ? newTmuxSessionName(targetScope ?? get().scope, kind === "agent" ? "agent" : "shell")
+          ((kind === "shell" || kind === "agent" || kind === "local_agent") && !t.tmuxAttach
+            ? newTmuxSessionName(targetScope ?? get().scope, kind === "shell" ? "shell" : "agent")
             : undefined),
         // A Sessions-view attach tab reattaches to its tmux session on restart.
         tmuxAttach: t.tmuxAttach,
@@ -4700,6 +4928,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // authority the user never asked for.
         hostBoundUid: t.hostBoundUid,
         mobileRequestHash: t.mobileRequestHash,
+        localLaunch,
+        // A Host session never auto-resumes after a restart: it comes back
+        // paused and waits for an explicit Resume (only in the root scope,
+        // the one place the marker means anything).
+        ...(t.hostSession && (targetScope ?? get().scope) === ROOT_SCOPE
+          ? { hostSession: true, hostSessionPaused: true }
+          : {}),
         // Restore the no-tmux marker BEFORE anything reads it: the minted name
         // above is harmless on such a tab precisely because `shouldPersistTab`
         // refuses to use it.
@@ -4712,6 +4947,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // rather than trusted: this layout is a file on disk, and an id that is
         // not in `TAB_COLORS` would reach `--tab-accent` as raw CSS.
         color: isTabColor(t.color) ? t.color : undefined,
+        // Its tab group, likewise from the file: plain text, capped.
+        stack: normalizeStackName(t.stack),
+        mark: isTabMark(t.mark) ? t.mark : undefined,
+        todoId: normalizeTodoId(t.todoId),
       };
     });
 
@@ -4931,6 +5170,48 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 }));
 
+// A detached window can fail to build while a display is being removed, or
+// while Wayland is still retiring its previous window under the same label.
+// Keep its layout detached through those failures. Only an exhausted retry may
+// dock it back, so a transient OS event cannot rewrite the saved window layout;
+// the retries span ~30 s because switching to one screen reconfigures the
+// outputs in several steps, seconds apart.
+const openingDetachedWindows = new Map<string, Promise<void>>();
+const detachedOpenDelays = [0, 300, 900, 1800, 3600, 7200, 15000];
+
+function openDetachedWindow(scope: string, groupId: string): Promise<void> {
+  const label = `detached-${scope}-${groupId}`;
+  const pending = openingDetachedWindows.get(label);
+  if (pending) return pending;
+  const task = (async () => {
+    for (const delay of detachedOpenDelays) {
+      if (delay) await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      const entry = (useTabsStore.getState().detachedGroupsByScope[scope] ?? [])
+        .find((d) => d.id === groupId);
+      if (!entry) return;
+      const b = entry.bounds;
+      try {
+        await invoke("detach_subwindow", {
+          projectId: scope,
+          groupId,
+          x: b?.x ?? null,
+          y: b?.y ?? null,
+          width: b?.w ?? null,
+          height: b?.h ?? null,
+        });
+        return;
+      } catch {
+        // The next attempt uses the latest bounds, including a monitor move.
+      }
+    }
+    useTabsStore.getState().recoverDetachedGroup(scope, groupId);
+  })().finally(() => {
+    openingDetachedWindows.delete(label);
+  });
+  openingDetachedWindows.set(label, task);
+  return task;
+}
+
 /**
  * Hydrate a scope from its saved tab session on disk — THE one implementation
  * of "read `load_tab_session`, filter to restorable tabs, `loadFromLayout`".
@@ -4976,6 +5257,7 @@ export async function hydrateScopeFromDisk(
       sessionId: tab.sessionId,
       resumeArgs: tab.resumeArgs,
       viewer: tab.viewer,
+      localLaunch: tab.localLaunch,
     }),
   );
   if (restorable.length === 0) {
@@ -5131,10 +5413,11 @@ export function isPtyTabKind(kind: TabKind): boolean {
  * Agents whose prior session can be resumed, mapping `cmd` → the launch args to
  * relaunch with that session. Two resume styles are wired:
  *
- *  - id-based: Claude (`--resume <id>`) and Codex (`codex resume`, args injected
- *    by the backend) resume a *specific* captured session.
+ *  - id-based: Claude (`--resume <id>`), Codex (`codex resume`) and Vibe
+ *    (`--resume <id>`) resume a captured session; the backend injects the
+ *    latter two from their per-tab hook records.
  *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Gemini, Grok,
- *    Google Antigravity and Mistral/vibe have no caller-supplied launch id, so
+ *    Google Antigravity have no caller-supplied launch id, so
  *    Eldrun re-launches with their "continue the most recent session" flag.
  *    Because each agent tab
  *    launches in the project directory, that most-recent session IS the tab's
@@ -5172,9 +5455,8 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   gemini: () => ["--resume", "latest"],
   // Antigravity CLI: `-c`/`--continue` resumes the most recent conversation.
   agy: () => ["--continue"],
-  // Mistral/vibe: `-c/--continue` resumes the most recent saved session. (Its
-  // `--resume [id]` with no id would open an interactive picker, which hangs a
-  // restore — so `--continue` is the non-interactive path.)
+  // Vibe mints its own ID. The backend replaces this legacy fallback with
+  // `--resume <live-id>` once its post-agent hook has recorded a turn.
   vibe: () => ["--continue"],
 };
 
@@ -5196,6 +5478,28 @@ export function isResumableAgentTab(
 }
 
 /**
+ * Whether a tab is a local-model tab that restores by relaunching its launch
+ * line (`TabEntry.localLaunch`) — the drivers other than Mistral, which have no
+ * session to resume. While its tmux session lives, the restore reattaches the
+ * running agent; once that is gone the relaunch is a fresh conversation.
+ */
+export function isRelaunchableLocalTab(
+  tab: { kind: TabKind; localLaunch?: LocalLaunch },
+): boolean {
+  const launch = tab.localLaunch;
+  return (
+    tab.kind === "local_agent" &&
+    !!launch &&
+    typeof launch.driver === "string" &&
+    !!launch.driver &&
+    typeof launch.model === "string" &&
+    !!launch.model &&
+    Array.isArray(launch.args) &&
+    launch.args.every((arg) => typeof arg === "string")
+  );
+}
+
+/**
  * Whether a tab is a restorable embed: a file dragged from the FileTree onto a
  * tab bar that renders IN-APP via a built-in `viewer` (pdf/image/markdown/text).
  * These re-render the file from its durable `embedPath` on restart with no side
@@ -5212,7 +5516,8 @@ export function isRestorableEmbedTab(
 /**
  * Tab-level restorability (supersedes bare `isRestorableKind` at call sites that
  * have the full tab): a tab survives a restart if its kind is restorable, it is
- * a resumable agent tab, or it is an in-app file-viewer embed.
+ * a resumable agent tab, a relaunchable local-model tab, or an in-app
+ * file-viewer embed.
  */
 export function isRestorableTab(
   tab: {
@@ -5221,11 +5526,13 @@ export function isRestorableTab(
     sessionId?: string;
     resumeArgs?: string[];
     viewer?: TabEntry["viewer"];
+    localLaunch?: LocalLaunch;
   },
 ): boolean {
   return (
     isRestorableKind(tab.kind) ||
     isResumableAgentTab(tab) ||
+    isRelaunchableLocalTab(tab) ||
     isRestorableEmbedTab(tab)
   );
 }

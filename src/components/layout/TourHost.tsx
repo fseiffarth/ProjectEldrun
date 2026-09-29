@@ -71,9 +71,8 @@ function sameRect(a: DOMRect | null, b: DOMRect | null): boolean {
 }
 
 /**
- * Drives the guided walkthroughs — the main tour, the advanced (remote) tour,
- * and the lessons: listens for the `eldrun:start-tour` /
- * `eldrun:start-advanced-tour` events, measures the active step's anchor (re-measuring as
+ * Drives the guided walkthroughs — the lessons, the two tours among them:
+ * listens for the `eldrun:start-tour` event, measures the active step's anchor (re-measuring as
  * the layout shifts), pulses the highlighted element, owns the keyboard
  * navigation, and renders the `TourCoachmark` overlay.
  *
@@ -92,7 +91,6 @@ export function TourHost() {
   const index = useTourStore((s) => s.index);
   const steps = useTourStore((s) => s.steps);
   const start = useTourStore((s) => s.start);
-  const startAdvanced = useTourStore((s) => s.startAdvanced);
   const next = useTourStore((s) => s.next);
   const prev = useTourStore((s) => s.prev);
   const skip = useTourStore((s) => s.skip);
@@ -111,18 +109,13 @@ export function TourHost() {
   const step = active ? steps[index] : null;
   const task = step?.task ?? null;
 
-  // Entry points: the gear menu / Settings / HowToStart dispatch the first, the
-  // gear menu and Settings the second (the first-run modal stays local-only).
+  // Entry point: the first-run wizard's "Take a tour" starts the quick-tour
+  // lesson directly; every other lesson starts from the Lessons picker.
   useEffect(() => {
     const onStart = () => start();
-    const onStartAdvanced = () => startAdvanced();
     window.addEventListener("eldrun:start-tour", onStart);
-    window.addEventListener("eldrun:start-advanced-tour", onStartAdvanced);
-    return () => {
-      window.removeEventListener("eldrun:start-tour", onStart);
-      window.removeEventListener("eldrun:start-advanced-tour", onStartAdvanced);
-    };
-  }, [start, startAdvanced]);
+    return () => window.removeEventListener("eldrun:start-tour", onStart);
+  }, [start]);
 
   // Run a step's optional prepare side-effect (e.g. reveal the file panel so
   // the step has an anchor to spotlight) when it becomes active.

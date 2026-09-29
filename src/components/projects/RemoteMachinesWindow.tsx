@@ -28,6 +28,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { formatRemoteTarget, resolveLocalMirror } from "../../types";
 import type { ComputeHost, GlobalMachine, ProjectEntry } from "../../types";
 import { useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** Distinct PTY id per login terminal opened here — the id is the handle
  *  `pty_kill` and the output stream use, so it must never be reused. */
@@ -760,7 +761,7 @@ export function RemoteMachinesWindow({
                 autoFocus
               />
             </label>
-            {dropError && <div className="project-dialog-error">{dropError}</div>}
+            {dropError && <ErrorNote className="project-dialog-error" error={dropError} />}
             <div className="project-dialog-actions">
               <button type="button" onClick={() => setPendingDrop(null)}>
                 {t("common.cancel")}
@@ -1042,8 +1043,8 @@ export function RemoteMachinesWindow({
                 busy={!!loginTerm}
                 onChange={setViaTerminal}
               />
-              {browse.error && <div className="project-dialog-error">{browse.error}</div>}
-              {addError && <div className="project-dialog-error">{addError}</div>}
+              {browse.error && <ErrorNote className="project-dialog-error" error={browse.error} />}
+              {addError && <ErrorNote className="project-dialog-error" error={addError} />}
               <div className="project-dialog-actions">
                 <button type="button" onClick={onClose}>{t("common.close")}</button>
                 {/* One action, three meanings — the step the form is actually on:
@@ -1155,7 +1156,7 @@ export function RemoteMachinesWindow({
                   spellCheck={false}
                 />
               </label>
-              {addError && <div className="project-dialog-error">{addError}</div>}
+              {addError && <ErrorNote className="project-dialog-error" error={addError} />}
               <div className="project-dialog-actions">
                 <button type="button" onClick={onClose}>{t("common.close")}</button>
                 <button type="button" disabled={busy} onClick={() => void addMachine()}>

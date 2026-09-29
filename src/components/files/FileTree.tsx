@@ -16,12 +16,15 @@ import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSy
 import {
   startCursorPoll,
   desktopCursor,
+  desktopCoordinatesSupported,
   snapshotFrame,
   physToClient,
   type PhysPoint,
   type WindowFrame,
 } from "../../lib/window/coords";
 import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/window/dragPlatform";
+import { newDropToken, probeDropTarget } from "../../lib/window/dropClaim";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
@@ -32,7 +35,7 @@ import { useSyncStore, isPathExcluded, dirSyncAggregate, type SyncFileState } fr
 import { confirmSyncTransfer } from "../../stores/remote/syncConfirm";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
-import { type FileEntry, type InternalViewer, type SortKey, fmtSize, fmtModified, visibleEntries, isHiddenByEnding, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
+import { type FileEntry, type InternalViewer, type SortKey, fmtSize, fmtModified, visibleEntries, sortEntries, isHiddenByEnding, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import {
   dropFileTreeSnapshot,
   fileTreeSnapshotKey,
@@ -82,8 +85,9 @@ import { RenameDialog, containingFolderLabel } from "./RenameDialog";
 import { useDialogs } from "../common/PromptDialogs";
 import { Dropdown } from "../common/Dropdown";
 import { FileIcon } from "../common/icons/FileIcon";
-import { SearchIcon } from "../common/icons/Icon";
+import { ArrowDownIcon, ArrowUpIcon, PlayIcon, SearchIcon } from "../common/icons/Icon";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 // The context menu's Delete rows name their keyboard twin (handleTreeKeyDown).
 const DELETE_KEY: ChordDescriptor = { key: "Delete" };
@@ -901,7 +905,25 @@ export function FileTree({
     // switch is to see them in place, not to hide them.
     const regular = separateGitignored ? nonStandard.filter((e) => !isIgnored(e)) : nonStandard;
     const gitignored = separateGitignored ? nonStandard.filter(isIgnored) : [];
-    return { regular, standard, gitignored, hiddenExt };
+    // The listing gives every folder size 0, so "Size" must sort on the figure
+    // the row shows: the recursive walk, less its ignored bytes outside the
+    // gitignored / hidden-by-extension groups (mirrors `dirShown` in
+    // renderEntry). An unwalked or scan-excluded folder sorts last.
+    const bySize = (list: FileEntry[], subtractIgnored: boolean) =>
+      sortKey !== "size"
+        ? list
+        : sortEntries(list, "size", descending, (e) => {
+            if (!e.is_dir) return e.size;
+            const total = dirSizes[e.path];
+            if (total === undefined) return undefined;
+            return subtractIgnored ? total - (dirIgnoredBytes[e.path] ?? 0) : total;
+          });
+    return {
+      regular: bySize(regular, true),
+      standard: bySize(standard, true),
+      gitignored: bySize(gitignored, false),
+      hiddenExt: bySize(hiddenExt, false),
+    };
   }, [
     entries,
     relPath,
@@ -912,6 +934,8 @@ export function FileTree({
     dirIgnoredBytes,
     hiddenEndings,
     shownPaths,
+    sortKey,
+    descending,
   ]);
 
   // How many rows the tree will actually render, raised a page at a time by the
@@ -1451,7 +1475,9 @@ export function FileTree({
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
 
-    invoke("watch_dir", { path: absDir }).catch(() => {});
+    // `repoDir` points the backend's `.git` watch at the project's repo, so
+    // add/commit/push (which only write `.git/`) re-read the markers too.
+    invoke("watch_dir", { path: absDir, repoDir: projectDir }).catch(() => {});
     listen("fs-change", () => {
       // Coalesce the burst of events a single write emits into one reload.
       if (timer) clearTimeout(timer);
@@ -2187,6 +2213,7 @@ export function FileTree({
     };
 
     const commitRelease = async (shiftKey: boolean) => {
+      const releasedAt = Date.now();
       // The OS owns the drag: it is dropping into an external app, and the
       // in-app drop targets don't apply. `eldrun:file-drag-ended` ends the
       // gesture instead (a stray pointerup here must not ALSO spawn a tab or a
@@ -2288,6 +2315,31 @@ export function FileTree({
         lastClient,
         viewport: { w: window.innerWidth, h: window.innerHeight },
       });
+      // No desktop geometry (native Wayland): `phys` is null, so the popout
+      // hit-test above could not run — but a popout may well be under the
+      // cursor. Ask this scope's windows to claim the release
+      // (`lib/window/dropClaim`), exactly as a tab dragged out of the bar does;
+      // the popout that receives the pointer answers with the pane under it.
+      if (outside && !shiftKey && !phys && !(await desktopCoordinatesSupported())) {
+        const scope = useTabsStore.getState().scope;
+        const claim = await probeDropTarget({
+          token: newDropToken(getCurrentWindow().label),
+          scope,
+          sourceLabel: getCurrentWindow().label,
+          tabKey: "",
+          label: d.label,
+          releasedAt,
+        });
+        if (claim?.groupId) {
+          commitFileDrop(d, projectId, projectDir, null, {
+            scope,
+            groupId: claim.groupId,
+            target: claim.target ?? undefined,
+          });
+          useDragStore.getState().end();
+          return;
+        }
+      }
       const detachBounds =
         outside && phys
           ? {
@@ -3104,7 +3156,7 @@ export function FileTree({
       return;
     }
     const tab = {
-      label: `▶ ${entry.name}`,
+      label: `▶\uFE0E ${entry.name}`,
       cmd: interp,
       cwd: plan.cwd,
       kind: "shell" as const,
@@ -3371,7 +3423,7 @@ export function FileTree({
             void pushRelToHost(relPath, label, true);
           }}
         >
-          ⬆
+          <ArrowUpIcon />
         </button>
       );
     }
@@ -3410,7 +3462,7 @@ export function FileTree({
             : pushRelToHost(relPath, label, true));
         }}
       >
-        {remoteListing ? "⬇" : "⬆"}
+        {remoteListing ? <ArrowDownIcon /> : <ArrowUpIcon />}
       </button>
     );
   }
@@ -3779,7 +3831,7 @@ export function FileTree({
       })()}
       </div>
       {loading && <div className="file-tree-loading">{t("common.loading")}</div>}
-      {error && <div className="file-tree-error">{error}</div>}
+      {error && <ErrorNote className="file-tree-error" error={error} />}
       {/* What the last transfer did — the success half, which nothing reported
           before. Same chrome as the whole-project row's result line. */}
       {syncNotice && (
@@ -3986,7 +4038,7 @@ export function FileTree({
                               void (remoteListing ? syncEntryToLocal(e) : pushEntryToHost(e));
                             }}
                           >
-                            {thisBusy ? <span className="file-run-spinner" /> : remoteListing ? "⬇" : "⬆"}
+                            {thisBusy ? <span className="file-run-spinner" /> : remoteListing ? <ArrowDownIcon /> : <ArrowUpIcon />}
                           </button>
                         );
                       })()}
@@ -4015,7 +4067,7 @@ export function FileTree({
                               void pushEntryToHost(e);
                             }}
                           >
-                            {thisBusy ? <span className="file-run-spinner" /> : "⬆"}
+                            {thisBusy ? <span className="file-run-spinner" /> : <ArrowUpIcon />}
                           </button>
                         );
                       })()}
@@ -4087,7 +4139,7 @@ export function FileTree({
                   }}
                   disabled={runLocked}
                 >
-                  ▶
+                  <PlayIcon />
                 </button>
               )}
               {isCompiling && (
@@ -4784,9 +4836,7 @@ export function FileTree({
                 if (e.key === "Escape") setPastePrompt(null);
               }}
             />
-            {pastePrompt.error && (
-              <div className="file-delete-path file-delete-error">{pastePrompt.error}</div>
-            )}
+            {pastePrompt.error && <ErrorNote className="file-delete-path file-delete-error" error={pastePrompt.error} />}
             <div className="file-delete-actions">
               <button type="button" onClick={() => setPastePrompt(null)} disabled={pasteBusy}>{t("common.cancel")}</button>
               <button type="button" onClick={confirmPaste} disabled={pasteBusy || !pastePrompt.name.trim()}>

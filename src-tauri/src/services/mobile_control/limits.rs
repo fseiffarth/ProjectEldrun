@@ -5,12 +5,18 @@
 //! tailnet peer could open thousands of dribbling connections and exhaust the
 //! sidecar's file descriptors without ever authenticating.
 //!
-//! Two bounds, both on the raw stream so they apply *before* any handler runs:
+//! Three bounds, all on the raw stream so they apply *before* any handler runs:
 //!
 //! * a semaphore permit per accepted connection, released when the stream drops;
 //! * a handshake deadline that fires while the server has not yet written a
-//!   single byte. Completing a request lifts it, so long-lived WebSockets are
-//!   untouched, while a connection that never finishes its headers dies.
+//!   single byte, so a connection that never finishes its headers dies;
+//! * once the server has answered, an idle deadline re-armed by every byte read
+//!   or written. Without it, 256 sockets held open after one completed request
+//!   — from any tailnet node, or any local process, since the agent fence
+//!   shares the network namespace — sat on every permit for as long as the
+//!   kernel kept them, and the phone could not connect at all. A live
+//!   WebSocket is never idle this long: the phone pings every 20 s in the
+//!   foreground and about once a minute throttled in the background.
 
 use std::{
     future::Future,
@@ -33,6 +39,8 @@ use tokio::{
 pub const MAX_CONNECTIONS: usize = 256;
 /// A real client completes its request headers in milliseconds over loopback.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long an answered connection may carry no byte in either direction.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 pub struct GuardedListener {
     inner: TcpListener,
@@ -77,7 +85,13 @@ impl axum::serve::Listener for GuardedListener {
 pub struct GuardedStream {
     inner: TcpStream,
     _permit: OwnedSemaphorePermit,
-    deadline: Option<Pin<Box<Sleep>>>,
+    /// The handshake deadline until the server has answered, the idle deadline
+    /// after — re-armed by every byte that then crosses.
+    deadline: Pin<Box<Sleep>>,
+    /// Whether the server has written anything yet. Only then do reads re-arm
+    /// the deadline: a slowloris dribbling one header byte per second must not
+    /// be able to keep the handshake window open.
+    answered: bool,
 }
 
 impl GuardedStream {
@@ -85,8 +99,15 @@ impl GuardedStream {
         Self {
             inner,
             _permit: permit,
-            deadline: Some(Box::pin(sleep(HANDSHAKE_TIMEOUT))),
+            deadline: Box::pin(sleep(HANDSHAKE_TIMEOUT)),
+            answered: false,
         }
+    }
+
+    fn rearm_idle(&mut self) {
+        self.deadline
+            .as_mut()
+            .reset(tokio::time::Instant::now() + IDLE_TIMEOUT);
     }
 }
 
@@ -99,15 +120,18 @@ impl AsyncRead for GuardedStream {
         // Polling the timer here is what makes it fire on a silent connection:
         // it registers our waker, so a peer that sends nothing still wakes us at
         // the deadline instead of parking forever on `Poll::Pending`.
-        if let Some(deadline) = self.deadline.as_mut() {
-            if deadline.as_mut().poll(cx).is_ready() {
-                return Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "handshake timeout",
-                )));
-            }
+        if self.deadline.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                if self.answered { "idle timeout" } else { "handshake timeout" },
+            )));
         }
-        Pin::new(&mut self.inner).poll_read(cx, buf)
+        let before = buf.filled().len();
+        let read = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if self.answered && matches!(read, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            self.rearm_idle();
+        }
+        read
     }
 }
 
@@ -118,10 +142,11 @@ impl AsyncWrite for GuardedStream {
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let written = Pin::new(&mut self.inner).poll_write(cx, buf);
-        // The server has answered, so this is a real client: lift the deadline
-        // rather than tearing down an idle WebSocket or a slow download.
+        // The server has answered, so this is a real client: the handshake
+        // deadline gives way to the idle one, which every byte re-arms.
         if matches!(written, Poll::Ready(Ok(_))) {
-            self.deadline = None;
+            self.answered = true;
+            self.rearm_idle();
         }
         written
     }
@@ -141,7 +166,8 @@ impl AsyncWrite for GuardedStream {
     ) -> Poll<io::Result<usize>> {
         let written = Pin::new(&mut self.inner).poll_write_vectored(cx, bufs);
         if matches!(written, Poll::Ready(Ok(_))) {
-            self.deadline = None;
+            self.answered = true;
+            self.rearm_idle();
         }
         written
     }
@@ -210,6 +236,38 @@ mod tests {
         stream.read_exact(&mut rest).await.expect("still open");
         assert_eq!(&rest, b"more");
         client.await.expect("client task").expect("client write");
+    }
+
+    // Same shape as the test above: real clock for the exchange, paused for
+    // the idle. A client that answered once and then held the socket open
+    // without a byte used to keep its permit until the kernel gave up on it.
+    #[tokio::test]
+    async fn an_answered_connection_that_falls_silent_is_closed_after_the_idle_window() {
+        use axum::serve::Listener;
+        let (mut guarded, address) = listener().await;
+        let client = tokio::spawn(async move {
+            let mut stream = TcpStream::connect(address).await.expect("connect");
+            stream.write_all(b"hello").await.expect("write");
+            let mut buffer = [0u8; 2];
+            let _ = stream.read_exact(&mut buffer).await;
+            // Then hold the socket open and say nothing, ever.
+            let mut rest = [0u8; 1];
+            let _ = stream.read(&mut rest).await;
+        });
+        let (mut stream, _) = guarded.accept().await;
+        let mut buffer = [0u8; 5];
+        stream.read_exact(&mut buffer).await.expect("read request");
+        stream.write_all(b"ok").await.expect("respond");
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
+        let mut rest = [0u8; 4];
+        let error = stream.read(&mut rest).await.expect_err("idle timeout");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() >= IDLE_TIMEOUT);
+        // Well past the handshake window, which no longer applies here.
+        assert!(started.elapsed() > HANDSHAKE_TIMEOUT * 4);
+        drop(stream);
+        client.abort();
     }
 
     #[tokio::test]

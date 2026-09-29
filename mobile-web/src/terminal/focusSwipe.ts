@@ -1,6 +1,7 @@
 /**
  * The Focus view's sideways swipe: left→right reveals the agent's status
- * strip, right→left puts it away.
+ * strip, right→left puts it away. The project screen reads the same gesture
+ * for its files drawer (`ProjectFiles`), which slides in from the left.
  *
  * Every listener here is passive and nothing is ever prevented. The Focus view
  * is a reading surface whose vertical scroll and text selection are the
@@ -11,7 +12,8 @@
  *
  * Three gestures are deliberately not swipes: one starting at a screen edge
  * (Android's system back gesture lives there, and toggling the strip on the
- * way out of the app would be a surprise), one starting in a text field (a
+ * way out of the app would be a surprise — the files drawer opts its left edge
+ * back in, `leftEdge`), one starting in a text field (a
  * drag there moves the caret), and one over something that can still pan
  * sideways in that direction (a wide code block has to keep scrolling).
  */
@@ -94,7 +96,16 @@ interface Gesture {
 
 export function installFocusSwipe(
   host: HTMLElement,
-  handlers: { onSwipeRight: () => void; onSwipeLeft: () => void },
+  /** `onSwipeRight` is told where the finger landed, so a host can read a
+   * swipe from the left of the screen as something else. */
+  handlers: { onSwipeRight: (start: SwipePoint) => void; onSwipeLeft: () => void },
+  /** `ignore`: a selector whose elements never start a swipe — a control
+   * that owns its own drag (`touch-action:none`), or a sheet laid over the
+   * host that the swipe must not reach through. `leftEdge`: a start at the
+   * left edge counts too — a drawer that slides in from there is pulled from
+   * there. Where Android keeps that edge for its back gesture it cancels the
+   * touch, and a cancelled touch is never a swipe. */
+  config: { ignore?: string; leftEdge?: boolean } = {},
 ): () => void {
   let gesture: Gesture | null = null;
 
@@ -108,9 +119,10 @@ export function installFocusSwipe(
       return;
     }
     gesture = null;
-    if (x < SWIPE_EDGE_GUARD || x > window.innerWidth - SWIPE_EDGE_GUARD) return;
+    if ((x < SWIPE_EDGE_GUARD && !config.leftEdge) || x > window.innerWidth - SWIPE_EDGE_GUARD) return;
     const element = elementOf(target);
     if (element?.closest(EDITABLE)) return;
+    if (config.ignore && element?.closest(config.ignore)) return;
     gesture = { id, start: { x, y, t: now }, target: element, selection: currentSelection(), handedOff: false };
   };
 
@@ -125,7 +137,7 @@ export function installFocusSwipe(
     if (blockedByScroller(current.target, host, direction)) return;
     const selection = currentSelection();
     if (selection && selection !== current.selection) return;
-    if (direction === "right") handlers.onSwipeRight();
+    if (direction === "right") handlers.onSwipeRight(current.start);
     else handlers.onSwipeLeft();
   };
 

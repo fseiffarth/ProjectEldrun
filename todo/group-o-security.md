@@ -865,10 +865,409 @@ intent. What is left is listed here.
     checksum, so a compromised GitHub account or CI run ships code straight
     to every user who clicks Install. Sign in CI (minisign or the Tauri
     updater key) and verify before `install` runs the staged file.
-    - **Blocked on the key (2026-09-18).** Planned shape, no new crates: CI
+    - **Was blocked on the key (2026-09-18).** Planned shape, no new crates: CI
       signs each asset with `openssl dgst -sha256 -sign` (ECDSA P-256, key in
       the `RELEASE_SIGNING_KEY` secret) and uploads `<asset>.sig`; the updater
       hashes while downloading and verifies with the `p256` crate against a
       public key compiled in, refusing an unsigned or mismatched file. The
       maintainer generates the key pair; only the public half enters the repo.
-    - [ ] 🤖 Automated test — a tampered staged file is refused.
+    - **Built 2026-09-24 (not live).** Shape changed from per-asset `.sig`:
+      the release job publishes `SHA256SUMS` + `SHA256SUMS.sig` (one DER
+      signature, checked in CI against the committed public key) and fails when
+      the `RELEASE_SIGNING_KEY` secret is missing. The updater verifies the list,
+      requires the asset name to carry the release version (no signed
+      downgrade), hashes while downloading and again before `install`.
+      Key pair from `scripts/release-signing-keygen.sh`; public half in
+      `src-tauri/release-signing.pub.pem`.
+    - [x] 🤖 Automated test — openssl signatures (low- and high-S) verify;
+      tampered list, foreign key, wrong version, duplicate or missing entry are
+      refused (`services::app_update` tests).
+    - [ ] 🖐️ Manual test — after the first signed release: Settings → Updates →
+      Download on an AppImage build installs it; the release page shows
+      `SHA256SUMS` and `SHA256SUMS.sig`.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+### Threat-model re-evaluation follow-ups (2026-09-24)
+
+Found by the four-way re-read of `docs/threat_model.md` (its "Open gaps"
+table). Code-read findings; only #862 was reproduced (scratch repo, git 2.53).
+
+861. **A fenced agent can plant binaries Eldrun runs on the host.**
+    `updatable_install_dirs` (`services/agent_fence.rs`) binds `~/.local/bin`
+    and `~/.local/share/<tool>` read-write for a native-installed CLI, and
+    `paths::effective_path` prepends `~/.local/bin` to every child's PATH. A
+    planted `~/.local/bin/git` runs at the next file-tree poll, unfenced; a
+    planted `bwrap` unfences later tabs. Keep the CLI self-update working
+    without handing the agent the shared launcher dir, and resolve Eldrun's
+    own `git`/`bwrap`/`tmux`/`ssh` so a user-writable dir can't shadow them.
+    - **Fixed 2026-09-24 (not live).** Private per-tab `~/.local/bin` bound over
+      the host's; `reconcile_launcher` carries back only the launcher link into
+      its share root. `paths::system_executable` / `helper_program`: bwrap only
+      from root-owned dirs (fail closed), git/tmux/ssh/rsync prefer them.
+      macOS fence: launcher dir read-only, so `claude update` there can't swap
+      the link — **your call** whether that matters.
+    - [x] 🤖 Automated test — the fence argv binds no user-shared bin dir
+      read-write; internal tool resolution ignores a planted `~/.local/bin/git`.
+    - [ ] 🖐️ Manual test — fenced native Claude: `touch ~/.local/bin/git`
+      fails; `claude update` still works.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+862. **Planted hooks run through Eldrun's hooks-live git calls.**
+    `hardened_git_command_in` leaves hooks live; diff, stage, file diff,
+    commit-message generation and the merge-state probe rewrite the index and
+    fire `post-index-change`. A fenced agent can *create* `.git/commondir`
+    (git_guard can't cover a file that doesn't exist) to redirect hooks, and
+    plant `MERGE_HEAD` so opening Git history reaches it. Hooks off by default
+    in the hardened helper, on only for the verbs `exec_trust` gates; treat a
+    `commondir` inside a main `.git` as hostile. Widens #158's residual.
+    - **Fixed 2026-09-24 (not live).** Hooks off on every Eldrun git call but
+      the `exec_trust`-gated verbs (`run_git_hooked`/`hooked_git_command_in`);
+      `GIT_COMMON_DIR` pinned to a main `.git`. Eldrun's stage/checkout/fetch
+      no longer run your own `post-*` hooks.
+    - [x] 🤖 Automated test — a `commondir`-redirected `post-index-change` does
+      not run on diff/stage/merge-state.
+    - [ ] 🖐️ Manual test — after the plant, open the Git panel, diff a file,
+      stage it: no hook output.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+863. **SFTP entry names escape the mirror.** `sftp.rs` drops only `""`, `.`,
+    `..`; `remote_sync::join_rel`/`mirror_local_path` join the rest unconfined
+    and `replace_local_atomic` writes there — a hostile remote account returns
+    `../../.config/autostart/x.desktop`, auto-sync writes it. Also: parents are
+    followed, so a directory symlink planted in the mirror redirects a pull.
+    Names must be one component; the local path is confined to the mirror;
+    parents must not be symlinks.
+    - **Fixed 2026-09-24 (not live).** `sftp::is_single_component_name`;
+      `remote_sync::confined_mirror_path`/`confined_mirror_dir`/
+      `write_mirror_file`; rsync destination, local delete and
+      `hpc_ws_pull_logs` confined too. Residual: check-then-write, no `openat`
+      walk; a push can read through a symlinked mirror dir.
+    - [x] 🤖 Automated test — traversal names and a symlinked parent are refused.
+
+864. **Secrets in world-readable argv.** `tmux_local.rs` passes MCP tokens as
+    `tmux -e K=V`; `sandbox.rs` passes agent API keys as `docker exec -e K=V`.
+    `/proc/*/cmdline` is 0444. Move them off argv (tmux environment over the
+    socket; `docker exec -e NAME` inheriting the value). Fix the comment that
+    says argv is same-uid only.
+    - **Fixed 2026-09-24 (not live) for tmux ≥ 3.2** via `update-environment`
+      slots 8630–8632 (also stops a tab inheriting another tab's token); docker
+      `-e NAME` + client env. tmux < 3.2 still carries tokens on argv.
+    - [x] 🤖 Automated test — no spawned argv item contains a token value.
+
+865. **`~/.gemini` is read-write in every fence** (`sandbox.rs`). An
+    `mcpServers` command or hook planted there runs at the next unfenced
+    Gemini/Antigravity start. Narrow to the credential files, config shadowed
+    read-only, as for Claude/Codex. Check OpenCode's `~/.local/share/opencode`.
+    - **Fixed 2026-09-24 (not live).** Gemini/Antigravity config staged per
+      spawn, instructions/hooks/extensions read-only, IDE/agy executables
+      unmounted. **Open:** OpenCode `snapshot/` (shadow git dirs) stays
+      writable and `bin/` is only protected once it exists — needs a per-scope
+      private store like `prepare_codex_state` (210 MB db: **your call**).
+    - [x] 🤖 Automated test — fence argv mounts no Gemini config file writable.
+
+866. **Format runs project-chosen programs ungated.** `rustfmt` is rustup's
+    proxy in the project dir, so `rust-toolchain.toml` `path = "./tc"` runs the
+    repo's own binary; a `.prettierrc` holding only a module name loads that
+    module without `exec_trust`.
+    - **Fixed 2026-09-24 (not live).** `RUSTUP_TOOLCHAIN` pinned to `rustup
+      default` unless the toolchain file is a plain channel; a string-only
+      `.prettierrc` asks.
+    - [x] 🤖 Automated test — both cases ask (or are refused) before running.
+
+867. **TeX hover preview relies on the distribution's shell-escape default.**
+    Previews (on by default) run the file's preamble in the project; nothing
+    passes `-no-shell-escape`. With `shell_escape = t` in `texmf.cnf`,
+    `\write18` runs on hover. Pass `-no-shell-escape` (previews always; builds
+    unless a trusted option says otherwise), set `openout_any=p`.
+    - **Fixed 2026-09-24 (not live).** `-no-shell-escape` on every run incl.
+      format dumps; previews run with `openout_any=p`.
+    - [x] 🤖 Automated test — `engine_args` carries `-no-shell-escape`.
+
+868. **OpenVPN runs config scripts as root.** No `--script-security 1`, so a
+    `.ovpn`'s `up`/`down` run under `pkexec`; an imported bundle can name its
+    own config; root writes `--writepid` into user-writable `<state>/openvpn/`.
+    - **Fixed 2026-09-24 (not live).** `--script-security 1` after `--config`
+      on every connect path, with a clear error when a config needs a script;
+      `prepare_root_pidfile` refuses planted symlinks; imports drop every
+      OpenVPN tunnel (`transfer.note.vpnDropped`). **Open:** `plugin` and
+      `log`/`status`/`cd` directives still act as root; same-user symlink race
+      during the polkit prompt. Configs relying on `update-resolv-conf` now
+      fail — **your call** on an opt-in.
+    - [x] 🤖 Automated test — argv always carries `--script-security 1`;
+      imported entries drop `remote.openvpn`.
+
+869. **Hardening batch (not vulnerabilities today).** ODT `unzipSync` and
+    `extract_archive` get size/entry caps (zip bomb kills the main window);
+    pdf.js `isEvalSupported:false` (the worker is outside the CSP); state dir
+    0700 and `storage::write_json` 0600; pin GitHub actions by SHA; CSP
+    `base-uri 'none'; form-action 'none'`, drop `script-src blob:` if unused;
+    agent API keys only to agent tabs; CalDAV stops sending credentials to
+    server-named cross-origin/plain-http hrefs; phone PWA prototype hardening;
+    audit the fence's shared network namespace (X11/abstract sockets).
+    - **Partly done 2026-09-24:** state dir tightened to 0700 at startup and
+      new state files created 0600 (`storage::ensure_private_state_dir`,
+      `write_json`; project-folder files keep the umask); every workflow
+      action pinned by commit SHA (bump them by hand — no Dependabot).
+
+870. **Any fenced agent could plant code the next local-model tab runs.**
+    Threat model gap 7. `agent_fence::local_model_mounts` bound all of
+    `<state>/vibe_local` read-write into every fence, whatever the CLI, and
+    `register_vibe_hook_in` only appended to a local home's `hooks.toml`; vibe
+    also loads MCP servers from `config.toml`, env from `.env`, and code from
+    `tools/`/`plugins/`. A Claude tab in one project could so run a hook in
+    the next local-model tab — unfenced, or in the root console's fence.
+    - **Fixed 2026-09-24 (not live).** Only the spawn's own home is mounted,
+      and only when its `VIBE_HOME` is a direct, real child of `vibe_local`
+      (`local_model_home`); its control paths (`LOCAL_MODEL_CONTROL`) are
+      read-only binds after it (Seatbelt: denied writes), created empty where
+      missing, symlinks replaced; a local home's `hooks.toml` is rewritten to
+      Eldrun's hook alone. Residual: same-model tabs share logs, history and
+      `trusted_folders.toml`. Vibe saving its own config in a fenced local tab
+      now fails (Eldrun owns that file).
+    - [x] 🤖 Automated test — `only_the_spawns_own_local_model_home_is_mounted`,
+      `a_symlinked_control_path_is_replaced_not_followed`,
+      `a_local_model_home_keeps_only_eldruns_hook`; the layering was checked
+      once under real bubblewrap (control files unwritable and unrenamable,
+      logs/history writable, sibling homes invisible).
+    - [ ] 🖐️ Manual test — a fenced local-model (Ollama) tab starts, answers,
+      and resumes; from a fenced Claude tab `ls ~/.local/share/eldrun/vibe_local`
+      shows nothing.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+### Agent fence reevaluation follow-ups (2026-09-26)
+
+Evidence and the focused fixes are in
+`docs/context/agent_authority.md` → “Reevaluation, 2026-09-26”.
+
+- [x] **High: confine host-side agent-home I/O with directory handles.**
+  `contained_path` checks followed by path-based open/rename/chmod/unlink
+  still race an active agent replacing a directory. Cover global apply,
+  hook registration, credential keepers, home migration/preparation and
+  cleanup; test concurrent directory replacement. The planted temporary/file
+  symlink fixes do not resolve this race.
+  - **Fixed 2026-09-26 (not live).** `services::home_io` (`HomeDir`,
+    `HomeFile`): `openat(O_DIRECTORY | O_NOFOLLOW)` walk, then reads,
+    exclusive-temporary writes, `renameat`, `unlinkat`, `fchmod` relative to
+    the handle. `contained_path`/`write_replacing`/`read_plain` are gone;
+    global apply, hook registration, both keepers, the scrub, `.cache` and
+    the one-time seeding go through it. Tests swap the directory for a link
+    between the open and the write.
+- [x] **High: remove writable shared CLI payloads from the fence.**
+  Host-installed CLIs still get `~/.local/share/<tool>` writable for updates;
+  another scope or host shell then executes the modified payload. Plan the
+  migration to Eldrun-owned installs or host-side updates, preserving the
+  one-click install flow. The private launcher copy alone is insufficient.
+  - **Fixed 2026-09-26 (not live).** Every install is read-only in the
+    fence; `updatable_install_dirs`, the Copilot `pkg/` payload and the
+    private `~/.local/bin` copy + carry-back (#861) are removed; the
+    updater switch is applied to every fenced spawn. Updates: reinstall
+    through Manage CLIs (one click, unchanged) or outside Eldrun.
+- [x] **Conditional high: close terminal injection for shell-tab shims.**
+  A CLI entered in a shell uses `agent_shim`, outside the direct fenced-tmux
+  drain path. Evaluate denying injection ioctls at the Linux fence boundary
+  and terminal isolation for macOS; verify with an isolated test PTY, never
+  by injecting into the user's live terminal.
+  - **Fixed 2026-09-26 (not live), drain only.** The shim runs the fenced
+    CLI as a child, waits, and `tcflush`es the terminal's input before the
+    shell reads again (the pane drain's twin). A seccomp deny of the
+    injecting ioctls was **not** added; macOS keeps the pane drain's limit
+    (a process the agent leaves behind). Not verified on a test PTY.
+- [x] **Make shared-login integrity explicit or mediate writes.**
+  In-place writes through shared credential hard links change every scope,
+  including Host, without passing the account-adoption guard. If isolation
+  is required, use per-home copies and validated host-side reconciliation;
+  cover both in-place updates and rename rotations in tests.
+  - **Fixed 2026-09-26 (not live).** Per-home copies; the store records
+    what it last placed per home (`.placed/`); every changed copy passes
+    the account guard; adopt-all-then-place-all per pass; keeper at 5 s;
+    login dirs reconciled file by file (no bind); old hard links replaced
+    by copies. Tests: in-place and rename, refused account both ways, Host
+    home, migration, directories.
+
+- [x] **High on X11 hosts: fenced agents reached the host's abstract sockets.**
+  bubblewrap unshares only the pid namespace, so `@/tmp/.X11-unix/X0`, the
+  systemd/D-Bus buses and IDE daemons stayed reachable; with `xhost +local:`
+  or `+si:localuser:$USER` (or cookie-less `startx`) a fenced agent could log
+  keystrokes and type into unfenced windows. Wayland sockets were already
+  hidden by the private `/run`.
+  - **Fixed 2026-09-28 (not live).** `services::fence_scope`: the launcher
+    runs `eldrun --fence-scope`, which enters Landlock's
+    `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET` and execs bwrap. Skipped below
+    Landlock ABI 6 (Linux 6.12) and for a setuid bwrap; fails closed where
+    used. Checked from a fenced tab: the XWayland socket answered before
+    (refused only by its cookie) and gave `EPERM` inside the scope.
+  - [x] 🤖 Automated test — `the_scope_refuses_outside_abstract_sockets_only`
+    (skips below ABI 6), `the_helper_is_the_running_binary_even_once_replaced`,
+    `a_setuid_bwrap_gets_no_helper`, the launcher's helper case.
+  - [ ] 🖐️ Manual test — after a restart onto this build, open a new agent
+    tab and run `python3 -c 'import socket; socket.socket(1).connect(b"\0/tmp/.X11-unix/X0")'`
+    → `PermissionError`; the agent itself starts, signs in and answers, and
+    a headless browser/Playwright run inside it still works.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+### Safe for everyone — non-expert users (2026-09-24)
+
+Plan: `docs/safe_for_everyone_plan.md`. Goal: every "⚠️ yours" row in
+`docs/threat_model.md` becomes a safe default, something Eldrun handles, or a
+warning the user can't miss, so that a typical engineer or a teacher can use
+Eldrun. None of these is started.
+
+2321. **Can a fenced agent type into host windows?** The fence shares the host
+    network namespace; `DISPLAY` is not scrubbed and the abstract X11 socket is
+    reachable. With `SI:localuser:$USER` (GNOME's default) a same-uid client
+    may connect without a cookie and use XTEST. Audit it under real bubblewrap
+    on an X11 session. If it works: scrub `DISPLAY`/`XAUTHORITY` and block the
+    abstract socket (`--unshare-net` + loopback proxy to the agent's API hosts,
+    reusing the VM proxy allowlist). Splits the "shared network namespace"
+    line out of #869. **Your call:** `--unshare-net` in Standard only, or
+    everywhere. Scrubbing `DISPLAY` alone doesn't fix it: the agent can
+    connect to the abstract socket directly. On a Wayland session the exposure
+    is limited to Xwayland clients (the Wayland socket under `/run/user` is
+    hidden), so audit on a real X11 session.
+
+2322. **tmux < 3.2 still leaks tokens to other users.** Refuse token-carrying
+    tabs on an old tmux (or spawn them without tmux) instead of putting the
+    token on world-readable argv. Residual of #864.
+
+2323. **One webview script reaches all 630 commands.** Declare app commands
+    in `build.rs` (`tauri_build::Attributes::app_manifest`) and grant them per
+    window in named sets (`terminal`, `git-write`, `mail-send`, `fs-write`,
+    `update-install`, …): `main` keeps what it uses, `detached-*` only its tab
+    kind's sets, `present-*` read-only viewer commands, `browser-*` nothing.
+    Pin each window's grants in a test beside `tests/capability_scope.rs`.
+
+2324. **Safety profiles and a Safety panel.** `settings.safety_profile`:
+    `standard` (new installs) | `developer` (existing installs, today's
+    defaults) | `expert`. Standard: fence required, root console can't read
+    projects, schedule MCP off, auto-sync off, VPN import off, phone pairing
+    hidden, trust prompts per #2325. A profile sets defaults and visibility
+    only; it never overrides an explicit user choice. Safety panel: every
+    "⚠️ yours" row as on/off with a one-line risk and a link to its setting.
+    **Your call:** offer Standard once to existing installs, or not.
+
+2325. **Trust prompts a non-expert can answer.** `exec_trust` dialogs default
+    to "Don't run", say in words what would run, and in Standard run the
+    approved program in the project container when one exists. Remembered
+    answers are listed in the Safety panel and can be revoked.
+
+2326. **Red badge for unfenced + bypass mode.** When an unfenced tab's CLI has
+    a bypass/auto-approve mode (recorded by the session hook), badge the tab.
+    Display only — Eldrun still never picks or changes the mode.
+
+2327. **Agents on Windows run with the user's full rights.** No fence exists
+    there (`platform_fenceable()`).
+    - ✅ (b) The first local agent spawn is refused until the user accepts
+      once — `FenceDecision::PlatformUnaccepted`, `UnfencedPlatformDialog`,
+      `agent_fence_platform_accepted`; Settings → Agent fence can withdraw it.
+      🖐️ Not run live (no Windows box here): open an agent tab on Windows;
+      the prompt shows once, Cancel starts nothing, Accept starts the tab and
+      the next tab starts without asking. Linux/macOS never show it.
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+    - ❌ AppContainer, rejected: cuts loopback (every Eldrun MCP endpoint,
+      Ollama, agent OAuth callbacks are `127.0.0.1`; exemption is admin-only),
+      blocks Credential Manager and `%TEMP%`. Low-IL/restricted tokens don't
+      hide reads. Rationale in `docs/context/agent_authority.md`.
+    - (a) Project container (Docker Desktop) stays the opt-in stronger boundary;
+      needs `C:\` ↔ container path mapping (the same-absolute-path invariant
+      can't hold on Windows) and Docker Desktop's licensing.
+    - (c) **Candidate real fence: the Linux fence unchanged inside WSL2.**
+      Agent tabs run `wsl.exe -d <distro>` with Eldrun-owned Linux agent
+      installs; `services::agent_fence` wraps them as on Linux. Costs: hide
+      `/mnt/*` except the project (else `C:\Users\<you>` is readable), kill
+      interop, `C:\`↔`/mnt/c/` path mapping wherever paths cross (eldrun-send,
+      git MCP, mobile control), drvfs speed, no Windows toolchain for the
+      agent, one-time `wsl --install` (UAC + reboot). **Go/no-go checks, run
+      in the default WSL distro before any code:**
+      1. `bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --tmpfs /tmp true; echo $?`
+         — must print `0` (unprivileged userns + bwrap work in WSL2).
+      2. `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /run --tmpfs /tmp --unshare-user --unsetenv WSL_INTEROP --unsetenv WSL_DISTRO_NAME bash -c 'cmd.exe /c echo LEAK; powershell.exe -c echo LEAK'`
+         — must print no `LEAK` (interop dead inside the fence; if it prints,
+         the design is void until interop can be disabled per process, e.g.
+         `/proc/sys/fs/binfmt_misc/WSLInterop` is ro-bound to an empty file).
+      3. `bwrap --ro-bind / / --tmpfs /mnt/c/Users/$WINUSER --bind /mnt/c/Users/$WINUSER/<project> /mnt/c/Users/$WINUSER/<project> --unshare-user ls /mnt/c/Users/$WINUSER`
+         — must list only `<project>`, and a write into it must land on `C:\`.
+      4. From WSL: `curl -s http://127.0.0.1:<eldrun-mcp-port>/mcp/help` —
+         reaches Eldrun only under mirrored networking (`.wslconfig`
+         `networkingMode=mirrored`, Win11 22H2+); NAT needs Eldrun to also
+         bind the WSL vEthernet address (token-protected as today).
+
+2328. **Warn about a planted `.git/commondir`.** Eldrun's own git ignores it
+    (#862), but the user's own terminal git follows it. Detect a `commondir`
+    inside a main `.git` and offer to remove it.
+
+2329. **Updates: check in the background, sign offline.** The update check runs
+    only when the Updates panel opens (`UpdatesPanel.tsx`). Check once a day
+    (not when headless connections are off), badge quietly, badge clearly for
+    a release marked security. Never install on its own. Move the release
+    signing key off GitHub (hardware key or offline step), so a CI compromise
+    can't sign. **Your call:** where the key lives, who can sign.
+
+2330. **Warn about an outdated WebKitGTK / GStreamer.** Linux only (WebView2
+    updates itself, macOS WebKit comes with the OS). On startup compare
+    against a version floor kept in the binary; the warning names the
+    package-manager command.
+
+2331. **Hostile-input test suite.** `tests/hostile/`: repos with planted git
+    config, hooks, `commondir`, `gitdir:` files, `latexmkrc`,
+    `rust-toolchain.toml`, `.prettierrc`; hostile mails, PDFs, ODTs, zip
+    bombs, SVGs, notebooks. Each case asserts that opening or viewing it runs
+    nothing and writes nothing outside scratch. CI on Linux, Windows, macOS.
+
+2332. **Fuzz the parsers.** `cargo fuzz` targets for mail parsing, iCalendar,
+    WebDAV XML, the git-config sanitizer and SFTP name confinement.
+
+2333. **Disclosure policy and an outside audit.** Add `SECURITY.md` (how to
+    report, scope, link to the threat model); reproducible release builds; an
+    external audit or pentest before telling non-experts Eldrun is safe.
+
+2336. **`~/.claude/jobs/` and other new entries are writable in every fence.**
+    `CLAUDE_UNMOUNTED` (`sandbox.rs`) lists what to hide, so an entry a newer
+    Claude Code adds is mounted read-write from the host by default. Seen
+    inside a fenced tab (2026-09-25): `jobs/`, `state/`, `cache/`,
+    `downloads/`, `plans/`, `statusline-mode/`, `.last-update-result.json`,
+    `.last-cleanup` are all host mounts, read-write. `jobs/<id>/state.json`
+    carries `respawnFlags`, `cwd`, `providerEnv` and `resumeSessionId`: if a
+    host-side Claude (daemon or the user's own terminal) respawns jobs from it,
+    a fenced agent can plant one that runs unfenced with its own flags, cwd and
+    `ANTHROPIC_BASE_URL`. Not verified; audit what reads `jobs/`. Also readable:
+    every session's `jobs/` output and `plans/` across projects. Fix: invert
+    to an allowlist (mount only what resume/login need; everything else lands
+    in the fence's tmpfs), and do the same for `CODEX_UNMOUNTED`, which has
+    the same shape. Stopgap until group S #2335 Phase 1 replaces the host home
+    with a per-scope one; drop it if that ships first.

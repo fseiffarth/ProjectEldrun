@@ -1,14 +1,14 @@
 /**
  * Eldrun's shared line-icon set — the replacement for colour emoji in the
  * chrome. Same rounded `currentColor` outline as {@link SaveIcon} /
- * {@link PrinterIcon} / the edge-rail icons (24-grid, 1.7 stroke), so every
+ * {@link PrinterIcon} / the edge-rail icons (24-grid, 1.4 stroke), so every
  * icon follows the theme, dims with its row, and reads as one family.
  *
  * Sized in `em` by default, so an icon drops into the spot a glyph held and
  * scales with that spot's `font-size` the way the glyph did. Each is
  * `aria-hidden`: the control around it carries the accessible name.
  */
-import type { ReactNode } from "react";
+import type { ReactNode, SVGProps } from "react";
 
 export interface IconProps {
   className?: string;
@@ -29,7 +29,7 @@ function Frame({ className, size = "1.2em", children }: IconProps & { children: 
       aria-hidden="true"
       focusable="false"
     >
-      <g stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
         {children}
       </g>
     </svg>
@@ -173,12 +173,13 @@ export function LockIcon(p: IconProps) {
   );
 }
 
-/** The lock with its shackle swung open. */
+/** The lock with its shackle swung out past the body's left edge. A shackle
+ *  that only lifts or shortens reads as closed at the 12px pill size. */
 export function UnlockIcon(p: IconProps) {
   return (
     <Frame {...p}>
       <rect x="5.5" y="10.5" width="13" height="10" rx="1.5" />
-      <path d="M8.5 10.5v-3a3.5 3.5 0 016.8-1.2" />
+      <path d="M8.5 10.5V7a3.5 3.5 0 00-7 0v1.5" />
     </Frame>
   );
 }
@@ -437,6 +438,193 @@ export function WindowIcon(p: IconProps) {
       <path d="M3.5 8.5h17" />
       <path d="M6.5 6.5h.01" />
       <path d="M9 6.5h.01" />
+    </Frame>
+  );
+}
+
+// ── Glyphs that used to be typed ─────────────────────────────────────────────
+// Every icon below replaces a Unicode symbol with the Emoji property (↗ ⬆ ⬇ ⬅
+// ➡ ↔ ↩ ⚠ ⚙ ✉ ☑ ▶ ☁ ✔ ✏ ⏱): a font fallback could hand any of those to the
+// colour-emoji font, where they ignore `currentColor` and the row's weight.
+
+/** North-east arrow — open externally, jump to, pop out. */
+export function ArrowUpRightIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M7 17L17 7" />
+      <path d="M9 7h8v8" />
+    </Frame>
+  );
+}
+
+export function ArrowUpIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M12 19V5" />
+      <path d="M6 11l6-6 6 6" />
+    </Frame>
+  );
+}
+
+export function ArrowDownIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M12 5v14" />
+      <path d="M6 13l6 6 6-6" />
+    </Frame>
+  );
+}
+
+export function ArrowLeftIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M19 12H5" />
+      <path d="M11 6l-6 6 6 6" />
+    </Frame>
+  );
+}
+
+export function ArrowRightIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M5 12h14" />
+      <path d="M13 6l6 6-6 6" />
+    </Frame>
+  );
+}
+
+/** A two-headed horizontal arrow — centred / both ways. */
+export function ArrowsHorizontalIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M4 12h16" />
+      <path d="M8 8l-4 4 4 4" />
+      <path d="M16 8l4 4-4 4" />
+    </Frame>
+  );
+}
+
+/** A hooked arrow back — undo, restore, reply. */
+export function UndoIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M9 14L4 9l5-5" />
+      <path d="M4 9h10.5a5.5 5.5 0 010 11H11" />
+    </Frame>
+  );
+}
+
+/** A triangle with a bang — warnings. */
+export function WarningIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M12 4L2.5 20h19z" />
+      <path d="M12 10v4.5" />
+      <path d="M12 17.4h.01" />
+    </Frame>
+  );
+}
+
+/** The header's eight-tooth cog, on this set's grid. */
+export function GearIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M10.37 5.45L10.74 3.09h2.52l.37 2.36a6.75 6.75 0 011.85.76l1.93-1.4 1.77 1.77-1.39 1.94a6.75 6.75 0 01.76 1.85l2.36.37v2.52l-2.36.37a6.75 6.75 0 01-.76 1.85l1.39 1.93-1.77 1.77-1.93-1.39a6.75 6.75 0 01-1.85.76l-.37 2.36h-2.52l-.37-2.36a6.75 6.75 0 01-1.85-.76l-1.94 1.39-1.77-1.77 1.4-1.93a6.75 6.75 0 01-.76-1.85l-2.36-.37v-2.52l2.36-.37a6.75 6.75 0 01.76-1.85l-1.4-1.94 1.77-1.77 1.94 1.4a6.75 6.75 0 011.85-.76z" />
+      <circle cx="12" cy="12" r="2.85" />
+    </Frame>
+  );
+}
+
+export function CloudIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M7 18.5h10a4 4 0 00.5-7.97A6 6 0 006.3 12.1 3.25 3.25 0 007 18.5z" />
+    </Frame>
+  );
+}
+
+/** A house — this machine, the local mirror. */
+export function HomeIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z" />
+    </Frame>
+  );
+}
+
+/** A bare tick — done, confirm. */
+export function CheckIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M5 12.5l4.5 4.5L19 7" />
+    </Frame>
+  );
+}
+
+/** The {@link CheckboxIcon}'s empty twin. */
+export function SquareIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <rect x="4" y="4" width="16" height="16" rx="2.5" />
+    </Frame>
+  );
+}
+
+/** A flat-top hexagon — a box of projects, in the shape of the logo's nodes. */
+export function HexagonIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M20.5 12l-4.25 7.36h-8.5L3.5 12l4.25-7.36h8.5z" />
+    </Frame>
+  );
+}
+
+/**
+ * A box's colour mark: the {@link HexagonIcon} filled with the box's colour
+ * (`currentColor`, so CSS can set it too) and rimmed like the logo's nodes.
+ * Cropped to the hexagon, so a small swatch is all mark and no margin.
+ */
+export function BoxSwatch({
+  className,
+  color,
+  ...rest
+}: { className?: string; color?: string } & SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 20 18"
+      className={className ? `box-swatch ${className}` : "box-swatch"}
+      style={color ? { color } : undefined}
+      aria-hidden="true"
+      focusable="false"
+      {...rest}
+    >
+      <path
+        d="M18.6 9l-4.3 7.45H5.7L1.4 9l4.3-7.45h8.6z"
+        fill="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function PencilIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M4 20l4-1L19.5 7.5a1.6 1.6 0 000-2.3l-.7-.7a1.6 1.6 0 00-2.3 0L5 16z" />
+      <path d="M14 6l4 4" />
+    </Frame>
+  );
+}
+
+/** A prompt in a frame — "open a terminal here". */
+export function TerminalIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <rect x="3" y="4.5" width="18" height="15" rx="2" />
+      <path d="M7.5 9.5l3 2.5-3 2.5" />
+      <path d="M12.5 15h4" />
     </Frame>
   );
 }

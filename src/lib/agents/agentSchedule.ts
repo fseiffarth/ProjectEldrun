@@ -289,3 +289,19 @@ export function scheduleSummary(
     .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
   return { total: schedules.length, enabled: enabled.length, next };
 }
+
+/** The enabled schedules that will still fire, soonest first, each with its
+ * next occurrence — what the phone's tab card lists above the last prompts. */
+export function upcomingSchedules(
+  schedules: ScheduledAgentPrompt[],
+  now: Date,
+  limit: number,
+): { message: string; at: Date }[] {
+  return schedules
+    .flatMap((schedule) => {
+      const at = nextScheduleOccurrence(schedule, now)?.at;
+      return at ? [{ message: schedule.message, at }] : [];
+    })
+    .sort((a, b) => a.at.getTime() - b.at.getTime())
+    .slice(0, limit);
+}

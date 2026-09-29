@@ -564,14 +564,14 @@ screen is not.*
     one tooltip line, so the cluster re-derives nothing) and
     `header/StatusCluster.tsx`, which folds the six behind a summary lamp and a
     `‹`/`›` toggle persisted as `header_status_expanded` (default collapsed).
-    Folding is `display: none`, never unmounting — a folded widget has to keep
-    polling to be able to **escalate** itself: a member reporting
-    `attention`/`alert` renders in the bar regardless of the fold, and the
-    escalating set is deliberately narrow (offline · battery ≤ 15 % on its own
-    power · Mobile error · VPN mid-connect · a machine in the error bucket) so
-    nothing pops in and out during ordinary work. Members keep a fixed DOM
-    order, so escalating never re-orders the survivors, and the fold is skipped
-    entirely when fewer than two members would fold. `HeaderBar` now holds the
+    Folding is `display: none`, never unmounting — a folded widget keeps
+    polling so its tone still colours the summary lamp. Collapsed hides
+    **every** member, failing ones too (2026-09-24: escalating members back
+    into the bar was dropped at the user's request); the lamp takes the worst
+    tone, and the set that tones up is deliberately narrow (offline · battery
+    ≤ 15 % on its own power · Mobile error · VPN mid-connect · a machine in the
+    error bucket) so the lamp doesn't flicker during ordinary work. The fold is
+    skipped entirely when fewer than two members exist. `HeaderBar` now holds the
     project strip alone in the centre; ✉ 🗓 ☑ (kept as their own buttons — each
     carries a live badge a launcher menu would hide), then 🧠 ▦ ⚙, then the
     cluster, sit right of it in three gap-separated groups.
@@ -591,11 +591,11 @@ screen is not.*
       - [ ] ❌ Doesn't work on Windows
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
-    - [ ] 🖐️ Manual test (escalation) — while collapsed, pull the network cable
-      (or disconnect WiFi): the connection icon appears in the bar on its own
-      and the summary lamp turns red. Reconnect: it folds away again. Same with
-      a VPN connect (amber while connecting, folds once green) and a global
-      machine that fails to connect (stays out until it is fixed or removed).
+    - [ ] 🖐️ Manual test (failing members stay folded) — while collapsed, pull
+      the network cable (or disconnect WiFi): NO icon pops into the bar, only
+      the summary lamp turns red and its tooltip names the connection.
+      Reconnect: the lamp goes green. Same with a VPN connect (lamp amber while
+      connecting) and a global machine that fails to connect (lamp red).
       - [ ] ✅ Works on Linux (X11)
       - [ ] ❌ Doesn't work on Linux (X11)
       - [ ] ✅ Works on Linux (Wayland)

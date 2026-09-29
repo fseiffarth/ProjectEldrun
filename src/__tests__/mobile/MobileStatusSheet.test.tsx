@@ -113,10 +113,11 @@ describe("Eldrun Mobile agent status sheet", () => {
   it("says an agent has no readable usage instead of showing an empty panel", async () => {
     answer(report({
       agent: "Codex",
-      usage: { label: "Codex", supported: false, cached: false, error: "Codex has no usage readout that can be read without a tab" },
+      // The desktop sends the reason as a code; the sheet names the agent itself.
+      usage: { label: "Codex", supported: false, cached: false, error: "no_usage_readout" },
     }));
     render(<StatusSheet tab={tab} live={null} onClose={() => {}} />);
-    await screen.findByText("Codex has no usage readout that can be read without a tab");
+    await screen.findByText("Codex has no usage readout Eldrun can ask for without opening a tab.");
     // The session half still answers — the refusal is about the quota only.
     expect(screen.getByText("Working")).toBeTruthy();
     expect(screen.getByText("Today in ProjectEldrun")).toBeTruthy();
@@ -143,6 +144,7 @@ describe("Eldrun Mobile agent status sheet", () => {
   it("names desktop Eldrun when the bridge is what is missing", async () => {
     fetchMock.mockImplementation(() => respond(503, { error: "desktop_unavailable" }));
     render(<StatusSheet tab={tab} live={null} onClose={() => {}} />);
-    await screen.findByText("Open desktop Eldrun to read this session's status.");
+    // The one vocabulary (`connection.ts`): the same sentence every screen uses.
+    await screen.findByText("Eldrun isn't running on your desktop.");
   });
 });

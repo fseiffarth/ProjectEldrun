@@ -109,7 +109,7 @@ beforeEach(() => {
     focusedGroupByScope: {},
   });
   useProjectsStore.setState({ rootDir: "/r", activeId: "p1" });
-  useRootOverlayStore.setState({ open: false, frame: null, filled: false });
+  useRootOverlayStore.setState({ open: false, frame: null, filled: false, installTabs: {} });
   useCalendarStore.setState({ events: [], tasks: [] });
   useRootReviewStore.setState({ proposals: [], count: 0, panel: false, busy: false, error: null });
 });
@@ -172,6 +172,25 @@ describe("RootOverlayHost", () => {
     fireEvent.click(closeButtons[1]);
     expect((useTabsStore.getState().tabsByScope.root ?? []).map((t) => t.key)).toEqual([a.key]);
     expect(b.key).not.toBe(a.key);
+  });
+
+  it("pulses the tab an install opened until it is clicked", async () => {
+    const { a, b } = seedRootTabs();
+    useRootOverlayStore.getState().markInstallTab(b.key);
+    render(<RootOverlayHost />);
+    await act(async () => useRootOverlayStore.getState().show());
+
+    const tabOf = (label: string) => screen.getByText(label).closest(".tab");
+    expect(tabOf("Shell")?.classList.contains("install-pending")).toBe(true);
+    expect(tabOf("Claude")?.classList.contains("install-pending")).toBe(false);
+
+    // Clicking a different tab leaves the mark; clicking the install's clears it.
+    fireEvent.mouseDown(screen.getByText("Claude"));
+    expect(tabOf("Shell")?.classList.contains("install-pending")).toBe(true);
+    fireEvent.mouseDown(screen.getByText("Shell"));
+    expect(tabOf("Shell")?.classList.contains("install-pending")).toBe(false);
+    expect(useRootOverlayStore.getState().installTabs).toEqual({});
+    expect(a.key).not.toBe(b.key);
   });
 
   it("adds a tab to the root scope, never to the project on screen", async () => {

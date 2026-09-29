@@ -3,6 +3,7 @@ import { inputFrameStart } from "../../../mobile-web/src/terminal/statusLine";
 import {
   MAX_LINES,
   dedentLines,
+  joinProseWraps,
   readableRange,
   readableScreen,
   readableText,
@@ -400,5 +401,40 @@ describe("Eldrun Mobile Codex sparkle", () => {
     const [line] = dedentLines(styled);
     expect(line.text).toBe("Question");
     expect(line.spans.map((span) => span.text).join("")).toBe("Question");
+  });
+});
+
+describe("Eldrun Mobile prose rewrap", () => {
+  const rows = (...texts: string[]) => texts.map((text, index) => ({ key: String(index), text, spans: [{ text }] }));
+
+  it("rejoins the rows a TUI wrapped itself, and keeps the breaks it meant", () => {
+    // Claude Code prints each wrapped row as a line of its own, so xterm never
+    // marks the continuation: the phone showed the pane's width as hard breaks.
+    const joined = joinProseWraps(rows(
+      "Four other-session commits sit unpushed on develop. How should I land my",
+      "Windows/CodeQL fix?",
+      "",
+      "Short line.",
+      "Another sentence the session started on a row of its own.",
+      "- a list item",
+    ));
+    expect(joined.map((line) => line.text)).toEqual([
+      "Four other-session commits sit unpushed on develop. How should I land my Windows/CodeQL fix?",
+      "",
+      "Short line.",
+      "Another sentence the session started on a row of its own.",
+      "- a list item",
+    ]);
+    expect(joined[0].spans.map((span) => span.text).join("")).toBe(joined[0].text);
+  });
+
+  it("drops the hanging indent of a wrapped agent message", () => {
+    const joined = joinProseWraps(rows(
+      "● My fix is ready and verified, but pushing develop now would also push four",
+      "  other commits.",
+    ));
+    expect(joined.map((line) => line.text)).toEqual([
+      "● My fix is ready and verified, but pushing develop now would also push four other commits.",
+    ]);
   });
 });

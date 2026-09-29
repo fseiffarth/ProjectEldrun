@@ -3768,7 +3768,11 @@ mod tests {
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
         let out = peer.run(&argv).expect("bundle create");
         assert!(!out.status.success());
-        assert!(is_empty_bundle_error(&String::from_utf8_lossy(&out.stderr)));
+        assert!(
+            is_empty_bundle_error(&String::from_utf8_lossy(&out.stderr)),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[test]

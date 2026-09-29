@@ -85,7 +85,9 @@ vi.mock("@xterm/xterm", () => ({
       this.renderer = null;
       this.state.disposed = true;
     }
-    parser = { registerOscHandler: () => ({ dispose() {} }) };
+    registerLinkProvider() { return { dispose() {} }; }
+    onWriteParsed() { return { dispose() {} }; }
+    parser = { registerOscHandler: () => ({ dispose() {} }), registerCsiHandler: () => ({ dispose() {} }) };
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} dispose() {} } }));

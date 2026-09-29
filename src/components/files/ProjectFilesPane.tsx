@@ -24,7 +24,7 @@ import type { ProjectBox, ProjectEntry } from "../../types";
 import type { SortKey } from "../../lib/viewers/fileUtils";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
-import { FolderIcon } from "../common/icons/Icon";
+import { FolderIcon, GearIcon, HexagonIcon } from "../common/icons/Icon";
 
 /**
  * THE project file view — the tree, the remote sync row and the Downloads
@@ -216,7 +216,7 @@ export function useBoxRoots(scope: string): { activeBox: ProjectBox | null; boxR
     if (!activeBox) return [];
     const roots: BoxRoot[] = [];
     if (activeBox.folder) {
-      roots.push({ rootId: scope, label: activeBox.name, icon: "▣", dir: activeBox.folder, variant: "box" });
+      roots.push({ rootId: scope, label: activeBox.name, icon: <HexagonIcon />, dir: activeBox.folder, variant: "box" });
     }
     for (const id of activeBox.member_ids) {
       const p = projects.find((m) => m.id === id);
@@ -405,7 +405,7 @@ function BoxRootSection({
               onClick={() => setShowSettings(true)}
               title={t("projectFilesView.projectSettingsTitle")}
             >
-              ⚙
+              <GearIcon />
             </button>
           )}
           <UntestedTag id="projectFilesPane.1" />

@@ -31,8 +31,6 @@ struct ProjectRecord {
     vm: Option<Value>,
     #[serde(default)]
     eldrun_mobile_access: bool,
-    #[serde(default)]
-    eldrun_trash: bool,
 }
 
 /// The slice of `boxes.json` the catalog reads (#31aa). A box is listed as a
@@ -78,6 +76,10 @@ struct SavedTab {
     /// The user's tab colour, a palette id (see `protocol::TAB_COLORS`).
     #[serde(default)]
     color: Option<String>,
+    /// A local-model tab's `{driver, model, args}` — what lets it restore, and
+    /// so be one the phone can come back to (`terminal_service::local_launch_ok`).
+    #[serde(default)]
+    local_launch: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +113,11 @@ pub struct PublicProject {
     /// A count and nothing else — deciding them is the desktop's alone.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_reviews: Option<usize>,
+    /// The desktop's git dot for a project (`protocol::git_dot`), filled in
+    /// per request from the desktop — never read from disk here. Absent when
+    /// clean, not a repo, never probed, or the desktop is closed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git: Option<&'static str>,
 }
 
 /// The one-line schedule summary the desktop's Agents view puts under an agent
@@ -123,6 +130,10 @@ pub struct TabSchedules {
     /// Desktop-local `YYYY-MM-DDTHH:MM` of the next run, when one is due.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
+    /// The soonest enabled schedules still to fire, `at` desktop-local like
+    /// `next`: the phone lists them with the tab's last prompts.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub upcoming: Vec<TabPrompt>,
 }
 
 /// One prompt an agent tab was given, as the desktop read it off the agent's
@@ -186,6 +197,10 @@ pub struct PublicTab {
 pub struct ResolvedTab {
     pub public: PublicTab,
     pub tmux_name: String,
+    /// The desktop's session id for an agent tab — the `ELDRUN_TAB_UID` its
+    /// processes run with, which `eldrun-send` stamps on what it sends. Never
+    /// crosses the browser API.
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -335,11 +350,7 @@ impl RootEnv {
     fn live() -> Self {
         Self {
             dir: crate::paths::root_work_dir(),
-            fenced: || {
-                crate::services::agent_fence::policy_enabled(None)
-                    && crate::services::agent_fence::platform_fenceable()
-                    && crate::services::agent_fence::bwrap_available()
-            },
+            fenced: crate::services::agent_fence::enforced_here,
         }
     }
 }
@@ -433,7 +444,16 @@ fn resumable(tab: &SavedTab) -> bool {
 /// still recognise it. The command itself never crosses the browser API; an
 /// agent the registry does not list keeps its tab label, as before.
 fn agent_label_of(tab: &SavedTab) -> String {
-    crate::commands::agents::agent_label_for_bin(&tab.cmd)
+    // A local-model tab's `cmd` may be `ollama` (`ollama launch claude …`);
+    // the agent is the driver's CLI, and the phone reads it as that one.
+    let bin = tab
+        .local_launch
+        .as_ref()
+        .and_then(|launch| launch.get("driver"))
+        .and_then(Value::as_str)
+        .and_then(crate::commands::ollama::local_driver_bin)
+        .unwrap_or(&tab.cmd);
+    crate::commands::agents::agent_label_for_bin(bin)
         .map(str::to_string)
         .unwrap_or_else(|| tab.label.chars().take(120).collect())
 }
@@ -445,11 +465,11 @@ fn canonical_below_any(path: &Path, roots: &[PathBuf]) -> bool {
 }
 
 /// The trust-tier gate every mobile scope passes: a local project that is
-/// neither a container (Trash excepted, as on the desktop) nor a VM. A box
+/// neither a container nor a VM. A box
 /// applies it to each member before that member's root may host a box tab.
 fn mobile_local(project: &ProjectRecord) -> bool {
     project.remote.is_none()
-        && !(enabled(&project.sandbox) && !project.eldrun_trash)
+        && !enabled(&project.sandbox)
         && !enabled(&project.vm)
 }
 
@@ -633,7 +653,17 @@ fn resolve_scope(
     let mut tabs = Vec::new();
     // project-tree-read: ok — this is the state-dir terminal-session snapshot.
     for tab in session.tab_layout {
-        let eligible_kind = tab.kind == "shell" || (tab.kind == "agent" && resumable(&tab));
+        // A local-model tab (`local_agent`) comes back like an agent tab: Mistral's
+        // resumes its session, the other drivers relaunch the line they were
+        // started with — and while the tmux session lives, both reattach.
+        let local_agent = tab.kind == "local_agent";
+        let agent = tab.kind == "agent" || local_agent;
+        let eligible_kind = tab.kind == "shell"
+            || (agent && resumable(&tab))
+            || (local_agent
+                && tab.local_launch.as_ref().is_some_and(|launch| {
+                    crate::services::terminal_service::local_launch_ok(launch, &tab.cmd)
+                }));
         if !eligible_kind
             || tab.ephemeral
             || tab.tmux_attach.is_some()
@@ -644,7 +674,10 @@ fn resolve_scope(
         let Some(tmux) = tab.tmux_session.as_deref() else {
             continue;
         };
-        if !expected_tmux(&source.raw_id, &tab.kind, tmux) {
+        // Local-model tabs are minted with the `agent` token, like every agent
+        // (`newTmuxSessionName`), and the phone knows them as agent tabs.
+        let kind = if agent { "agent" } else { tab.kind.as_str() };
+        if !expected_tmux(&source.raw_id, kind, tmux) {
             continue;
         }
         let live_row = live
@@ -653,8 +686,8 @@ fn resolve_scope(
         let public = PublicTab {
             id: key_id(host_key, "tab", &[&source.raw_id, tmux]),
             label: tab.label.chars().take(120).collect(),
-            kind: tab.kind.clone(),
-            agent_label: (tab.kind == "agent").then(|| agent_label_of(&tab)),
+            kind: kind.to_string(),
+            agent_label: agent.then(|| agent_label_of(&tab)),
             agent_status: None,
             agent_model: None,
             working_at: None,
@@ -673,6 +706,7 @@ fn resolve_scope(
         tabs.push(ResolvedTab {
             public,
             tmux_name: tmux.to_string(),
+            session_id: tab.session_id.clone(),
         });
     }
     let last_activity = tabs.iter().filter_map(|t| t.public.last_activity).max();
@@ -685,6 +719,7 @@ fn resolve_scope(
         last_activity,
         pending_reviews: (source.kind == ScopeKind::Root)
             .then(|| crate::services::root_mcp_review::pending_count(state_dir)),
+        git: None,
     };
     Some(ResolvedProject {
         public,
@@ -1012,10 +1047,85 @@ mod tests {
             tmux_attach: None,
             ephemeral: false,
             color: None,
+            local_launch: None,
         };
         assert_eq!(agent_label_of(&tab("release review", "claude")), "Claude");
         assert_eq!(agent_label_of(&tab("Codex", "codex")), "Codex");
         assert_eq!(agent_label_of(&tab("My bot", "/opt/bot --x")), "My bot");
+        // A local-model tab names its driver's CLI, not `ollama`.
+        let mut local = tab("qwen3:8b · Claude Code", "ollama");
+        local.local_launch = Some(serde_json::json!({ "driver": "claude" }));
+        assert_eq!(agent_label_of(&local), "Claude");
+    }
+
+    /// Local-model tabs reach the phone as agent tabs (#31bl): Mistral's by its
+    /// resumable session, the other drivers by a `localLaunch` line Eldrun
+    /// builds — never by one it does not, and never without the `agent` token
+    /// every agent tab's tmux name carries.
+    #[test]
+    fn local_model_tabs_are_listed_as_agent_tabs() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let root = state.join("p");
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "p-1",
+                "name": "P",
+                "status": "active",
+                "directory": root.to_string_lossy(),
+                "eldrun_mobile_access": true,
+            }]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        let sessions = state.join("sessions").join("p-1");
+        fs::create_dir_all(&sessions).expect("session dir");
+        let tab = |n: &str, cmd: &str, extra: serde_json::Value| {
+            let mut row = serde_json::json!({
+                "label": format!("Local {n}"),
+                "cmd": cmd,
+                "cwd": root.to_string_lossy(),
+                "kind": "local_agent",
+                "tmuxSession": format!("eldrun-p-1--agent-10000000{n}"),
+            });
+            row.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            row
+        };
+        let launch = |args: serde_json::Value| {
+            serde_json::json!({ "localLaunch": { "driver": "claude", "model": "qwen3:8b", "args": args } })
+        };
+        // The wrong token.
+        let mut wrong_token = tab("5", "vibe", serde_json::json!({ "sessionId": "s5" }));
+        wrong_token["tmuxSession"] = serde_json::json!("eldrun-p-1--local_agent-100000005");
+        fs::write(
+            sessions.join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "tabLayout": [
+                    tab("1", "vibe", serde_json::json!({ "sessionId": "s1" })),
+                    tab("2", "ollama", launch(serde_json::json!(["launch", "claude", "--model", "qwen3:8b"]))),
+                    // Not a line Eldrun builds.
+                    tab("3", "ollama", launch(serde_json::json!(["serve"]))),
+                    // Neither resumable nor relaunchable.
+                    tab("4", "ollama", serde_json::json!({})),
+                    wrong_token,
+                ]
+            }))
+            .expect("session"),
+        )
+        .expect("write session");
+
+        let catalog = Catalog::load(state, &[7; 32]).expect("catalog");
+        let tabs = &catalog.projects.first().expect("project").tabs;
+        let listed: Vec<(&str, &str, Option<&str>)> = tabs
+            .iter()
+            .map(|t| (t.public.label.as_str(), t.public.kind.as_str(), t.public.agent_label.as_deref()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![("Local 1", "agent", Some("Mistral")), ("Local 2", "agent", Some("Claude"))]
+        );
     }
 
     /// A mobile-enabled box is a scope of its own (#31aa): listed as `kind:

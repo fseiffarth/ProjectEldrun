@@ -19,6 +19,18 @@ export function agentFenceInstallCommand(status: AgentFenceStatus | null | undef
   return status.install_cmd || null;
 }
 
+/** The marker `pty_spawn`'s refusal carries on a platform with no fence
+ *  (Windows) while the user has not yet accepted that agents run with their
+ *  full rights. Mirrors `agent_fence::PLATFORM_UNACCEPTED_SENTINEL`. */
+export const FENCE_PLATFORM_UNACCEPTED = "ELDRUN_FENCE_PLATFORM_UNACCEPTED";
+
+/** Whether a spawn error is that refusal — the one a `UnfencedPlatformDialog`
+ *  answer lifts — rather than something to print as it is. */
+export function unfencedPlatformRefusal(e: unknown): boolean {
+  const text = e instanceof Error ? e.message : String(e);
+  return text.includes(FENCE_PLATFORM_UNACCEPTED);
+}
+
 export const AGENT_FENCE_DEFAULT_PATHS = [
   "~/.local/bin",
   "~/.local/share/claude",
@@ -42,26 +54,13 @@ export function parseAgentFencePaths(value: string): string[] {
     .filter((path, index, all) => path !== "" && all.indexOf(path) === index);
 }
 
-export type AgentFenceLabelKey =
-  | "pill.agentFenceInherit"
-  | "pill.agentFenceOn"
-  | "pill.agentFenceOff";
-
-export function agentFenceLabelKey(value: boolean | undefined): AgentFenceLabelKey {
-  return value === undefined
-    ? "pill.agentFenceInherit"
-    : value
-      ? "pill.agentFenceOn"
-      : "pill.agentFenceOff";
-}
-
 export type AgentFenceReasonKey =
   | "pill.agentFenceReasonRemote"
   | "pill.agentFenceReasonMacos"
   | "pill.agentFenceReasonWindows"
   | "pill.agentFenceReasonPlatform"
   | "pill.agentFenceReasonContainer"
-  | "pill.agentFenceReasonOff"
+  | "pill.agentFenceReasonHostSession"
   | "pill.agentFenceReasonBwrap"
   | "pill.agentFenceReasonSeatbelt"
   | "pill.agentFenceReasonUnknown";
@@ -73,10 +72,25 @@ export function agentFenceReasonKey(reason: string): AgentFenceReasonKey | null 
     Windows: "pill.agentFenceReasonWindows",
     "this platform": "pill.agentFenceReasonPlatform",
     container: "pill.agentFenceReasonContainer",
-    off: "pill.agentFenceReasonOff",
+    "host session": "pill.agentFenceReasonHostSession",
     "bubblewrap unavailable": "pill.agentFenceReasonBwrap",
     "sandbox-exec unavailable": "pill.agentFenceReasonSeatbelt",
     "unknown project or box": "pill.agentFenceReasonUnknown",
   };
   return keys[reason] ?? null;
+}
+
+/** The project pill's fence marker (`agent_fence_marks`): how many live agent
+ *  tabs run outside the fence right now — measured from the agent processes,
+ *  so a tab started before the fence became the only mode (and kept alive by
+ *  a tmux reattach) still counts. The fence has no "off" any more. */
+export interface AgentFenceMark {
+  live_unfenced: number;
+}
+
+export type AgentFenceMarkLevel = "live";
+
+export function agentFenceMarkLevel(mark: AgentFenceMark | undefined): AgentFenceMarkLevel | null {
+  if (!mark) return null;
+  return mark.live_unfenced > 0 ? "live" : null;
 }

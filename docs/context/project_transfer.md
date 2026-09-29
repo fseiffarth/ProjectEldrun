@@ -86,9 +86,7 @@ The user still has to switch to the project and press something.
 - **`host_bound/` markers**, which pin a tab to a machine that is not the
   destination. They live under the session dir and are not packed.
 - **A project VM's overlay disk.** So a VM project is refused up front
-  (`export_blocker`) rather than exported into something that cannot boot. The
-  Trash workspace is refused for the mirror-image reason: every installation
-  makes its own.
+  (`export_blocker`) rather than exported into something that cannot boot.
 
 ## Sizes, and why the dialog has toggles
 

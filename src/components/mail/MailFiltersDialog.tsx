@@ -55,6 +55,7 @@ import type {
 } from "../../types/mail";
 import { stripFormatControls } from "../../lib/textSafety";
 import { UntestedTag } from "../common/UntestedTag";
+import { ErrorNote } from "../common/ErrorNote";
 
 export interface MailFiltersDialogProps {
   accounts: MailAccount[];
@@ -407,7 +408,7 @@ export function MailFiltersDialog({ accounts, onClose }: MailFiltersDialogProps)
           </div>
 
           {report && <FilterReportView report={report} />}
-          {error && <div className="project-dialog-error">{error}</div>}
+          {error && <ErrorNote className="project-dialog-error" error={error} />}
 
           <div className="mail-dialog-actions">
             <button

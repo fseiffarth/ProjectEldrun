@@ -22,9 +22,9 @@
 //! `-e HOME=<host home>`. This is what keeps the file tree, git UI, viewers and
 //! usage watcher reading host bytes unchanged, keeps `-w <cwd>` trivially
 //! correct for subdir tabs, and — most importantly — keeps **agent session
-//! resume** working: Claude/Codex transcripts and the SessionStart hook record
-//! host-absolute cwds, so the *same* session resumes correctly whether the
-//! toggle is on or off.
+//! resume** working: transcripts and the SessionStart hook record host-absolute
+//! cwds, so the *same* session resumes correctly whether the toggle is on or
+//! off.
 //!
 //! **Windows** is the one host where "identical" cannot be literal: a Linux
 //! container has no `C:\`. Every host path crossing into the container goes
@@ -32,73 +32,43 @@
 //! (`C:\Users\a\p` → `/c/Users/a/p`), and it is applied at exactly one layer —
 //! the argv builders — so every mount planner above them keeps reasoning in
 //! host paths. `--user` is omitted there (Docker Desktop maps bind-mounted
-//! files to the Windows user regardless of the in-container uid), and the
-//! SessionStart hook the staged configs point at is swapped for a POSIX twin
-//! (see [`staged_config_mounts`]) because the registered one is PowerShell.
+//! files to the Windows user regardless of the in-container uid).
 //!
 //! ## What the container can reach (blast radius)
 //!
 //! Only these host paths are bind-mounted, each at its identical absolute path:
 //! - the **project directory** (rw) — the sole project bytes exposed;
-//! - selected subpaths of `~/.claude`, `~/.codex` (rw, when present) — the agent
-//!   auth + transcript files resume needs, and **only** those (see [`rw_mounts`]);
-//! - `~/.claude/projects` **per transcript dir**: this project's rw, every other
-//!   project's read-only (see the transcript section below);
+//! - the project's **Eldrun-owned agent home** (`services::agent_home`) at
+//!   `$HOME` (rw): the agents' config, transcripts and session stores live
+//!   there, never in the user's own home, which the container never sees;
 //! - `<state_dir>/live_sessions/<project-id>` (rw) — where the in-container
 //!   SessionStart hook records a tab's live session id for resume. **Per project**,
 //!   not the shared root: one flat directory let a contained agent overwrite
-//!   another project's tab record and so choose which conversation an
-//!   *uncontained* agent resumes;
-//! - Gemini creds (`~/.gemini`, `~/.config/gemini`, rw, when present) — narrowed
-//!   from the whole `~/.config` so `gh`/`gcloud`/etc. secrets are *not* exposed;
-//! - `<state_dir>/hooks` mounted **read-only** (see the RCE note below);
-//! - the agents' hook-registration files (`~/.claude/settings.json[.local]`,
-//!   `~/.codex/config.toml`) as **per-project writable copies** shadowing the
-//!   host originals (see the RCE note below), staged under
-//!   `<state_dir>/sandbox-stage/<project-id>/` and refreshed from the host
-//!   originals at each `up`.
+//!   another project's tab record and so choose which conversation another
+//!   project's agent resumes;
+//! - the shared login directories of `services::agent_auth` (rw);
+//! - `<state_dir>/hooks` and `<state_dir>/bin` **read-only** (see below);
+//! - the repo's git control files, re-mounted read-only (`services::git_guard`).
 //!
 //! Nothing else under `$HOME` or `state_dir` (notably `projects.json`,
 //! `time_log.json`, or another project's `live_sessions` record) is mounted.
 //!
-//! ## Claude transcripts: read every project, write only our own
+//! ## Hook mounts
 //!
-//! `~/.claude/projects` is the one mount whose contents span projects — Claude
-//! keys transcripts by encoded cwd, not by Eldrun project. It is therefore
-//! mounted **per entry, explicitly** ([`claude_transcript_mounts`]), never as one
-//! dir: this project's transcript dirs rw, **every other project's `:ro`**. Reading
-//! another project's history is allowed; rewriting one is not, because the
-//! rewritten log is what an *uncontained* future session reads back as its own
-//! history. Membership is decided by the `cwd` recorded **inside** a transcript,
-//! not by decoding the directory name — that encoding maps both `/` and `.` to
-//! `-`, so a name cannot distinguish a subdirectory from a sibling project.
-//!
-//! A cwd with no host dir at create time (a subdir tab, a fresh worktree) has
-//! nothing to mount, so the mount *parent* is a per-project stage dir: the new
-//! transcript lands there, on the host, and teardown harvests it into the real
-//! `~/.claude/projects`.
-//!
-//! ## Hook mounts (host-RCE defence)
-//!
-//! The SessionStart hook *script* lives at `<state_dir>/hooks/…` and its absolute
-//! path is baked into `~/.claude/settings.json` / `~/.codex/config.toml`. Two
-//! distinct escape paths, each closed differently:
-//! - **The script** is shared with host-run agents, so it is mounted
-//!   **read-only**: a writable copy would let a compromised agent rewrite it and
-//!   have arbitrary code run on the host next time an agent starts there.
-//! - **The registration files** point *at* that script. They are mounted as
-//!   **per-project writable copies** rather than the host originals: the
-//!   container gets a real, writable file it can freely rewrite (so agents that
-//!   persist config don't error), but its writes land in the throwaway copy —
-//!   the host's real settings can never be repointed at an attacker command.
-//!   The copy still carries the hook registration, so resume recording works.
+//! The SessionStart hook *script* lives at `<state_dir>/hooks/…`, is shared by
+//! every agent home, and is mounted **read-only**: a writable copy would let a
+//! compromised agent rewrite it and have code run on the host next time an
+//! agent starts. The registration files that point at it are in the scope's
+//! own home, where a rewrite affects that scope alone.
 //!
 //! ## The exec step and the tab-kill contract
 //!
 //! Tabs are spawned as `docker exec -i -t -w <cwd> … <name> sh -c '…' sh <cmd>
 //! <args…>`. Per-tab env (`opts.env`, `TERM`/`COLORTERM`) and **agent-auth env**
 //! (`ssh_exec::AGENT_AUTH_ENV`, read off the host process at exec time so
-//! rotated tokens are picked up per spawn) ride as `-e` flags. The `sh -c`
+//! rotated tokens are picked up per spawn) ride as `-e` flags — secrets as a
+//! bare `-e NAME` whose value docker reads from the client's environment, since
+//! `/proc/<pid>/cmdline` is world-readable (#864). The `sh -c`
 //! wrapper records the process's pid into an in-container pidfile before
 //! exec'ing the real command: Docker does **not** kill an exec'd process when
 //! its client dies, so closing a tab would otherwise leave the agent running
@@ -125,7 +95,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::paths;
 use crate::schema::project::{DetectedSpecKind, DetectedSpecSource, SandboxScope, SandboxSpec};
@@ -357,11 +327,44 @@ pub fn docker_create_args(
     a
 }
 
+/// Whether a tab variable's VALUE must stay off the `docker exec` argv (#864):
+/// the forwarded agent credentials and Eldrun's MCP bearer tokens. The docker
+/// client stays alive for the tab's whole life, and `/proc/<pid>/cmdline` is
+/// readable by every local user — not only this uid.
+fn is_secret_exec_env(key: &str) -> bool {
+    crate::services::ssh_exec::AGENT_AUTH_ENV.contains(&key)
+        || [
+            crate::services::root_mcp::TOKEN_ENV,
+            crate::services::root_mcp::SCHEDULE_TOKEN_ENV,
+            crate::services::root_mcp::GIT_TOKEN_ENV,
+            crate::services::root_mcp::HELP_TOKEN_ENV,
+        ]
+        .contains(&key)
+}
+
+/// The environment the `docker` CLIENT process must carry for
+/// [`docker_exec_args`]: every secret it names as a bare `-e NAME`, which
+/// docker resolves from its own environment (0400, same-uid) instead of argv.
+/// `auth_env` wins a clash, as its later `-e` did when values rode the argv.
+pub fn docker_exec_client_env(
+    env: &BTreeMap<String, String>,
+    auth_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    env.iter()
+        .filter(|(k, _)| is_secret_exec_env(k))
+        .chain(auth_env.iter())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
 /// Build the `docker exec …` argv that runs a tab's command inside the session
-/// container. Per-tab env rides as `-e` flags (the exec inherits the container
-/// env, notably `HOME`, from create). The `sh -c` wrapper writes the process's
-/// pid to `pidfile` before exec'ing the real command — the tab-kill contract
-/// (see the module doc and [`kill_tab_process`]).
+/// container. Per-tab env rides as `-e K=V` flags (the exec inherits the
+/// container env, notably `HOME`, from create) — except a secret (every
+/// `auth_env` entry, and any [`is_secret_exec_env`] key of `env`), which rides
+/// as a bare `-e NAME`: docker takes its value from the client's environment,
+/// which the caller fills from [`docker_exec_client_env`] (#864). The `sh -c`
+/// wrapper writes the process's pid to `pidfile` before exec'ing the real
+/// command — the tab-kill contract (see the module doc and [`kill_tab_process`]).
 pub fn docker_exec_args(
     name: &str,
     cwd: &str,
@@ -383,14 +386,20 @@ pub fn docker_exec_args(
         "COLORTERM=truecolor".to_string(),
     ];
     for (k, v) in env {
+        if auth_env.contains_key(k) {
+            continue; // named once, below; the auth value wins as it always did
+        }
         a.push("-e".to_string());
+        if is_secret_exec_env(k) {
+            a.push(k.clone());
+            continue;
+        }
         let value = if k == "ELDRUN_PROJECT_DIR" { container_path(v) } else { v.clone() };
         a.push(format!("{k}={value}"));
     }
-    for (k, v) in auth_env {
+    for k in auth_env.keys() {
         a.push("-e".to_string());
-        let value = if k == "ELDRUN_PROJECT_DIR" { container_path(v) } else { v.clone() };
-        a.push(format!("{k}={value}"));
+        a.push(k.clone());
     }
     a.push(name.to_string());
     a.push("sh".to_string());
@@ -545,14 +554,6 @@ pub fn is_agent_cmd(cmd: &str) -> bool {
     let base = cmd.rsplit(['/', '\\']).next().unwrap_or(cmd);
     let base = base.strip_suffix(".exe").unwrap_or(base);
     crate::commands::agents::agent_bins().contains(&base)
-}
-
-/// The permanent Trash workspace is the strict isolation profile: its
-/// container receives its project directory and no host-backed agent state.
-/// API-key environment variables may still be forwarded at exec time, but a
-/// contained process cannot inspect or alter any host file outside Trash.
-pub fn is_strict_trash_project(project_id: &str) -> bool {
-    paths::is_trash_project_id(project_id)
 }
 
 /// Re-derive a spawn's authority flags from the trustworthy project record.
@@ -732,22 +733,15 @@ pub fn wrap_pty_options_docker(opts: &mut PtyOptions) -> Result<(), String> {
     // Auth env is read at exec (not create) so rotated tokens are picked up
     // per tab spawn.
     let auth_env = host_auth_env();
-    // Trash agent tabs can live in a host tmux session for Eldrun Mobile. Their
-    // PTY is only tmux's client, so registering it for normal tab-close cleanup
-    // would kill the contained agent as soon as the desktop detaches. The
-    // persistent container is itself the lifetime boundary instead.
-    let persistent_trash = is_strict_trash_project(&project_id) && opts.tmux_session.is_some();
-    let pidfile = if persistent_trash {
-        format!("/tmp/eldrun-persist-{}.pid", sanitize_key(&opts.id))
-    } else {
-        register_exec_tab(&opts.id, &name)
-    };
+    let pidfile = register_exec_tab(&opts.id, &name);
 
     opts.args = docker_exec_args(&name, &opts.cwd, &env, &auth_env, &pidfile, &cmd, &cmd_args);
     opts.cmd = "docker".to_string();
     // Env now rides inside the docker argv as `-e` flags; the docker client
-    // itself needs nothing from opts.env.
+    // itself needs nothing from opts.env — except the secrets, which the argv
+    // only names (`-e NAME`) and docker reads from the client's own env (#864).
     opts.env.clear();
+    opts.env.extend(docker_exec_client_env(&env, &auth_env));
     Ok(())
 }
 
@@ -856,74 +850,34 @@ pub fn up(
     let home = paths::home_dir_string();
     let (uid, gid) = host_uid_gid();
     let state_dir = storage::state_dir();
-    let strict_trash = is_strict_trash_project(project_id);
-    // A strict Trash container deliberately does not mount the host home. Give
-    // its agents a writable container-only home instead of a dangling host path
-    // so browser/device-flow logins and CLI caches remain usable without
-    // exposing host-backed credentials or session files.
-    let container_home = if strict_trash {
-        "/tmp/eldrun-home".to_string()
-    } else {
-        home.clone()
-    };
     let live_sessions = state_dir.join("live_sessions");
     // This project's own slice of the live-session records — the only one the
     // container gets to see (see `rw_mounts`).
     let live_sessions_own = crate::services::agent_session::project_live_sessions_dir(project_id);
     let hooks_dir = state_dir.join("hooks");
-    // Ensure the hook's write target and the staging dir exist so their bind
-    // mounts map real host paths rather than docker-auto-created (root-owned)
-    // ones. Best effort.
-    if !strict_trash {
-        let _ = std::fs::create_dir_all(&live_sessions_own);
-    }
-    let stage = stage_dir(project_id);
-    if !strict_trash {
-        let _ = std::fs::create_dir_all(&stage);
-    }
+    // Ensure the hook's write target exists so its bind mount maps a real host
+    // path rather than a docker-auto-created (root-owned) one. Best effort.
+    let _ = std::fs::create_dir_all(&live_sessions_own);
 
-    // Refresh the staged config copies from the host originals at every up.
-    // `fs::copy` overwrites in place (same inode), so a running container's
-    // bind mounts see the refreshed content too.
-    let (mut rw_mounts, mut ro_mounts) = if strict_trash {
-        (Vec::new(), Vec::new())
-    } else {
-        let codex_state = prepare_codex_state(&home, project_id);
-        let (mut rw, ro) = agent_home_mounts(
-            &home,
-            &live_sessions_own.to_string_lossy(),
-            &live_sessions.to_string_lossy(),
-            true,
-        );
-        // Parent first; Docker also sorts nested bind mounts by destination,
-        // but preserving the relationship here keeps the pure argv obvious.
-        rw.insert(
-            0,
-            format!("{}:{home}/.codex", codex_state.to_string_lossy()),
-        );
-        (rw, ro)
-    };
-    if !strict_trash {
-        rw_mounts.extend(
-            staged_config_mounts(&home, &stage)
-                .into_iter()
-                .map(|(src, dst)| format!("{src}:{dst}")),
-        );
-        rw_mounts.extend(
-            staged_claude_json_mounts(&home, &stage, &[project_dir.to_string()])
-                .into_iter()
-                .map(|(src, dst)| format!("{src}:{dst}")),
-        );
-        // The credential file is a mirror with a stable inode, not the host
-        // original a rename would orphan under the container — see
-        // `claude_credential_mounts`.
-        rw_mounts.extend(
-            claude_credential_mounts(&home)
-                .into_iter()
-                .map(|(src, dst)| format!("{src}:{dst}")),
-        );
-        ro_mounts.extend(ro_mounts_for_hooks(&hooks_dir));
-    }
+    // The scope's Eldrun-owned agent home is the container's `$HOME`
+    // (`services::agent_home`): the user's own home never enters it.
+    let scope_home = crate::services::agent_home::prepare_scope_home(
+        project_id,
+        &[PathBuf::from(project_dir)],
+    )
+    .map_err(|e| format!("Project container: prepare agent home: {e}"))?
+    .dir;
+    // Parent first; Docker also sorts nested bind mounts by destination,
+    // but preserving the relationship here keeps the pure argv obvious.
+    let rw_mounts = vec![
+        format!("{}:{home}", scope_home.to_string_lossy()),
+        format!(
+            "{}:{}",
+            live_sessions_own.to_string_lossy(),
+            live_sessions.to_string_lossy()
+        ),
+    ];
+    let mut ro_mounts = ro_mounts_for_hooks(&hooks_dir);
     let bin = crate::services::agent_bin::bin_dir();
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
     ro_mounts.push(format!("{0}:{0}", bin.to_string_lossy()));
@@ -931,16 +885,14 @@ pub fn up(
     let image = image_for(project_id, spec);
 
     // The create argv (sans fingerprint label) is its own fingerprint input —
-    // and deliberately WITHOUT the transcript mounts. That set changes whenever
-    // *any* project gains a transcript dir, and a fingerprint mismatch means
-    // `rm -f` + recreate: folding it in would let an unrelated project's agent
-    // kill every live tab of this one. Mounts are fixed at create anyway, so a
-    // session simply runs with the set it started with.
+    // deliberately WITHOUT the git-guard mounts below, whose set changes as the
+    // agent works; a fingerprint mismatch means `rm -f` + recreate under the
+    // live tabs. Mounts are fixed at create anyway.
     let base = docker_create_args(
         &name,
         project_id,
         &image,
-        &container_home,
+        &home,
         uid,
         gid,
         project_dir,
@@ -951,15 +903,6 @@ pub fn up(
     );
     let fingerprint = spec_fingerprint(&base);
 
-    let (tx_rw, tx_ro) = if strict_trash {
-        (Vec::new(), Vec::new())
-    } else {
-        claude_transcript_mounts(
-            &home,
-            &[project_dir.to_string()],
-            &claude_projects_stage(project_id),
-        )
-    };
     // The repo's git control files, re-mounted over the rw project (#158): a
     // contained agent can commit, but cannot plant a hook or `core.fsmonitor`
     // for the host's next git, nor swap `.git` for a `gitdir:` pointer. Kept out
@@ -973,12 +916,10 @@ pub fn up(
     };
     let rw_mounts: Vec<String> = rw_mounts
         .into_iter()
-        .chain(tx_rw)
         .chain(guard.pinned.into_iter().map(identical))
         .collect();
     let ro_mounts: Vec<String> = ro_mounts
         .into_iter()
-        .chain(tx_ro)
         .chain(guard.read_only.into_iter().map(identical))
         .collect();
 
@@ -999,7 +940,7 @@ pub fn up(
         &name,
         project_id,
         &image,
-        &container_home,
+        &home,
         uid,
         gid,
         project_dir,
@@ -1042,9 +983,6 @@ pub fn up_for_project(project_id: &str) -> Result<Option<String>, String> {
 /// best-effort. Only spawns docker when this run actually created the container
 /// or the toggle is currently on — a never-containerized project costs nothing.
 pub fn down_for_project(project_id: &str) {
-    if is_strict_trash_project(project_id) {
-        return;
-    }
     let name = container_name_for(project_id);
     let created = created_set().lock().unwrap().contains(&name);
     if !created && !sandbox_spec_for(project_id).is_some_and(|s| s.enabled) {
@@ -1052,9 +990,6 @@ pub fn down_for_project(project_id: &str) {
     }
     let _guard = lifecycle_lock().lock().unwrap();
     let _ = docker(&["rm", "-f", &name]);
-    // The mounts are gone with the container: anything the session recorded for
-    // a cwd that had no host dir at create time is in the stage now.
-    harvest_project_transcripts(project_id);
     created_set().lock().unwrap().remove(&name);
     exec_tabs()
         .lock()
@@ -1069,33 +1004,20 @@ pub fn down_all() {
     if created_set().lock().unwrap().is_empty() {
         return;
     }
-    remove_all_owned_except_trash();
-    harvest_all_transcripts();
+    remove_all_owned();
     created_set().lock().unwrap().clear();
     exec_tabs().lock().unwrap().clear();
 }
 
-/// Startup, **before the window can spawn anything**: harvest the transcripts a
-/// previous run left in the stage and clear the stage root.
-///
-/// A crashed run never got to harvest, so whatever its fenced/contained agents
-/// recorded for a cwd that had no host transcript dir yet is still here — and
-/// the resolver's session probe reads the host dir. This used to run on the
-/// [`sweep_orphans`] thread, racing the restored tabs: a restore that probed
-/// before the harvest landed saw no log and launched `--session-id <launch>`,
-/// which Claude refuses once a log for that id exists ("already in use"), and
-/// a fenced spawn that set its stage up before the wipe had it pulled out from
-/// under its mount. Plain renames, so it is cheap enough to block on.
-pub fn harvest_and_clear_stage() {
-    let stage_root = storage::state_dir().join("sandbox-stage");
-    harvest_all_transcripts();
-    harvest_all_claude_trust();
-    let _ = std::fs::remove_dir_all(&stage_root);
+/// Startup: wipe the per-scope stage root (a previous run's private launcher
+/// dirs and Seatbelt profiles). Nothing in it outlives a run.
+pub fn clear_stage() {
+    let _ = std::fs::remove_dir_all(storage::state_dir().join("sandbox-stage"));
 }
 
 /// Startup sweep: remove every container labelled `eldrun.owner=eldrun` (a
 /// previous run's containers are by definition stale). The staged config
-/// copies are cleared by [`harvest_and_clear_stage`], which must have run first
+/// copies are cleared by [`clear_stage`], which must have run first
 /// and synchronously. Best-effort; cheap no-op when docker is absent.
 pub fn sweep_orphans() {
     // Containers run on every OS with Docker (Docker Desktop on Windows and
@@ -1106,7 +1028,7 @@ pub fn sweep_orphans() {
     if !sweep_should_probe(crate::paths::binary_on_path("docker")) || preflight_docker().is_err() {
         return;
     }
-    remove_all_owned_except_trash();
+    remove_all_owned();
 }
 
 /// Whether the startup sweep may spend a `docker` spawn at all: only when a
@@ -1116,31 +1038,14 @@ fn sweep_should_probe(docker_on_path: bool) -> bool {
 }
 
 /// `docker rm -f` every container carrying our owner label. Best-effort.
-/// Preserve the strict Trash container across Eldrun restarts: host tmux owns
-/// mobile-reachable agents there, while Docker remains the filesystem boundary.
-fn remove_all_owned_except_trash() {
+fn remove_all_owned() {
     let _guard = lifecycle_lock().lock().unwrap();
-    let Ok(out) = docker(&[
-        "ps",
-        "-aq",
-        "--filter",
-        &format!("label={OWNER_LABEL}"),
-        "--filter",
-        &format!("label=eldrun.project={}", paths::TRASH_PROJECT_ID),
-    ]) else {
-        return;
-    };
-    let preserve: HashSet<&str> = std::str::from_utf8(&out.stdout)
-        .unwrap_or("")
-        .split_whitespace()
-        .collect();
     let Ok(out) = docker(&["ps", "-aq", "--filter", &format!("label={OWNER_LABEL}")]) else {
         return;
     };
     let ids: Vec<&str> = std::str::from_utf8(&out.stdout)
         .unwrap_or("")
         .split_whitespace()
-        .filter(|id| !preserve.contains(*id))
         .collect();
     if ids.is_empty() {
         return;
@@ -1621,429 +1526,23 @@ fn detect_spec_sources(project_dir: &Path, spec: &mut SandboxSpec) {
 
 // ── Mounts / identity (shared helpers) ────────────────────────────────────
 
-/// Entries of `~/.claude` that are deliberately **not** mounted into a container.
-///
-/// The whole dir used to be one rw mount, which handed a contained agent several
-/// routes straight back to **host** code execution and to every project's history:
-/// - `shell-snapshots/` — Claude sources a snapshot for each host Bash call, so one
-///   appended line runs on the host the next time an *uncontained* session does;
-/// - `plugins/`, `agents/`, `skills/` — register hook commands / steer every future
-///   session. `skills/` is the personal half of the Skills Library
-///   (`docs/skills_plan.md`): a `SKILL.md` is instructions every project on this
-///   machine lazily loads, and a skill folder may bundle a `scripts/` directory,
-///   so a contained agent that could write here would be writing code and
-///   standing orders for every *uncontained* session of every other project —
-///   the `agents/` hole exactly, one directory over;
-/// - `backups/`, `file-history/` — copies of the config the staged shadow protects,
-///   and a rewrite target with the same effect;
-/// - `history.jsonl`, `sessions/`, `session-env/`, `stats-cache.json`, `daemon.*` —
-///   cross-project state a project container has no business reading or writing;
-/// - `telemetry/` — likewise.
-///
-/// `settings.json`/`settings.local.json` are excluded here because
-/// [`staged_config_mounts`] mounts a writable per-project **copy** at those exact
-/// paths; mounting the originals as well would be a duplicate destination.
-/// `projects` (the transcripts) is excluded for the same reason — it is mounted
-/// explicitly, per entry, by [`claude_transcript_mounts`], because *this*
-/// project's transcripts must be writable and every other project's must not.
-///
-/// A trailing `*` matches by prefix (`daemon*`), a leading one by suffix
-/// (`*.sh`). Everything not listed is still mounted — deliberately: an unknown
-/// new entry breaking resume is worse than an unknown new entry being reachable,
-/// and the named holes are the exploitable ones.
-const CLAUDE_UNMOUNTED: &[&str] = &[
-    "shell-snapshots",
-    "plugins",
-    "agents",
-    "skills",
-    "backups",
-    "file-history",
-    "telemetry",
-    "history.jsonl",
-    "sessions",
-    "session-env",
-    "stats-cache.json",
-    // `daemon*`, not `daemon.*`: the prefix used to end in a dot, so the
-    // `daemon/` **directory** itself — the one holding the daemon's private
-    // state — fell through the hole and was mounted read-write.
-    "daemon*",
-    "settings.json",
-    "settings.local.json",
-    // Same cross-project `projects` map (prompt history, `allowedTools`) that
-    // `staged_claude_json_mounts` exists to stage a *filtered* copy of, plus the
-    // `.bak`/`.backup.<ts>` siblings a restore reads back. Staged, not mounted.
-    ".claude.json*",
-    // Cross-session content with no part in resume: debug logs, feedback
-    // drafts, the paste cache, and uploaded files — the same class as
-    // `history.jsonl`, which has been denied here since the beginning.
-    "debug",
-    "feedback",
-    "paste-cache",
-    "uploads",
-    CLAUDE_PROJECTS_ENTRY,
-    // Owned by [`claude_credential_mounts`], like `settings.json` is by the
-    // staged shadow: this destination gets an Eldrun-owned **mirror** file, not
-    // the host original. Mounted as a file here it was a pin on one inode, and
-    // Claude rotates the file by rename — every tab already running kept
-    // reading the orphaned old inode and reported "Login expired" while a new
-    // tab worked (`services::agent_creds` has the whole story).
-    ".credentials.json",
-];
 
-/// Entries of `~/.claude`/`~/.codex` mounted **read-only** rather than left out:
-/// the agent genuinely reads them, but a write must never reach the host.
-///
-/// - `*.sh` — the statusline/hook scripts an agent's own `settings.json` points
-///   at. [`staged_config_mounts`] stops a contained agent *repointing* a hook;
-///   it does nothing about rewriting the script already pointed at, which the
-///   host's **uncontained** CLI then executes on its next launch. That is a
-///   straight fence-to-host code-execution path.
-/// - `*.md` — the user's global instructions (`~/.claude/CLAUDE.md`,
-///   `~/.codex/AGENTS.md`, and whatever they import). A write there is a
-///   standing prompt injection into every future uncontained session.
-const AGENT_READ_ONLY: &[&str] = &["*.sh", "*.md"];
-
-/// Entries of `~/.codex` that are not mounted. Much shorter than
-/// [`CLAUDE_UNMOUNTED`] on purpose: the rollout tree Codex keeps a conversation
-/// in **must** stay mounted, because `agent_session::codex_session_exists`
-/// reads it back to decide whether a tab can resume — unmounting it silently
-/// kills Codex resume in every container:
-///
-/// - `sessions/`, the rollout logs Codex writes;
-/// - the SQLite thread store is handled separately in a durable per-scope
-///   directory mounted over `~/.codex`, because WAL/SHM files cannot safely be
-///   individual file mounts.
-///
-/// `config.toml` is the staged-shadow destination (see [`staged_config_mounts`]).
-const CODEX_UNMOUNTED: &[&str] = &["history.jsonl", "config.toml"];
-
-/// Codex's SQLite files must live in the per-scope directory mounted over
-/// `~/.codex`, rather than being mounted one file at a time from the host.
-/// SQLite removes and recreates its `-wal`/`-shm` sidecars; a file bind pins the
-/// old inode, so a fenced tab could write a rollout while its thread index and
-/// paginated history disappeared with the tmpfs home. The next
-/// `codex resume <id>` then found only the rollout and failed in Codex's legacy
-/// `list_turns` path.
-fn is_codex_sqlite_entry(name: &str) -> bool {
-    name.contains(".sqlite")
-}
-
-/// Whether a directory entry name matches one of a pattern list. A pattern
-/// ending in `*` matches by prefix, one starting with `*` by suffix; everything
-/// else is an exact match.
-fn matches_entry(name: &str, patterns: &[&str]) -> bool {
-    patterns.iter().any(|p| {
-        if let Some(prefix) = p.strip_suffix('*') {
-            name.starts_with(prefix)
-        } else if let Some(suffix) = p.strip_prefix('*') {
-            name.ends_with(suffix)
-        } else {
-            *p == name
-        }
-    })
-}
-
-/// Per-entry identical-path mounts for one agent state dir as `(rw, ro)`,
-/// skipping the excluded entries. Mounting the children rather than the parent
-/// is what makes the exclusion real: an unmounted child is simply not reachable,
-/// and the container cannot create new top-level entries in the host's dir
-/// either. Entries matching [`AGENT_READ_ONLY`] land in the `ro` half.
-fn narrowed_agent_mounts(
-    dir: &str,
-    unmounted: &[&str],
-    codex_state_overlay: bool,
-) -> (Vec<String>, Vec<String>) {
-    let base = Path::new(dir);
-    if !base.is_dir() {
-        return (Vec::new(), Vec::new());
-    }
-    let Ok(entries) = std::fs::read_dir(base) else {
-        return (Vec::new(), Vec::new());
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .filter(|n| {
-            !matches_entry(n, unmounted)
-                && !(codex_state_overlay && is_codex_sqlite_entry(n))
-        })
-        .collect();
-    // Deterministic order so the spec fingerprint doesn't flap with readdir order.
-    names.sort();
-    let (mut rw, mut ro) = (Vec::new(), Vec::new());
-    for name in &names {
-        let pair = format!("{dir}/{name}:{dir}/{name}");
-        if matches_entry(name, AGENT_READ_ONLY) {
-            ro.push(pair);
-        } else {
-            rw.push(pair);
-        }
-    }
-    (rw, ro)
-}
-
-/// The agent auth/state mounts the resume machinery depends on, as
-/// `(read-write, read-only)` `src:dst` pairs.
-///
-/// `~/.claude`/`~/.codex` are mounted **per entry** with an exclusion list rather
-/// than wholesale (see [`CLAUDE_UNMOUNTED`]); entries matching
-/// [`AGENT_READ_ONLY`] come back in the read-only half instead. Gemini creds are
-/// mounted only when they exist so we never auto-create empty root-owned dirs in
-/// `$HOME`.
-///
-/// `live_sessions_src` is this project's **own** subdirectory of
-/// `<state_dir>/live_sessions`, mounted at `live_sessions_dst` — the canonical root
-/// path the hook script writes to. This is the one deliberately non-identical
-/// mount: the hook's target path is baked into a read-only script shared with
-/// host-run agents, so per-project isolation has to come from *what* is mounted
-/// there. With the shared root mounted, a contained agent could overwrite another
-/// project's tab record and thereby choose which conversation an **uncontained**
-/// agent resumes.
-pub(crate) fn agent_home_mounts(
-    home: &str,
-    live_sessions_src: &str,
-    live_sessions_dst: &str,
-    codex_state_overlay: bool,
-) -> (Vec<String>, Vec<String>) {
-    let (mut rw, mut ro) = (Vec::new(), Vec::new());
-    for (dir, unmounted) in [
-        (format!("{home}/.claude"), CLAUDE_UNMOUNTED),
-        (format!("{home}/.codex"), CODEX_UNMOUNTED),
-    ] {
-        let (entry_rw, entry_ro) = narrowed_agent_mounts(
-            &dir,
-            unmounted,
-            codex_state_overlay && dir.ends_with("/.codex"),
-        );
-        rw.extend(entry_rw);
-        ro.extend(entry_ro);
-    }
-    // The in-container SessionStart hook writes a tab's live id here.
-    rw.push(format!("{live_sessions_src}:{live_sessions_dst}"));
-    // Gemini credentials only — narrowed from the whole `~/.config` so unrelated
-    // secrets (`gh`, `gcloud`, …) are never exposed to the container.
-    for cand in [format!("{home}/.gemini"), format!("{home}/.config/gemini")] {
-        if Path::new(&cand).is_dir() {
-            rw.push(format!("{cand}:{cand}"));
-        }
-    }
-    // OpenCode keeps every session in `~/.local/share/opencode/opencode.db`
-    // (plus `auth.json`) and its last model/prompt history under
-    // `~/.local/state/opencode`. Unmounted, a fenced tab wrote its conversation
-    // into the throwaway home and the restore's `opencode --continue` found no
-    // session to continue. Whole directories, for the same reason as Codex's
-    // store: SQLite replaces its `-wal`/`-shm` sidecars. The config dir is
-    // readable only — plugins and MCP commands declared there run in the host's
-    // uncontained OpenCode — and the cache (downloaded binaries) stays out.
-    for (rel, writable) in [
-        (".local/share/opencode", true),
-        (".local/state/opencode", true),
-        (".config/opencode", false),
-    ] {
-        let dir = format!("{home}/{rel}");
-        if Path::new(&dir).is_dir() {
-            if writable { &mut rw } else { &mut ro }.push(format!("{dir}:{dir}"));
-        }
-    }
-    // The other "continue last session" agents: only the session store their
-    // continue flag reads is mounted, so a restored tab finds its conversation.
-    // The rest of each home stays unmounted, exactly as before — hooks, tools and
-    // MCP configs live beside these, and read-only copies of config the CLI
-    // rewrites at startup would trade a lost session for a failed launch.
-    for rel in CONTINUE_AGENT_SESSION_STORES {
-        let path = format!("{home}/{rel}");
-        if Path::new(&path).is_dir() {
-            rw.push(format!("{path}:{path}"));
-        }
-    }
-    (rw, ro)
-}
-
-/// Session stores of the agents `RESUMABLE_AGENTS` (frontend) relaunches with a
-/// "continue the most recent session" flag, relative to `$HOME`. Antigravity is
-/// absent because it keeps its conversations under `~/.gemini`, mounted above.
-const CONTINUE_AGENT_SESSION_STORES: &[&str] = &[
-    // Qwen Code ≥0.24: `projects/<cwd>/chats/*.jsonl`; older releases, `tmp/`.
-    ".qwen/projects",
-    ".qwen/tmp",
-    // GitHub Copilot CLI: `session-state/<id>/events.jsonl`.
-    ".copilot/session-state",
-    // Cursor Agent: `chats/<cwd hash>/<chat id>/`.
-    ".cursor/chats",
-    // Mistral Vibe: `logs/session/` (under `$VIBE_HOME`, default `~/.vibe`).
-    ".vibe/logs",
-    // Grok Build: `sessions/<working dir>/`.
-    ".grok/sessions",
-    // Droid: `sessions/<uuid>.{jsonl,settings.json}`, filed by working dir.
-    ".factory/sessions",
-];
-
-/// Durable, scope-local top level for Codex's mutable databases. It is outside
-/// `sandbox-stage`: that directory is deliberately cleared at Eldrun startup,
-/// while these files are the session index needed *after* a restart.
-pub(crate) fn codex_state_dir(scope_id: &str) -> PathBuf {
-    storage::state_dir()
-        .join("codex-state")
-        .join(sanitize_key(scope_id))
-}
-
-/// Seed a new scope from the host's resume databases, then return the directory
-/// that should be mounted over `~/.codex`.
-///
-/// `VACUUM INTO` takes a consistent SQLite snapshot including committed WAL
-/// pages. Copying the three files independently while an uncontained Codex is
-/// running can produce a corrupt or incomplete store. Once a scope owns a
-/// database we never refresh it from the host: fenced tabs keep advancing that
-/// private copy, and overwriting it would lose exactly the sessions this mount
-/// exists to preserve.
-pub(crate) fn prepare_codex_state(home: &str, scope_id: &str) -> PathBuf {
-    let target = codex_state_dir(scope_id);
-    prepare_codex_state_in(&Path::new(home).join(".codex"), &target);
-    target
-}
-
-fn prepare_codex_state_in(source: &Path, target: &Path) {
-    use rusqlite::{Connection, OpenFlags};
-    use std::sync::{Mutex, OnceLock};
-
-    // Two restored tabs can reach the first seed together. Serialize the
-    // absent-check/snapshot/rename sequence so neither can replace the other's
-    // just-created scope database.
-    static SEED_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let _seed_guard = SEED_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-    if std::fs::create_dir_all(target).is_err() {
-        return;
-    }
-    // Codex persists config with an atomic rename, which replaces the staged
-    // symlink inside the overlay. Bubblewrap must create that link afresh on
-    // every spawn; Docker mounts the staged file over the same now-empty path.
-    let config = target.join("config.toml");
-    if config.is_dir() {
-        let _ = std::fs::remove_dir_all(&config);
-    } else {
-        let _ = std::fs::remove_file(&config);
-    }
-    let Ok(entries) = std::fs::read_dir(source) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        // Only the two stores required to resume a thread. Logs, queues and
-        // memories are intentionally born scope-local instead of multiplying
-        // tens of megabytes of unrelated host state into every project.
-        if !(name.ends_with(".sqlite")
-            && (name.starts_with("state") || name.starts_with("thread_history")))
-        {
-            continue;
-        }
-        let dest = target.join(name);
-        if dest.exists() {
-            continue;
-        }
-        let tmp = target.join(format!(".{name}.seed-{}", std::process::id()));
-        let _ = std::fs::remove_file(&tmp);
-        let Ok(conn) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
-            continue;
-        };
-        // SQLite accepts the destination as a bound filename expression; no
-        // path text is interpolated into SQL.
-        if conn.execute("VACUUM INTO ?1", [tmp.to_string_lossy().as_ref()]).is_ok() {
-            if std::fs::rename(&tmp, &dest).is_err() {
-                let _ = std::fs::remove_file(&tmp);
-            }
-        } else {
-            let _ = std::fs::remove_file(&tmp);
-        }
-    }
-}
-
-/// The Claude credential mount as `(src, dst)` pairs (the same pair shape as
-/// [`staged_config_mounts`], for the same colon-in-a-Windows-path reason):
-/// `<state_dir>/agent-creds/claude/.credentials.json` mounted at the real
-/// `~/.claude/.credentials.json`. Empty when the host holds no credential file
-/// — a logged-out host mounts nothing rather than an empty file the agent
-/// would write its login into and lose with the tab.
-///
-/// Why a **mirror** rather than the host file: a file bind mount pins an
-/// inode, and Claude Code rotates its credentials by writing a temp file and
-/// renaming it over the original, so every tab bound before a rotation kept
-/// reading the orphaned old record (stale token → failed refresh → "Login
-/// expired") while a freshly opened tab followed the path and worked. The
-/// mirror's inode never changes: `services::agent_creds` rewrites it *in
-/// place* whenever the host file changes and carries a refresh a tab persisted
-/// back the same way. Why not a symlink into the staging dir like the config
-/// shadows: Claude opens this file with `O_NOFOLLOW` and refuses a link.
-///
-/// The mirror is brought up to date **here**, at plan time, so a tab spawned a
-/// second after a rotation starts with the token the host has now rather than
-/// the one the keeper's last tick saw.
-///
-/// Linux only. Everywhere else the pair is the real path twice, which is
-/// exactly what it was: on macOS Seatbelt can deny but not substitute,
-/// `sandbox_exec_inputs` only reads the `dst` off this list to keep it
-/// writable, and the real file is what the agent opens there; Windows fences
-/// nothing and refuses the container. Neither creates a mirror — a second copy
-/// of a secret nobody mounts. If the mirror cannot be written on Linux (an
-/// unwritable state dir) the same identical-path mount is the fallback: a tab
-/// that logs in and later expires beats a tab that cannot log in at all, and
-/// the fallback is logged.
-pub(crate) fn claude_credential_mounts(home: &str) -> Vec<(String, String)> {
-    claude_credential_mounts_in(home, &crate::services::agent_creds::mirror_path())
-}
-
-/// [`claude_credential_mounts`] with the mirror location injected (tests).
-pub(crate) fn claude_credential_mounts_in(home: &str, mirror: &Path) -> Vec<(String, String)> {
-    let host = crate::services::agent_creds::host_path(Path::new(home));
-    if !host.is_file() {
-        return Vec::new();
-    }
-    let dst = host.to_string_lossy().into_owned();
-    if !cfg!(target_os = "linux") {
-        return vec![(dst.clone(), dst)];
-    }
-    match crate::services::agent_creds::ensure_mirror_current(&host, mirror) {
-        Some(mirror) => vec![(mirror.to_string_lossy().into_owned(), dst)],
-        None => {
-            eprintln!(
-                "agent_creds: mirror {} unavailable; mounting the host file itself",
-                mirror.display()
-            );
-            vec![(dst.clone(), dst)]
-        }
-    }
-}
-
-// ── Claude transcripts: read every project, write only our own ────────────
-
-/// The `~/.claude` entry holding **transcripts**
-/// (`~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`). Kept out of the
-/// [`CLAUDE_UNMOUNTED`] denylist's mounted-by-default set and mounted explicitly
-/// instead — see [`claude_transcript_mounts`].
-const CLAUDE_PROJECTS_ENTRY: &str = "projects";
+// ── Claude transcript dirs: which scope they belong to ─────────────────────
 
 /// How many transcript files / how many of each file's leading lines are read
-/// when asking a transcript dir which cwd it belongs to. Bounded because this
-/// runs for every dir at every container create, and a single transcript line
-/// can carry a large tool result.
+/// when asking a transcript dir which cwd it belongs to. Bounded because a
+/// single transcript line can carry a large tool result.
 const TRANSCRIPT_PROBE_FILES: usize = 3;
 const TRANSCRIPT_PROBE_LINES: usize = 32;
 
-/// This project's stand-in for `~/.claude/projects` inside the container:
-/// `<state_dir>/sandbox-stage/<project>/claude-projects`.
-///
-/// It is the mount *parent*, so a transcript dir the container creates for a cwd
-/// nobody knew about at create time (a subdir tab, a fresh worktree) lands in a
-/// real host directory instead of the container's throwaway layer — teardown
-/// harvests it into `~/.claude/projects` (see [`harvest_claude_transcripts`]).
-pub(crate) fn claude_projects_stage(project_id: &str) -> PathBuf {
-    stage_dir(project_id).join("claude-projects")
+/// Whether the transcript dir `dir` (named `name`) belongs to one of `roots`:
+/// by the cwd its sessions record, else by the name. What
+/// `agent_home::seed_claude_transcripts` copies into a new scope home.
+pub(crate) fn transcript_dir_belongs_to(dir: &Path, name: &str, roots: &[String]) -> bool {
+    match transcript_cwd(dir) {
+        Some(cwd) => roots.iter().any(|root| cwd_is_within(&cwd, root)),
+        None => roots.iter().any(|root| transcript_name_matches(name, root)),
+    }
 }
 
 /// The absolute cwd a transcript dir's sessions were recorded in, read out of a
@@ -2111,141 +1610,6 @@ fn transcript_name_matches(name: &str, project_dir: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('-'))
 }
 
-/// The `~/.claude/projects` mounts as `(rw, ro)` `src:dst` pairs — **an explicit
-/// entry per transcript directory**, never one mount of the parent.
-///
-/// The policy, which the mount list states rather than implies:
-/// - the per-project **stage** dir is mounted rw *at* `~/.claude/projects`, so it
-///   is the parent every nested mount lands in and the only place a *new*
-///   transcript dir can be created;
-/// - every transcript dir belonging to **this** project is nested **rw** — a
-///   containerized session has to append to its own log, and `--resume` has to
-///   find it there next time;
-/// - every **other** project's transcript dir is nested **`:ro`** — readable
-///   (an agent may look at what was done elsewhere) but not writable, because a
-///   rewritten transcript is a message an *uncontained* future session will read
-///   back as its own history.
-///
-/// The whole dir used to be one rw mount, which made every project's history
-/// rewritable from inside any container.
-pub(crate) fn claude_transcript_mounts(
-    home: &str,
-    roots: &[String],
-    stage: &Path,
-) -> (Vec<String>, Vec<String>) {
-    let dest_root = format!("{home}/.claude/{CLAUDE_PROJECTS_ENTRY}");
-    // Created by us so the mount maps a real user-owned dir rather than a
-    // docker-auto-created root-owned one (the container runs as --user uid:gid).
-    let _ = std::fs::create_dir_all(stage);
-    let mut rw = vec![format!("{}:{dest_root}", stage.to_string_lossy())];
-    let mut ro = Vec::new();
-
-    let real_root = Path::new(home).join(".claude").join(CLAUDE_PROJECTS_ENTRY);
-    let Ok(entries) = std::fs::read_dir(&real_root) else {
-        return (rw, ro);
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .collect();
-    // Deterministic order so the mount list doesn't flap with readdir order.
-    names.sort();
-
-    for name in names {
-        let src = real_root.join(&name);
-        // Pre-create the nested mountpoint inside the stage for the same
-        // ownership reason as the stage itself.
-        let _ = std::fs::create_dir_all(stage.join(&name));
-        let pair = format!("{}:{dest_root}/{name}", src.to_string_lossy());
-        let ours = match transcript_cwd(&src) {
-            Some(cwd) => roots.iter().any(|root| cwd_is_within(&cwd, root)),
-            None => roots
-                .iter()
-                .any(|root| transcript_name_matches(&name, root)),
-        };
-        if ours {
-            rw.push(pair);
-        } else {
-            ro.push(pair);
-        }
-    }
-    (rw, ro)
-}
-
-/// Move transcript dirs the container created in `stage` into the host's real
-/// `~/.claude/projects`, so a session opened in a cwd that had no dir at create
-/// time is still resumable (and still visible to `claude_session_exists`, which
-/// scans the real dir) after teardown.
-///
-/// A dir that *was* mounted leaves an empty mountpoint behind, so "has anything
-/// in it" is exactly the test for "the container made this". Never overwrites a
-/// host file: same-named entries are left alone.
-fn harvest_claude_transcripts(stage: &Path, real_root: &Path) {
-    let Ok(entries) = std::fs::read_dir(stage) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let src = entry.path();
-        if !src.is_dir() {
-            continue;
-        }
-        let empty = std::fs::read_dir(&src)
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(true);
-        if empty {
-            let _ = std::fs::remove_dir(&src);
-            continue;
-        }
-        let Some(name) = src.file_name() else {
-            continue;
-        };
-        let dest = real_root.join(name);
-        let _ = std::fs::create_dir_all(real_root);
-        if !dest.exists() && std::fs::rename(&src, &dest).is_ok() {
-            continue;
-        }
-        // The host already has that dir (or the rename crossed a filesystem):
-        // move over only the files it doesn't have.
-        let _ = std::fs::create_dir_all(&dest);
-        if let Ok(files) = std::fs::read_dir(&src) {
-            for file in files.flatten() {
-                let target = dest.join(file.file_name());
-                if target.exists() {
-                    continue;
-                }
-                if std::fs::rename(file.path(), &target).is_err() {
-                    let _ = std::fs::copy(file.path(), &target);
-                }
-            }
-        }
-        let _ = std::fs::remove_dir_all(&src);
-    }
-}
-
-/// [`harvest_claude_transcripts`] for one project's stage.
-pub(crate) fn harvest_project_transcripts(project_id: &str) {
-    let real = paths::home_dir()
-        .join(".claude")
-        .join(CLAUDE_PROJECTS_ENTRY);
-    harvest_claude_transcripts(&claude_projects_stage(project_id), &real);
-}
-
-/// [`harvest_claude_transcripts`] for every staged project — app exit, and the
-/// startup sweep (where it is a previous *crashed* run's harvest, and so must
-/// run before the stage root is cleared).
-fn harvest_all_transcripts() {
-    let real = paths::home_dir()
-        .join(".claude")
-        .join(CLAUDE_PROJECTS_ENTRY);
-    let Ok(entries) = std::fs::read_dir(storage::state_dir().join("sandbox-stage")) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        harvest_claude_transcripts(&entry.path().join("claude-projects"), &real);
-    }
-}
-
 /// Read-only identical-path mounts: just the hook *script* dir, which is shared
 /// with host-run agents and so must be immutable from inside the container (see
 /// the module doc). Mounted only when it exists on the host.
@@ -2261,526 +1625,35 @@ pub(crate) fn ro_mounts_for_hooks(hooks_dir: &Path) -> Vec<String> {
 /// Per-project staging dir for the writable hook-config copies:
 /// `<state_dir>/sandbox-stage/<sanitized project id>`. One dir per project
 /// (mounts are fixed at create), refreshed at each `up` — no per-tab leak.
+#[cfg(target_os = "macos")]
 pub(crate) fn stage_dir(project_id: &str) -> PathBuf {
     storage::state_dir()
         .join("sandbox-stage")
         .join(sanitize_key(project_id))
 }
 
-/// Copy the agents' hook-registration files into the per-project `stage` dir
-/// and return rw mounts of the *copies* at the files' identical container
-/// paths. The container thus gets writable settings it can freely rewrite (so
-/// agents that persist config don't error) while the host originals are
-/// shadowed and never touched — a compromised agent cannot repoint the host's
-/// SessionStart hook. Best effort: a file that is absent or fails to copy is
-/// simply not mounted.
-///
-/// The shadow is **unconditional**: a host file that does not exist yet is staged
-/// as an empty default instead of being skipped. Skipping it was the hole the
-/// shadow exists to close — with no mount at that path, the container's write went
-/// *through* to the real host `~/.claude/settings.local.json` (or
-/// `~/.codex/config.toml`), which is exactly the "repoint the host's SessionStart
-/// hook at an attacker command" escape. Installs where the file simply hadn't been
-/// created yet were therefore unprotected.
-///
-/// Returned as `(copy on host, original path)` **pairs**, not pre-joined
-/// `src:dst` strings: a host path is not colon-free on every platform (a
-/// Windows drive letter carries one), so joining here would hand the caller a
-/// string it cannot split back apart unambiguously. The bubblewrap fence takes
-/// the same pairs but symlinks rather than mounts them — see
-/// [`crate::services::agent_fence::STAGE_MOUNT`] for why a mounted file cannot
-/// be replaced by the rename every one of these agents writes with.
-pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, String)> {
-    let home = Path::new(home);
-    let mut mounts = Vec::new();
-    for rel in [
-        ".claude/settings.json",
-        ".claude/settings.local.json",
-        ".codex/config.toml",
-    ] {
-        // Native separators: the container path is the host original's own path.
-        let src_path = rel
-            .split('/')
-            .fold(home.to_path_buf(), |p, seg| p.join(seg));
-        // Flatten the host path to a unique leaf so the three files never collide.
-        let src = src_path.to_string_lossy().into_owned();
-        let leaf = src
-            .trim_start_matches(['/', '\\'])
-            .replace(['/', '\\', ':'], "_");
-        let dst = stage.join(&leaf);
-        // The outgoing shadow, read before it is overwritten: the folder-trust
-        // answers below are carried across from it.
-        let previous = if rel == ".codex/config.toml" {
-            std::fs::read_to_string(&dst).ok()
-        } else {
-            None
-        };
-        let staged = if src_path.is_file() {
-            std::fs::copy(&src_path, &dst).is_ok()
-        } else {
-            // No host original: stage an empty default so the container still gets
-            // a real, writable file at that path — and its writes stay in the
-            // throwaway copy rather than creating the host's.
-            std::fs::write(&dst, default_agent_config(rel)).is_ok()
-        };
-        if staged {
-            #[cfg(windows)]
-            rewrite_hook_for_container(&dst);
-            // `previous` is `Some` only for the Codex config (above).
-            if let Some(prev) = &previous {
-                carry_codex_project_trust(&dst, prev);
-            }
-            mounts.push((dst.to_string_lossy().into_owned(), src));
-        }
-    }
-    mounts
-}
-
-/// Carry the `[projects."…"]` tables of the outgoing Codex config shadow into
-/// the freshly staged one.
-///
-/// Codex asks whether it may work in a folder and records the answer as
-/// `[projects."<path>"] trust_level = "trusted"` in `~/.codex/config.toml`. In a
-/// fenced tab that file is a throwaway copy of the host original (the whole
-/// point — an agent must not be able to repoint the host's SessionStart hook),
-/// and re-copying it at every spawn threw the answer away with it: the user was
-/// asked about the same project root on every single Eldrun restart.
-///
-/// So the shadow keeps the answers the *user* gave inside it, and nothing else:
-/// the rest of the file is still the host original, so an edit the user makes
-/// to their real config (model, MCP servers, approval policy) reaches the next
-/// fenced tab as before, and nothing here is ever written back to the host. A
-/// table the host original already declares wins — that is the user's own
-/// answer, on the file they can actually see.
-///
-/// The blast radius of an agent forging a trust entry is one Eldrun project's
-/// fenced tabs, whose writable roots the fence pins independently.
-fn carry_codex_project_trust(staged: &Path, previous: &str) {
-    let Ok(fresh) = std::fs::read_to_string(staged) else {
-        return;
-    };
-    fn header_of(block: &str) -> &str {
-        block.lines().next().unwrap_or_default().trim()
-    }
-    let have: Vec<&str> = toml_tables(&fresh, "[projects.")
-        .into_iter()
-        .map(header_of)
-        .collect();
-    let carried: Vec<&str> = toml_tables(previous, "[projects.")
-        .into_iter()
-        .filter(|block| !have.contains(&header_of(block)))
-        .collect();
-    if carried.is_empty() {
-        return;
-    }
-    let mut out = fresh;
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    for block in carried {
-        out.push('\n');
-        out.push_str(block.trim_end());
-        out.push('\n');
-    }
-    let _ = std::fs::write(staged, out);
-}
-
-/// The top-level TOML tables of `text` whose header line starts with `prefix`,
-/// each returned with its body down to the next table header.
-///
-/// A line scanner rather than a parser: these files are written by Codex itself
-/// and by us, the answer only has to be exact for machine-written tables, and a
-/// dependency-free scan cannot reformat a config we hand back to an agent.
-fn toml_tables<'a>(text: &'a str, prefix: &str) -> Vec<&'a str> {
-    let mut blocks = Vec::new();
-    let mut start: Option<usize> = None;
-    let mut offset = 0usize;
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('[') {
-            if let Some(from) = start.take() {
-                blocks.push(&text[from..offset]);
-            }
-            if trimmed.starts_with(prefix) {
-                start = Some(offset);
-            }
-        }
-        offset += line.len();
-    }
-    if let Some(from) = start {
-        blocks.push(&text[from..]);
-    }
-    blocks
-}
-
-/// Windows: point a staged config copy's SessionStart hook at the POSIX twin.
-///
-/// The host registers a PowerShell hook (`eldrun_session_start.ps1`), which a
-/// Linux container cannot run — the record that lets a tab resume its session
-/// would simply never be written. `agent_session` also writes the POSIX body
-/// beside it (with the *container-side* live-sessions path baked in), and this
-/// swaps the command in the copy — never the host original — so the same
-/// hook contract holds inside the container. Both serializations are covered:
-/// Claude's JSON (serde-escaped string) and Codex's TOML (literal string).
-#[cfg(windows)]
-fn rewrite_hook_for_container(staged: &Path) {
-    let Ok(text) = std::fs::read_to_string(staged) else {
-        return;
-    };
-    let host_cmd = crate::services::agent_session::hook_command();
-    let container_cmd = crate::services::agent_session::container_hook_command();
-    let rewritten = if staged.extension().and_then(|e| e.to_str()) == Some("json") {
-        let (Ok(from), Ok(to)) = (
-            serde_json::to_string(&host_cmd),
-            serde_json::to_string(&container_cmd),
-        ) else {
-            return;
-        };
-        text.replace(&from, &to)
+/// Whether Claude will skip its trust dialog in `cwd` for scope `scope_id`:
+/// its answer is recorded in the scope home's `.claude.json`. A scope whose
+/// home does not exist yet is seeded from the user's file, so that is read
+/// then. Read-only. The caller is the frontend's auto-`/rename`, which must
+/// not type a blind Enter into a launch that is about to ask a question — the
+/// default answer is `No, exit`.
+pub fn claude_folder_trusted(cwd: &str, scope_id: Option<&str>) -> bool {
+    let home = crate::services::agent_home::scope_home(scope_id);
+    let candidates = if home.join(".claude.json").exists() {
+        vec![home.join(".claude.json")]
     } else {
-        text.replace(&format!("'{host_cmd}'"), &format!("'{container_cmd}'"))
+        let user = paths::home_dir();
+        vec![user.join(".claude.json"), user.join(".claude").join(".claude.json")]
     };
-    if rewritten != text {
-        let _ = std::fs::write(staged, rewritten);
-    }
-}
-
-/// Stage the `.claude.json` files and mount each copy at its real path.
-///
-/// This top-level file is Claude's identity and onboarding state: without it a
-/// fenced/contained tab looks like a fresh install and demands login **every
-/// tab**, even though `.credentials.json` itself is mounted. It is also
-/// cross-project state — a `projects` map keyed by cwd holding every project's
-/// prompt history and `allowedTools` — so neither hiding it nor mounting the
-/// host original writable is acceptable: the former breaks login, the latter
-/// would let a boxed agent read every project's history and write standing
-/// permissions for *uncontained* sessions of other projects (the same class of
-/// hole as [`CLAUDE_UNMOUNTED`]'s `plugins`/`agents`).
-///
-/// So: a per-project **copy**, with the `projects` map filtered to entries at
-/// or under this box's own `roots`. Login and onboarding survive, foreign
-/// history stays invisible, and writes die with the stage. Refreshed in place
-/// at every up, like [`staged_config_mounts`]. A missing or unparsable host
-/// file stages `{}` (fresh-install behavior, which is then accurate).
-///
-/// Two locations, because the file has moved between CLI versions:
-/// `$HOME/.claude.json` (staged unconditionally — a write must never create the
-/// host's) and `$HOME/.claude/.claude.json` (staged only when the host has it,
-/// so a version that does not use it is not handed a spurious fresh-install
-/// marker). `.claude.json*` is in [`CLAUDE_UNMOUNTED`] so the second one is
-/// never mounted raw alongside its own filtered stage.
-pub(crate) fn staged_claude_json_mounts(
-    home: &str,
-    stage: &Path,
-    roots: &[String],
-) -> Vec<(String, String)> {
-    let home = Path::new(home);
-    let nested = home.join(".claude").join(".claude.json");
-    let mut out = Vec::new();
-    out.extend(staged_claude_json_copy(&home.join(".claude.json"), stage, roots));
-    if nested.is_file() {
-        out.extend(staged_claude_json_copy(&nested, stage, roots));
-    }
-    out
-}
-
-/// One `.claude.json` staged copy: read, filter the `projects` map to `roots`,
-/// write into `stage`, and return the `(copy, original path)` pair.
-fn staged_claude_json_copy(
-    src_path: &Path,
-    stage: &Path,
-    roots: &[String],
-) -> Option<(String, String)> {
-    let src = src_path.to_string_lossy().into_owned();
-    let leaf = src
-        .trim_start_matches(['/', '\\'])
-        .replace(['/', '\\', ':'], "_");
-    let dst = stage.join(&leaf);
-    // The refresh below overwrites whatever the last tab left here, so take the
-    // trust answers and carried preferences out of it first — see
-    // [`agent_trust_path`] for why they cannot simply stay in the stage.
-    harvest_claude_staged_copy(&dst);
-    let mut value: serde_json::Value = std::fs::read(src_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    if let Some(projects) = value.get_mut("projects").and_then(|v| v.as_object_mut()) {
-        projects.retain(|cwd, _| {
-            roots
-                .iter()
-                .any(|root| Path::new(cwd).starts_with(root))
-        });
-    }
-    apply_recorded_trust(&mut value, roots);
-    apply_recorded_claude_prefs(&mut value);
-    let body = serde_json::to_vec(&value).ok()?;
-    std::fs::write(&dst, body).ok()?;
-    Some((dst.to_string_lossy().into_owned(), src))
-}
-
-// ── Trust the user granted from inside the fence ──────────────────────────
-
-/// `<state_dir>/agent_trust.json` — the folders the user answered Claude's
-/// "Is this a project you created or one you trust?" dialog for while inside a
-/// fenced or contained tab.
-///
-/// Claude records that answer in `~/.claude.json`, which such a tab only ever
-/// sees as the stage copy above — and that copy is rewritten from the host file
-/// at **every** spawn, so the answer was gone before the next tab started and
-/// the dialog came back every single time. Worse, the tab could not even be
-/// used to answer it: Eldrun types an agent's `/rename` line and then a bare
-/// Enter, which confirmed the dialog's default row, `No, exit`. The tab died
-/// on launch and nothing could ever trust the folder.
-///
-/// So Eldrun remembers the answer in its OWN state and re-applies it to each
-/// staged copy. The host `~/.claude.json` is never written — that is the rule
-/// this whole shadow exists to keep (`AGENTS.md`: Eldrun must never manipulate
-/// another application's config).
-///
-/// The same file carries the few *preferences* Claude keeps in `~/.claude.json`
-/// that the user toggles from inside a tab ([`CLAUDE_CARRIED_PREFS`]). They
-/// suffer the identical amnesia: Claude's fullscreen layout opens its diff
-/// sidebar by itself once a session has changes, and closing it records
-/// `diffSidebarOpen: false` so it stays closed — into the stage copy, which the
-/// next spawn rewrites from the host. So the grey "No changes this session"
-/// panel came back in every new tab, and nothing the user did inside one could
-/// stop it.
-fn agent_trust_path() -> PathBuf {
-    storage::state_dir().join("agent_trust.json")
-}
-
-/// Top-level `~/.claude.json` keys whose value, once Claude writes it inside a
-/// fenced or contained tab, is carried into every later staged copy. Only
-/// user-facing toggles belong here — never identity, permissions, or anything
-/// a compromised agent could turn into standing authority for other sessions.
-const CLAUDE_CARRIED_PREFS: &[&str] = &["diffSidebarOpen"];
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct AgentTrust {
-    /// Absolute working directories accepted for Claude, in the order seen.
-    #[serde(default)]
-    claude: Vec<String>,
-    /// The [`CLAUDE_CARRIED_PREFS`] values last seen in a staged copy.
-    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
-    claude_prefs: serde_json::Map<String, serde_json::Value>,
-}
-
-fn read_agent_trust() -> AgentTrust {
-    storage::read_json(&agent_trust_path()).unwrap_or_default()
-}
-
-/// Record `paths` as Claude-trusted. Recording is deliberately *not* bounded to
-/// any root — a fenced agent writes its stage copy freely, so a bound here
-/// would be a bound on attacker-controlled input rather than on effect. The
-/// bound that matters is applied at injection time
-/// ([`apply_recorded_trust`]), where only paths inside the spawning tab's own
-/// roots are ever re-applied.
-fn record_claude_trust(paths: &[String]) {
-    if paths.is_empty() {
-        return;
-    }
-    let _ = storage::patch_json(&agent_trust_path(), AgentTrust::default(), |trust| {
-        for path in paths {
-            if !trust.claude.iter().any(|known| known == path) {
-                trust.claude.push(path.clone());
-            }
-        }
-        Ok(())
-    });
-}
-
-/// The `projects` keys of a `.claude.json`-shaped value whose trust dialog has
-/// been accepted. Absolute paths only, so a relative or empty key recorded by
-/// anything cannot become a prefix-free entry in Eldrun's store.
-fn accepted_trust_paths(value: &serde_json::Value) -> Vec<String> {
-    let Some(projects) = value.get("projects").and_then(|v| v.as_object()) else {
-        return Vec::new();
-    };
-    projects
+    candidates
         .iter()
-        .filter(|(cwd, entry)| {
-            Path::new(cwd).is_absolute()
-                && entry
-                    .get("hasTrustDialogAccepted")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false)
-        })
-        .map(|(cwd, _)| cwd.clone())
-        .collect()
+        .filter_map(|candidate| std::fs::read(candidate).ok())
+        .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .any(|value| trust_accepted_for(&value, cwd))
 }
 
-/// Take the trust answers and the carried preferences out of one staged
-/// `.claude.json` copy before it is overwritten or deleted. No-op for a missing
-/// or unparsable file.
-fn harvest_claude_staged_copy(staged: &Path) {
-    let Ok(bytes) = std::fs::read(staged) else {
-        return;
-    };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return;
-    };
-    record_claude_trust(&accepted_trust_paths(&value));
-    record_claude_prefs(carried_claude_prefs(&value));
-}
-
-/// The [`CLAUDE_CARRIED_PREFS`] entries a `.claude.json`-shaped value holds.
-/// Anything else in the file — and the whole file when it is not an object —
-/// is ignored, so a staged copy an agent rewrote cannot smuggle a key in.
-fn carried_claude_prefs(value: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
-    let mut prefs = serde_json::Map::new();
-    let Some(obj) = value.as_object() else {
-        return prefs;
-    };
-    for key in CLAUDE_CARRIED_PREFS {
-        if let Some(v) = obj.get(*key) {
-            prefs.insert((*key).to_string(), v.clone());
-        }
-    }
-    prefs
-}
-
-/// Remember `prefs` (already filtered by [`carried_claude_prefs`]); a key the
-/// copy no longer has keeps its last recorded value.
-fn record_claude_prefs(prefs: serde_json::Map<String, serde_json::Value>) {
-    if prefs.is_empty() {
-        return;
-    }
-    let _ = storage::patch_json(&agent_trust_path(), AgentTrust::default(), |trust| {
-        for (key, value) in prefs {
-            trust.claude_prefs.insert(key, value);
-        }
-        Ok(())
-    });
-}
-
-/// Put the recorded preferences into a staged copy, over whatever the host
-/// file says: the tab is where the user last toggled them, and a value Claude
-/// wrote in an unfenced session cannot be told apart by mtime from the file's
-/// constant bookkeeping rewrites.
-fn apply_recorded_claude_prefs(value: &mut serde_json::Value) {
-    apply_claude_prefs(value, &read_agent_trust().claude_prefs);
-}
-
-/// Pure core of [`apply_recorded_claude_prefs`]. Re-filtered against
-/// [`CLAUDE_CARRIED_PREFS`] so an edited state file cannot widen the set.
-fn apply_claude_prefs(
-    value: &mut serde_json::Value,
-    prefs: &serde_json::Map<String, serde_json::Value>,
-) {
-    if prefs.is_empty() {
-        return;
-    }
-    let Some(obj) = value.as_object_mut() else {
-        return;
-    };
-    for key in CLAUDE_CARRIED_PREFS {
-        if let Some(v) = prefs.get(*key) {
-            obj.insert((*key).to_string(), v.clone());
-        }
-    }
-}
-
-/// Startup counterpart to [`harvest_claude_staged_copy`]: every stage dir's
-/// staged `.claude.json` copies, harvested before the stage root is cleared.
-/// A clean quit leaves the last tab's answer in the stage, so without this it
-/// would be wiped by the very next launch.
-fn harvest_all_claude_trust() {
-    let Ok(stages) = std::fs::read_dir(storage::state_dir().join("sandbox-stage")) else {
-        return;
-    };
-    for stage in stages.flatten() {
-        let Ok(files) = std::fs::read_dir(stage.path()) else {
-            continue;
-        };
-        for file in files.flatten() {
-            // `settings.json` / `config.toml` shadows share this directory; only
-            // the `.claude.json` copies (`<escaped host path>` + that suffix)
-            // carry a `projects` map.
-            if file.file_name().to_string_lossy().ends_with(".claude.json") {
-                harvest_claude_staged_copy(&file.path());
-            }
-        }
-    }
-}
-
-/// Re-apply the recorded trust for paths inside `roots` to a staged copy, so a
-/// folder the user has already accepted is not asked about again in every new
-/// tab. Only the flag is set: history and `allowedTools` stay filtered out, and
-/// an entry the host file does not have is created holding nothing else.
-fn apply_recorded_trust(value: &mut serde_json::Value, roots: &[String]) {
-    apply_trust_paths(value, &read_agent_trust().claude, roots);
-}
-
-/// Pure core of [`apply_recorded_trust`], so the root bound is unit-testable
-/// without a state directory (`ELDRUN_STATE_DIR` is process-wide and this suite
-/// runs in parallel).
-fn apply_trust_paths(value: &mut serde_json::Value, trusted: &[String], roots: &[String]) {
-    let recorded: Vec<&String> = trusted
-        .iter()
-        .filter(|cwd| roots.iter().any(|root| Path::new(cwd).starts_with(root)))
-        .collect();
-    if recorded.is_empty() {
-        return;
-    }
-    let Some(root_obj) = value.as_object_mut() else {
-        return;
-    };
-    let projects = root_obj
-        .entry("projects")
-        .or_insert_with(|| serde_json::json!({}));
-    if !projects.is_object() {
-        *projects = serde_json::json!({});
-    }
-    let Some(projects) = projects.as_object_mut() else {
-        return;
-    };
-    for cwd in recorded {
-        let entry = projects
-            .entry(cwd.clone())
-            .or_insert_with(|| serde_json::json!({}));
-        if let Some(obj) = entry.as_object_mut() {
-            obj.insert(
-                "hasTrustDialogAccepted".to_string(),
-                serde_json::Value::Bool(true),
-            );
-        }
-    }
-}
-
-/// Whether Claude will skip its trust dialog in `cwd`: the host `~/.claude.json`
-/// already records the answer, or — only when `staged` — Eldrun recorded one
-/// the user gave inside a fenced/contained tab. Read-only.
-///
-/// The caller is the frontend's auto-`/rename`, which must not type a blind
-/// Enter into a launch that is about to ask a question — the default answer is
-/// `No, exit`.
-///
-/// `staged` says whether the spawn will read the staged `.claude.json` copy
-/// (fenced or containerized) rather than the host file. Eldrun's recorded trust
-/// reaches Claude only through that copy ([`apply_recorded_trust`]); an
-/// unfenced tab reads the host file, which never gets it. Counting the record
-/// there is how turning a project's fence off killed every new Claude tab: the
-/// folder had only ever been trusted inside the fence, the probe said
-/// "trusted", the dialog came up anyway, and the rename's Enter answered it.
-pub fn claude_folder_trusted(cwd: &str, staged: bool) -> bool {
-    let home = paths::home_dir();
-    let host_trusted = [
-        home.join(".claude.json"),
-        home.join(".claude").join(".claude.json"),
-    ]
-    .iter()
-    .filter_map(|candidate| std::fs::read(candidate).ok())
-    .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-    .any(|value| trust_accepted_for(&value, cwd));
-    let recorded = if staged {
-        read_agent_trust().claude
-    } else {
-        Vec::new()
-    };
-    host_trusted || recorded.iter().any(|path| path == cwd)
-}
-
-/// Pure core of the host-file half of [`claude_folder_trusted`].
+/// Pure core of [`claude_folder_trusted`].
 fn trust_accepted_for(value: &serde_json::Value, cwd: &str) -> bool {
     value
         .get("projects")
@@ -2788,16 +1661,6 @@ fn trust_accepted_for(value: &serde_json::Value, cwd: &str) -> bool {
         .and_then(|entry| entry.get("hasTrustDialogAccepted"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
-}
-
-/// Placeholder content for a shadowed agent-config file the host does not have
-/// yet: a JSON file needs to parse, a TOML file may be empty.
-fn default_agent_config(rel: &str) -> &'static [u8] {
-    if rel.ends_with(".json") {
-        b"{}\n"
-    } else {
-        b""
-    }
 }
 
 /// Build the runtime hardening flags from a project's spec, applying built-in
@@ -2946,8 +1809,6 @@ mod tests {
         ]
     }
     fn ro() -> Vec<String> {
-        // Only the hook script dir is read-only; registration files are
-        // writable per-project copies (see `staged_config_mounts`).
         vec!["/state/hooks:/state/hooks".to_string()]
     }
 
@@ -3234,11 +2095,12 @@ mod tests {
         ));
         assert!(has_flag_value(&out, "-e", "TERM=xterm-256color"));
         assert!(has_flag_value(&out, "-e", "ELDRUN_TAB_UID=tab-1"));
-        // Auth env rides at exec (rotated tokens per spawn), before the name.
-        assert!(has_flag_value(&out, "-e", "ANTHROPIC_API_KEY=sk-test"));
+        // Auth env rides at exec (rotated tokens per spawn), before the name —
+        // by NAME only; the value is in the docker client's env (#864).
+        assert!(has_flag_value(&out, "-e", "ANTHROPIC_API_KEY"));
         let key = out
             .iter()
-            .position(|s| s == "ANTHROPIC_API_KEY=sk-test")
+            .position(|s| s == "ANTHROPIC_API_KEY")
             .unwrap();
         let name = pos(&out, "eldrun-p1").unwrap();
         assert!(key < name, "env must precede the container name");
@@ -3251,6 +2113,31 @@ mod tests {
         assert_eq!(out[name + 4], "sh");
         // Original command + resume args preserved in order after the wrapper.
         assert_eq!(&out[name + 5..], &["claude", "--resume", "uuid-1"]);
+    }
+
+    #[test]
+    fn exec_argv_carries_no_secret_value() {
+        // #864: `/proc/<pid>/cmdline` is world-readable and the docker client
+        // lives as long as the tab — a key or token VALUE must be on no argv item.
+        let envs = env(&[
+            ("ELDRUN_TAB_UID", "tab-1"),
+            (crate::services::root_mcp::TOKEN_ENV, "root-s3cret"),
+            ("OPENAI_API_KEY", "tab-s3cret"),
+        ]);
+        let auth = env(&[("ANTHROPIC_API_KEY", "auth-s3cret"), ("OPENAI_API_KEY", "auth-wins-s3cret")]);
+        let out = docker_exec_args("eldrun-p1", "/p", &envs, &auth, "/tmp/x.pid", "claude", &[]);
+        assert!(!out.iter().any(|a| a.contains("s3cret")), "{out:?}");
+        for name in [crate::services::root_mcp::TOKEN_ENV, "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] {
+            assert_eq!(out.iter().filter(|a| *a == name).count(), 1, "{name} named once: {out:?}");
+            assert!(has_flag_value(&out, "-e", name));
+        }
+        assert!(has_flag_value(&out, "-e", "ELDRUN_TAB_UID=tab-1"));
+        // …and the values reach the docker client's own environment instead.
+        let client = docker_exec_client_env(&envs, &auth);
+        assert_eq!(client.get(crate::services::root_mcp::TOKEN_ENV).map(String::as_str), Some("root-s3cret"));
+        assert_eq!(client.get("ANTHROPIC_API_KEY").map(String::as_str), Some("auth-s3cret"));
+        assert_eq!(client.get("OPENAI_API_KEY").map(String::as_str), Some("auth-wins-s3cret"));
+        assert!(!client.contains_key("ELDRUN_TAB_UID"));
     }
 
     #[test]
@@ -3271,513 +2158,6 @@ mod tests {
     }
 
     // ── stage dir ─────────────────────────────────────────────────────────
-
-    /// The user answers Codex's "may I work in this folder?" inside a fenced
-    /// tab; the next spawn re-copies the host original over the shadow. Without
-    /// the carry-over that answer is gone and the question comes back on every
-    /// Eldrun restart.
-    #[test]
-    fn staged_codex_config_keeps_the_folder_trust_answered_in_the_fence() {
-        let base = std::env::temp_dir().join(format!("eldrun-sbx-trust-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let home = base.join("home");
-        let stage = base.join("stage");
-        std::fs::create_dir_all(home.join(".codex")).unwrap();
-        std::fs::create_dir_all(&stage).unwrap();
-        let host = home.join(".codex").join("config.toml");
-        std::fs::write(&host, "[projects.\"/home/u\"]\ntrust_level = \"trusted\"\n").unwrap();
-        let home_str = home.to_string_lossy().into_owned();
-
-        let shadow = PathBuf::from(
-            staged_config_mounts(&home_str, &stage)
-                .into_iter()
-                .find(|(_, original)| original.ends_with("config.toml"))
-                .unwrap()
-                .0,
-        );
-        // Codex records the answer in the shadow, and the user edits the *host*
-        // config meanwhile — both have to survive the next spawn.
-        std::fs::write(
-            &shadow,
-            std::fs::read_to_string(&shadow).unwrap()
-                + "\n[projects.\"/home/u/work/p\"]\ntrust_level = \"trusted\"\n",
-        )
-        .unwrap();
-        std::fs::write(
-            &host,
-            "model = \"gpt-5-codex\"\n\n[projects.\"/home/u\"]\ntrust_level = \"trusted\"\n",
-        )
-        .unwrap();
-
-        staged_config_mounts(&home_str, &stage);
-        let after = std::fs::read_to_string(&shadow).unwrap();
-        assert!(
-            after.contains("[projects.\"/home/u/work/p\"]"),
-            "the answer given in the fence must survive a restage: {after}"
-        );
-        assert!(
-            after.contains("model = \"gpt-5-codex\""),
-            "the host original must still reach the fence: {after}"
-        );
-        assert_eq!(
-            after.matches("[projects.\"/home/u\"]").count(),
-            1,
-            "a table the host already declares must not be duplicated: {after}"
-        );
-        // Nothing is ever written back to the host.
-        assert!(!std::fs::read_to_string(&host)
-            .unwrap()
-            .contains("/home/u/work/p"));
-
-        // A third pass is a no-op, not a growing pile of repeated tables.
-        staged_config_mounts(&home_str, &stage);
-        let third = std::fs::read_to_string(&shadow).unwrap();
-        assert_eq!(third, after, "restaging must be idempotent");
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn toml_tables_reads_whole_tables_and_stops_at_the_next_header() {
-        let text = "model = \"m\"\n\n[projects.\"/a\"]\ntrust_level = \"trusted\"\n\n\
-                    [[hooks.SessionStart]]\nmatcher = \"startup\"\n\n[projects.\"/b\"]\nx = 1\n";
-        let blocks = toml_tables(text, "[projects.");
-        assert_eq!(blocks.len(), 2, "{blocks:?}");
-        assert!(blocks[0].contains("trust_level"));
-        assert!(!blocks[0].contains("hooks.SessionStart"));
-        assert!(blocks[1].trim_end().ends_with("x = 1"));
-        assert!(toml_tables("", "[projects.").is_empty());
-        assert!(toml_tables("[tui]\nx = 1\n", "[projects.").is_empty());
-    }
-
-    #[test]
-    fn staged_config_mounts_copies_and_shadows_host_originals() {
-        // Fake home with a settings.json; a distinct stage dir. Both under the
-        // OS temp dir, keyed by pid so parallel test runs don't collide.
-        let base = std::env::temp_dir().join(format!("eldrun-sbx-{}", std::process::id()));
-        let home = base.join("home");
-        let stage = base.join("stage");
-        let claude = home.join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        std::fs::create_dir_all(&stage).unwrap();
-        let settings = claude.join("settings.json");
-        std::fs::write(&settings, b"{\"hooks\":{}}").unwrap();
-
-        let home_str = home.to_string_lossy().into_owned();
-        let mounts = staged_config_mounts(&home_str, &stage);
-
-        // All THREE registration files are shadowed — the two that don't exist on
-        // this fake host included. That is the point: a missing shadow used to let
-        // the container write through and create the real host file.
-        assert_eq!(mounts.len(), 3, "got: {mounts:?}");
-        let (src, dst) = (mounts[0].0.clone(), mounts[0].1.clone());
-        assert_eq!(dst, settings.to_string_lossy());
-        // Source is a real copy living under the stage dir, not the host file.
-        assert!(Path::new(&src).starts_with(&stage));
-        assert_ne!(Path::new(&src), settings.as_path());
-        assert_eq!(std::fs::read(&src).unwrap(), b"{\"hooks\":{}}");
-        // The absent ones are staged as parseable/empty defaults, and the host
-        // originals are still absent (nothing wrote through).
-        for (staged_src, original) in &mounts[1..] {
-            assert!(
-                Path::new(staged_src).is_file(),
-                "{staged_src} must be staged"
-            );
-            assert!(
-                !Path::new(original).exists(),
-                "staging must never create the host original {original}"
-            );
-        }
-        assert_eq!(std::fs::read(&mounts[1].0).unwrap(), b"{}\n");
-        assert_eq!(std::fs::read(&mounts[2].0).unwrap(), b"");
-
-        // Refresh-at-up: a second pass overwrites the same copies in place (same
-        // paths, new content) — never a second set of files.
-        std::fs::write(&settings, b"{\"hooks\":{\"v\":2}}").unwrap();
-        let again = staged_config_mounts(&home_str, &stage);
-        assert_eq!(again, mounts, "mount list must be stable across refreshes");
-        assert_eq!(std::fs::read(src).unwrap(), b"{\"hooks\":{\"v\":2}}");
-        assert_eq!(
-            std::fs::read_dir(&stage).unwrap().count(),
-            3,
-            "one staged copy per file, refreshed in place"
-        );
-
-        std::fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn staged_claude_json_keeps_login_and_filters_foreign_projects() {
-        let base = std::env::temp_dir().join(format!("eldrun-sbx-cj-{}", std::process::id()));
-        let home = base.join("home");
-        let stage = base.join("stage");
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&stage).unwrap();
-        let root = home.join("work/p").to_string_lossy().into_owned();
-        let host = home.join(".claude.json");
-        std::fs::write(
-            &host,
-            serde_json::json!({
-                "oauthAccount": {"emailAddress": "u@example.org"},
-                "hasCompletedOnboarding": true,
-                "projects": {
-                    root.clone(): {"allowedTools": ["Bash"]},
-                    format!("{root}/sub"): {"history": ["own subdir survives"]},
-                    "/elsewhere/secret": {"history": ["other project's prompts"]},
-                },
-            })
-            .to_string(),
-        )
-        .unwrap();
-
-        let home_str = home.to_string_lossy().into_owned();
-        let staged_mounts = staged_claude_json_mounts(&home_str, &stage, std::slice::from_ref(&root));
-        assert_eq!(staged_mounts.len(), 1, "no nested copy on this fake host");
-        let (src, dst) = staged_mounts[0].clone();
-        assert_eq!(dst, host.to_string_lossy());
-        assert!(Path::new(&src).starts_with(&stage));
-        let staged: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&src).unwrap()).unwrap();
-        // Login + onboarding survive; foreign project entries do not.
-        assert_eq!(
-            staged["oauthAccount"]["emailAddress"], "u@example.org",
-            "login state must survive into the box"
-        );
-        assert_eq!(staged["hasCompletedOnboarding"], true);
-        let projects = staged["projects"].as_object().unwrap();
-        assert_eq!(projects.len(), 2, "got: {projects:?}");
-        assert!(projects.contains_key(&root));
-        assert!(projects.contains_key(&format!("{root}/sub")));
-
-        // The newer nested location is staged too, and only when the host has it.
-        let claude_dir = home.join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        let nested = claude_dir.join(".claude.json");
-        std::fs::write(
-            &nested,
-            serde_json::json!({"projects": {"/elsewhere/secret": {"history": ["x"]}}})
-                .to_string(),
-        )
-        .unwrap();
-        let both = staged_claude_json_mounts(&home_str, &stage, std::slice::from_ref(&root));
-        assert_eq!(both.len(), 2, "got: {both:?}");
-        assert_eq!(both[1].1, nested.to_string_lossy());
-        assert_ne!(both[1].0, both[0].0, "the two copies must not collide");
-        let nested_staged: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&both[1].0).unwrap()).unwrap();
-        assert!(
-            nested_staged["projects"].as_object().unwrap().is_empty(),
-            "the nested copy is filtered the same way"
-        );
-        std::fs::remove_file(&nested).unwrap();
-
-        // Missing host file: an empty object is staged, the original not created.
-        std::fs::remove_file(&host).unwrap();
-        let again = staged_claude_json_mounts(&home_str, &stage, &[root]);
-        assert_eq!(again.len(), 1);
-        assert_eq!(again[0].0, src, "refreshed in place, not a second copy");
-        assert_eq!(std::fs::read(&again[0].0).unwrap(), b"{}");
-        assert!(!host.exists(), "staging must never create the host original");
-
-        std::fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn accepted_trust_paths_takes_only_absolute_accepted_entries() {
-        // Absolute in the OS's own spelling: `Path::is_absolute` — which is what
-        // the filter asks — wants a drive prefix on Windows, where a leading `/`
-        // is merely rooted. The `.claude.json` this reads holds native paths.
-        let abs = |name: &str| {
-            if cfg!(windows) {
-                format!("C:\\u\\work\\{name}")
-            } else {
-                format!("/home/u/work/{name}")
-            }
-        };
-        let (p, q, r) = (abs("p"), abs("q"), abs("r"));
-        let mut projects = serde_json::Map::new();
-        projects.insert(p.clone(), serde_json::json!({"hasTrustDialogAccepted": true}));
-        projects.insert(q, serde_json::json!({"hasTrustDialogAccepted": false}));
-        projects.insert(r, serde_json::json!({"history": ["no answer yet"]}));
-        projects.insert(
-            "relative/path".to_string(),
-            serde_json::json!({"hasTrustDialogAccepted": true}),
-        );
-        let value = serde_json::json!({ "projects": projects });
-        let mut got = accepted_trust_paths(&value);
-        got.sort();
-        assert_eq!(got, vec![p]);
-        // A file with no `projects` map at all yields nothing rather than panicking.
-        assert!(accepted_trust_paths(&serde_json::json!({})).is_empty());
-    }
-
-    #[test]
-    fn recorded_trust_is_reinjected_only_inside_the_tabs_own_roots() {
-        let roots = vec!["/home/u/work/p".to_string(), "/home/u/boxes/b".to_string()];
-        let trusted = vec![
-            "/home/u/boxes/b".to_string(),      // a root itself
-            "/home/u/work/p/sub".to_string(),   // inside a root
-            "/home/u/other".to_string(),        // outside every root — must not appear
-        ];
-        let mut value = serde_json::json!({
-            "oauthAccount": {"emailAddress": "u@example.org"},
-            "projects": {"/home/u/work/p": {"allowedTools": ["Bash"]}},
-        });
-        apply_trust_paths(&mut value, &trusted, &roots);
-        let projects = value["projects"].as_object().unwrap();
-        assert_eq!(projects.len(), 3, "got: {projects:?}");
-        assert_eq!(projects["/home/u/boxes/b"]["hasTrustDialogAccepted"], true);
-        assert_eq!(projects["/home/u/work/p/sub"]["hasTrustDialogAccepted"], true);
-        assert!(!projects.contains_key("/home/u/other"));
-        // An entry the host file already had keeps everything else it carried,
-        // and login state is untouched.
-        assert_eq!(projects["/home/u/work/p"]["allowedTools"][0], "Bash");
-        assert_eq!(value["oauthAccount"]["emailAddress"], "u@example.org");
-        // Nothing recorded inside the roots leaves the value byte-identical, so
-        // a staged `{}` stays `{}` (the "never create the host original" test).
-        let mut empty = serde_json::json!({});
-        apply_trust_paths(&mut empty, &["/home/u/other".to_string()], &roots);
-        assert_eq!(empty, serde_json::json!({}));
-        // A non-object staged file is left alone rather than indexed into.
-        let mut weird = serde_json::json!([1, 2]);
-        apply_trust_paths(&mut weird, &trusted, &roots);
-        assert_eq!(weird, serde_json::json!([1, 2]));
-    }
-
-    #[test]
-    fn carried_claude_prefs_take_only_the_listed_keys() {
-        let value = serde_json::json!({
-            "diffSidebarOpen": false,
-            "oauthAccount": {"emailAddress": "u@example.org"},
-            "hasCompletedOnboarding": true,
-            "projects": {"/home/u/work/p": {"allowedTools": ["Bash"]}},
-        });
-        let prefs = carried_claude_prefs(&value);
-        assert_eq!(prefs.len(), 1, "got: {prefs:?}");
-        assert_eq!(prefs["diffSidebarOpen"], false);
-        // A copy without the key records nothing (so the last answer stands),
-        // and a non-object file is ignored rather than indexed into.
-        assert!(carried_claude_prefs(&serde_json::json!({"theme": "dark"})).is_empty());
-        assert!(carried_claude_prefs(&serde_json::json!([1, 2])).is_empty());
-    }
-
-    #[test]
-    fn recorded_claude_prefs_overwrite_the_staged_copy_and_nothing_else() {
-        let mut recorded = serde_json::Map::new();
-        recorded.insert("diffSidebarOpen".to_string(), serde_json::json!(false));
-        // An edited state file cannot widen the set past the allow-list.
-        recorded.insert("hasCompletedOnboarding".to_string(), serde_json::json!(false));
-        recorded.insert("apiKeyHelper".to_string(), serde_json::json!("evil"));
-        let mut value = serde_json::json!({
-            "diffSidebarOpen": true,
-            "hasCompletedOnboarding": true,
-            "oauthAccount": {"emailAddress": "u@example.org"},
-        });
-        apply_claude_prefs(&mut value, &recorded);
-        assert_eq!(value["diffSidebarOpen"], false, "the tab's answer wins over the host's");
-        assert_eq!(value["hasCompletedOnboarding"], true);
-        assert!(value.get("apiKeyHelper").is_none());
-        assert_eq!(value["oauthAccount"]["emailAddress"], "u@example.org");
-        // A key the host file never had is created, since that is exactly the
-        // case in which Claude re-opens the sidebar on its own.
-        let mut fresh = serde_json::json!({});
-        apply_claude_prefs(&mut fresh, &recorded);
-        assert_eq!(fresh, serde_json::json!({"diffSidebarOpen": false}));
-        // Nothing recorded leaves a staged `{}` byte-identical, and a non-object
-        // file is left alone.
-        let mut empty = serde_json::json!({});
-        apply_claude_prefs(&mut empty, &serde_json::Map::new());
-        assert_eq!(empty, serde_json::json!({}));
-        let mut weird = serde_json::json!([1, 2]);
-        apply_claude_prefs(&mut weird, &recorded);
-        assert_eq!(weird, serde_json::json!([1, 2]));
-    }
-
-    #[test]
-    fn agent_home_mounts_carry_opencode_sessions_and_read_only_its_config() {
-        let base = std::env::temp_dir().join(format!("eldrun-sbx-oc-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let home = base.join("home");
-        let home_str = home.to_string_lossy().into_owned();
-        let pair = |rel: &str| format!("{home_str}/{rel}:{home_str}/{rel}");
-
-        // Never used OpenCode: nothing mounted, nothing created.
-        std::fs::create_dir_all(&home).unwrap();
-        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
-        assert!(!rw.iter().chain(&ro).any(|m| m.contains("opencode")));
-        assert!(!home.join(".local/share/opencode").exists());
-
-        for rel in [
-            ".local/share/opencode",
-            ".local/state/opencode",
-            ".config/opencode",
-            ".cache/opencode",
-        ] {
-            std::fs::create_dir_all(format!("{home_str}/{rel}")).unwrap();
-        }
-        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
-        // The session store `opencode --continue` reads must be writable.
-        assert!(rw.contains(&pair(".local/share/opencode")));
-        assert!(rw.contains(&pair(".local/state/opencode")));
-        // Config: readable, never writable (plugins/MCP run in the host's CLI).
-        assert!(ro.contains(&pair(".config/opencode")));
-        assert!(!rw.contains(&pair(".config/opencode")));
-        // Cache holds downloaded binaries: not mounted at all.
-        assert!(!rw.iter().chain(&ro).any(|m| m.contains(".cache/opencode")));
-
-        std::fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn agent_home_mounts_carry_only_the_continue_agents_session_stores() {
-        let base = std::env::temp_dir().join(format!("eldrun-sbx-cont-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let home = base.join("home");
-        let home_str = home.to_string_lossy().into_owned();
-        let stores = [
-            ".qwen/projects",
-            ".qwen/tmp",
-            ".copilot/session-state",
-            ".cursor/chats",
-            ".vibe/logs",
-        ];
-        // Their neighbours: hooks, tools, MCP and permission config.
-        let neighbours = [
-            ".qwen/settings.json",
-            ".copilot/mcp-config.json",
-            ".cursor/cli-config.json",
-            ".vibe/hooks.toml",
-        ];
-        for rel in stores {
-            std::fs::create_dir_all(format!("{home_str}/{rel}")).unwrap();
-        }
-        for rel in neighbours {
-            std::fs::write(format!("{home_str}/{rel}"), b"x").unwrap();
-        }
-
-        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
-        for rel in stores {
-            assert!(
-                rw.contains(&format!("{home_str}/{rel}:{home_str}/{rel}")),
-                "{rel} must be writable"
-            );
-        }
-        for rel in neighbours {
-            assert!(
-                !rw.iter().chain(&ro).any(|m| m.contains(rel)),
-                "{rel} must stay unmounted"
-            );
-        }
-
-        std::fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn agent_home_mounts_deny_the_named_holes_and_read_only_the_scripts() {
-        let base = std::env::temp_dir().join(format!("eldrun-sbx-nar-{}", std::process::id()));
-        let home = base.join("home");
-        let claude = home.join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        for dir in ["daemon", "debug", "feedback", "paste-cache", "uploads", "todos"] {
-            std::fs::create_dir_all(claude.join(dir)).unwrap();
-        }
-        for file in [
-            ".claude.json",
-            ".claude.json.bak",
-            ".claude.json.backup.1",
-            ".credentials.json",
-            "statusline-command.sh",
-            "CLAUDE.md",
-        ] {
-            std::fs::write(claude.join(file), b"x").unwrap();
-        }
-
-        let home_str = home.to_string_lossy().into_owned();
-        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
-        let mounted = |set: &[String], name: &str| {
-            let want = format!("{home_str}/.claude/{name}:{home_str}/.claude/{name}");
-            set.contains(&want)
-        };
-
-        // Denied outright: the daemon dir (the pattern used to be `daemon.*`,
-        // which never matched it), the stale cross-project `.claude.json`
-        // family, and the cross-session content dirs.
-        for name in [
-            "daemon",
-            ".claude.json",
-            ".claude.json.bak",
-            ".claude.json.backup.1",
-            "debug",
-            "feedback",
-            "paste-cache",
-            "uploads",
-        ] {
-            assert!(!mounted(&rw, name), "{name} must not be writable");
-            assert!(!mounted(&ro, name), "{name} must not be mounted at all");
-        }
-        // Readable, never writable: what the host executes or reads as
-        // instructions.
-        for name in ["statusline-command.sh", "CLAUDE.md"] {
-            assert!(mounted(&ro, name), "{name} must stay readable");
-            assert!(!mounted(&rw, name), "{name} must not be writable");
-        }
-        // Still mounted read-write: any entry nobody named (the deliberate
-        // default).
-        assert!(mounted(&rw, "todos"));
-        // The credential file is owned by `claude_credential_mounts` (a
-        // stable-inode mirror), never by the per-entry planner: mounted here it
-        // would pin the inode Claude's rename-rotation leaves behind.
-        assert!(!mounted(&rw, ".credentials.json"));
-        assert!(!mounted(&ro, ".credentials.json"));
-
-        std::fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn credential_mount_is_the_mirror_at_the_real_path_and_absent_when_logged_out() {
-        let base = std::env::temp_dir().join(format!("eldrun-sbx-cred-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let home = base.join("home");
-        let claude = home.join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        let home_str = home.to_string_lossy().into_owned();
-        let mirror = crate::services::agent_creds::mirror_path_in(&base.join("state"));
-
-        // No host credential file: nothing to mount, and no mirror is created.
-        assert!(claude_credential_mounts_in(&home_str, &mirror).is_empty());
-        assert!(!mirror.exists());
-
-        let record = br#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":5}}"#;
-        std::fs::write(claude.join(".credentials.json"), record).unwrap();
-        let pairs = claude_credential_mounts_in(&home_str, &mirror);
-        // Spelled by `host_path`, not by a `/`-joined literal: Windows joins
-        // with a backslash and this test runs there too.
-        let dst = crate::services::agent_creds::host_path(&home)
-            .to_string_lossy()
-            .into_owned();
-        if !cfg!(target_os = "linux") {
-            // Seatbelt cannot substitute, Windows fences nothing: the real
-            // file, in place, and no mirror.
-            assert_eq!(pairs, vec![(dst.clone(), dst)]);
-            assert!(!mirror.exists());
-        } else {
-            assert_eq!(pairs, vec![(mirror.to_string_lossy().into_owned(), dst)]);
-            // Seeded at plan time, so a fresh tab starts with the current token.
-            assert_eq!(std::fs::read(&mirror).unwrap(), record);
-        }
-
-        std::fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn entry_patterns_match_prefix_suffix_and_exact() {
-        assert!(matches_entry("daemon", &["daemon*"]));
-        assert!(matches_entry("daemon.log", &["daemon*"]));
-        assert!(!matches_entry("daemon", &["daemon.*"]));
-        assert!(matches_entry("hook.sh", &["*.sh"]));
-        assert!(!matches_entry("sh", &["*.sh"]));
-        assert!(matches_entry("settings.json", &["settings.json"]));
-        assert!(!matches_entry("settings.jsonc", &["settings.json"]));
-    }
 
     // ── spec sources ──────────────────────────────────────────────────────
 
@@ -3852,6 +2232,7 @@ mod tests {
             tmux_attach: None,
             host_bound_uid: None,
             schedule_target_id: None,
+            host_session: false,
         };
         wrap_pty_options_docker(&mut opts).unwrap();
         assert_eq!(opts.cmd, "claude");
@@ -3879,6 +2260,7 @@ mod tests {
             tmux_attach: None,
             host_bound_uid: None,
             schedule_target_id: None,
+            host_session: false,
         };
         enforce_spawn_authority(&mut opts);
         assert!(!opts.sandbox, "box tabs must never spawn containerized");
@@ -4124,160 +2506,6 @@ mod tests {
 
     // ── Mount narrowing (S-3) ─────────────────────────────────────────────
 
-    #[test]
-    fn unmounted_entry_matching_is_exact_with_a_star_prefix() {
-        assert!(matches_entry("shell-snapshots", CLAUDE_UNMOUNTED));
-        assert!(matches_entry("plugins", CLAUDE_UNMOUNTED));
-        assert!(matches_entry("agents", CLAUDE_UNMOUNTED));
-        // Personal skills are instructions + optional `scripts/` that every
-        // *uncontained* session of every project loads — the `agents/` hole one
-        // directory over, and the reason the personal install scope exists at all.
-        assert!(matches_entry("skills", CLAUDE_UNMOUNTED));
-        assert!(matches_entry("history.jsonl", CLAUDE_UNMOUNTED));
-        // `daemon.*` is a prefix pattern.
-        assert!(matches_entry("daemon.log", CLAUDE_UNMOUNTED));
-        assert!(matches_entry("daemon.sock", CLAUDE_UNMOUNTED));
-        // Not a prefix match for a non-star pattern.
-        assert!(!matches_entry("plugins-of-mine", CLAUDE_UNMOUNTED));
-        // Transcripts are excluded *here* because `claude_transcript_mounts`
-        // owns that destination — per entry, rw for ours and `:ro` for the rest.
-        assert!(matches_entry("projects", CLAUDE_UNMOUNTED));
-        // The credential file is excluded here for the same reason: it is
-        // `claude_credential_mounts`'s destination — a stable-inode mirror,
-        // because a file mount of the host original pins the inode Claude's
-        // rename-rotation leaves behind. What resume needs still gets there.
-        assert!(matches_entry(".credentials.json", CLAUDE_UNMOUNTED));
-        assert!(!matches_entry("todos", CLAUDE_UNMOUNTED));
-        // Codex keeps `sessions/` — a containerized Codex writes its rollouts there
-        // and the host reads them back to decide whether a tab can resume.
-        assert!(!matches_entry("sessions", CODEX_UNMOUNTED));
-        assert!(matches_entry("history.jsonl", CODEX_UNMOUNTED));
-    }
-
-    #[test]
-    fn narrowed_agent_mounts_skips_the_excluded_entries_and_is_deterministic() {
-        let base = std::env::temp_dir().join(format!("eldrun-narrow-{}", std::process::id()));
-        let claude = base.join(".claude");
-        std::fs::create_dir_all(claude.join("projects")).unwrap();
-        std::fs::create_dir_all(claude.join("shell-snapshots")).unwrap();
-        std::fs::create_dir_all(claude.join("plugins")).unwrap();
-        std::fs::write(claude.join("history.jsonl"), b"{}").unwrap();
-        std::fs::write(claude.join("daemon.log"), b"").unwrap();
-        std::fs::write(claude.join(".credentials.json"), b"{}").unwrap();
-        std::fs::write(claude.join("settings.json"), b"{}").unwrap();
-        std::fs::create_dir_all(claude.join("todos")).unwrap();
-
-        let dir = claude.to_string_lossy().into_owned();
-        let (mounts, _) = narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED, false);
-
-        // Compare whole mount strings rather than picking the entry name back
-        // out of them. `dir` comes from `temp_dir()`, so on Windows it carries a
-        // drive-letter colon and `\` separators — `split(':')` would read "C"
-        // and `rsplit('/')` would never match. Building the expectation with the
-        // same `{p}:{p}` shape also asserts the identical-path property (the one
-        // agent resume depends on) by construction.
-        let expected: Vec<String> = ["todos"]
-            .iter()
-            .map(|n| format!("{dir}/{n}:{dir}/{n}"))
-            .collect();
-        assert_eq!(mounts, expected);
-        // `settings.json` is deliberately absent here — `staged_config_mounts`
-        // owns that destination with a writable per-project copy. So is
-        // `projects` — `claude_transcript_mounts` owns that one — and so is
-        // `.credentials.json`, owned by `claude_credential_mounts` (a mirror
-        // whose inode survives the host file's rename-rotation).
-        assert!(!mounts.iter().any(|m| m.contains("settings.json")));
-        assert!(!mounts.iter().any(|m| m.ends_with("/projects")));
-        assert!(!mounts.iter().any(|m| m.contains(".credentials.json")));
-        // Stable across calls, so the spec fingerprint doesn't flap.
-        assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED, false).0, mounts);
-        // A dir that isn't there mounts nothing (never auto-created).
-        assert_eq!(
-            narrowed_agent_mounts(
-                &base.join("nope").to_string_lossy(),
-                CLAUDE_UNMOUNTED,
-                false,
-            ),
-            (Vec::new(), Vec::new())
-        );
-
-        std::fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn codex_overlay_owns_sqlite_families_but_keeps_directory_mounts() {
-        let base = std::env::temp_dir().join(format!("eldrun-codex-mount-{}", std::process::id()));
-        let home = base.join("home");
-        let codex = home.join(".codex");
-        std::fs::create_dir_all(codex.join("sessions")).unwrap();
-        for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
-            std::fs::write(codex.join(name), b"").unwrap();
-        }
-
-        let home = home.to_string_lossy().into_owned();
-        let (overlay, _) = agent_home_mounts(&home, "/state/live/p", "/state/live", true);
-        let (native, _) = agent_home_mounts(&home, "/state/live/p", "/state/live", false);
-        let pair = |name: &str| format!("{home}/.codex/{name}:{home}/.codex/{name}");
-
-        assert!(overlay.contains(&pair("sessions")));
-        for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
-            assert!(!overlay.contains(&pair(name)), "{name} must come from the overlay");
-            assert!(native.contains(&pair(name)), "macOS keeps using the host store");
-        }
-        std::fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn codex_state_seed_includes_committed_wal_pages_and_is_not_refreshed() {
-        let base = std::env::temp_dir().join(format!("eldrun-codex-seed-{}", std::process::id()));
-        let source = base.join("host-codex");
-        let target = base.join("scope-state");
-        std::fs::create_dir_all(&source).unwrap();
-
-        let state = source.join("state_5.sqlite");
-        let conn = rusqlite::Connection::open(&state).unwrap();
-        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
-        conn.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
-        conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY)", []).unwrap();
-        conn.execute("INSERT INTO threads VALUES ('from-wal')", []).unwrap();
-        // The large unrelated log store is deliberately not cloned per project.
-        rusqlite::Connection::open(source.join("logs_2.sqlite")).unwrap();
-
-        prepare_codex_state_in(&source, &target);
-        let seeded = rusqlite::Connection::open(target.join("state_5.sqlite")).unwrap();
-        assert_eq!(
-            seeded.query_row("SELECT id FROM threads", [], |row| row.get::<_, String>(0)).unwrap(),
-            "from-wal"
-        );
-        assert!(!target.join("logs_2.sqlite").exists());
-
-        // A later host row must not overwrite the scope's independently
-        // advancing store on another spawn.
-        conn.execute("INSERT INTO threads VALUES ('host-later')", []).unwrap();
-        prepare_codex_state_in(&source, &target);
-        assert_eq!(
-            seeded.query_row("SELECT count(*) FROM threads", [], |row| row.get::<_, i64>(0)).unwrap(),
-            1
-        );
-        drop(seeded);
-        drop(conn);
-        std::fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn live_sessions_is_mounted_per_project_at_the_canonical_path() {
-        let (mounts, _) = agent_home_mounts(
-            "/home/alice",
-            "/state/live_sessions/p1",
-            "/state/live_sessions",
-            false,
-        );
-        // The ONE deliberately non-identical mount: the hook script's baked-in path
-        // is served by this project's own slice.
-        assert!(mounts.contains(&"/state/live_sessions/p1:/state/live_sessions".to_string()));
-        assert!(!mounts.contains(&"/state/live_sessions:/state/live_sessions".to_string()));
-    }
-
     // ── Claude transcripts: read all, write ours ──────────────────────────
 
     /// A transcript dir holding one log whose first line records `cwd`.
@@ -4296,79 +2524,23 @@ mod tests {
     }
 
     #[test]
-    fn every_transcript_dir_is_listed_and_only_ours_is_writable() {
-        let base = std::env::temp_dir().join(format!("eldrun-tx-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let home = base.join("home");
-        let projects = home.join(".claude").join("projects");
-        let project_dir = base.join("work").join("proj");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        let project = project_dir.to_string_lossy().into_owned();
-
+    fn a_transcript_dir_belongs_to_a_scope_by_its_recorded_cwd_then_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let projects = tmp.path().join("projects");
+        let project = "/work/proj".to_string();
         transcript_dir(&projects, "ours", Some(&project));
-        transcript_dir(
-            &projects,
-            "ours-subdir",
-            Some(&project_dir.join("sub").to_string_lossy()),
-        );
-        let second_root = base.join("work").join("box-sibling");
-        transcript_dir(
-            &projects,
-            "ours-second-root",
-            Some(&second_root.join("nested").to_string_lossy()),
-        );
-        transcript_dir(
-            &projects,
-            "sibling",
-            // The encoding is lossy, so this name *could* be read as a subdir of
-            // ours — the recorded cwd says it is a different project.
-            Some(&base.join("work").join("proj-panel").to_string_lossy()),
-        );
+        transcript_dir(&projects, "-work-proj-sub", Some("/work/proj/sub"));
         transcript_dir(&projects, "elsewhere", Some("/somewhere/else"));
-        // No log at all and a name that matches nothing: unknown ⇒ read-only.
-        transcript_dir(&projects, "empty-unknown", None);
-
-        let stage = base.join("stage");
-        let home_str = home.to_string_lossy().into_owned();
-        let roots = vec![project.clone(), second_root.to_string_lossy().into_owned()];
-        let (rw, ro) = claude_transcript_mounts(&home_str, &roots, &stage);
-
-        let src_of = |name: &str| projects.join(name).to_string_lossy().into_owned();
-        let has = |v: &[String], name: &str| {
-            let src = src_of(name);
-            v.iter().any(|m| m.starts_with(&format!("{src}:")))
-        };
-
-        // The stage is the mount parent — the only place a *new* transcript dir
-        // can be created, and it is ours.
-        assert!(rw[0].starts_with(&format!("{}:", stage.to_string_lossy())));
-        assert!(rw[0].ends_with(&format!("{home_str}/.claude/projects")));
-
-        assert!(has(&rw, "ours"));
-        assert!(has(&rw, "ours-subdir"));
-        assert!(has(&rw, "ours-second-root"));
-        assert!(
-            has(&ro, "sibling"),
-            "a sibling project must not be writable"
-        );
-        assert!(has(&ro, "elsewhere"));
-        assert!(
-            has(&ro, "empty-unknown"),
-            "unknown must default to read-only"
-        );
-        // Nothing is writable that isn't ours, and nothing is silently dropped:
-        // the read allowance is listed entry by entry.
-        for name in ["sibling", "elsewhere", "empty-unknown"] {
-            assert!(!has(&rw, name));
-        }
-        assert_eq!(rw.len() + ro.len(), 1 + 6);
-        // Deterministic, so the mount list doesn't flap with readdir order.
-        assert_eq!(
-            claude_transcript_mounts(&home_str, &roots, &stage),
-            (rw, ro)
-        );
-
-        std::fs::remove_dir_all(&base).ok();
+        transcript_dir(&projects, "-work-proj", None);
+        transcript_dir(&projects, "-work-proj2", None);
+        let roots = vec![project];
+        let belongs = |name: &str| transcript_dir_belongs_to(&projects.join(name), name, &roots);
+        assert!(belongs("ours"));
+        assert!(belongs("-work-proj-sub"));
+        assert!(!belongs("elsewhere"));
+        // No transcript to ask: the name decides, at a `-` boundary.
+        assert!(belongs("-work-proj"));
+        assert!(!belongs("-work-proj2"));
     }
 
     #[test]
@@ -4397,42 +2569,6 @@ mod tests {
         assert!(cwd_is_within("/home/u/proj/sub", "/home/u/proj"));
         // Not a string prefix match — this is the sibling that used to slip in.
         assert!(!cwd_is_within("/home/u/proj2", "/home/u/proj"));
-    }
-
-    #[test]
-    fn harvest_moves_new_transcripts_home_and_never_overwrites() {
-        let base = std::env::temp_dir().join(format!("eldrun-harvest-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let stage = base.join("stage");
-        let real = base.join("home").join(".claude").join("projects");
-        std::fs::create_dir_all(&real).unwrap();
-
-        // A dir that *was* mounted: the mountpoint is left behind empty.
-        std::fs::create_dir_all(stage.join("mounted")).unwrap();
-        // A cwd nobody knew about at create time — the container made this.
-        std::fs::create_dir_all(stage.join("fresh")).unwrap();
-        std::fs::write(stage.join("fresh").join("a.jsonl"), b"{}").unwrap();
-        // A dir the host already has: keep its file, take the new one.
-        std::fs::create_dir_all(stage.join("both")).unwrap();
-        std::fs::write(stage.join("both").join("old.jsonl"), b"container").unwrap();
-        std::fs::write(stage.join("both").join("new.jsonl"), b"container").unwrap();
-        std::fs::create_dir_all(real.join("both")).unwrap();
-        std::fs::write(real.join("both").join("old.jsonl"), b"host").unwrap();
-
-        harvest_claude_transcripts(&stage, &real);
-
-        assert!(real.join("fresh").join("a.jsonl").is_file());
-        assert!(!stage.join("fresh").exists());
-        // An empty mountpoint is not a transcript — dropped, not "harvested".
-        assert!(!real.join("mounted").exists());
-        assert_eq!(
-            std::fs::read_to_string(real.join("both").join("old.jsonl")).unwrap(),
-            "host",
-            "a host transcript must never be overwritten by the container's copy"
-        );
-        assert!(real.join("both").join("new.jsonl").is_file());
-
-        std::fs::remove_dir_all(&base).ok();
     }
 
     // ── Dockerfile confinement + network allowlist (S-8) ──────────────────

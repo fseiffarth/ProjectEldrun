@@ -6,6 +6,7 @@ import {
 } from "@tauri-apps/api/window";
 import { IS_MAC, IS_LINUX } from "../../lib/platform";
 import { useT } from "../../lib/i18n";
+import { toggleWindowFullscreen, useFullscreenMode } from "../../lib/window/fullscreenMode";
 
 // Toggle maximize with a clean restore geometry on Linux.
 //
@@ -43,6 +44,7 @@ async function toggleMaximize() {
 
 export function WindowControls() {
   const t = useT();
+  const fullscreen = useFullscreenMode((s) => s.on);
   // macOS draws native traffic-light buttons (top-left) via the Overlay title-bar
   // style configured in tauri.macos.conf.json, so Eldrun's own controls would be
   // redundant — and on the wrong side. Render nothing there.
@@ -64,6 +66,15 @@ export function WindowControls() {
 
   return (
     <div className="wm-controls no-drag" onMouseDown={isolate}>
+      {/* Shared by the main window and every popout; F11 is the same toggle. */}
+      <button
+        className="wm-btn wm-fullscreen"
+        onMouseDown={isolate}
+        onClick={() => run("toggle-fullscreen", toggleWindowFullscreen)}
+        title={t(fullscreen ? "windowControls.exitFullscreen" : "windowControls.fullscreen")}
+        aria-label={t(fullscreen ? "windowControls.exitFullscreen" : "windowControls.fullscreen")}
+        aria-pressed={fullscreen}
+      />
       <button
         className="wm-btn wm-minimize"
         onMouseDown={isolate}

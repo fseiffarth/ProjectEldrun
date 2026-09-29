@@ -11,7 +11,7 @@ import {
   type RootOverlayFrame,
 } from "../../stores/rootOverlay";
 import { useProjectsStore } from "../../stores/projects";
-import { busyStateClass, useActivityStore } from "../../stores/activity";
+import { attentionStateClass, busyStateClass, useActivityStore } from "../../stores/activity";
 import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useSettingsStore } from "../../stores/settings";
 import {
@@ -42,7 +42,7 @@ import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { TabScopeContext } from "../tabs/tabScopeContext";
 import { TabPane } from "../tabs/TabPane";
-import { TabStatusMark } from "../tabs/TabLocalityBadges";
+import { TabAgentModeMarks, TabStatusMark } from "../tabs/TabLocalityBadges";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
@@ -50,6 +50,7 @@ import { StarIcon } from "./StarIcon";
 import { RootReviewStrip } from "./RootReviewStrip";
 import { useRootReviewStore } from "../../stores/rootReview";
 import { useMailStore } from "../../stores/mail";
+import { MailIcon, WarningIcon } from "../common/icons/Icon";
 
 /** What the backend's `root-mcp-changed` event carries (`services::root_mcp::Change`). */
 type RootMcpChange = (
@@ -68,8 +69,14 @@ interface RootMcpStatus {
   tools: string[];
   /** At least one mail account is open to a contained reader agent. */
   mail_open?: boolean;
+  /** With `mail_open`: the widest per-account scope — a few marked messages,
+   *  or a whole account. */
+  mail_scope?: "marked" | "all";
   /** Root agents run fenced, so the staged-write review cannot be bypassed. */
   review_enforced?: boolean;
+  /** A root agent started now could read the projects (the fence switch is
+   *  on, or it runs unfenced) — what a mail draft's `attach` needs. */
+  projects_readable?: boolean;
 }
 
 /** A rect relative to the overlay's pane region. */
@@ -794,10 +801,13 @@ function RootOverlay() {
               title={`${agentsWithTools}${
                 toolsOn ? `\n${status?.tools.join(", ")}` : ""
               }\n${t("rootConsole.rightsInSettings")}\n${t("rootConsole.noPhone")}${
-                status?.mail_open ? `\n${t("rootConsole.mailOpen")}` : ""
+                status?.mail_open
+                  ? `\n${t(status.mail_scope === "all" ? "rootConsole.mailOpenAll" : "rootConsole.mailOpen")}`
+                  : ""
               }${reviewAdvisory ? `\n${t("rootConsole.reviewAdvisory")}` : ""}`}
             >
-              {t("rootConsole.rightsBadge")}{reviewAdvisory ? " ⚠" : ""}{status?.mail_open ? " ✉" : ""}
+              {t("rootConsole.rightsBadge")}{reviewAdvisory && <> <WarningIcon /></>}
+              {status?.mail_open && <> <MailIcon />{status.mail_scope === "all" && <MailIcon />}</>}
             </span>
             <button
               type="button"
@@ -990,6 +1000,10 @@ function GroupStrip({
   const busyKindByTab = useActivityStore((s) => s.busyKindByTab);
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
   const clearAttention = useActivityStore((s) => s.clearAttention);
+  // Tabs a one-click install opened pulse until clicked, so the user can tell
+  // which of the console's tabs is running what they just asked for.
+  const installTabs = useRootOverlayStore((s) => s.installTabs);
+  const clearInstallTab = useRootOverlayStore((s) => s.clearInstallTab);
   return (
     <div className="tab-strip" ref={stripRef}>
       {tabs.map((tab) => {
@@ -1002,32 +1016,34 @@ function GroupStrip({
         const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
         const stateClass = working
           ? busyStateClass(busyKindByTab[ptyId], tab.kind)
-          : attn === "decision"
-            ? " needs-decision"
-            : attn === "done"
-              ? " finished"
-              : "";
+          : attentionStateClass(attn);
+        const install = !!installTabs[tab.key];
         return (
           <div
             key={tab.key}
-            className={`tab ${isActive ? "active" : ""}${stateClass}${
+            className={`tab ${isActive ? "active" : ""}${stateClass}${install ? " install-pending" : ""}${
               draggingKey === tab.key ? " dragging" : ""
             }`}
+            title={install ? t("rootConsole.installTabTitle") : undefined}
             onPointerDown={(e) => onTabPointerDown(e, tab, groupId)}
             onMouseDown={() => {
               if (isActive) clearAttention(ptyId);
+              if (install) clearInstallTab(tab.key);
               if (groupId === EMPTY_GROUP_ID) return;
               useTabsStore.getState().setGroupActiveInScope(ROOT_SCOPE, groupId, tab.key);
             }}
           >
             <TabStatusMark stateClass={stateClass} />
             <span className="tab-label">{tab.label}</span>
+            <TabAgentModeMarks scope={ROOT_SCOPE} tab={tab} isActive={isActive} />
+            {install && <UntestedTag id="rootConsole.installTabTitle" />}
             <button
               className="tab-close"
               title={t("detachedTabs.closeTab")}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                clearInstallTab(tab.key);
                 useTabsStore.getState().removeTabInScope(ROOT_SCOPE, tab.key);
               }}
             >

@@ -535,6 +535,7 @@ describe("activity store per-scope status counts (pill status bars)", () => {
       working: 2,
       decision: 0,
       done: 0,
+      interrupted: 0,
     });
   });
 
@@ -557,6 +558,7 @@ describe("activity store per-scope status counts (pill status bars)", () => {
       working: 1,
       decision: 0,
       done: 0,
+      interrupted: 0,
     });
   });
 
@@ -569,6 +571,7 @@ describe("activity store per-scope status counts (pill status bars)", () => {
       working: 0,
       decision: 1,
       done: 2,
+      interrupted: 0,
     });
   });
 
@@ -585,6 +588,7 @@ describe("activity store per-scope status counts (pill status bars)", () => {
       working: 1,
       decision: 0,
       done: 0,
+      interrupted: 0,
     });
   });
 
@@ -599,6 +603,7 @@ describe("activity store per-scope status counts (pill status bars)", () => {
       working: 2,
       decision: 0,
       done: 0,
+      interrupted: 0,
     });
   });
 
@@ -612,6 +617,7 @@ describe("activity store per-scope status counts (pill status bars)", () => {
       working: 0,
       decision: 1,
       done: 0,
+      interrupted: 0,
     });
   });
 
@@ -635,6 +641,7 @@ describe("activity store per-scope status counts (pill status bars)", () => {
       working: 0,
       decision: 0,
       done: 1,
+      interrupted: 0,
     });
   });
 
@@ -692,6 +699,7 @@ describe("activity store per-scope status counts (pill status bars)", () => {
       working: 1,
       decision: 0,
       done: 0,
+      interrupted: 0,
     });
     expect(useActivityStore.getState().statusTabsByScope["proj-a"]).toEqual([
       { key: "agent-2", state: "working" },

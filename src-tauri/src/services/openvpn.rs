@@ -301,6 +301,34 @@ fn runtime_dir() -> PathBuf {
     storage::state_dir().join("openvpn")
 }
 
+/// Ready a pidfile path that ROOT will write (#868). OpenVPN opens `--writepid`
+/// with a plain `fopen(…, "w")`, which follows a symlink, and the runtime dir is
+/// the user's own — so a link planted there would have root truncate its target.
+/// Refuses a symlinked runtime dir and unlinks a symlink (or any non-regular
+/// file) at the pidfile path; a regular file is left for OpenVPN to overwrite, as
+/// before, since `adopt_config` may still need a live tunnel's pid from it. This
+/// narrows the hole rather than closing it: the same uid can re-plant a link
+/// while the polkit prompt is up. Only a root-owned pid dir would close it.
+fn prepare_root_pidfile(pidfile: &Path) -> Result<(), String> {
+    if let Some(dir) = pidfile.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create openvpn dir: {e}"))?;
+        let linked = std::fs::symlink_metadata(dir)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if linked {
+            return Err(format!(
+                "Refusing to start OpenVPN: its runtime folder {} is a symlink.",
+                dir.display()
+            ));
+        }
+    }
+    match std::fs::symlink_metadata(pidfile) {
+        Ok(meta) if !meta.file_type().is_file() => std::fs::remove_file(pidfile)
+            .map_err(|e| format!("could not clear the OpenVPN pidfile {}: {e}", pidfile.display())),
+        _ => Ok(()),
+    }
+}
+
 /// Directory where selected `.ovpn` configs are copied so a project no longer
 /// depends on the original file's location.
 fn configs_dir() -> PathBuf {
@@ -436,7 +464,7 @@ fn display_name(file_name: &str) -> String {
 pub fn interactive_connect_command(config: &str) -> Result<String, String> {
     let arm = arm_interactive(config)?;
     Ok(format!(
-        "pkexec openvpn --config {} --auth-nocache --writepid {}{}",
+        "pkexec openvpn --config {} --script-security 1 --auth-nocache --writepid {}{}",
         shell_quote(&arm.config),
         shell_quote(&arm.pidfile.to_string_lossy()),
         arm.management
@@ -448,7 +476,7 @@ pub fn interactive_connect_command(config: &str) -> Result<String, String> {
 pub fn interactive_connect_command(config: &str) -> Result<String, String> {
     let arm = arm_interactive(config)?;
     Ok(format!(
-        "openvpn --config {} --auth-nocache --writepid {}{}",
+        "openvpn --config {} --script-security 1 --auth-nocache --writepid {}{}",
         shell_quote(&arm.config),
         shell_quote(&arm.pidfile.to_string_lossy()),
         arm.management
@@ -461,7 +489,7 @@ pub fn interactive_connect_command(config: &str) -> Result<String, String> {
 pub fn interactive_connect_command(config: &str) -> Result<String, String> {
     let arm = arm_interactive(config)?;
     Ok(format!(
-        "sudo openvpn --config {} --auth-nocache --writepid {}{}",
+        "sudo openvpn --config {} --script-security 1 --auth-nocache --writepid {}{}",
         shell_quote(&arm.config),
         shell_quote(&arm.pidfile.to_string_lossy()),
         arm.management
@@ -483,7 +511,7 @@ fn arm_interactive(config: &str) -> Result<InteractiveArm, String> {
         return Err("OpenVPN config path must not be empty".to_string());
     }
     let pidfile = interactive_pidfile(config);
-    let _ = std::fs::create_dir_all(runtime_dir());
+    prepare_root_pidfile(&pidfile)?;
     let _ = std::fs::remove_file(&pidfile);
     interactive_registry()
         .lock()
@@ -559,9 +587,19 @@ pub fn openvpn_available() -> bool {
 /// - `askpass_file` → `--askpass <f>` (a one-line passphrase file), for an
 ///   encrypted private key.
 ///
-/// Shape: `--config <cfg> [--auth-user-pass <f>] [--askpass <f>] --auth-nocache
-///         --writepid <pidfile> --connect-timeout 20 --persist-tun
-///         --verb 3 --mute 0`.
+/// Shape: `--config <cfg> --script-security 1 [--auth-user-pass <f>]
+///         [--askpass <f>] --auth-nocache --writepid <pidfile>
+///         --connect-timeout 20 --persist-tun --verb 3 --mute 0`.
+///
+/// `--script-security 1` (#868): OpenVPN runs elevated, so a config's `up`,
+/// `down`, `route-up`, `tls-verify`, … scripts would run **as root** — and the
+/// config may come from anywhere (a download, an imported bundle). Level 1 still
+/// lets OpenVPN call its own built-in executables (`ip`, `route`), which is all
+/// tunnel setup needs; a config that relies on a script (typically
+/// `update-resolv-conf` for pushed DNS) now fails at `up` instead of running it.
+/// It comes right after `--config`: the file's directives are applied at that
+/// position and a later command-line option wins, so the file's own
+/// `script-security 2` cannot raise it back.
 pub fn openvpn_args(
     config: &str,
     userpass_file: Option<&Path>,
@@ -573,7 +611,12 @@ pub fn openvpn_args(
         return Err("OpenVPN config path must not be empty".to_string());
     }
     validate_arg("OpenVPN config", config)?;
-    let mut args = vec!["--config".to_string(), config.to_string()];
+    let mut args = vec![
+        "--config".to_string(),
+        config.to_string(),
+        "--script-security".to_string(),
+        "1".to_string(),
+    ];
     if let Some(f) = userpass_file {
         args.push("--auth-user-pass".to_string());
         args.push(f.to_string_lossy().into_owned());
@@ -882,6 +925,17 @@ pub fn explain_openvpn_error(log: &str) -> Option<String> {
     if s.contains("connection refused") {
         return Some(
             "The VPN server refused the connection — check the config's port/protocol.".to_string(),
+        );
+    }
+    // #868: Eldrun always passes `--script-security 1`, so a config whose `up`/
+    // `down` script is required (commonly `update-resolv-conf`) stops at the
+    // script. Say so — otherwise it reads like a network failure.
+    if s.contains("may not be called unless '--script-security 2'") {
+        return Some(
+            "This VPN config runs a script (an up/down or similar hook), and Eldrun never lets \
+             OpenVPN run config scripts as root. Remove the script lines from the config, or \
+             connect it outside Eldrun."
+                .to_string(),
         );
     }
 
@@ -1414,11 +1468,14 @@ pub fn connect_streaming(
     }
 
     let stem = safe_stem(config);
+    let pidfile = runtime_dir().join(format!("{stem}.pid"));
+    // Root writes it: no symlink may stand there (#868). Before the credentials,
+    // so a refusal leaves no secret file behind.
+    prepare_root_pidfile(&pidfile)?;
     // Feed the secrets through whichever channels the config actually reads —
     // both, when it has an `auth-user-pass` account *and* an encrypted key.
     let (userpass_file, askpass_file) =
         write_credfiles(config, &stem, username, password, key_passphrase)?;
-    let pidfile = runtime_dir().join(format!("{stem}.pid"));
     let mut args = openvpn_args(
         config,
         userpass_file.as_deref(),
@@ -2230,11 +2287,14 @@ pub fn connect_streaming(
     }
 
     let stem = safe_stem(config);
+    let pidfile = runtime_dir().join(format!("{stem}.pid"));
+    // Root writes it: no symlink may stand there (#868). Before the credentials,
+    // so a refusal leaves no secret file behind.
+    prepare_root_pidfile(&pidfile)?;
     // Feed the secrets through whichever channels the config actually reads —
     // both, when it has an `auth-user-pass` account *and* an encrypted key.
     let (userpass_file, askpass_file) =
         write_credfiles(config, &stem, username, password, key_passphrase)?;
-    let pidfile = runtime_dir().join(format!("{stem}.pid"));
     let args = openvpn_args(
         config,
         userpass_file.as_deref(),
@@ -2540,6 +2600,11 @@ pub fn connect_streaming(
     // spuriously — start clean.
     let _ = std::fs::remove_file(&pidfile);
     let _ = std::fs::remove_file(&logfile);
+    // Root writes both: refuse a symlinked runtime folder (#868).
+    if let Err(e) = prepare_root_pidfile(&pidfile) {
+        remove_credfiles();
+        return Err(e);
+    }
 
     let mut args = openvpn_args(
         config,
@@ -2919,6 +2984,12 @@ mod tests {
         // Elevated via pkexec; passphrase typed interactively (no --askpass file).
         assert!(cmd.starts_with("pkexec openvpn --config "));
         assert!(cmd.contains("'/home/u/work.ovpn'"));
+        // #868: the config's own scripts never run as root — and the override
+        // follows the config, so the file's `script-security 2` cannot win.
+        assert!(
+            cmd.contains("--config '/home/u/work.ovpn' --script-security 1 "),
+            "{cmd}"
+        );
         assert!(cmd.contains("--auth-nocache"));
         assert!(!cmd.contains("--askpass"));
 
@@ -3193,6 +3264,53 @@ mod tests {
         let pi = args.iter().position(|a| a == "--writepid").unwrap();
         assert_eq!(args[pi + 1], "/run/eldrun/openvpn/x.pid");
         assert!(args.iter().any(|a| a == "--auth-nocache"));
+    }
+
+    /// #868: OpenVPN runs as root, so a config's `up`/`down` scripts would too.
+    /// Every argv shape pins `--script-security 1`, AFTER `--config` (whose
+    /// directives apply at that position; a later option wins).
+    #[test]
+    fn openvpn_args_always_forbid_config_scripts() {
+        let pid = Path::new("/run/eldrun/openvpn/x.pid");
+        let f = Path::new("/run/eldrun/openvpn/x.f");
+        for (userpass, askpass) in [(None, None), (Some(f), None), (None, Some(f)), (Some(f), Some(f))] {
+            let args = openvpn_args("/home/u/work.ovpn", userpass, askpass, pid).unwrap();
+            let ci = args.iter().position(|a| a == "--config").unwrap();
+            let si = args.iter().position(|a| a == "--script-security").unwrap();
+            assert_eq!(args[si + 1], "1");
+            assert!(si > ci, "{args:?}");
+            assert_eq!(args.iter().filter(|a| *a == "--script-security").count(), 1);
+        }
+        assert!(explain_openvpn_error(
+            "WARNING: External program may not be called unless '--script-security 2' or higher is enabled."
+        )
+        .unwrap()
+        .contains("script"));
+    }
+
+    /// #868: root `fopen`s the pidfile in the user's runtime dir; a symlink
+    /// planted there must be gone (the link, never its target) before launch.
+    #[cfg(unix)]
+    #[test]
+    fn root_pidfile_never_follows_a_planted_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = dir.path().join("openvpn");
+        std::fs::create_dir_all(&rt).unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"precious").unwrap();
+        let pidfile = rt.join("x.pid");
+        std::os::unix::fs::symlink(&victim, &pidfile).unwrap();
+        prepare_root_pidfile(&pidfile).unwrap();
+        assert!(std::fs::symlink_metadata(&pidfile).is_err(), "the link is removed");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        // A regular (possibly live) pidfile is left for adoption.
+        std::fs::write(&pidfile, b"123\n").unwrap();
+        prepare_root_pidfile(&pidfile).unwrap();
+        assert!(pidfile.is_file());
+        // A symlinked runtime dir is refused outright.
+        let linked = dir.path().join("linked-openvpn");
+        std::os::unix::fs::symlink(dir.path(), &linked).unwrap();
+        assert!(prepare_root_pidfile(&linked.join("x.pid")).is_err());
     }
 
     /// A tunnel must survive a blip. `--connect-retry-max` caps reconnects for

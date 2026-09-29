@@ -18,7 +18,7 @@ import { selectUrgentMail } from "./todoBoard";
  * **The alert feed behind the side panel's opt-in "Alerts" group.**
  *
  * One merged, time-ordered list of the three things that can need the user
- * *now*: mail they marked urgent/important, calendar entries about to start,
+ * *now*: mail they themselves marked Urgent, calendar entries about to start,
  * and to-do cards whose due date is here or past. The group sits in the file
  * viewer — the surface that is open all day — so the deadline reaches the user
  * without a second window.
@@ -158,9 +158,9 @@ export interface AlertItem {
 export interface AlertInput {
   /** Local wall-clock "now" (`"YYYY-MM-DDTHH:MM"` or a full ISO stamp). */
   now: string;
-  /** Priority-marked mail, as `useTodoStore` already holds it. */
+  /** Urgent-marked mail, as `useTodoStore` already holds it. Only the marks the
+   *  user made by hand become rows — see `selectAlerts`' mail block. */
   urgentMail?: MailHeader[];
-  importantMail?: MailHeader[];
   /** `useCalendarStore`'s events — recurring series are expanded by the caller. */
   events?: CalendarEvent[];
   /** `useCalendarStore`'s tasks (the board's cards). */
@@ -427,16 +427,23 @@ function buildAlerts(input: AlertInput): AlertItem[] {
     // The pre-cap is `limit` *plus* the muted ids: a muted message is dropped
     // downstream, so pre-capping at `limit` alone would let a silenced mail
     // consume the slot a live one was supposed to take.
-    const urgentIds = new Set((input.urgentMail ?? []).map((h) => h.id));
+    //
+    // Only an Urgent mark the *user* made reaches this group. A keyword rule or
+    // the local classifier may file mail into Urgent, but an alert is an
+    // interruption, and the user alone decides what may interrupt them —
+    // an automatic mark stays in the mail client and the to-do rail. Important
+    // is not an alert at all. A mark with no recorded source (a store that
+    // predates the column) cannot prove it was the user's, so it stays out too.
+    const userUrgent = (input.urgentMail ?? []).filter(
+      (h) => h.priority_source === "user",
+    );
     for (const header of selectUrgentMail(
-      input.urgentMail ?? [],
-      input.importantMail ?? [],
+      userUrgent,
+      [],
       tasks,
       limit + (input.muted?.length ?? 0),
     )) {
-      const priority = urgentIds.has(header.id) || header.priority === "urgent"
-        ? "urgent"
-        : "important";
+      const priority = "urgent";
       const at = mailStamp(header.date);
       const minutesAway = at === null ? null : minutesBetween(now, at);
       const severity = mailSeverity(minutesAway, priority);

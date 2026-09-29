@@ -84,6 +84,23 @@ describe("buildMdGraph", () => {
     expect(g.truncated).toBe(false);
   });
 
+  it("collects hover details from the same markdown reads", async () => {
+    const reads: string[] = [];
+    const files: Record<string, string> = {
+      "/p/start.md": "[guide](guide.md)",
+      "/p/guide.md": "---\ntitle: Private metadata\n---\n# Guide\n\nA short [introduction](start.md) to the guide.\n",
+    };
+    const g = await buildMdGraph("/p/start.md", async (path) => {
+      reads.push(path);
+      return files[path] ?? null;
+    });
+    expect(reads).toEqual(["/p/start.md", "/p/guide.md"]);
+    expect(g.nodes.find((n) => n.path === "/p/guide.md")).toMatchObject({
+      heading: "Guide",
+      excerpt: "A short introduction to the guide.",
+    });
+  });
+
   it("treats non-markdown targets as leaves without reading them", async () => {
     const reads: string[] = [];
     const g = await buildMdGraph("/p/a.md", (path) => {

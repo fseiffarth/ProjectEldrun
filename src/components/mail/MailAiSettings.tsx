@@ -11,6 +11,7 @@ import {
   mailAiResolvable,
 } from "../../lib/mail";
 import type { MailAccount, MailAiClassifyReport, MailAiPrefs } from "../../types/mail";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * The **Mail AI (local)** settings section (Group Q #203), now **per account**.
@@ -190,7 +191,7 @@ export function MailAiSettings({
         >
           {running ? t("mailAi.classifyRunning") : t("mailAi.classifyPreview")}
         </button>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         {report && (
           <div className="mail-ai-report">
             <div className="mail-ai-report-head">

@@ -114,6 +114,12 @@ export function noteScheduleProposal(ptyId: string): void {
   useActivityStore.getState().recompute();
 }
 const inputByPty: Record<string, number> = {};
+/// When the user cut the agent's turn off (an interrupt key while it was
+/// working, or on a pending prompt — see `noteUserInput`). An interrupted turn
+/// fires no Stop, so without this the tab went back to looking idle, exactly as
+/// a turn that finished would once it had been read. Held until the agent's
+/// next turn begins; `attentionFor` turns it into the `interrupted` mark.
+const interruptedByPty: Record<string, number> = {};
 /// When the tab was last DELIBERATELY opened — switched to in a tab bar, or put
 /// on a phone's screen (`clearAttention`). Deliberately not the same as
 /// `seenAtByPty`, which `attentionFor` re-stamps on every tick for as long as a
@@ -166,6 +172,7 @@ const PTY_MAPS: Record<string, unknown>[] = [
   bellByPty,
   proposalByPty,
   inputByPty,
+  interruptedByPty,
   readAtByPty,
   busySinceMarkByPty,
   workAtByPty,
@@ -258,6 +265,10 @@ export function noteAgentTurn(ptyId: string, state: AgentTurnState, job = false)
   if (!splitPtyId(ptyId)) return;
   const at = Date.now();
   deliveryTurns[ptyId] = { state, at, job, startedAt: state === "working" ? at : deliveryTurns[ptyId]?.startedAt };
+  // A new turn (or prompt) ends the interrupted mark, and so does the session
+  // ending. A `done` does not: after an interrupt Claude's only hook is the
+  // idle notice a minute later, which says nothing about the turn that was cut.
+  if (state !== "done") delete interruptedByPty[ptyId];
   if (state === "idle") delete turnByPty[ptyId];
   else turnByPty[ptyId] = { state, at, job };
   useActivityStore.getState().recompute();
@@ -381,7 +392,12 @@ export function lastTabReadAt(ptyId: string): number | undefined {
  *  `decision` (the agent's next hook — a finished tool, or Stop — says what
  *  came of it; until then the bytes do). An `interrupt` (a bare Escape,
  *  Ctrl+C) ends a `working` turn that will fire no Stop. Ordinary typing under
- *  a `working` verdict is the next prompt being queued and changes nothing. */
+ *  a `working` verdict is the next prompt being queued and changes nothing.
+ *
+ *  An interrupt that lands on a turn in flight — a `working` or `decision`
+ *  verdict, or for a tab with no hooks, bytes that read as working — marks the
+ *  tab interrupted (see `interruptedByPty`). One on an idle composer (clearing
+ *  the line) does not. */
 export function noteUserInput(ptyId: string, interrupt = false) {
   // Group B #234: a popout's terminal reports to the classifier that lives in
   // the main window — the popout's own maps are never read by anything.
@@ -389,12 +405,34 @@ export function noteUserInput(ptyId: string, interrupt = false) {
     void emit(DETACHED_ACTIVITY_EVENT, { ptyId, kind: interrupt ? "interrupt" : "input" });
     return;
   }
-  inputByPty[ptyId] = Date.now();
+  const now = Date.now();
+  const turn = turnVerdict(ptyId, now);
+  if (interrupt) {
+    const inFlight = turn
+      ? turn.state === "working" || turn.state === "decision"
+      : bytesSayWorking(ptyId, now);
+    if (inFlight) interruptedByPty[ptyId] = now;
+  }
+  inputByPty[ptyId] = now;
   tailByPty[ptyId] = "";
-  const turn = turnByPty[ptyId];
   if (turn && (turn.state === "decision" || (interrupt && turn.state === "working"))) {
     delete turnByPty[ptyId];
   }
+}
+
+/** Record that the tab's previous process died mid-turn — Eldrun quit, crashed
+ *  or respawned it while its hooks last said `working` or `decision` (the
+ *  backend reads the leftover record at spawn: `pty_spawn`'s `interrupted`).
+ *  The resumed agent starts out marked interrupted, the same as a turn cut off
+ *  by an interrupt key, until its next turn begins. */
+export function noteTurnCutOff(ptyId: string) {
+  if (isDetachedWindow()) {
+    void emit(DETACHED_ACTIVITY_EVENT, { ptyId, kind: "cutoff" });
+    return;
+  }
+  if (!splitPtyId(ptyId)) return;
+  interruptedByPty[ptyId] = Date.now();
+  useActivityStore.getState().recompute();
 }
 
 /** True when a keystroke is the user cutting the agent off: a bare Escape (the
@@ -412,7 +450,10 @@ export function isInterruptInput(data: string): boolean {
  */
 export function applyDetachedStatus(
   scope: string,
-  status: Record<string, "working" | "working-shell" | "working-both" | "needs-decision" | "finished">,
+  status: Record<
+    string,
+    "working" | "working-shell" | "working-both" | "needs-decision" | "finished" | "interrupted"
+  >,
 ): void {
   const prefix = `${scope}:`;
   const busyByTab: Record<string, boolean> = {};
@@ -436,6 +477,7 @@ export function applyDetachedStatus(
         state === "working-shell" ? "shell" : state === "working-both" ? "both" : "agent";
     } else if (state === "needs-decision") attentionByTab[ptyId] = "decision";
     else if (state === "finished") attentionByTab[ptyId] = "done";
+    else if (state === "interrupted") attentionByTab[ptyId] = "interrupted";
   }
   useActivityStore.setState({
     busyByTab,
@@ -508,8 +550,10 @@ export function _clearPtyActivityForTest() {
 }
 
 /** The kind of attention a tab/scope is raising: an agent waiting on a user
- *  decision (a prompt is on screen) vs one that simply finished its turn. */
-export type AttentionKind = "decision" | "done";
+ *  decision (a prompt is on screen), one that simply finished its turn, or one
+ *  whose turn the user cut off (`interrupted` — a state, not unread output, so
+ *  it is never rolled up into `attentionByScope`). */
+export type AttentionKind = "decision" | "done" | "interrupted";
 
 /** What an agent tab is asking for, or null if it isn't asking for anything.
  *  Derived on each `recompute` tick from the tab's own output rather than pushed
@@ -560,6 +604,11 @@ function attentionFor(
   if (turn?.state !== "done" && quiet >= DECISION_QUIET_MS && tailLooksLikeDecision(ptyId)) {
     return "decision";
   }
+  // A cut-off turn is a state of the tab, not output waiting to be read: it
+  // holds while watched (the strips leave it off the viewed tab themselves, as
+  // they do `done`) and until the agent's next turn begins. It outranks the
+  // idle notice's `done`, which is all Claude reports after an interrupt.
+  if (interruptedByPty[ptyId] !== undefined) return "interrupted";
   // Past here everything is inferred from silence, which a watched tab's own
   // screen already tells the user better than a lamp could.
   if (lookedAt) return null;
@@ -594,6 +643,7 @@ function rollupAttentionScopes(
 ): Record<string, AttentionKind> {
   const byScope: Record<string, AttentionKind> = {};
   for (const [ptyId, kind] of Object.entries(attentionByTab)) {
+    if (kind === "interrupted") continue;
     const parts = splitPtyId(ptyId);
     if (!parts) continue;
     if (kind === "decision" || byScope[parts.scope] === undefined) {
@@ -619,10 +669,16 @@ export interface TabStatusCounts {
   working: number;
   decision: number;
   done: number;
+  interrupted: number;
 }
 
 function sameCounts(a: TabStatusCounts, b: TabStatusCounts): boolean {
-  return a.working === b.working && a.decision === b.decision && a.done === b.done;
+  return (
+    a.working === b.working &&
+    a.decision === b.decision &&
+    a.done === b.done &&
+    a.interrupted === b.interrupted
+  );
 }
 
 /** What a busy tab is busy WITH, for the surfaces that paint an agent's own
@@ -648,13 +704,26 @@ export function busyStateClass(kind: BusyKind | undefined, tabKind: TabEntry["ki
   return busy === "shell" ? " working shell" : busy === "both" ? " working job" : " working";
 }
 
+/** The state class a tab strip puts on an agent tab that is not busy, from its
+ *  attention flag (already filtered for the viewed tab by the strip). Shared
+ *  by the three strips, like {@link busyStateClass}. */
+export function attentionStateClass(attn: AttentionKind | null): string {
+  return attn === "decision"
+    ? " needs-decision"
+    : attn === "done"
+      ? " finished"
+      : attn === "interrupted"
+        ? " interrupted"
+        : "";
+}
+
 /** One non-idle tab of a scope: WHICH tab a status bar stands for, so the bar
  *  can be clicked to jump to it. The `state` is the bar's own CSS class, i.e.
  *  the same three words the tab glow uses. */
 export interface StatusTab {
   /** The tab's key within its scope (not the composed PTY id). */
   key: string;
-  state: "working" | "needs-decision" | "finished";
+  state: "working" | "needs-decision" | "finished" | "interrupted";
   /** A tab busy with a COMMAND rather than an agent turn (`BusyKind` "shell").
    *  The bar paints it in its own colour (`--status-shell-working`). A tab doing
    *  both is drawn as the agent it is: one bar cannot say two things, and the
@@ -715,12 +784,13 @@ function computeStatusScopes(
   const counts: Record<string, TabStatusCounts> = {};
   const byScope: Record<string, StatusTab[]> = {};
   for (const [scope, tabs] of Object.entries(tabsByScope)) {
-    const tally: TabStatusCounts = { working: 0, decision: 0, done: 0 };
+    const tally: TabStatusCounts = { working: 0, decision: 0, done: 0, interrupted: 0 };
     // Most urgent state first, so the strip's bars and this list are one order —
     // a bar's position IS its tab, which is what makes a click on it addressable.
     const working: StatusTab[] = [];
     const decision: StatusTab[] = [];
     const done: StatusTab[] = [];
+    const interrupted: StatusTab[] = [];
     for (const t of tabs) {
       const ptyId = `${scope}:${t.key}`;
       if (isPtyTabKind(t.kind) && busyByTab[ptyId]) {
@@ -736,12 +806,15 @@ function computeStatusScopes(
       } else if (attentionByTab[ptyId] === "done") {
         tally.done++;
         done.push({ key: t.key, state: "finished" });
+      } else if (attentionByTab[ptyId] === "interrupted") {
+        tally.interrupted++;
+        interrupted.push({ key: t.key, state: "interrupted" });
       }
     }
-    if (!tally.working && !tally.decision && !tally.done) continue;
+    if (!tally.working && !tally.decision && !tally.done && !tally.interrupted) continue;
     const beforeCounts = prevCounts[scope];
     counts[scope] = beforeCounts && sameCounts(beforeCounts, tally) ? beforeCounts : tally;
-    const list = [...working, ...decision, ...done];
+    const list = [...working, ...decision, ...done, ...interrupted];
     const beforeTabs = prevTabs[scope];
     byScope[scope] = beforeTabs && sameTabs(beforeTabs, list) ? beforeTabs : list;
   }
@@ -869,6 +942,9 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     // `attentionFor`). Keep it, so the lamp holds steady instead of blinking off
     // and on at the switch. Input is what retires it.
     if (kind === "decision" && tailLooksLikeDecision(ptyId)) return;
+    // Nor does it undo an interruption, which is a state rather than unread
+    // output (the strips already leave it off the viewed tab).
+    if (kind === "interrupted") return;
     const attentionByTab = { ...get().attentionByTab };
     delete attentionByTab[ptyId];
     const status = computeStatusScopes(
@@ -948,6 +1024,10 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
         const ts = lastOutputByPty[ptyId];
         const onset = onsetByPty[ptyId];
         const turn = turnVerdict(ptyId, now);
+        // A tab with no hooks working again is past its interruption (a hooked
+        // one says so itself: `noteAgentTurn`). Before `attentionFor`, so the
+        // mark does not outlive the tick that saw the work.
+        if (!turn && bytesSayWorking(ptyId, now)) delete interruptedByPty[ptyId];
         // Attention before busy: a menu read off a quiet screen outranks a
         // "working" verdict a tool-use hook left standing (see `attentionFor`),
         // and `computeStatusScopes` lets working win otherwise.
@@ -1036,7 +1116,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
           }
           // Count the EDGE, not the state: an agent sitting on a decision prompt
           // for ten ticks stopped to ask once, not ten times.
-          if (attn && prevAttn[ptyId] !== attn) {
+          if (attn && attn !== "interrupted" && prevAttn[ptyId] !== attn) {
             bumpUsage(
               scope,
               attn === "decision" ? METRIC.AGENT_DECISION : METRIC.AGENT_DONE,

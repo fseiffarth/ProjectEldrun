@@ -55,6 +55,15 @@ class FakeWebSocket {
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
 
+/** A bubble's words, without the time a messenger puts in its corner. */
+function said(bubble: Element | null | undefined): string | null {
+  if (!bubble) return null;
+  const copy = bubble.cloneNode(true) as Element;
+  copy.querySelectorAll(".transcript-time").forEach((time) => time.remove());
+  return copy.textContent;
+}
+
+
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, agent_label: "Claude Code", available: true, viewer_busy: false };
 
 function jsonResponse(status: number, body: unknown) {
@@ -129,6 +138,25 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBeNull();
   });
 
+  it("stays in the Reader for a tab with no session id yet, and paints the session once it reads", async () => {
+    // A tab the phone just created: the bridge answers `no_session` until the
+    // agent's hook records one. The Reader reads the screen meanwhile and
+    // never hands over to Terminal — nothing would bring it back.
+    let stored: unknown = { available: false, reason: "no_session", entries: [], truncated: false };
+    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Reader" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByTestId("session-transcript")).toBeNull();
+    expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBeNull();
+
+    stored = STORED;
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect(screen.getByRole("button", { name: "Reader" }).getAttribute("aria-pressed")).toBe("true");
+    screen.getByTestId("session-transcript");
+  });
+
   it("opens a shell tab on Terminal", async () => {
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));
     render(<Terminal tab={{ ...TAB, id: "tab-9", kind: "shell", agent_label: undefined }} back={() => {}} />);
@@ -147,12 +175,12 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(calls.find((url) => url.includes("/transcript"))).toBe("/api/v1/tabs/tab-7/transcript?limit=120");
     const chat = screen.getByTestId("session-transcript");
     const prompt = screen.getByRole("group", { name: "Your prompt" });
-    expect(prompt.textContent).toBe("add a clear button");
+    expect(said(prompt)).toBe("add a clear button");
     expect(prompt.className).toBe("readable-turn user");
     // One bubble per message the agent wrote, its Markdown formatted, its
     // link only a label.
     const answers = chat.querySelectorAll(".readable-turn.agent.answer");
-    expect([...answers].map((bubble) => bubble.textContent)).toEqual(["Looking at the composer.", "Done: the ✕ empties the draft. See the docs."]);
+    expect([...answers].map((bubble) => said(bubble))).toEqual(["Looking at the composer.", "Done: the ✕ empties the draft. See the docs."]);
     expect(answers[1].querySelector("strong")?.textContent).toBe("✕");
     expect(chat.querySelector("a")).toBeNull();
     // The next read names the version it holds, so an unmoved file answers small.
@@ -176,6 +204,110 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     fireEvent.click(sheet().getByRole("button", { name: "Copy message" }));
     await settle();
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("add a clear button");
+  });
+
+  it("sets a plan put up for approval apart from the answers around it", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => ({
+      ...STORED,
+      entries: [
+        { kind: "prompt", text: "plan the merge", at: "2026-09-27T10:00:00Z" },
+        { kind: "answer", text: "Here is the plan.", at: "2026-09-27T10:00:01Z" },
+        { kind: "answer", text: "# Merge\n\n1. Move the search", plan: true, at: "2026-09-27T10:00:02Z" },
+      ],
+    })));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+
+    const chat = screen.getByTestId("session-transcript");
+    const answers = [...chat.querySelectorAll(".readable-turn.agent.answer")];
+    expect(answers.map((bubble) => bubble.classList.contains("plan"))).toEqual([false, true]);
+    const plan = screen.getByRole("group", { name: "Plan" });
+    expect(plan).toBe(answers[1]);
+    expect(plan.querySelector(".transcript-plan-head")?.textContent).toMatch(/^Plan/);
+    expect(plan.querySelector("h1")?.textContent).toBe("Merge");
+  });
+
+  it("lets a message's text be selected in part and copies only what is marked", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => STORED));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+
+    const answers = screen.getByTestId("session-transcript").querySelectorAll(".readable-turn.agent.answer");
+    fireEvent.contextMenu(answers[1] as HTMLElement);
+    const sheet = () => within(screen.getByRole("dialog", { name: "Message" }));
+    fireEvent.click(sheet().getByRole("button", { name: /^Select text/ }));
+    const text = screen.getByTestId("message-select-text");
+    expect(text.textContent).toBe("Done: the **✕** empties the draft. See [the docs](https://example.com).");
+    // Nothing marked yet: Copy still takes the whole message.
+    sheet().getByRole("button", { name: "Copy message" });
+
+    const range = document.createRange();
+    range.setStart(text.firstChild as Text, 6);
+    range.setEnd(text.firstChild as Text, 9);
+    act(() => {
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    fireEvent.click(sheet().getByRole("button", { name: "Copy selection" }));
+    await settle();
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("the");
+    window.getSelection()?.removeAllRanges();
+  });
+
+  it("pins the prompt the scroll position is reading the answer to, and a tap returns to it", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => ({
+      ...STORED,
+      entries: [{ kind: "prompt", text: "an older question", at: "2026-09-15T05:40:00.000Z" }, { kind: "answer", text: "An older answer." }, ...STORED.entries],
+    })));
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    // The output's top edge sits at 100; each prompt bubble is 40 tall and
+    // placed by its top edge.
+    const tops: Record<string, number> = { "an older question": 110, "add a clear button": 300 };
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("readable-output")) return new DOMRect(0, 100, 400, 600);
+      const top = this.dataset.prompt === undefined ? undefined : tops[this.dataset.prompt];
+      return new DOMRect(0, top ?? 0, 300, 40);
+    });
+    const label = "Your prompt for this answer — show it";
+    const pinnedText = () => screen.queryByRole("button", { name: label })?.querySelector(".readable-pinned-prompt-text")?.textContent ?? null;
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    const output = document.querySelector(".readable-output") as HTMLElement;
+    // Both bubbles in view: nothing to pin.
+    expect(pinnedText()).toBeNull();
+
+    // Scrolled into the older answer, the newer prompt in view below it: a
+    // prompt is on screen, so the older one does not pin.
+    tops["an older question"] = 20;
+    tops["add a clear button"] = 400;
+    fireEvent.scroll(output);
+    expect(pinnedText()).toBeNull();
+
+    // The newer prompt below the view's bottom edge (700): the older prompt
+    // pins, not the newest.
+    tops["add a clear button"] = 720;
+    fireEvent.scroll(output);
+    expect(pinnedText()).toBe("an older question");
+
+    // The newer bubble half off the top is still in view: nothing pins.
+    tops["add a clear button"] = 80;
+    fireEvent.scroll(output);
+    expect(pinnedText()).toBeNull();
+
+    // Scrolled past the newer bubble: it pins, and a tap returns to it.
+    tops["add a clear button"] = 20;
+    tops["an older question"] = -200;
+    fireEvent.scroll(output);
+    expect(pinnedText()).toBe("add a clear button");
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start", behavior: "smooth" });
+    const prompts = screen.getAllByRole("group", { name: "Your prompt" });
+    expect(scrollIntoView.mock.contexts[0]).toBe(prompts[prompts.length - 1]);
   });
 
   it("falls back to the screen when the session is unavailable, and can be switched to it", async () => {
@@ -274,7 +406,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     const chat = screen.getByTestId("session-transcript");
     const prompts = () => [...chat.querySelectorAll(".readable-turn.user")];
     const bubble = prompts()[1];
-    expect(bubble.textContent).toBe("also the tests");
+    expect(said(bubble)).toBe("also the tests");
     expect(bubble.className).toBe("readable-turn user");
     expect(document.querySelector(".last-sent")).toBeNull();
 
@@ -289,8 +421,8 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     await settle();
     expect(prompts()).toHaveLength(2);
     expect(prompts()[1]).toBe(bubble);
-    expect(bubble.textContent).toBe("also the tests");
-    expect(bubble.nextElementSibling?.textContent).toBe("Still on the button.");
+    expect(said(bubble)).toBe("also the tests");
+    expect(said(bubble.nextElementSibling)).toBe("Still on the button.");
   });
 
   it("keeps a sent prompt in Reader while Codex is binding its rollout", async () => {
@@ -304,7 +436,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "keep this visible" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await settle();
-    expect(screen.getByRole("group", { name: "Your prompt" }).textContent).toBe("keep this visible");
+    expect(said(screen.getByRole("group", { name: "Your prompt" }))).toBe("keep this visible");
 
     // Current Codex releases can announce the live session before a readable
     // rollout exists. The reader must retain the phone's just-sent prompt
@@ -313,7 +445,184 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
     screen.getByTestId("session-transcript");
-    expect(screen.getByRole("group", { name: "Your prompt" }).textContent).toBe("keep this visible");
+    expect(said(screen.getByRole("group", { name: "Your prompt" }))).toBe("keep this visible");
+
+    stored = { available: true, version: "answer:codex", entries: [
+      { kind: "answer", text: "Here is the answer." },
+    ], truncated: false };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect([...screen.getByTestId("session-transcript").querySelectorAll(".readable-turn")]
+      .map((bubble) => said(bubble))).toEqual(["keep this visible", "Here is the answer."]);
+  });
+
+  it("shows Codex's next unstamped answer below the prompt sent from this phone", async () => {
+    const codex = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
+    localStorage.setItem("eldrun.mobile.view.codex", "focus");
+    let stored: unknown = { available: true, version: "one", truncated: false, entries: [
+      { kind: "prompt", text: "first", at: "2026-09-18T10:00:00Z" },
+      { kind: "answer", text: "First reply" },
+    ] };
+    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    render(<Terminal tab={codex} back={() => {}} />);
+    await settle();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "follow up" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settle();
+    stored = { available: true, version: "two", truncated: false, entries: [
+      { kind: "prompt", text: "first", at: "2026-09-18T10:00:00Z" },
+      { kind: "answer", text: "First reply" },
+      { kind: "answer", text: "Reply to follow up" },
+    ] };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+
+    const bubbles = screen.getByTestId("session-transcript").querySelectorAll(".readable-turn");
+    expect([...bubbles].map((bubble) => said(bubble))).toEqual([
+      "first", "First reply", "follow up", "Reply to follow up",
+    ]);
+  });
+
+  it("starts Reader on an empty chat after a Codex /clear, until the new session is read", async () => {
+    const codex = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
+    localStorage.setItem("eldrun.mobile.view.codex", "focus");
+    let stored: unknown = { ...STORED, usage: { contextLeft: 12 } };
+    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    render(<Terminal tab={codex} back={() => {}} />);
+    await settle();
+    expect(screen.getByText("add a clear button")).toBeTruthy();
+
+    // Codex writes no rollout — and reports no new id — until the first
+    // prompt, so the desktop still answers with the cleared conversation.
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    expect(screen.queryByText("add a clear button")).toBeNull();
+    expect(screen.queryByText("12%")).toBeNull();
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect(screen.queryByText("add a clear button")).toBeNull();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "fresh start" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settle();
+    expect([...screen.getByTestId("session-transcript").querySelectorAll(".readable-turn")]
+      .map((bubble) => said(bubble))).toEqual(["fresh start"]);
+
+    // The new rollout is bound: its records are the chat.
+    stored = { available: true, version: "new-rollout", truncated: false, entries: [
+      { kind: "prompt", text: "fresh start", at: "2026-09-24T08:00:00Z" },
+      { kind: "answer", text: "Starting fresh." },
+    ] };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect([...screen.getByTestId("session-transcript").querySelectorAll(".readable-turn")]
+      .map((bubble) => said(bubble))).toEqual(["fresh start", "Starting fresh."]);
+  });
+
+  it("does not send /clear to a working Codex, and says why on the phone", async () => {
+    const codex = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
+    localStorage.setItem("eldrun.mobile.view.codex", "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => STORED));
+    render(<Terminal tab={codex} back={() => {}} />);
+    await settle();
+    const working = new TextEncoder().encode("• Working (6s • esc to interrupt)\n› ");
+    const payload = new ArrayBuffer(working.byteLength);
+    new Uint8Array(payload).set(working);
+    act(() => { FakeWebSocket.instances[0].onmessage?.({ data: payload } as MessageEvent); });
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
+    const before = FakeWebSocket.instances[0].sent.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 350)); });
+    expect(FakeWebSocket.instances[0].sent.length).toBe(before);
+    expect(screen.getByText(/Codex is still working/)).toBeTruthy();
+    // The conversation goes on, and so does the chat.
+    expect(screen.getByText("add a clear button")).toBeTruthy();
+  });
+
+  it("offers Undo after a Claude clear: the desktop resumes the cleared chat and the Reader shows it again", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude", "focus");
+    const undoCalls: string[] = [];
+    const sidecar = sidecarFetch(() => STORED);
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (url.endsWith("/undo-clear")) {
+        undoCalls.push(init?.method ?? "GET");
+        return Promise.resolve(jsonResponse(200, { undone: true }));
+      }
+      return sidecar(url);
+    }));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    expect(screen.getByText("add a clear button")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    expect(screen.queryByText("add a clear button")).toBeNull();
+    const undo = screen.getByRole("button", { name: "Bring back the conversation you just cleared" });
+    expect(undo.textContent).toBe("Undo");
+
+    fireEvent.click(undo);
+    await settle();
+    expect(undoCalls).toEqual(["POST"]);
+    expect(screen.getByText("add a clear button")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Start a new conversation" }).textContent).toBe("Clear");
+  });
+
+  it("takes Undo away once the new chat is given a prompt, and offers it on Codex but not Aider", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude", "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => STORED));
+    const { unmount } = render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    expect(screen.getByRole("button", { name: "Bring back the conversation you just cleared" })).toBeTruthy();
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "fresh start" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settle();
+    expect(screen.queryByRole("button", { name: "Bring back the conversation you just cleared" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Start a new conversation" })).toBeTruthy();
+    unmount();
+
+    const codex = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
+    localStorage.setItem("eldrun.mobile.view.codex", "focus");
+    const codexView = render(<Terminal tab={codex} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    expect(screen.getByRole("button", { name: "Bring back the conversation you just cleared" })).toBeTruthy();
+    codexView.unmount();
+
+    // Aider resumes nothing, so its clear is final.
+    const aider = { ...TAB, id: "tab-aider", label: "Aider", agent_label: "Aider" };
+    render(<Terminal tab={aider} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    expect(screen.queryByRole("button", { name: "Bring back the conversation you just cleared" })).toBeNull();
+  });
+
+  it("reloads the Reader after an Undo, reading the session afresh", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude", "focus");
+    const transcriptUrls: string[] = [];
+    const sidecar = sidecarFetch(() => STORED);
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.endsWith("/undo-clear")) return Promise.resolve(jsonResponse(200, { undone: true }));
+      if (url.includes("/transcript")) transcriptUrls.push(url);
+      return sidecar(url);
+    }));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    const before = transcriptUrls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Bring back the conversation you just cleared" }));
+    await settle();
+    await settle();
+    const reads = transcriptUrls.slice(before);
+    expect(reads.length).toBeGreaterThan(0);
+    // No version: the whole session comes back, not an "unchanged".
+    expect(reads.some((url) => !url.includes("version="))).toBe(true);
   });
 
   it("clears the draft with the composer's ✕", async () => {

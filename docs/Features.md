@@ -75,7 +75,7 @@ only `src-tauri/` changes need a rebuild/restart.
 |---------|-------|
 | X11 switching stability | #15–17 |
 | Full session restore on startup | #24 — `schema/active_session.rs` exists but unwired |
-| Docker projects | #38 — plan in `docs/docker_projects_plan.md`, no runtime |
+| Docker projects | #38 — one session container per project; see `docs/context/docker_containers.md` |
 | Cross-platform Windows/macOS QA | #30/#31 |
 | Backend runtime hardening (PTY resurrection, transcript storage) | #32 |
 | URI-scheme routing + in-app mail/browser | #33/#61/#65 (gated on CSP restore, Security #1/#2) |

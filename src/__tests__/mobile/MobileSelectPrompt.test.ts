@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeSelectRows, missingSelectRow, readSelectPrompt, sameSelectStep, selectKeys, selectMoveKeys, selectSignature } from "../../../mobile-web/src/terminal/selectPrompt";
+import { mergeSelectRows, missingSelectRow, readQuestionTabs, readSelectPrompt, sameSelectStep, selectKeys, selectMoveKeys, selectSignature } from "../../../mobile-web/src/terminal/selectPrompt";
 import { currentMode, modeChoices } from "../../../mobile-web/src/terminal/agentModes";
 import { inputFrameStart, sessionStatus } from "../../../mobile-web/src/terminal/statusLine";
 
@@ -349,6 +349,29 @@ describe("Eldrun Mobile select dialog", () => {
     expect(prompt?.options[1].description).toBeUndefined();
   });
 
+  it("does not take Claude's spinner above a mid-turn picker for its heading", () => {
+    // `/model` opened while a turn runs is drawn right under the spinner, with
+    // no blank between them — and the spinner's verb and timer change every
+    // tick, so as the heading every repaint read as a new step.
+    const read = (spinner: string) => readSelectPrompt(lines(
+      "Some answer text.",
+      "",
+      spinner,
+      "Select model",
+      "Switch between Claude models.",
+      "",
+      "  1. Default (recommended)   Opus",
+      "❯ 2. Sonnet                  Everyday tasks",
+    ));
+    const first = read("✻ Wiggling… (12s · ↓ 2.1k tokens)");
+    const later = read("✶ Whirring… (13s · ↓ 2.2k tokens)");
+    expect(first?.title).toBe("Select model");
+    expect(first?.question).toBe(3);
+    // Nothing above the spinner is the dialog's.
+    expect(first?.context).toBe(3);
+    expect(selectSignature(first!)).toBe(selectSignature(later!));
+  });
+
   it("leaves a dialog untitled rather than titling it with the output above it", () => {
     const prompt = readSelectPrompt(lines(
       "I read the three files and they agree on the shape of the fix,",
@@ -563,5 +586,22 @@ describe("Eldrun Mobile input frame", () => {
     expect(cut(...output)).toEqual(output);
     // A prompt further up than the frame window is scrolled-past output.
     expect(cut("\u276f ", "a", "b", "c", "d", "e", "f", "g", "h", "i").length).toBe(10);
+  });
+});
+
+describe("Eldrun Mobile question tabs", () => {
+  it("reads the header row Claude Code draws over an agent's question", () => {
+    expect(readQuestionTabs("☐ Push scope")).toEqual([{ label: "Push scope", answered: false }]);
+    // Several questions: answered ones are ticked, and Submit is navigation.
+    expect(readQuestionTabs("←  ☒ Scope  ☐ Release tag  ✔ Submit  →")).toEqual([
+      { label: "Scope", answered: true },
+      { label: "Release tag", answered: false },
+    ]);
+  });
+
+  it("is not fooled by a sentence", () => {
+    expect(readQuestionTabs("✔ Done")).toBeNull();
+    expect(readQuestionTabs("Push scope")).toBeNull();
+    expect(readQuestionTabs("● ☐ is how the box looks")).toBeNull();
   });
 });

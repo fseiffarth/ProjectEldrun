@@ -1,6 +1,6 @@
 [package]
 name = "eldrun"
-version = "0.1.80"
+version = "0.1.95"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 default-run = "eldrun"
@@ -47,6 +47,9 @@ tauri-plugin-drag = "2"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Merge the Eldrun-wide agent config layer into Codex's config.toml without
+# losing its comments or layout (`services::agent_global`).
+toml_edit = "0.25"
 chrono = "0.4"
 chrono-tz = "0.10"
 regex = "1"
@@ -213,7 +216,12 @@ rand = "0.8"
 url = "2"
 axum = { version = "0.8", features = ["ws"] }
 base64ct = { version = "1", features = ["alloc"] }
-p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+p256 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+# Web Push payload encryption for Eldrun Mobile (`mobile_control::push`, RFC
+# 8291 `aes128gcm`). The RFC fixes AES-128-GCM, so the at-rest XChaCha choice
+# above does not apply; the nonce is derived per message from a fresh salt and
+# ephemeral key, never a counter. Already in the tree transitively.
+aes-gcm = "0.10"
 subtle = "2"
 # RFC 1918 / ULA / CGNAT / link-local classification for the loopback-and-intranet
 # navigation gate. `IpAddr::is_global()` is still unstable, so this is the stable
@@ -277,6 +285,9 @@ gtk = "0.18"
 webview2-com = "0.38"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
+    # The user's regional time picture (`GetLocaleInfoEx`) for the default
+    # 12/24-hour clock (`commands/os_clock.rs`).
+    "Win32_Globalization",
     # Native screen capture (BitBlt the virtual screen → PNG) in `screenshot.rs`.
     "Win32_Graphics_Gdi",
     # Interface byte counters for the network pane (`GetIfTable2` + the Ndis
@@ -317,6 +328,13 @@ windows = { version = "0.61", features = [
 
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1"
+# Native PDF printing (`commands/print_native.rs`): PDFKit's own print
+# operation, the one Preview runs. Same objc2 0.6 / 0.3 line tao already pulls
+# in, so only the PDFKit bindings are new.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPrintInfo", "NSPrintOperation", "NSResponder", "NSWindow"] }
+objc2-pdf-kit = { version = "0.3", default-features = false, features = ["std", "PDFDocument", "objc2-app-kit"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

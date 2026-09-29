@@ -42,8 +42,10 @@ tool is unavailable, say so — never skip silently.
 ## Git & privacy (public repo)
 
 - Work on `develop`; `main` is reached by PR.
-- Before any push: `scripts/privacy-check.sh` must pass (the pre-push hook and
-  CI run it; hooks need `git config core.hooksPath .githooks` once per clone).
+- Before any push: `scripts/privacy-check.sh` must pass (the pre-commit and
+  pre-push hooks and CI run it; hooks need `git config core.hooksPath
+  .githooks` once per clone). A plumbing commit (private index + `update-ref`)
+  skips pre-commit: run `GIT_INDEX_FILE=<yours> git hook run pre-commit` first.
   Never hardcode institution/lab hostnames. Author email must be the GitHub
   `noreply` one. New/changed binaries need their blob id in
   `scripts/privacy-reviewed-binaries.txt`. Private literals that must never
@@ -60,9 +62,9 @@ tool is unavailable, say so — never skip silently.
   is: grep `docs/filemap_rationale/` (frozen, verify against code).
 - Design rationale, one file per subsystem in `docs/context/` — open only the
   one you're touching: agent_authority, agent_schedule_mcp, agent_sessions,
-  caldav, dev_builds, docker_containers, git_sync, hpc_careful_mode, mail_encryption,
+  caldav, dev_builds, docker_containers, git_push_mcp, git_sync, help_mcp, hpc_careful_mode, mail_encryption,
   multi_host_remote, openvpn, project_boxes, project_transfer,
-  remote_autoconnect, remote_credentials, remote_projects, root_console,
+  release_signing, remote_autoconnect, remote_credentials, remote_projects, root_console,
   tmux_sessions, usage_stats, vm_projects.
 - Before touching byte-sync or git lockstep: `docs/remote_sync_guide.md`.
 - Updating a wrapped third-party tool: `docs/third_party_update_checklist.md`.
@@ -90,8 +92,8 @@ tool is unavailable, say so — never skip silently.
 - Install flows are one-click open-a-tab-and-run, never copy-it-yourself.
 - Box agent docs: edit only outside the
   `<!-- eldrun:box-links:start/end -->` generated blocks.
-- Eldrun never edits another app's paths or config (the agent-session hooks
-  are the one exception).
+- Eldrun never edits another app's paths or config. (The agent-session hooks
+  go into Eldrun's own agent homes, so they are no longer an exception.)
 
 ## Invariants
 
@@ -112,7 +114,19 @@ Security / data loss:
   `services::exec_trust`; what runs or where comes from `projects.json`, never
   the in-folder `project.json`.
 - `services::agent_fence` fails closed: missing/unusable bubblewrap never
-  falls back to launching unfenced.
+  falls back to launching unfenced. The fence is the only mode (no per-project
+  or global "off"); the one unfenced local agent is the root console's explicit
+  Host session (`PtyOptions.host_session`, its own `agent-homes/host`). A CLI
+  typed into a shell tab runs through the `agent_bin` shim, fenced.
+- Agents live only in Eldrun: every local agent tab's `$HOME` is its scope's
+  `<state_dir>/agent-homes/<key>` (`services::agent_home`), never the user's.
+  Logins are shared per CLI through `services::agent_auth` (credential files
+  only, hard-linked into every home); config, skills, hooks and MCP entries
+  are per scope. What the user wants everywhere lives in the Eldrun-wide layer
+  `<state_dir>/agent-global` (`services::agent_global`), copied/merged into
+  each home at every spawn and never mounted into a fence — no agent may be
+  able to write it. Eldrun registers its session hooks in those homes, not in
+  the user's own CLI config.
 - `services::mobile_control`: raw project ids, paths, commands, tmux targets
   never cross the browser API.
 - Terminal `kill`/`kill_all` reap the whole child subtree.
@@ -134,7 +148,9 @@ Remote & sync:
 Agents:
 - An agent's permission mode is its own CLI's. Eldrun injects no mode flag and
   has no mode toggle; `agent_session` only re-applies the mode Claude's hook
-  recorded on `--resume`. Don't grow that into a mode Eldrun chooses.
+  recorded on `--resume`. Don't grow that into a mode Eldrun chooses. (The
+  Manage CLIs Codex auto-review switch only edits the user's own Codex config
+  in the Eldrun-wide layer; it is off unless the user turns it on.)
 
 Frontend:
 - Gate remote/SFTP/git probes on connected — a sync command against a dead

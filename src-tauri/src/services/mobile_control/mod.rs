@@ -9,6 +9,7 @@ pub mod admin;
 pub mod auth;
 pub mod config;
 pub mod discovery;
+pub mod files;
 pub mod host;
 pub mod inbox;
 pub mod live_pwa;
@@ -16,6 +17,8 @@ pub mod outbox;
 pub mod limits;
 pub mod protocol;
 pub mod pty_bridge;
+pub mod push;
+pub mod sign_in;
 pub mod store;
 
 // The bundle baked in at compile time, when it was built, and the directory a

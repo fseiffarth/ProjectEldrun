@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { SettingsAdvanced, SettingsCard, SettingsHeader, SettingsList, SettingsSection, ToggleRow } from "./settingsUi";
@@ -6,18 +6,24 @@ import { formatBytes as fmtBytes } from "../../lib/formatBytes";
 import { UntestedTag } from "../common/UntestedTag";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { Dropdown } from "../common/Dropdown";
 import { useSettingsStore } from "../../stores/settings";
 import { AgentScheduleMcpSettings } from "../agents/AgentScheduleMcpSettings";
+import { GitPushMcpSettings } from "../agents/GitPushMcp";
 import { PLATFORM } from "../../lib/platform";
-import { runInstallInTab, type InstallShellKind } from "../../lib/installCommand";
+import {
+  NODE_DOWNLOAD_URL,
+  NODE_INSTALL,
+  runInstallInTab,
+  type InstallShellKind,
+  type NodeRuntimeStatus,
+} from "../../lib/installCommand";
 import {
   codexHookNeedsTrust,
   openCodexHooksTab,
   type CodexHookState,
 } from "../../lib/agents/codexHooks";
-import type { GlobalAppEntry } from "../../types";
+import type { CustomAgent, GlobalAppEntry } from "../../types";
 import { parseSshAddress } from "../projects/scaffold";
 import { useProjectsStore } from "../../stores/projects";
 import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
@@ -49,6 +55,18 @@ import {
 import { formatTime } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agents/agentFence";
+import { loginIdForCmd } from "../../lib/agents/signInLaunch";
+import {
+  AGENT_ITEMS,
+  agentShortcutSlots,
+  effectiveAgentOrder,
+  enabledInstalledAgentBins,
+  moveInAgentOrder,
+  sortByAgentOrder,
+} from "../tabs/newTabItems";
+import { AGENT_TAB_ACTIONS, chordLabel, resolveChord } from "../../lib/shortcuts/shortcuts";
+import { useShortcutOverrides } from "../../lib/shortcuts/shortcutHint";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface OllamaModelInfo {
   name: string;
@@ -164,12 +182,26 @@ function matchesSizeBuckets(sizes: string[], selected: Set<string>): boolean {
 }
 
 /** Every sub-panel takes the same two: `onBack` returns to the main settings
- *  panel, `onClose` dismisses the whole dialog. Optional because the panels are
- *  also rendered standalone in tests. */
+ *  panel, `onClose` dismisses the whole dialog. Both optional: the panels are
+ *  also rendered standalone in tests, and the Models & agents overlay
+ *  (`models/ModelsOverlay`) hosts the Agents and Ollama panels as tabs, where
+ *  there is no settings page to go back to (`SettingsHeader` omits Back). */
 export interface SubPanelProps {
-  onBack: () => void;
+  onBack?: () => void;
   onClose?: () => void;
 }
+
+/** The external programs a user can name here. `browser` is what PDF links
+ *  open in (`lib/linkTarget`); the header launcher that once ran the rest is
+ *  gone, but configured commands are kept in settings rather than dropped. */
+const GLOBAL_APP_ROLES: Array<{ key: string; labelKey: TranslationKey; fallback: string }> = [
+  { key: "browser", labelKey: "globalApp.role.browser", fallback: "◎" },
+  { key: "password_manager", labelKey: "globalApp.role.password_manager", fallback: "⚿" },
+  { key: "video_conf", labelKey: "globalApp.role.video_conf", fallback: "▣" },
+  { key: "screenshot", labelKey: "globalApp.role.screenshot", fallback: "▤" },
+  { key: "screen_recorder", labelKey: "globalApp.role.screen_recorder", fallback: "●" },
+  { key: "chat", labelKey: "globalApp.role.chat", fallback: "☏" },
+];
 
 export function GlobalAppsSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
@@ -208,12 +240,6 @@ export function GlobalAppsSettings({ onBack, onClose }: SubPanelProps) {
           const roleLabel = t(role.labelKey);
           return (
             <div className="global-app-settings-row" key={role.key}>
-              <Toggle
-                size="sm"
-                checked={entry.visible !== false}
-                onChange={(e) => updateRole(role.key, { visible: e.target.checked })}
-                title={t("globalApps.showRole", { role: roleLabel })}
-              />
               <span className="settings-role-icon" aria-hidden>{role.fallback}</span>
               <span className="settings-role-label">{roleLabel}</span>
               <input
@@ -285,7 +311,7 @@ export function FileTypeSettings({ onBack, onClose }: SubPanelProps) {
       <SettingsHeader title={t("filetypes.title")} onBack={onBack} onClose={onClose} />
       <div className="dialog-scroll">
       <p className="settings-help">{t("filetypes.help")}</p>
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
       <SettingsList boxed>
         {Object.entries(apps).sort(([a], [b]) => a.localeCompare(b)).map(([ext, app]) => (
           <div className="filetype-settings-row" key={ext}>
@@ -426,7 +452,7 @@ export function RemoteHostsSettings({ onBack, onClose }: SubPanelProps) {
       <SettingsHeader title={t("nav.remoteHosts.title")} onBack={onBack} onClose={onClose} />
       <div className="dialog-scroll">
       <p className="settings-help">{t("remoteHosts.help")}</p>
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
       {/* One framed list holds the saved hosts, the empty state AND the add
           row — the same shape the File Type Apps panel uses. Before, the add
           row sat outside the frame and read as a stray strip below it. */}
@@ -557,36 +583,6 @@ interface AgentInfo {
   warmup: boolean;
 }
 
-/**
- * Per-OS command that installs Node.js (and with it `npm`). Most agent CLIs
- * install via `npm install -g …`, so when `npm` is missing the Manage Agents
- * panel offers this first. nvm installs Node without administrator rights and
- * works identically on Linux and macOS; Windows uses winget (present on Windows
- * 10/11) and runs in either PowerShell or Command Prompt.
- */
-const NODE_INSTALL: Record<
-  "windows" | "macos" | "linux",
-  { command: string; shellKey: TranslationKey; shellKind: InstallShellKind }
-> = {
-  linux: {
-    command:
-      'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
-    shellKey: "install.shellBash",
-    shellKind: "bash",
-  },
-  macos: {
-    command:
-      'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
-    shellKey: "install.shellBash",
-    shellKind: "bash",
-  },
-  windows: {
-    command: "winget install OpenJS.NodeJS.LTS",
-    shellKey: "install.shellPowerShellOrCmd",
-    shellKind: "default",
-  },
-};
-const NODE_DOWNLOAD_URL = "https://nodejs.org/en/download";
 
 /**
  * "Codex won't run our session hook" notice for the Manage Agents panel.
@@ -684,6 +680,263 @@ function ClaudeRemoteControlNotice() {
   );
 }
 
+/** One row of `agent_logins` (`services::agent_auth`): a CLI's shared
+ *  sign-in across every Eldrun agent home. Never a token. */
+interface AgentLogin {
+  id: string;
+  signed_in: boolean;
+  account: string | null;
+  importable: boolean;
+  /** A tab's login the keeper refused: another account, or a file that
+   *  names a command where a credential belongs. */
+  blocked: { account: string | null; stored: string | null; command: string | null } | null;
+  shared: boolean;
+}
+
+/** The shared agent logins: one row per CLI whose login Eldrun can share,
+ *  with the one-click import from this computer and a way out. */
+function AgentLoginsRows() {
+  const t = useT();
+  const [logins, setLogins] = useState<AgentLogin[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = () => {
+    invoke<AgentLogin[]>("agent_logins")
+      .then(setLogins)
+      .catch(() => setLogins(null));
+  };
+  useEffect(refresh, []);
+  const labels = useMemo(() => new Map(AGENT_ITEMS.map((a) => [a.cmd, a.label])), []);
+  const registry = useMemo(
+    () => new Map(AGENT_ITEMS.map((a) => [loginIdForCmd(a.cmd), a.label])),
+    [],
+  );
+  if (!logins) return null;
+  const rows = logins.filter((l) => l.shared);
+  const run = (id: string, cmd: "agent_login_import" | "agent_login_sign_out") => {
+    setError(null);
+    setBusy(id);
+    invoke(cmd, { id })
+      .catch((e: unknown) => setError(String(e)))
+      .finally(() => {
+        setBusy(null);
+        refresh();
+      });
+  };
+  return (
+    <>
+      <div className="settings-subheader">
+        {t("settings.agentLogins")} <UntestedTag id="settings.agentLogins" />
+      </div>
+      <p className="settings-help">{t("settings.agentLoginsHelp")}</p>
+      {rows.map((l) => {
+        const label = registry.get(l.id) ?? labels.get(l.id) ?? l.id;
+        const state = l.signed_in
+          ? l.account
+            ? t("settings.agentLoginSignedInAs", { account: l.account })
+            : t("settings.agentLoginSignedIn")
+          : t("settings.agentLoginNotSignedIn");
+        return (
+          <div key={l.id} className="settings-toggle-card-row">
+            <span>
+              {label}
+              <span className="settings-help"> · {state}</span>
+              {l.blocked && (
+                <span className="settings-help pill-fence-live-note">
+                  {" "}
+                  {l.blocked.command
+                    ? t("settings.agentLoginBlockedCommand", { field: l.blocked.command })
+                    : t("settings.agentLoginBlocked", { account: l.blocked.account ?? "", stored: l.blocked.stored ?? "" })}
+                </span>
+              )}
+            </span>
+            <span>
+              {l.importable && (
+                <button
+                  type="button"
+                  className="ollama-action-btn"
+                  disabled={busy === l.id}
+                  onClick={() => run(l.id, "agent_login_import")}
+                >
+                  {t("settings.agentLoginImport")}
+                </button>
+              )}
+              {l.signed_in && (
+                <button
+                  type="button"
+                  className="ollama-action-btn"
+                  disabled={busy === l.id}
+                  onClick={() => run(l.id, "agent_login_sign_out")}
+                >
+                  {t("settings.agentLoginSignOut")}
+                </button>
+              )}
+            </span>
+          </div>
+        );
+      })}
+      {error && <p className="settings-help">{error}</p>}
+    </>
+  );
+}
+
+/** `agent_global_status` (`services::agent_global`). */
+interface AgentGlobalLayer {
+  dir: string;
+  files: number;
+  codexAutoReview: boolean;
+}
+
+/** The Eldrun-wide agent config: the instructions, skills, hooks and MCP
+ *  servers every agent home gets, filled from this computer in one click. */
+function AgentGlobalRow() {
+  const t = useT();
+  const [layer, setLayer] = useState<AgentGlobalLayer | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const refresh = () => {
+    invoke<AgentGlobalLayer>("agent_global_status")
+      .then(setLayer)
+      .catch(() => setLayer(null));
+  };
+  useEffect(refresh, []);
+  const importNow = () => {
+    setNote(null);
+    setBusy(true);
+    invoke<{ files: number; configs: number }>("agent_global_import")
+      .then((r) => setNote(t("settings.agentGlobalImported", { files: r.files, configs: r.configs })))
+      .catch((e: unknown) => setNote(String(e)))
+      .finally(() => {
+        setBusy(false);
+        refresh();
+      });
+  };
+  return (
+    <>
+      <div className="settings-subheader">
+        {t("settings.agentGlobal")} <UntestedTag id="settings.agentGlobal" />
+      </div>
+      <p className="settings-help">{t("settings.agentGlobalHelp")}</p>
+      <div className="settings-toggle-card-row">
+        <span className="settings-help">
+          {layer && layer.files > 0
+            ? t("settings.agentGlobalFiles", { count: layer.files })
+            : t("settings.agentGlobalEmpty")}
+        </span>
+        <span>
+          <button type="button" className="ollama-action-btn" disabled={busy} onClick={importNow}>
+            {t("settings.agentGlobalImport")}
+          </button>
+          <button
+            type="button"
+            className="ollama-action-btn"
+            onClick={() => void invoke("agent_global_open").catch((e: unknown) => setNote(String(e)))}
+          >
+            {t("settings.agentGlobalOpen")}
+          </button>
+        </span>
+      </div>
+      {note && <p className="settings-help">{note}</p>}
+    </>
+  );
+}
+
+/** Codex auto-review (`approvals_reviewer` in the Eldrun-wide layer's Codex
+ *  config). On the Codex card, not under the fence settings: it is what makes
+ *  fenced Codex usable, so it sits where a Codex user looks. */
+function CodexAutoReviewToggle() {
+  const t = useT();
+  const [on, setOn] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const refresh = () => {
+    invoke<AgentGlobalLayer>("agent_global_status")
+      .then((l) => setOn(l.codexAutoReview))
+      .catch(() => setOn(null));
+  };
+  useEffect(refresh, []);
+  return (
+    <>
+      <ToggleRow
+        label={<>{t("settings.codexAutoReview")} <UntestedTag id="settings.codexAutoReview" /></>}
+        checked={on ?? false}
+        disabled={busy || on === null}
+        onChange={(e) => {
+          setNote(null);
+          setBusy(true);
+          invoke("agent_global_set_codex_auto_review", { enabled: e.target.checked })
+            .catch((err: unknown) => setNote(String(err)))
+            .finally(() => {
+              setBusy(false);
+              refresh();
+            });
+        }}
+      />
+      <p className="settings-help">{t("settings.codexAutoReviewHelp")}</p>
+      {note && <p className="settings-help">{note}</p>}
+    </>
+  );
+}
+
+/** `copilot_fence_auth_status`: the Copilot sign-in Eldrun holds for fenced
+ *  tabs (`services::copilot_auth`). Never carries the token itself. */
+interface CopilotFenceAuth {
+  supported: boolean;
+  signedIn: boolean;
+  login: string | null;
+  valid: boolean | null;
+}
+
+/** Copilot sign-in for fenced tabs: who is signed in, and a way out. Hidden
+ *  where the fence leaves the keyring reachable (everything but Linux). */
+function CopilotFenceAuthRow() {
+  const t = useT();
+  const [auth, setAuth] = useState<CopilotFenceAuth | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = () => {
+    invoke<CopilotFenceAuth>("copilot_fence_auth_status")
+      .then(setAuth)
+      .catch(() => setAuth(null));
+  };
+  useEffect(refresh, []);
+  if (!auth?.supported) return null;
+
+  const state = !auth.signedIn
+    ? t("settings.copilotFenceAuthNone")
+    : auth.valid === false
+      ? t("settings.copilotFenceAuthExpired")
+      : auth.login
+        ? t("settings.copilotFenceAuthSignedIn", { login: auth.login })
+        : t("settings.copilotFenceAuthSignedInOffline");
+
+  return (
+    <>
+      <div className="settings-toggle-card-row">
+        <span>
+          {t("settings.copilotFenceAuth")} <UntestedTag id="settings.copilotFenceAuth" />
+        </span>
+        {auth.signedIn && (
+          <button
+            type="button"
+            className="ollama-action-btn"
+            onClick={() => {
+              setError(null);
+              invoke("copilot_fence_sign_out")
+                .then(refresh)
+                .catch((e: unknown) => setError(String(e)));
+            }}
+          >
+            {t("settings.copilotFenceAuthSignOut")}
+          </button>
+        )}
+      </div>
+      <p className="settings-help">{state}</p>
+      {error && <p className="settings-help">{error}</p>}
+      <p className="settings-help">{t("settings.copilotFenceAuthHelp")}</p>
+    </>
+  );
+}
+
 function AgentFenceCard() {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
@@ -705,13 +958,6 @@ function AgentFenceCard() {
       <div className="settings-subheader">
         {t("settings.agentFenceTitle")} <UntestedTag id="settings.agentFenceTitle" />
       </div>
-      <label className="settings-toggle-card-row">
-        <span>{t("settings.agentFenceEnabled")}</span>
-        <Toggle
-          checked={settings?.agent_fence ?? true}
-          onChange={(e) => void updateSettings({ agent_fence: e.target.checked })}
-        />
-      </label>
       <p className="settings-help">{t("settings.agentFenceHelp")}</p>
       <p className="settings-help">{t("settings.agentFenceLimits")}</p>
       <p className="settings-help">{t("settings.agentFenceSharedState")}</p>
@@ -723,6 +969,31 @@ function AgentFenceCard() {
         />
       </label>
       <p className="settings-help">{t("settings.agentFenceCargoCredentialsHelp")}</p>
+      {settings?.agent_fence_platform_accepted && (
+        // Only once given: the acceptance a fence-less platform (Windows) asks
+        // for before the first agent tab. Switching it off asks again next time.
+        <>
+          <label className="settings-toggle-card-row">
+            <span>{t("settings.agentFencePlatformAccepted")} <UntestedTag id="settings.agentFencePlatformAccepted" /></span>
+            <Toggle
+              checked
+              onChange={() => void updateSettings({ agent_fence_platform_accepted: false })}
+            />
+          </label>
+          <p className="settings-help">{t("settings.agentFencePlatformAcceptedHelp")}</p>
+        </>
+      )}
+      <AgentLoginsRows />
+      <AgentGlobalRow />
+      <CopilotFenceAuthRow />
+      <label className="settings-toggle-card-row">
+        <span>{t("settings.rootFenceProjects")} <UntestedTag id="settings.rootFenceProjects" /></span>
+        <Toggle
+          checked={settings?.root_fence_projects_readable ?? false}
+          onChange={(e) => void updateSettings({ root_fence_projects_readable: e.target.checked })}
+        />
+      </label>
+      <p className="settings-help">{t("settings.rootFenceProjectsHelp")}</p>
       <label className="settings-help" htmlFor="agent-fence-paths">
         {t("settings.agentFencePaths")}
       </label>
@@ -753,14 +1024,6 @@ function AgentFenceCard() {
   );
 }
 
-/** Backend `NodeRuntimeStatus` (`node_runtime_status`). */
-interface NodeRuntimeStatus {
-  npm: boolean;
-  /** `node --version`, e.g. `v22.22.1`; null when Node is absent. */
-  version: string | null;
-  min_major: number;
-  too_old: boolean;
-}
 
 /**
  * "Install Node/npm first" helper for the Manage Agents panel. Most agent CLIs
@@ -1119,7 +1382,7 @@ function AgentComposerCard({ agents }: { agents: AgentInfo[] | null }) {
           {t("agents.composerAdd")}
         </button>
       </div>
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
 
       <div className="settings-subheader">{t("agents.composerModels")}</div>
       {listEditor(models, writeModels, "agents.composerNoModels")}
@@ -1270,6 +1533,8 @@ function AgentCronRow({ cmd, label }: { cmd: string; label: string }) {
   );
 }
 
+const NO_CUSTOM_AGENTS: CustomAgent[] = [];
+
 /**
  * "Manage Agents" panel: detect and one-click-install the AI coding-agent CLIs
  * Eldrun can launch as agent tabs (Claude, Codex, Google Antigravity, Google
@@ -1278,7 +1543,16 @@ function AgentCronRow({ cmd, label }: { cmd: string; label: string }) {
  * registry lives in the backend (`commands::agents`); this just renders each
  * entry with an install button, a live install log, and a manual fallback.
  */
-export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
+export function AgentsPanel({
+  onBack,
+  onClose,
+  installedExtras,
+}: SubPanelProps & {
+  /** Rendered at the end of each **installed** card. The Models & agents
+   *  overlay passes the dropdown's Default · + tab · Root · MCP chips
+   *  (`AgentChips`); Settings passes nothing, so its cards are unchanged. */
+  installedExtras?: (a: AgentInfo) => ReactNode;
+}) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const remoteMachines = useGlobalMachinesStore((s) => s.machines);
@@ -1313,6 +1587,22 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
   // Filter over the *not installed* half only (see the two sections below).
   const [search, setSearch] = useState("");
   const logRef = useRef<HTMLPreElement>(null);
+  const shortcutOverrides = useShortcutOverrides();
+  const customAgents = settings?.custom_agents ?? NO_CUSTOM_AGENTS;
+  // Custom agents whose command is on PATH — the + menu's own probe, so a
+  // missing one takes no number here either.
+  const [installedCustom, setInstalledCustom] = useState<Set<string> | null>(null);
+  const customCmdsKey = customAgents.map((ca) => ca.cmd).join("\n");
+  useEffect(() => {
+    const cmds = customCmdsKey ? customCmdsKey.split("\n") : [];
+    if (cmds.length === 0) {
+      setInstalledCustom(new Set());
+      return;
+    }
+    invoke<string[]>("probe_binaries", { bins: cmds })
+      .then((found) => setInstalledCustom(new Set(found)))
+      .catch(() => setInstalledCustom(new Set()));
+  }, [customCmdsKey]);
 
   const refresh = () => {
     invoke<AgentInfo[]>("list_agents").then(setAgents).catch(() => setAgents([]));
@@ -1559,10 +1849,51 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
     );
   };
 
+  // The installed list's order is the + menu's, and so Ctrl+1–9's
+  // (`agent_order`, row keys = binaries). Before anything was moved it is the
+  // menu's own: the default agent first, then registry order.
+  const installedList = (agents ?? []).filter((a) => a.installed);
+  const defaultAgentCmd = settings?.default_agent_cmd || "claude";
+  const defaultAgentBin =
+    (agents ?? []).find((a) => a.id === defaultAgentCmd)?.bin ?? defaultAgentCmd;
+  const builtinKeys = sortByAgentOrder(
+    installedList,
+    (a) => a.bin,
+    AGENT_ITEMS.map((item) => item.cmd),
+  ).map((a) => a.bin);
+  const savedOrder = settings?.agent_order;
+  const agentOrder = effectiveAgentOrder(
+    [...builtinKeys, ...customAgents.map((ca) => `custom:${ca.id}`)],
+    savedOrder,
+    defaultAgentBin,
+  );
+  const chordSlots = agentShortcutSlots({
+    installedBuiltins: enabledInstalledAgentBins(installedList, disabledAgents),
+    installedCmds: installedCustom,
+    customAgents,
+    defaultAgentBin,
+    agentOrder: savedOrder,
+  });
+  const chordFor = (bin: string) => {
+    const slot = chordSlots.findIndex((s) => s?.key === bin);
+    return slot < 0 ? null : chordLabel(resolveChord(AGENT_TAB_ACTIONS[slot], shortcutOverrides));
+  };
+  const visibleOrder = agentOrder.filter((key) => builtinKeys.includes(key));
+  const moveAgent = (bin: string, delta: 1 | -1) => {
+    // Keys of agents not installed right now keep their place in the saved
+    // list, so a reinstall lands where it was.
+    const kept = (savedOrder ?? []).filter((key) => !agentOrder.includes(key));
+    void updateSettings({
+      agent_order: moveInAgentOrder([...agentOrder, ...kept], bin, delta, builtinKeys),
+    });
+  };
+
   // The card for one CLI. One renderer for both sections below, so an
   // installed entry and one still to be installed cannot drift into two
   // designs — the only thing that differs is which list a card lands in.
-  const agentCard = (a: AgentInfo) => (
+  const agentCard = (a: AgentInfo) => {
+    const chord = a.installed ? chordFor(a.bin) : null;
+    return (
     <SettingsCard key={a.id} className="agent-list-entry">
       <div className="agent-list-entry-head">
         <div className="settings-subheader">
@@ -1576,21 +1907,49 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
           )}
         </div>
         {a.installed && (
-          <label
-            className="agent-disable-toggle"
-            title={t("agents.disableToggleTitle")}
-          >
-            <Toggle
-              checked={!disabledAgents.includes(a.id)}
-              onChange={(e) => setAgentDisabled(a.id, !e.target.checked)}
-              size="sm"
-              aria-label={t(
-                disabledAgents.includes(a.id) ? "agents.disableAriaEnable" : "agents.disableAriaDisable",
-                { label: a.label },
-              )}
-            />
-            {disabledAgents.includes(a.id) ? t("agents.disabled") : t("agents.enabled")}
-          </label>
+          <div className="agent-list-entry-actions">
+            <UntestedTag id="settingsSubPanels.agentOrder" />
+            {chord && (
+              <kbd className="agent-chord-chip" title={t("agents.chordTitle", { label: a.label })}>
+                {chord}
+              </kbd>
+            )}
+            <button
+              type="button"
+              className="settings-btn sm icon"
+              title={t("agents.moveUp")}
+              aria-label={t("agents.moveUpLabel", { label: a.label })}
+              disabled={visibleOrder.indexOf(a.bin) <= 0}
+              onClick={() => moveAgent(a.bin, -1)}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="settings-btn sm icon"
+              title={t("agents.moveDown")}
+              aria-label={t("agents.moveDownLabel", { label: a.label })}
+              disabled={visibleOrder.indexOf(a.bin) >= visibleOrder.length - 1}
+              onClick={() => moveAgent(a.bin, 1)}
+            >
+              ↓
+            </button>
+            <label
+              className="agent-disable-toggle"
+              title={t("agents.disableToggleTitle")}
+            >
+              <Toggle
+                checked={!disabledAgents.includes(a.id)}
+                onChange={(e) => setAgentDisabled(a.id, !e.target.checked)}
+                size="sm"
+                aria-label={t(
+                  disabledAgents.includes(a.id) ? "agents.disableAriaEnable" : "agents.disableAriaDisable",
+                  { label: a.label },
+                )}
+              />
+              {disabledAgents.includes(a.id) ? t("agents.disabled") : t("agents.enabled")}
+            </label>
+          </div>
         )}
       </div>
       <div className="agent-remote-install-row">
@@ -1812,12 +2171,15 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
           )}
         </>
       )}
+      {a.id === "codex" && a.installed && <CodexAutoReviewToggle />}
       {a.id === "codex" && <CodexHookNotice />}
       {a.id === "claude" && <ClaudeRemoteControlNotice />}
+      {a.installed && installedExtras?.(a)}
     </SettingsCard>
-  );
+    );
+  };
 
-  const installedAgents = (agents ?? []).filter((a) => a.installed);
+  const installedAgents = sortByAgentOrder(installedList, (a) => a.bin, agentOrder);
   const availableAgents = (agents ?? []).filter((a) => !a.installed);
   const query = search.trim().toLowerCase();
   // Matched on the label, the id and the binary name, because a CLI is looked
@@ -1896,6 +2258,7 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
         <AgentFenceCard />
         <AgentCronSection agents={agents} />
         <AgentScheduleMcpSettings />
+        <GitPushMcpSettings />
         <AgentComposerCard agents={agents} />
       </SettingsAdvanced>
       </div>
@@ -2632,7 +2995,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
           {installing && <span className="ollama-status-text">{t("ollama.runningInstaller")}</span>}
         </div>
 
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         {installLog !== null && (
           <pre className="ollama-install-log" ref={installLogRef}>
             {installLog || t("ollama.startingEllipsis")}
@@ -2726,7 +3089,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
         )}
       </div>
 
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
 
       <div className="settings-section-title">
         {t("ollama.modelLocationTitle")} <UntestedTag id="ollama.modelLocationTitle" />
@@ -3141,7 +3504,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
         ))}
       </div>
 
-      {regError && <div className="project-dialog-error">{regError}</div>}
+      {regError && <ErrorNote className="project-dialog-error" error={regError} />}
 
       <div className="settings-list">
         {shownRegistry.map((m) => (

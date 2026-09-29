@@ -183,10 +183,10 @@
   gap: 8px;
   width: 190px;
   padding: 10px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
-  background: var(--bg-elevated, var(--bg-panel));
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  color: var(--text-primary);
+  /* A stacking context, so the shared surface's `z-index: -1` accent wash
+     paints inside this popover rather than behind the toolbar. */
+  z-index: 1;
 }
 
 .presentation-slider {
@@ -476,9 +476,9 @@
   align-items: center;
   gap: 4px;
 }
-/* Right-click-Run "arguments" popover — canonical panel chrome (see the menu
-   layout convention): explicit colours so a portal-free child never inherits
-   the body's default black text. */
+/* Right-click-Run "arguments" popover — the shared popover surface (the
+   `.context-menu` group in projects-tabs.css), plus an explicit colour so it
+   never inherits the body's default black text. */
 .file-viewer-run-args {
   position: absolute;
   top: calc(100% + 4px);
@@ -489,11 +489,7 @@
   gap: 6px;
   min-width: 220px;
   padding: 8px;
-  background: var(--bg-elevated);
   color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-2);
 }
 .file-viewer-run-args-label {
   font-size: 10px;
@@ -684,6 +680,11 @@
   padding: 1px 4px;
   font-size: 10px;
   cursor: var(--cur-pointer, pointer);
+}
+/* A failed dictionary download beside the "＋ Language" menu. */
+.file-viewer-spell-error {
+  color: var(--danger);
+  font-size: 10px;
 }
 
 /* Markdown formatting toolbar (bold/italic/heading/link/list/TOC). */
@@ -1396,6 +1397,14 @@
    the surrounding text. */
 .yaml-val-string { color: var(--success); }
 .yaml-val-other { color: var(--success); }
+/* The achromatic pair takes the code viewer's palette (see the plain
+   `dark`/`light` .tok-* block): its accent-secondary is a grey, which would
+   leave booleans indistinguishable from keys. Both split them the way their
+   tokens do — yellow numbers, purple booleans, green strings. */
+:is([data-theme="dark"], [data-theme="light"]) .yaml-val-number { color: var(--doc-yellow); }
+:is([data-theme="dark"], [data-theme="light"]) .yaml-val-boolean { color: var(--doc-purple); }
+:is([data-theme="dark"], [data-theme="light"]) .yaml-val-string,
+:is([data-theme="dark"], [data-theme="light"]) .yaml-val-other { color: var(--doc-green); }
 
 .yaml-value-locked {
   color: var(--text-muted);
@@ -2590,7 +2599,7 @@
    green for strings (Helix's default uses grey there, too flat for this).
    `fancy_dark` carries the Helix dark-purple vibe; `fancy_light` drops the same
    hues darker so they stay legible on the light surface. Plain `dark`/`light`
-   keep the calm semantic colors above. */
+   get their own palette further down. */
 [data-theme="fancy_dark"] .tok-comment { color: #697c81; }   /* sirocco  */
 [data-theme="fancy_dark"] .tok-string  { color: #9fd86a; }   /* green    */
 [data-theme="fancy_dark"] .tok-keyword { color: #d9bfff; }   /* lilac    */
@@ -2630,6 +2639,63 @@
 [data-theme="fancy_light"] .tok-md-quote   { color: #6b7280; }  /* sirocco  */
 [data-theme="fancy_light"] .tok-md-list    { color: #8e24aa; }  /* lilac    */
 [data-theme="fancy_light"] .tok-md-hr      { color: #6b7280; }  /* sirocco  */
+
+/* Plain `dark`/`light`: the achromatic pair's accent IS the ink (white / black,
+   accent-secondary a grey), so the semantic mapping above renders keywords,
+   functions, types, tags and markdown headings as grey-on-black — only strings
+   and numbers kept a hue. Code is the one place colour carries meaning rather
+   than decoration, so these two take a palette of their own: the terminal's
+   hues (the --doc-* set each declares in its theme block — GitHub-dark's
+   bright tier on black, the light terminal's on white): green strings, purple
+   keywords, yellow numbers, blue functions — the One Dark / Catppuccin role
+   split. */
+:is([data-theme="dark"], [data-theme="light"]) .tok-comment { color: var(--doc-grey); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-string  { color: var(--doc-green); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-keyword { color: var(--doc-purple); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-num     { color: var(--doc-yellow); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-type    { color: var(--doc-cyan); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-func    { color: var(--doc-blue); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-tag     { color: var(--doc-blue); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-attr    { color: var(--doc-cyan); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-prop    { color: var(--doc-blue); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-overlay { color: var(--doc-yellow); }
+
+:is([data-theme="dark"], [data-theme="light"]) .tok-md-heading { color: var(--doc-blue); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-md-strong  { color: var(--doc-yellow); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-md-em      { color: var(--doc-purple); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-md-code    { color: var(--doc-green); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-md-link    { color: var(--doc-link); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-md-url     { color: var(--doc-grey); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-md-quote   { color: var(--doc-grey); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-md-list    { color: var(--doc-cyan); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-md-hr      { color: var(--doc-grey); }
+
+/* TeX: math runs green (commands and numbers inside keep their own colour),
+   a sectioning command's title reads as a heading. */
+:is([data-theme="dark"], [data-theme="light"]) .tok-math { color: var(--doc-green); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-section + .tok-arg {
+  color: var(--doc-blue);
+  font-weight: 700;
+  font-style: normal;
+}
+
+/* Plain text (.txt, .log, anything unrecognised — `scanPlain`). Only the
+   achromatic pair styles these; in every other theme the spans are inert and a
+   text file stays uncoloured. */
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-heading { color: var(--doc-blue); font-weight: 700; }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-rule    { color: var(--doc-grey); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-list    { color: var(--doc-cyan); font-weight: 700; }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-key     { color: var(--doc-blue); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-url     { color: var(--doc-link); text-decoration: underline; }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-date    { color: var(--doc-purple); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-string  { color: var(--doc-green); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-num     { color: var(--doc-yellow); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-marker  { color: var(--doc-yellow); font-weight: 700; }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-bad     { color: var(--doc-red); font-weight: 700; }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-warn    { color: var(--doc-yellow); font-weight: 700; }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-info    { color: var(--doc-green); }
+:is([data-theme="dark"], [data-theme="light"]) .tok-txt-debug   { color: var(--doc-grey); }
+
 
 /* #49 link-decoration + #45 ghost overlays: transparent <pre> layers aligned to
    the textarea exactly like .file-viewer-highlight, so only their styled spans
@@ -5948,7 +6014,7 @@
    The "Graph" mode of the markdown viewer (MdGraphView): local-file links
    crawled from the viewed document, drawn as SVG on concentric BFS rings.
    The SVG is laid out at fixed pixel coordinates by lib/viewers/mdGraph.ts;
-   this only paints it. Hover affordance is opacity/stroke only — never a
+   the viewport fits and transforms it. Hover affordance is opacity/stroke only — never a
    blurred box-shadow animation (WebKitGTK software-renders those). */
 .md-graph {
   display: flex;
@@ -5979,14 +6045,87 @@
   color: var(--text-primary);
   border-color: var(--accent);
 }
-.md-graph-hint {
+.md-graph-zoom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
   color: var(--text-muted);
   font-size: var(--text-md);
 }
-.md-graph-scroll {
+.md-graph-zoom button,
+.md-graph-back {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+  padding: 3px 7px;
+}
+.md-graph-zoom button:hover,
+.md-graph-back:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.md-graph-back:disabled {
+  opacity: .5;
+  cursor: var(--cur-default, default);
+}
+.md-graph-zoom span {
+  min-width: 38px;
+  text-align: center;
+}
+.md-graph-hint {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+.md-graph-viewport {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  position: relative;
+  overflow: hidden;
+  cursor: var(--cur-grab, grab);
+  touch-action: none;
+}
+.md-graph-viewport.dragging {
+  cursor: var(--cur-grabbing, grabbing);
+}
+.md-graph-viewport svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+.md-graph-tooltip {
+  position: absolute;
+  z-index: 1;
+  width: min(300px, calc(100% - 16px));
+  max-height: 140px;
+  overflow: hidden;
+  pointer-events: none;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .18);
+  font-size: var(--text-md);
+}
+.md-graph-tooltip strong,
+.md-graph-tooltip span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.md-graph-tooltip span {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.md-graph-tooltip p {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
 }
 .md-graph-edge {
   stroke: var(--border-color);
@@ -6043,4 +6182,137 @@
 .project-remark-row.missing { opacity:.55; }
 .project-remark-target { font:inherit; color:var(--accent); border:0; background:none; padding:0; }
 .project-remark-text { white-space:pre-wrap; overflow-wrap:anywhere; }
-.project-remark-dialog textarea { width:100%; resize:vertical; }
+.file-delete-dialog textarea.file-paste-name { resize:vertical; }
+
+/* ── The achromatic pair: document colour ──────────────────────────────────
+   Every viewer rule above paints a document's structure with --accent /
+   --accent-secondary — which `dark` and `light` define as the ink and a grey,
+   so a rendered README, a YAML tree or a .bib file came out as a page of
+   ink-coloured headings. Content is not chrome (see rule 4 in themes.css):
+   here it takes the terminal's hues, the --doc-* set on each theme block,
+   and the chrome around it (toolbars, buttons, focus rings, selection) stays
+   the neutral ink. Roles follow the token block: blue for structure and
+   links, purple for the second level and flags, green for code, yellow for
+   emphasis and identity, cyan for list markers. */
+
+/* Rendered markdown (also the notebook's markdown cells). */
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body h1 {
+  color: var(--doc-blue);
+  border-bottom-color: color-mix(in srgb, var(--doc-blue) 40%, transparent);
+}
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body h2 {
+  color: var(--doc-purple);
+  border-bottom-color: color-mix(in srgb, var(--doc-purple) 35%, transparent);
+}
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body h3 { color: var(--doc-green); }
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body h3::before { background: var(--doc-green); }
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body h4 { color: var(--doc-yellow); }
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body h5 { color: var(--doc-cyan); }
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body a,
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body a.file-link {
+  color: var(--doc-link);
+  text-decoration-color: var(--doc-link);
+}
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body code {
+  color: var(--doc-green);
+  background: color-mix(in srgb, var(--doc-green) 10%, var(--bg-input));
+}
+/* Fenced blocks keep their .tok-* colours; only the frame takes a hue. */
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body pre code { color: var(--text-primary); background: none; }
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body pre {
+  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--doc-blue) 45%, transparent);
+}
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body blockquote {
+  border-left-color: var(--doc-purple);
+  background: color-mix(in srgb, var(--doc-purple) 7%, transparent);
+}
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body li::marker { color: var(--doc-cyan); }
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body li.task-item > input[type="checkbox"] {
+  accent-color: var(--doc-green);
+}
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body hr {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--doc-blue) 45%, var(--border-color)) 20%,
+    color-mix(in srgb, var(--doc-blue) 45%, var(--border-color)) 80%,
+    transparent
+  );
+}
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body table,
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body table.md-table {
+  border-color: color-mix(in srgb, var(--doc-blue) 30%, var(--border-color));
+}
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body thead th {
+  color: var(--doc-blue);
+  background: color-mix(in srgb, var(--doc-blue) 12%, var(--bg-secondary));
+  border-bottom-color: color-mix(in srgb, var(--doc-blue) 40%, transparent);
+}
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body tbody tr:hover {
+  background: color-mix(in srgb, var(--doc-blue) 8%, transparent);
+}
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body .md-alert-note { border-left-color: var(--doc-blue); }
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body .md-alert-note .md-alert-title { color: var(--doc-blue); }
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body .md-alert-important { border-left-color: var(--doc-purple); }
+:is([data-theme="dark"], [data-theme="light"]) .markdown-body .md-alert-important .md-alert-title { color: var(--doc-purple); }
+
+/* File links in the source editor's link layer. */
+:is([data-theme="dark"], [data-theme="light"]) .file-viewer-link-layer .file-link {
+  text-decoration-color: var(--doc-link);
+}
+
+/* ODT documents. */
+:is([data-theme="dark"], [data-theme="light"]) .odt-document h1 { color: var(--doc-blue); }
+:is([data-theme="dark"], [data-theme="light"]) .odt-document h2 { color: var(--doc-purple); }
+:is([data-theme="dark"], [data-theme="light"]) .odt-document h3 { color: var(--doc-green); }
+:is([data-theme="dark"], [data-theme="light"]) .odt-document h4 { color: var(--doc-yellow); }
+:is([data-theme="dark"], [data-theme="light"]) .odt-document a { color: var(--doc-link); }
+
+/* YAML / JSON tree and cards: keys blue like the code viewer's properties;
+   values already follow the .tok-* split (see .yaml-val-*). */
+:is([data-theme="dark"], [data-theme="light"]) .yaml-tree,
+:is([data-theme="dark"], [data-theme="light"]) .yaml-cards {
+  --yaml-guide-0: color-mix(in srgb, var(--doc-blue) 45%, transparent);
+}
+:is([data-theme="dark"], [data-theme="light"]) .yaml-key { color: var(--doc-blue); }
+:is([data-theme="dark"], [data-theme="light"]) .yaml-key:hover {
+  background: color-mix(in srgb, var(--doc-blue) 14%, transparent);
+}
+:is([data-theme="dark"], [data-theme="light"]) .yaml-flow-tag { color: var(--doc-purple); }
+:is([data-theme="dark"], [data-theme="light"]) .yaml-list-chevron,
+:is([data-theme="dark"], [data-theme="light"]) .yaml-card-bullet { color: var(--doc-cyan); }
+
+/* BibTeX cards: the entry type a flag (purple), the citation key the
+   identity (yellow), field names keys (blue). A duplicate's warning rail
+   still wins — .bib-card-dup is restated so this block cannot outrank it. */
+:is([data-theme="dark"], [data-theme="light"]) .bib-card {
+  border-left-color: color-mix(in srgb, var(--doc-blue) 60%, transparent);
+}
+:is([data-theme="dark"], [data-theme="light"]) .bib-card.bib-card-dup { border-left-color: var(--warning); }
+:is([data-theme="dark"], [data-theme="light"]) .bib-card-type,
+:is([data-theme="dark"], [data-theme="light"]) .bib-card-type-static { color: var(--doc-purple); }
+:is([data-theme="dark"], [data-theme="light"]) .bib-card-key { color: var(--doc-yellow); }
+:is([data-theme="dark"], [data-theme="light"]) .bib-card-fname { color: var(--doc-blue); }
+
+/* Markdown link graph. The file/missing variants are restated after the
+   base node rule: at this block's specificity it would otherwise repaint
+   them blue. */
+:is([data-theme="dark"], [data-theme="light"]) .md-graph-node circle {
+  fill: color-mix(in srgb, var(--doc-blue) 22%, var(--bg-panel));
+  stroke: var(--doc-blue);
+}
+:is([data-theme="dark"], [data-theme="light"]) .md-graph-node:hover circle {
+  fill: color-mix(in srgb, var(--doc-blue) 40%, var(--bg-panel));
+}
+:is([data-theme="dark"], [data-theme="light"]) .md-graph-node-current circle {
+  fill: var(--doc-purple);
+  stroke: var(--doc-purple);
+}
+:is([data-theme="dark"], [data-theme="light"]) .md-graph-node-file circle {
+  fill: var(--bg-input);
+  stroke: var(--text-muted);
+}
+:is([data-theme="dark"], [data-theme="light"]) .md-graph-node-missing circle {
+  fill: none;
+  stroke: var(--danger);
+}

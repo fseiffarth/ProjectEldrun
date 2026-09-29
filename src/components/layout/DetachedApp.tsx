@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRendererWatchdog } from "../../lib/window/rendererWatchdog";
 import { emit, listen } from "@tauri-apps/api/event";
 import { detachedWindowVisible } from "../../lib/window/detachedVisibility";
+import { answerRetireRequests } from "../../lib/window/unsavedWork";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useSettingsStore,
@@ -26,10 +27,15 @@ import {
   DETACHED_DOCK,
   DETACHED_HIDE,
   DETACHED_EDIT,
+  DETACHED_GAVE_UP,
+  DETACHED_REOPEN,
   DETACHED_REQUEST_SEED,
   DETACHED_ZOOM,
   applyEditToSubtree,
   applyColorToTabs,
+  applyMarkToTabs,
+  applyTodoToTabs,
+  applyStackToTabs,
   applyRenameToTabs,
   applyLocationToTabs,
   detachedSeedEvent,
@@ -61,6 +67,7 @@ import { PLATFORM } from "../../lib/platform";
 import { useTabLandStore } from "../../stores/drag/tabLand";
 import { startFocusTracking, useQuiesce } from "../../stores/power";
 import { clearStrayFullscreen } from "../../lib/window/strayFullscreen";
+import { useFullscreenMode } from "../../lib/window/fullscreenMode";
 import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
 import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { useProjectsStore } from "../../stores/projects";
@@ -69,11 +76,13 @@ import { installWindowsEvents } from "../../stores/windows";
 import { listenPdfReveal } from "../../stores/viewers/pdfSync";
 import { listenEditorJump } from "../../stores/viewers/editorJump";
 import { listenTexCenter } from "../../stores/viewers/texCenter";
+import { chordMatches, resolveChord, zoomFor, type ShortcutMap } from "../../lib/shortcuts/shortcuts";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { ExecTrustHost } from "../common/ExecTrustHost";
 import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
+import { UnfencedPlatformDialog } from "../common/UnfencedPlatformDialog";
 import { ScreenshotSaveOverlay } from "./ScreenshotSaveOverlay";
 import { DetachedCloseChoice } from "./DetachedCloseChoice";
 
@@ -188,12 +197,13 @@ export function DetachedApp({ param }: Props) {
   // main window and for its reason: a `_NET_WM_STATE_FULLSCREEN` window loses
   // `_NET_WM_ACTION_MOVE`, so the WM refuses the `_NET_WM_MOVERESIZE` that
   // `startDragging` sends and this popout can no longer be moved by its titlebar
-  // or by a tab bar's grip. Nothing here fullscreens a popout any more (F11
-  // maximizes — see `DetachedCenterPanel`), so this is the net under that: a
-  // window already stuck in the state when this build loads, or any future path
-  // into it, is released rather than left immovable with no visible cause. macOS
-  // is excluded for the same reason it is there — its own Space is the expected
-  // behaviour and `DeckPresenter`/F11 opt into it deliberately.
+  // or by a tab bar's grip. The one fullscreen a popout is meant to hold is the
+  // user's own fullscreen mode (F11 / the window-controls button), which is
+  // recorded (`lib/window/fullscreenMode`) and left alone; this is the net under
+  // everything else: a window already stuck in the state when this build loads,
+  // or any other path into it, is released rather than left immovable with no
+  // visible cause. macOS is excluded for the same reason it is there — its own
+  // Space is the expected behaviour and `DeckPresenter` opts into it deliberately.
   //
   // It runs CONTINUOUSLY, not only at mount, and that is the load-bearing part.
   // A mount-only check cannot see the one path that still fullscreens a popout
@@ -202,8 +212,7 @@ export function DetachedApp({ param }: Props) {
   // reloading, an HMR module swap in dev, a crash mid-talk — leaves the window
   // fullscreen with the guard long since finished. And a popout has no OS title
   // bar, so nothing on screen distinguishes that from a merely large window: it
-  // has simply stopped being movable, with no control anywhere that brings it back
-  // (F11 maximizes, and a maximize leaves a fullscreen window fullscreen).
+  // has simply stopped being movable, with nothing on screen that says so.
   // Observed live under Muffin — `_NET_WM_ALLOWED_ACTIONS` on the stuck popout had
   // lost `_NET_WM_ACTION_MOVE`, `_NET_WM_ACTION_RESIZE` and both MAXIMIZE atoms.
   //
@@ -273,22 +282,36 @@ export function DetachedApp({ param }: Props) {
       void emit(DETACHED_ZOOM, { scope: param.scope, groupId: param.groupId, zoom: next });
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
       // Agent panes consume Ctrl +/- for their own font zoom and stopPropagation,
       // so those never reach here — this only fires for the rest of the window.
-      if (e.code === "Equal") {
-        e.preventDefault();
-        applyAndPersist(stepZoom(zoomRef.current, 1));
-      } else if (e.code === "Minus") {
-        e.preventDefault();
-        applyAndPersist(stepZoom(zoomRef.current, -1));
-      } else if (e.code === "Digit0") {
-        e.preventDefault();
-        applyAndPersist(1);
-      }
+      const zoom = zoomFor(
+        e,
+        useSettingsStore.getState().settings?.keyboard_shortcuts as ShortcutMap | undefined,
+      );
+      if (!zoom) return;
+      e.preventDefault();
+      applyAndPersist(zoom === "reset" ? 1 : stepZoom(zoomRef.current, zoom === "in" ? 1 : -1));
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, [param.scope, param.groupId]);
+
+  // Ctrl+Shift+T — reopen the last closed agent tab into THIS popout. The
+  // closed list lives in the main window, so this only asks (DETACHED_REOPEN).
+  // Captured on `document` so it works from a focused terminal like the main
+  // window's; unlike there, the key is taken even when nothing is left to
+  // reopen, since this window cannot know that without asking.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const overrides = useSettingsStore.getState().settings
+        ?.keyboard_shortcuts as ShortcutMap | undefined;
+      if (!chordMatches(resolveChord("reopenClosedTab", overrides), e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void emit(DETACHED_REOPEN, { scope: param.scope, groupId: param.groupId });
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [param.scope, param.groupId]);
 
   // This window is its own JS runtime with its own `document` and its own copy
@@ -444,6 +467,8 @@ export function DetachedApp({ param }: Props) {
       .catch(() => {});
     const flush = () => {
       if (!pos || !size) return;
+      // A fullscreen popout's rect is its monitor, not a place to reopen at.
+      if (useFullscreenMode.getState().on) return;
       // #238: a park (`hide()`) / unpark (`show()`) can fire Moved/Resized with
       // whatever geometry the WM used while the window was off screen. Persisting
       // that would move the popout on the next launch, so a flush is only taken
@@ -509,6 +534,20 @@ export function DetachedApp({ param }: Props) {
       clearInterval(id);
     };
   }, []);
+
+  // Native Wayland closes a popout whose scope was left, and the main window
+  // rebuilds it on return. Before it goes, the backend asks: settle what
+  // autosave would save, and say whether any unsaved work is left — which
+  // keeps the window alive (minimized) instead. Attaching the listener also
+  // announces this popout as able to answer (`detached_retire_ready`).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    answerRetireRequests(label)
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, [label]);
 
   // Seed + edit listeners. The main window owns the source of truth and ships
   // the group's tabs + subtree; subsequent main-side edits re-seed.
@@ -617,8 +656,11 @@ export function DetachedApp({ param }: Props) {
             // its tabs were out of the layout, its record persisted
             // `detached: true`, and the failure repeated at every launch (#224).
             // The `WindowEvent::Destroyed` hook tells the main window, which
-            // docks any surviving record back; this destroy is what triggers it.
-            void getCurrentWindow().destroy();
+            // docks any surviving record back once this keeps happening; saying
+            // first that this death is our own failure is what lets it.
+            void emit(DETACHED_GAVE_UP, { label }).finally(() => {
+              void getCurrentWindow().destroy();
+            });
             return;
           }
           void emit(DETACHED_REQUEST_SEED, {
@@ -650,6 +692,12 @@ export function DetachedApp({ param }: Props) {
       // Optimistic, like the two beside it: the picker stays open after a pick,
       // so the tab has to recolour under it rather than on the re-seed.
       setTabs((ts) => applyColorToTabs(ts, edit.key, edit.color));
+    } else if (edit.kind === "setStack") {
+      setTabs((ts) => applyStackToTabs(ts, edit.key, edit.stack));
+    } else if (edit.kind === "setMark") {
+      setTabs((ts) => applyMarkToTabs(ts, edit.key, edit.mark));
+    } else if (edit.kind === "setTodo") {
+      setTabs((ts) => applyTodoToTabs(ts, edit.key, edit.todoId));
     } else if (edit.kind === "setLocation") {
       // Optimistic: flip the badge now; the main window respawns the pane on the
       // new host and re-derives the same payload.
@@ -683,10 +731,10 @@ export function DetachedApp({ param }: Props) {
   const handleClose = (key: string) => {
     const isLastTab = !group || orderedTabKeys(group).length <= 1;
     if (isLastTab) {
-      void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
+      void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId, user: true });
       return;
     }
-    pushEdit({ kind: "close", key });
+    pushEdit({ kind: "close", key, user: true });
   };
 
   // Group B #237: put the WHOLE popout back into the main window's tiled layout
@@ -833,6 +881,7 @@ export function DetachedApp({ param }: Props) {
           rather than parking when no host is mounted, so the two together make
           the hang impossible in either direction.) */}
       <HpcGuardDialog />
+      <UnfencedPlatformDialog />
       {/* #233: the screenshot save step. `useScreenshotPendingStore` is
           per-window, so a PDF screenshot taken in a popout raised its overlay
           nowhere: the shot reached the clipboard and the save-to-project half of
@@ -846,7 +895,7 @@ export function DetachedApp({ param }: Props) {
           }}
           onCloseTabs={() => {
             setCloseChoice(null);
-            void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
+            void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId, user: true });
             // The main window closes this window via `attach_subwindow`; the
             // timer is the net for a main window that is gone or wedged, so the
             // popout can never be stuck un-closable.
@@ -875,6 +924,7 @@ export function DetachedApp({ param }: Props) {
       onReorder={(tabKeys) => pushEdit({ kind: "reorder", tabKeys })}
       onRename={(key, label) => pushEdit({ kind: "rename", key, label })}
       onSetColor={(key, color) => pushEdit({ kind: "setColor", key, color })}
+      onSetStack={(key, stack) => pushEdit({ kind: "setStack", key, stack })}
       onSplit={(key, targetGroupId, edge) => {
         // Mint the new pane's ids HERE and ship them, so the main store names
         // the pane as this window does (see `mintDetachedSplitIds`). The ids

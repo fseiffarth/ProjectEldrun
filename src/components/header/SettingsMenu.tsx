@@ -8,17 +8,18 @@ import { SettingsGlyph } from "./HeaderGlyphs";
 const MENU_ID = "settings";
 
 /**
- * The header's ⚙ — app settings, help, the tours and the lessons.
+ * The header's ⚙ — app settings, help, the tours, the lessons and the update
+ * check (Settings → Updates, which checks on open).
  *
  * It used to be the *project switcher's* leading button, which put three
  * controls belonging to one widget on both sides of a scrolling strip (⚙ left
  * of the pills, + and the search right of them) and left the + sitting flush
  * against the global-app cluster with nothing to say which of the two it
  * belonged to. Settings are the machine's, not a project's, so the gear belongs
- * with 🧠 ✉ 🗓 ☑ ▦ — after which everything left of the strip is a global app
+ * with 🧠 ✉ 🗓 ☑ — after which everything left of the strip is a global app
  * and everything right of it acts on the project list.
  *
- * Built as `GlobalAppMenu`'s twin down to the class names: same wrapper, same
+ * Built as the header menus' twin down to the class names: same wrapper, same
  * button chrome, and the same shared `headerHoverMenu` id — which is the real
  * reason to move it rather than merely re-order the DOM. The switcher's two
  * menus ran on their own timers, so the 250 ms grace one of them closes on let
@@ -27,8 +28,9 @@ const MENU_ID = "settings";
  *
  * Every entry is a `window` event, so this component owns no dialog: the
  * settings dialog stays mounted in `ProjectSwitcher`, which already listened
- * for `eldrun:open-settings` (the Local Model button's door into a specific
- * panel) long before the gear left it.
+ * for `eldrun:open-settings` (once the Local Model button's door into a
+ * specific panel; that button now opens the Models & agents overlay instead)
+ * long before the gear left it.
  */
 export function SettingsMenu() {
   const t = useT();
@@ -60,10 +62,10 @@ export function SettingsMenu() {
         aria-label={t("settings.title")}
         aria-haspopup="menu"
         aria-expanded={open}
-        // Reveal rather than toggle: a click also fires mouseenter, so a toggle
-        // here would open on enter and immediately shut (the rule every hover
-        // menu in this header follows).
-        onClick={reveal}
+        // Hover reveals the menu; a click goes straight to the settings overlay,
+        // the gear's obvious meaning. Keyboard still opens the menu: the hook
+        // preventDefaults Enter/Space/↓ on the trigger, so they never click.
+        onClick={() => fire("eldrun:open-settings", "main")}
       >
         <SettingsGlyph className="settings-menu-icon" />
       </button>
@@ -84,14 +86,11 @@ export function SettingsMenu() {
           <button role="menuitem" onClick={() => fire("eldrun:open-how-to-start")}>
             {t("projectSwitcher.howToStartMenu")}
           </button>
-          <button role="menuitem" onClick={() => fire("eldrun:start-tour")}>
-            {t("settings.takeTour")}
-          </button>
-          <button role="menuitem" onClick={() => fire("eldrun:start-advanced-tour")}>
-            {t("settings.takeAdvancedTour")}
-          </button>
           <button role="menuitem" onClick={() => fire("eldrun:open-lessons")}>
             {t("settings.lessons")}
+          </button>
+          <button role="menuitem" onClick={() => fire("eldrun:open-settings", "updates")}>
+            {t("settings.checkForUpdates")}
           </button>
           <UntestedTag id="desktop.headerMenus" />
         </div>

@@ -822,6 +822,8 @@ fn local_publish(
                 "--remote=origin",
                 "--push",
             ]);
+            // gh's own `git push` runs in `dir` too: same common-dir pin (#862).
+            crate::commands::git::pin_common_dir(&mut cmd, dir);
             if let Some(tok) = token {
                 cmd.env(provider.token_env(), tok);
             }
@@ -856,7 +858,7 @@ fn local_publish(
                 ));
             }
             args.extend(["push", "-u", "origin", "HEAD"].map(String::from));
-            let mut push = crate::commands::git::hardened_git_command_in(dir, &args);
+            let mut push = crate::commands::git::hooked_git_command_in(dir, &args);
             if let Some(tok) = token {
                 push.env("ELDRUN_GIT_TOKEN", tok);
                 push.env("GIT_TERMINAL_PROMPT", "0");

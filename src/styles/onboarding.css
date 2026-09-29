@@ -91,6 +91,109 @@
   border-color: var(--accent) !important;
 }
 
+/* The intro wizard (HowToStart): the Settings dialog's navigation frame
+   (.settings-with-navigation + .settings-navigation rail), narrower, and a
+   fixed height so turning a page never resizes the dialog under the cursor.
+   Explicit colour: the dialog must not inherit `body`'s (none → black). */
+.settings-dialog.intro-dialog {
+  width: min(860px, calc(100vw - 32px));
+  height: min(660px, calc(100vh - 96px));
+  color: var(--text-primary);
+}
+.intro-rail-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.intro-rail .how-to-start-num {
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
+}
+.intro-rail .settings-btn:not([aria-current]) .how-to-start-num {
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--control-border);
+}
+.intro-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.intro-skip {
+  margin-left: auto;
+}
+.intro-skip + .how-to-start-got-it {
+  margin-left: 0;
+}
+.intro-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.intro-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.intro-choice-row .settings-btn[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.intro-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.intro-step-done .how-to-start-num {
+  background: var(--success);
+}
+.intro-compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+}
+.intro-prereq {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.intro-examples,
+.intro-hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.intro-examples .settings-btn {
+  white-space: normal;
+  text-align: left;
+}
+.intro-ask-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.intro-ask-form input {
+  flex: 1;
+  min-width: 0;
+}
+.intro-ask-form .settings-link-row {
+  padding-top: 0;
+}
+.intro-toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+}
+
 /* Contextual hint coachmark/banner. z-index 90: above the header (80) so it can
    point at chrome, but below true modals (.modal-backdrop, 100) so a dialog is
    never pierced by a stray hint. Portaled to body (see HintBubble). */
@@ -107,7 +210,7 @@
   /* Fade in on appearance, then keep a slow accent breathing on the border so a
      freshly-surfaced hint draws the eye without nagging. Opacity-only entry so it
      never fights the inline/class positioning transforms (translateY/translateX).
-     Shares the pulse vocabulary of tab-working-pulse / side-panel-drop-pulse. */
+     Shares the pulse vocabulary of tab-new-hint-pulse / side-panel-drop-pulse. */
   animation: hint-bubble-in 0.24s ease-out,
     hint-bubble-breathe 2.4s ease-in-out 0.24s infinite;
 }
@@ -260,6 +363,50 @@
 
 .hint-bubble-got-it:hover {
   background: var(--accent-hover);
+}
+
+.hint-bubble-got-it:disabled {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
+}
+
+/* The sign-in card over a terminal pane (TerminalSignInCard): the hint bubble's
+   look, pinned to the pane's bottom-right instead of the viewport. Fades in
+   only — the bubble's breathing border animates a blurred box-shadow, which a
+   card that can sit on screen for minutes must not do on WebKitGTK. */
+.hint-bubble.terminal-sign-in {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 5;
+  width: min(360px, calc(100% - 32px));
+  animation: hint-bubble-in 0.24s ease-out;
+}
+
+.terminal-sign-in .hint-bubble-actions .hint-bubble-got-it {
+  margin-left: 0;
+}
+
+.terminal-sign-in-code {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.terminal-sign-in-code input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.terminal-sign-in-code .hint-bubble-got-it {
+  margin-left: 0;
 }
 
 /* The element a tour step spotlights (TourHost) — an OUTWARD spread ring.

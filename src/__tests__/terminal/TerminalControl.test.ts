@@ -181,6 +181,15 @@ describe("agent pane mousedown", () => {
     expect(agentMouseDownAction(press({ button: 2, detail: 2 }), true)).toBe("pass");
     expect(agentMouseDownAction(press({ button: 1 }), true)).toBe("pass");
   });
+  it("in a shell pane, forces the selection for every click count and never pastes", () => {
+    // Local shells run in a `mouse on` tmux, so the mouse is always grabbed; a
+    // drag must still make the xterm selection that copy-on-select copies.
+    expect(agentMouseDownAction(press(), true, false)).toBe("select");
+    expect(agentMouseDownAction(press({ detail: 2 }), true, false)).toBe("select");
+    expect(agentMouseDownAction(press({ detail: 3 }), true, false)).toBe("select");
+    expect(agentMouseDownAction(press({ detail: 2 }), false, false)).toBe("pass");
+    expect(agentMouseDownAction(press({ ctrlKey: true }), true, false)).toBe("pass");
+  });
 });
 
 describe("right-click context menu", () => {

@@ -71,8 +71,8 @@ const CLAUDE_SCREEN = [
   STATUS_ROW,
 ].join("\n");
 
-async function openAgent(screenText: string) {
-  render(<Terminal tab={{ id: "tab", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+async function openAgent(screenText: string, { project, kind = "agent" }: { project?: string; kind?: "agent" | "shell" } = {}) {
+  render(<Terminal tab={{ id: "tab", label: kind === "agent" ? "Claude" : "Shell", kind, available: true, viewer_busy: false }} project={project} back={() => {}} />);
   await act(async () => {});
   const bytes = new TextEncoder().encode(screenText);
   const payload = new ArrayBuffer(bytes.byteLength);
@@ -189,6 +189,89 @@ describe("Eldrun Mobile Focus status line", () => {
     const body = document.querySelector(".terminal-body");
     expect(body).not.toBeNull();
     drag(body!, [100, 300], [220, 300]);
+    expect(strip()).toBeNull();
+  });
+});
+
+/** The desktop's answers for project `p1`: its detail with the files switch
+ * as given, and a one-folder listing. Everything else the screen asks for
+ * is refused, which it rides out. */
+function hostWith(files: boolean) {
+  return vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url === "/api/v1/projects/p1") {
+      return new Response(JSON.stringify({ project: { id: "p1", label: "Alpha", status: "active" }, desktop_available: true, agents: [], tabs: [], files }), { status: 200 });
+    }
+    if (url === "/api/v1/projects/p1/files") {
+      return new Response(JSON.stringify({ entries: [{ token: "tok-src", name: "src", kind: "dir", size: 0, modified: 1_770_000_000 }], truncated: false }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
+  });
+}
+
+const drawer = () => screen.queryByRole("dialog", { name: "Files" });
+
+describe("Eldrun Mobile Focus — the project's files drawer", () => {
+  beforeEach(() => {
+    terminalState.lines = [];
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    localStorage.setItem("eldrun.mobile.view.agent", "focus");
+    localStorage.setItem("eldrun.mobile.view.shell", "focus");
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("opens the files on a swipe from the left third, the status line from further right", async () => {
+    vi.stubGlobal("fetch", hostWith(true));
+    await openAgent(CLAUDE_SCREEN, { project: "p1" });
+
+    drag(output(), [600, 300], [760, 300]);
+    expect(strip()).not.toBeNull();
+    expect(drawer()).toBeNull();
+    drag(output(), [760, 300], [600, 300]);
+    expect(strip()).toBeNull();
+
+    drag(output(), [100, 300], [260, 300]);
+    expect(strip()).toBeNull();
+    const files = drawer();
+    expect(files).not.toBeNull();
+    // The trail starts at the project's name, read off its detail.
+    expect(await within(files!).findByRole("button", { name: "Open the folder src" })).toBeTruthy();
+    expect(within(within(files!).getByRole("navigation", { name: "Folders" })).getByRole("button").textContent).toBe("Alpha");
+
+    drag(files!, [300, 300], [100, 300]);
+    expect(drawer()).toBeNull();
+  });
+
+  it("opens from the screen's left edge", async () => {
+    vi.stubGlobal("fetch", hostWith(true));
+    await openAgent(CLAUDE_SCREEN, { project: "p1" });
+
+    drag(output(), [4, 300], [200, 300]);
+    expect(drawer()).not.toBeNull();
+  });
+
+  it("leaves the swipe to the status line, edge guard included, while the switch is off", async () => {
+    const fetch = hostWith(false);
+    vi.stubGlobal("fetch", fetch);
+    await openAgent(CLAUDE_SCREEN, { project: "p1" });
+
+    drag(output(), [4, 300], [200, 300]);
+    expect(strip()).toBeNull();
+    drag(output(), [100, 300], [260, 300]);
+    expect(strip()).not.toBeNull();
+    expect(drawer()).toBeNull();
+    expect(fetch.mock.calls.some(([url]) => String(url).includes("/files"))).toBe(false);
+  });
+
+  it("opens the files from anywhere on a shell, which has no status line", async () => {
+    vi.stubGlobal("fetch", hostWith(true));
+    await openAgent("$ ls\nREADME.md", { project: "p1", kind: "shell" });
+
+    drag(output(), [600, 300], [760, 300]);
+    expect(drawer()).not.toBeNull();
     expect(strip()).toBeNull();
   });
 });

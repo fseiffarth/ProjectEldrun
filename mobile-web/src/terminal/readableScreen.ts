@@ -433,6 +433,54 @@ export function dedentLines(lines: readonly ReadableLine[]): ReadableLine[] {
   });
 }
 
+/** A row that opens something of its own rather than continuing a sentence: a
+ * list item, an agent's message or tool marker, a quote, a frame. */
+const BLOCK_OPENER = /^\s*(?:(?:[-*+•●⏺⎿>›❯☐☒☑✔✓]|\d{1,3}[.)])\s|[│┃┆┌┏╭╔└┗╰╚├┣─━═])/u;
+
+/**
+ * The same lines with a TUI's own word wrap undone, so the phone re-wraps the
+ * prose at *its* width. Claude Code lays its text out itself and prints every
+ * row as a line of its own, so xterm never marks one as a continuation
+ * (`readableRange` rejoins only those) and a dialog's question arrived as the
+ * pane's column count in hard breaks — re-wrapped again at phone width into
+ * ragged half-lines.
+ *
+ * The wrap width is not printed anywhere, so it is read off the block: no row
+ * is wider than it, and a greedy wrap breaks a row only when the next word
+ * would not have fitted after it. A row that ends with room to spare for that
+ * word, measured against the widest row, was broken on purpose and stays
+ * broken. Blank rows and rows that open a block of their own never join. Only
+ * for text known to be prose — a diff or a table would be read as wrapped.
+ */
+export function joinProseWraps(lines: readonly ReadableLine[]): ReadableLine[] {
+  let width = 0;
+  for (const line of lines) width = Math.max(width, line.text.trimEnd().length);
+  const out: ReadableLine[] = [];
+  /** The last *physical* row appended — what the wrap measured — not the line
+   * it has been joined onto. */
+  let physical = "";
+  for (const line of lines) {
+    const previous = out[out.length - 1];
+    const before = physical.trimEnd();
+    physical = line.text;
+    const rest = line.text.trimStart();
+    const word = /^\S+/u.exec(rest)?.[0] ?? "";
+    const wrapped = previous !== undefined && before !== "" && rest !== ""
+      && !BLOCK_OPENER.test(line.text) && before.length + 1 + word.length > width;
+    if (!wrapped) {
+      out.push({ ...line });
+      continue;
+    }
+    const spans = line.spans.map((span) => ({ ...span }));
+    trimSpansLeft(spans, line.text.length - rest.length);
+    const head = previous.text.trimEnd();
+    const headSpans = previous.spans.map((span) => ({ ...span }));
+    trimSpansRight(headSpans, previous.text.length - head.length);
+    out[out.length - 1] = { ...previous, text: `${head} ${rest}`, spans: [...headSpans, { text: " " }, ...spans] };
+  }
+  return out;
+}
+
 /** `dedentLines` for rows that are already plain text — the status strip's
  * (`statusFrameLines`). A fullscreen TUI centres its box, so those rows can
  * arrive 70 columns in on a wide pane; the strip is a phone-width readout of

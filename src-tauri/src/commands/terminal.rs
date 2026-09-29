@@ -63,6 +63,9 @@ pub struct PtySpawned {
     /// The session name rode in on the launch argv (Claude's `--name`), so the
     /// tab must not also type its `/rename` line.
     pub named: bool,
+    /// The tab's previous process died mid-turn (`agent_turn::bind_tab`): the
+    /// tab starts out marked interrupted.
+    pub interrupted: bool,
 }
 
 /// Append Claude's `--name=<name>` to a launch argv, unless there is no name
@@ -279,18 +282,6 @@ pub async fn pty_spawn(
     // every step below sees the enforced values.
     crate::services::sandbox::enforce_spawn_authority(&mut opts);
 
-    // Trash is an agent-only workspace. The project record cannot be weakened
-    // from its writable folder, and this spawn gate also refuses stale UI tabs
-    // or renderer-crafted shell commands before anything reaches the host.
-    if opts
-        .project_id
-        .as_deref()
-        .is_some_and(crate::paths::is_trash_project_id)
-        && !crate::services::sandbox::is_agent_cmd(&opts.cmd)
-    {
-        return Err("The Trash project accepts recognised agent CLIs only.".to_string());
-    }
-
     // VM-tier hard refusals (`docs/vm_projects_plan.md`): for a VM project the
     // remote→local fallback that exists elsewhere is not a perf surprise but
     // the untrusted agent stepping outside the boundary — so a local spawn is
@@ -374,6 +365,11 @@ pub async fn pty_spawn(
         }
     }
 
+    // The tab's scope, for the agent shims a shell tab may run
+    // (`services::agent_shim`): its project or box, else the root console.
+    opts.env
+        .entry("ELDRUN_SCOPE".into())
+        .or_insert_with(|| crate::services::agent_home::scope_of(opts.project_id.as_deref()));
     if let Some(pid) = opts.project_id.as_deref() {
         let box_folder = crate::commands::boxes::box_id_of_scope(pid).and_then(|id|
             crate::commands::boxes::get_boxes().ok()?.into_iter().find(|b| b.id == id)?.folder);
@@ -421,7 +417,7 @@ pub async fn pty_spawn(
             )
             .ok_or_else(|| {
                 format!(
-                    "Agent fence: unknown project or box scope '{}'; agent '{}' was not started.",
+                    "Agent sandbox: unknown project or box scope '{}'; agent '{}' was not started.",
                     opts.project_id.as_deref().unwrap_or("root"),
                     opts.id
                 )
@@ -475,6 +471,15 @@ pub async fn pty_spawn(
     }
     if agent_spawn && !root_agent && reader_project.is_none() {
         crate::services::root_mcp::apply_schedule_to_spawn(&mut opts);
+        // Agent-requested pushes (`services::git_push_mcp`), beside the
+        // schedule lane: same qualifying spawns, its own token.
+        crate::services::root_mcp::apply_git_push_to_spawn(&mut opts);
+    }
+    // The read-only help server (`services::help_mcp`): every LOCAL agent tab,
+    // root or project, beside whatever the lines above handed out. Last, since
+    // it merges into the Vibe env the root/schedule wiring sets outright.
+    if agent_spawn {
+        crate::services::root_mcp::apply_help_to_spawn(&mut opts);
     }
     let mut mcp_spawn_guard = agent_spawn
         .then(|| crate::services::root_mcp::SpawnTokenGuard::new(&opts));
@@ -500,9 +505,10 @@ pub async fn pty_spawn(
     // The agent's hooks report its turn state under its tab uid; bind that uid
     // to this PTY so the report reaches the tab's own marks, and drop any
     // record a previous run of the same tab left behind (see agent_turn).
-    if let Some(uid) = opts.env.get("ELDRUN_TAB_UID").cloned() {
-        crate::services::agent_turn::bind_tab(&uid, &opts.id, opts.project_id.as_deref());
-    }
+    let interrupted = match opts.env.get("ELDRUN_TAB_UID").cloned() {
+        Some(uid) => crate::services::agent_turn::bind_tab(&uid, &opts.id, opts.project_id.as_deref()),
+        None => false,
+    };
 
     // Codex resume, without the hook. Codex will not run Eldrun's SessionStart
     // hook until the user trusts it (`/hooks`), and an untrusted hook fails
@@ -541,6 +547,7 @@ pub async fn pty_spawn(
                 &opts.id,
                 &uid,
                 std::path::Path::new(&opts.cwd),
+                opts.project_id.as_deref(),
                 resumed,
             );
         }
@@ -556,8 +563,11 @@ pub async fn pty_spawn(
     // Never for the root console: `--remote-control` is what puts a session in
     // the Claude phone app, and the root scope's rights must not be reachable
     // from a phone by any route (it is absent from Eldrun Mobile's catalog too).
+    // Nor for a subcommand (`claude auth login`, a sign-in tab), which refuses
+    // the session's flags.
     if opts.cmd == "claude"
         && !root_agent
+        && !crate::services::agent_fence::runs_subcommand(&opts.args)
         && resolve_agent_remote_control(opts.project_id.as_deref())
         && !opts.args.iter().any(|a| a == "--remote-control")
     {
@@ -637,6 +647,7 @@ pub async fn pty_spawn(
     // Those, and a host CLI that is too old or not read yet, keep the typed line.
     let named = opts.cmd == "claude"
         && session_name.is_some()
+        && !crate::services::agent_fence::runs_subcommand(&opts.args)
         && crate::commands::agents::claude_takes_name_flag()
         && append_claude_name(&mut opts.args, session_name.as_deref());
 
@@ -645,44 +656,99 @@ pub async fn pty_spawn(
     // tmux server on the host while the command *inside* its session is
     // fenced.  A missing/blocked fence tool fails closed.
     let mut fenced_registration: Option<(String, String)> = None;
-    #[cfg(target_os = "linux")]
-    let mut fenced_content_shadow = None;
-    #[cfg(not(target_os = "linux"))]
-    let fenced_content_shadow = None;
+    // Every agent tab that runs on the host, fenced or not, for the pill's
+    // live check (`agent_fence::live_unfenced_by_scope`). Taken before the
+    // fence and tmux rewrites replace `cmd`.
+    let host_agent_tab = (fence_roots.is_some()
+        && !opts.sandbox
+        && opts.cmd != "ssh"
+        && opts.cmd != "docker")
+        .then(|| crate::services::agent_fence::HostAgentTab {
+            scope_id: opts.project_id.clone().unwrap_or_else(|| "root".to_string()),
+            agent_cmd: opts.cmd.clone(),
+            tmux_session: opts.tmux_session.clone(),
+        });
+    let spawned_tab_id = opts.id.clone();
+    // What the root tab's MCP session records as its projects grant: the
+    // paths the fence argv bound when fenced, everything when the agent runs
+    // unfenced (it already reads everything).
+    let mut root_projects = crate::services::root_mcp::ProjectsGrant::All;
     if let Some(roots) = fence_roots.as_deref() {
         let decision = crate::services::agent_fence::decide(
             &opts,
             roots.to_vec(),
             remote_agent_run,
-            crate::services::agent_fence::policy_enabled(opts.project_id.as_deref()),
             crate::services::agent_fence::platform_fenceable(),
+            crate::services::agent_fence::platform_accepted(),
             crate::services::agent_fence::bwrap_available(),
         );
+        let local_agent = opts.cmd != "ssh" && opts.cmd != "docker";
+        let scope_id = crate::services::agent_home::scope_of(opts.project_id.as_deref());
         match decision {
-            crate::services::agent_fence::FenceDecision::Fenced { .. }
-                if opts.cmd != "ssh" && opts.cmd != "docker" =>
-            {
-                let scope_id = opts
-                    .project_id
-                    .clone()
-                    .unwrap_or_else(|| "root".to_string());
+            crate::services::agent_fence::FenceDecision::Fenced { .. } if local_agent => {
+                // The scope's Eldrun-owned home (`services::agent_home`), the
+                // agent's `$HOME` from here on: bound by the Linux fence, set
+                // by environment where the fence cannot redirect a path.
+                let home = crate::services::agent_home::prepare_scope_home(&scope_id, roots)
+                    .map_err(|e| format!("Agent home: {e}"))?;
                 #[cfg(target_os = "linux")]
-                {
-                    fenced_content_shadow = Some(crate::services::agent_fence::wrap_pty_options_bwrap(
-                        &mut opts, roots, &scope_id,
-                    )?);
-                }
+                crate::services::agent_fence::wrap_pty_options_bwrap(
+                    &mut opts, roots, &scope_id, &home.dir,
+                )?;
                 #[cfg(target_os = "macos")]
                 crate::services::agent_fence::wrap_pty_options_sandbox_exec(
-                    &mut opts, roots, &scope_id,
+                    &mut opts, roots, &scope_id, &home.dir,
                 )?;
+                // Unreachable where no fence exists (`decide` never answers
+                // `Fenced` there); the home is still prepared for symmetry.
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                let _ = &home;
+                root_projects = match crate::services::agent_fence::take_root_projects_granted(&opts.id) {
+                    Some(paths) => crate::services::root_mcp::ProjectsGrant::Paths(paths),
+                    None => crate::services::root_mcp::ProjectsGrant::Hidden,
+                };
                 fenced_registration = Some((opts.id.clone(), scope_id));
+            }
+            // The root console's Host session: unfenced, in Eldrun's own
+            // `host` home, sharing the logins. Never a project's default.
+            crate::services::agent_fence::FenceDecision::NotApplicable {
+                reason: crate::services::agent_fence::HOST_SESSION_REASON,
+            } if local_agent => {
+                let home = crate::services::agent_home::prepare_host_home()
+                    .map_err(|e| format!("Host session home: {e}"))?;
+                for (k, v) in crate::services::agent_fence::home_env(&home.dir, &crate::paths::home_dir()) {
+                    opts.env.entry(k).or_insert(v);
+                }
+                crate::services::agent_auth::apply_fence_env(&opts.cmd, &mut opts.env);
+                opts.env.insert("ELDRUN_HOST_SESSION".into(), "1".into());
+            }
+            // No fence on this platform (Windows): the same Eldrun-owned home
+            // and shared logins, by environment; the rights are the user's.
+            crate::services::agent_fence::FenceDecision::NotApplicable { reason: "platform" }
+                if local_agent =>
+            {
+                let home = crate::services::agent_home::prepare_scope_home(&scope_id, roots)
+                    .map_err(|e| format!("Agent home: {e}"))?;
+                for (k, v) in crate::services::agent_fence::home_env(&home.dir, &crate::paths::home_dir()) {
+                    opts.env.entry(k).or_insert(v);
+                }
+                crate::services::agent_auth::apply_fence_env(&opts.cmd, &mut opts.env);
+            }
+            // Fail closed on a fence-less platform too: the tab that asked
+            // shows the acceptance prompt and retries once it is given.
+            crate::services::agent_fence::FenceDecision::PlatformUnaccepted => {
+                return Err(crate::services::agent_fence::platform_unaccepted_message());
             }
             crate::services::agent_fence::FenceDecision::Unavailable => {
                 return Err(crate::services::agent_fence::fence_unavailable_message());
             }
             _ => {}
         }
+    }
+
+    // Before the agent process exists, so no tool call can see the default.
+    if root_agent && root_projects != crate::services::root_mcp::ProjectsGrant::Hidden {
+        crate::services::root_mcp::mark_tab_projects_readable(&opts.id, root_projects);
     }
 
     // Persistent LOCAL (tmux) sessions (TODO #85): a tab that resolved to a LOCAL
@@ -692,14 +758,7 @@ pub async fn pty_spawn(
     // now `cmd == "ssh"` (its tmux is inside the remote command) and a container tab
     // is `cmd == "docker"`, so both are skipped. No-op on Windows / without tmux.
     #[cfg(unix)]
-    if opts.tmux_session.is_some()
-        && opts.cmd != "ssh"
-        && (opts.cmd != "docker"
-            || opts
-                .project_id
-                .as_deref()
-                .is_some_and(crate::paths::is_trash_project_id))
-    {
+    if opts.tmux_session.is_some() && opts.cmd != "ssh" && opts.cmd != "docker" {
         crate::services::tmux_local::wrap_pty_options_local(&mut opts);
     }
 
@@ -714,17 +773,26 @@ pub async fn pty_spawn(
         }
     }
 
-    let result = crate::terminal::spawn_pty(app, registry.inner().clone(), opts);
+    let mcp_token_handed_out = mcp_spawn_guard.as_ref().is_some_and(|g| g.holds_token());
+    let result = crate::terminal::spawn_pty(app.clone(), registry.inner().clone(), opts);
     if result.is_ok() {
         if let Some(guard) = mcp_spawn_guard.as_mut() { guard.keep(); }
+        if mcp_token_handed_out {
+            // The MCP session access fold lists live sessions; a new token is one.
+            let _ = tauri::Emitter::emit(&app, crate::commands::root_mcp::SESSIONS_EVENT, ());
+        }
         if let Some(claim) = resume_claim {
             claim.keep();
         }
         if let Some((tab_id, scope_id)) = fenced_registration {
-            crate::services::agent_fence::register_tab(&tab_id, &scope_id, fenced_content_shadow);
+            crate::services::agent_fence::register_tab(&tab_id, &scope_id);
+        }
+        match host_agent_tab {
+            Some(tab) => crate::services::agent_fence::track_host_agent_tab(&spawned_tab_id, tab),
+            None => crate::services::agent_fence::untrack_host_agent_tab(&spawned_tab_id),
         }
     }
-    result.map(|()| PtySpawned { named })
+    result.map(|()| PtySpawned { named, interrupted })
 }
 
 /// Honest per-scope fence status for the project-pill menu.  This performs no
@@ -733,6 +801,41 @@ pub async fn pty_spawn(
 #[tauri::command]
 pub fn agent_fence_status(project_id: String) -> crate::services::agent_fence::AgentFenceStatus {
     crate::services::agent_fence::status_for_scope(&project_id)
+}
+
+/// Whether fenced Copilot tabs have a sign-in Eldrun holds for them, and as
+/// whom. Never returns the token (see `services::copilot_auth`).
+#[tauri::command]
+pub async fn copilot_fence_auth_status() -> crate::services::copilot_auth::CopilotFenceAuth {
+    crate::services::copilot_auth::status().await
+}
+
+/// Forget the Copilot sign-in Eldrun holds for fenced tabs.
+#[tauri::command]
+pub async fn copilot_fence_sign_out() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(crate::services::copilot_auth::sign_out)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The project pills' fence markers, one call for every pill: whether new
+/// agent tabs start unfenced by choice, and how many live ones run outside the
+/// fence right now — measured from the agent processes, not from what their
+/// spawn decided (see `agent_fence::HostAgentTab`).
+#[tauri::command]
+pub async fn agent_fence_marks(
+    registry: State<'_, RegistryState>,
+    project_ids: Vec<String>,
+) -> Result<std::collections::HashMap<String, crate::services::agent_fence::AgentFenceMark>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let live = crate::services::agent_fence::live_unfenced_by_scope(|id| {
+            registry.lock().unwrap().pid(id)
+        });
+        crate::services::agent_fence::marks_for_scopes(&project_ids, &live)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// List the tmux sessions running on the **local** machine (TODO #85), for a local
@@ -806,6 +909,31 @@ pub async fn local_tmux_kill_eldrun_sessions() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(crate::services::tmux_local::kill_eldrun_sessions)
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// The visible screen of a **local** tmux session, as plain rows — what the
+/// model tag beside an agent tab reads the session's status line from
+/// (`stores/agents/agentModels`). `None` when the session is not here (a remote
+/// tab, one that exited, no tmux), which the caller reads as "no screen".
+#[tauri::command]
+pub async fn local_tmux_screen(session: String) -> Result<Option<String>, String> {
+    if !crate::services::ssh_exec::valid_tmux_session_name(&session)
+        || !crate::services::tmux_local::tmux_available()
+    {
+        return Ok(None);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = crate::paths::command_no_window("tmux")
+            .args(crate::services::tmux_local::local_tmux_screen_args(&session))
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Rename a **local** tmux session (TODO #85). `new_name` must be a safe tmux name.

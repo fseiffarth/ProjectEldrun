@@ -13,6 +13,7 @@ describe("LESSONS catalog", () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toEqual([
       // Basics
+      "tour",
       "add-project",
       "import-project",
       "add-tab",
@@ -37,6 +38,7 @@ describe("LESSONS catalog", () => {
       "add-local-model",
       "skills-library",
       // Advanced
+      "tour-remote",
       "project-boxes",
       "docker-sandbox",
       "vm-project",

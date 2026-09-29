@@ -36,6 +36,7 @@ import { runInstallInTab, containerBuildShell, PROVIDER_CLI_INSTALL } from "../.
 import { UntestedTag } from "../common/UntestedTag";
 import { IS_WINDOWS, IS_MAC } from "../../lib/platform";
 import { useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** OS-appropriate command to install git, used by the one-click "Install git"
  *  prompt shown when creating/importing a git-backed project on a machine with
@@ -1576,7 +1577,7 @@ export function ProjectDialog({
               {sourceDir && !scaffoldPreview.length && !scaffoldError && (
                 <div className="scaffold-empty">{t("projectDialog.loadingScaffoldPreview")}</div>
               )}
-              {scaffoldError && <div className="project-dialog-error">{scaffoldError}</div>}
+              {scaffoldError && <ErrorNote className="project-dialog-error" error={scaffoldError} />}
             </div>
           </div>
         )}
@@ -1638,7 +1639,7 @@ export function ProjectDialog({
 
         </div>
         <div className="dialog-fixed-footer">
-          {error && <div className="project-dialog-error" role="alert">{error}</div>}
+          {error && <ErrorNote className="project-dialog-error" role="alert" error={error} />}
           {busy && <div role="status" className="project-dialog-path">{cloning ? t("projectDialog.cloningEllipsis") : publishing ? t("projectDialog.publishingEllipsis") : bootingVm ? t("projectDialog.vmBooting") : t("projectDialog.working")}</div>}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose}>{t("common.cancel")}</button>

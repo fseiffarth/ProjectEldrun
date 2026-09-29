@@ -17,7 +17,6 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 import { ProjectSwitcher } from "../../components/layout/ProjectSwitcher";
-import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { useBoxesStore } from "../../stores/boxes";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useProjectsStore } from "../../stores/projects";
@@ -85,7 +84,6 @@ describe("Box membership controls", () => {
         project("Alpha", 1),
         project("Beta", 2),
         project("inactive", 3, { status: "inactive" }),
-        project(TRASH_PROJECT_ID, 4, { name: "Trash" }),
       ],
       ["member"],
     );
@@ -94,7 +92,6 @@ describe("Box membership controls", () => {
     expect(menu.classList.contains("box-membership")).toBe(true);
     expect(menu.querySelector('[data-project-id="member"]')).toBeNull();
     expect(menu.querySelector('[data-project-id="inactive"]')).toBeNull();
-    expect(menu.querySelector(`[data-project-id="${TRASH_PROJECT_ID}"]`)).toBeNull();
     expect(menu.querySelector('[data-project-id="Alpha"]')).toBeTruthy();
     expect(menu.querySelector('[data-project-id="Beta"]')).toBeTruthy();
     expect(menu.textContent).not.toContain("New Project");

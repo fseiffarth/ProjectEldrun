@@ -280,19 +280,26 @@ export function claudeLaunchName(cmd: string | null | undefined, initialInput: s
  * forces a selection, Alt column-selects, and Ctrl is left as the escape hatch
  * that still reaches a mouse-driven TUI — so a modified press is always passed
  * through untouched.
+ *
+ * Shell and command tabs (`pasteOnDoubleClick` false) take the `"select"` half
+ * only. Every local tab runs inside tmux with `mouse on`, so the mouse is ALWAYS
+ * grabbed there: a plain drag went to tmux's copy-mode, which jumps the view and
+ * never reaches the OS clipboard, instead of making the xterm selection that
+ * copy-on-select copies. There a double-click stays xterm's select-a-word.
  */
 export type AgentMouseDown = "paste" | "select" | "pass";
 
 export function agentMouseDownAction(
   ev: { button: number; detail: number; shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean },
   mouseGrabbed: boolean,
+  pasteOnDoubleClick = true,
 ): AgentMouseDown {
   if (ev.button !== 0) return "pass";
   if (ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return "pass";
   // `detail` counts the clicks of the current sequence: 2 is the second press of
   // a double-click (the first arrived as a plain 1 and did nothing but place an
   // empty selection), 3 the triple-click that selects a whole line.
-  if (ev.detail === 2) return "paste";
+  if (ev.detail === 2 && pasteOnDoubleClick) return "paste";
   return mouseGrabbed ? "select" : "pass";
 }
 

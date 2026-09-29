@@ -1,12 +1,18 @@
+import { translate, useI18nStore } from "../../src/lib/i18n";
+
 /** One row of the phone's list. `kind` says whether it is a project or a box
  * (#31aa) — a box is a scope of its own on the desktop, always "active" here,
  * and a host older than the field sends none, which reads as a project. */
-export interface ProjectRow { id: string; label: string; status: string; kind?: "project" | "box" | "root"; live_sessions: number; last_activity?: number; /** Root only: staged root-agent proposals awaiting a decision — which is made at the desk, never here. */ pending_reviews?: number }
+/** A project's pending git state, the desktop pill's dot: changes not yet added ▸ staged, not committed ▸ committed, not pushed ▸ `.git` missing. Absent when clean. */
+export type GitDot = "dirty" | "staged" | "unpushed" | "broken";
+export interface ProjectRow { id: string; label: string; status: string; kind?: "project" | "box" | "root"; live_sessions: number; last_activity?: number; /** Root only: staged root-agent proposals awaiting a decision — which is made at the desk, never here. */ pending_reviews?: number; git?: GitDot }
 export type AgentStatus = "working" | "question" | "done";
 /** The desktop's own one-line summary of a tab's scheduled prompts: what the
  * Agents view prints under an agent tab, so the project overview says the same
- * thing without opening the sheet. `next` is desktop-local wall clock. */
-export interface TabSchedules { total: number; enabled: number; next?: string }
+ * thing without opening the sheet. `next` is desktop-local wall clock, and so
+ * is each `upcoming` row's `at`: the soonest enabled schedules still to fire,
+ * which the card lists above its last prompts (absent from an older host). */
+export interface TabSchedules { total: number; enabled: number; next?: string; upcoming?: TabPrompt[] }
 /** `agent_model` is the model the tab's session is showing, as the desktop
  * reads it off the pane's own status line — the same words, and the same
  * parse, as the model chip in Focus (`terminal/statusLine`); for a tab whose
@@ -23,6 +29,34 @@ export interface TabSchedules { total: number; enabled: number; next?: string }
 export interface TabPrompt { text: string; at?: string }
 export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; prompts?: TabPrompt[]; available: boolean; viewer_busy: boolean; last_activity?: number; /** The tab's colour as a palette id (see `tabColors.ts`); absent when it has none. */ color?: string }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
+/** A place the ＋ can start an agent: a linked worktree by opaque id. The
+ * main one has an empty label — it is the project folder. */
+export interface WorktreeRow { id: string; label: string; branch?: string; main: boolean }
+/** One cloud launch an agent offers; `task` → it needs the task up front. */
+export interface CloudLaunchRow { agent_id: string; action: "new" | "open"; task: boolean }
+/** One agent the ＋ can open a sign-in tab for. `signed_in` is absent where
+ * the desktop cannot tell; `alternate` names the CLI's other way in. */
+export interface SignInRow { agent_id: string; signed_in?: boolean; account?: string; alternate?: "console" | "browser" }
+/** The ＋ sheet's local-model group: the model the desktop's "+" drives and
+ * the agents it offers for it. `ready` is false until the model is on the GPU
+ * (a start then loads it first); `caution` marks an agent built for hosted
+ * frontier models, which a local model may answer badly. */
+export interface LocalAgentRow { id: string; label: string; caution: boolean }
+export interface LocalLaunchRow { model: string; ready: boolean; agents: LocalAgentRow[] }
+export interface LaunchOptions { worktrees: WorktreeRow[]; cloud: CloudLaunchRow[]; sign_in: SignInRow[]; local?: LocalLaunchRow }
+
+/** `GET /api/v1/projects/{id}/launch-options` — asked when the ＋ sheet opens.
+ * A desktop that predates the route answers 404; that reads as "project folder
+ * only, no cloud", which is exactly what such a desktop can start. */
+export async function getLaunchOptions(projectId: string, signal?: AbortSignal): Promise<LaunchOptions> {
+  try {
+    const body = await api<Partial<LaunchOptions>>(`/api/v1/projects/${encodeURIComponent(projectId)}/launch-options`, { signal });
+    return { worktrees: body.worktrees ?? [], cloud: body.cloud ?? [], sign_in: body.sign_in ?? [], ...(body.local?.agents?.length ? { local: body.local } : {}) };
+  } catch (reason) {
+    if (reason instanceof ApiError && reason.status === 404) return { worktrees: [], cloud: [], sign_in: [] };
+    throw reason;
+  }
+}
 /** One agent tab in the cross-project activity list: an ordinary tab row plus
  * the project it lives in, because that list is flat and a tab label on its own
  * does not say where the session is. */
@@ -52,7 +86,12 @@ export interface ScheduledPromptList { schedules: ScheduledPrompt[]; time_zone: 
  * desktop's; the phone only ever sends the text. */
 export interface ProjectPrompt { id: string; message: string; created_at: string; updated_at: string }
 export interface ProjectPromptList { prompts: ProjectPrompt[] }
-export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[] }
+/** An agent tab closed in the project this desktop session, newest first — an
+ * opaque id and its label, reopened by `reopenTab`. */
+export interface ClosedTabRow { id: string; label: string; agent: string; closed_at: number }
+/** `files`: whether the read-only file browser answers for this project
+ * (the desktop's switch is on, and it is a project, not a box or root). */
+export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[]; closed?: ClosedTabRow[]; files?: boolean }
 export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; intake: boolean; overdue: boolean; due_today: boolean; color?: string }
 export interface TodoSubtask { id: string; title: string; done: boolean }
 export interface TodoTaskInput {
@@ -171,7 +210,9 @@ export interface MobileCalendarInfo {
   color: string;
   visible: boolean;
   readonly: boolean;
-  source_url?: string;
+  /** A subscribed feed. Only the fact crosses; the feed URL, which routinely
+   * embeds a private token, stays on the desktop. */
+  subscribed?: boolean;
   caldav: boolean;
 }
 export interface MobileCalendarEventInput {
@@ -219,18 +260,40 @@ export class ApiError extends Error {
   constructor(public status: number, public code: string) { super(code); }
 }
 
-/** Set by the app root. A session can expire (12h) or vanish when the mobile
- * host restarts, and nothing anywhere inspected a mid-session 401 — the app
- * simply showed "Host unavailable" until the phone happened to lock. */
-let onUnauthorized: (() => void) | undefined;
+/** Set by the app root. A session slides out after a quiet quarter hour and
+ * vanishes when the mobile host restarts. The handler answers whether it
+ * renewed the session silently — the device key signs a fresh challenge, no
+ * PIN — in which case the request that met the 401 is sent once more; when it
+ * could not, the app has already moved to its lock screen. */
+let onUnauthorized: (() => Promise<boolean>) | undefined;
 
-export function setUnauthorizedHandler(handler: (() => void) | undefined): void {
+export function setUnauthorizedHandler(handler: (() => Promise<boolean>) | undefined): void {
   onUnauthorized = handler;
+}
+
+/** Renew the session the way a 401 would, for a caller that met the lapse
+ * elsewhere — the terminal socket's `session_expired` close. */
+export function recoverSession(): Promise<boolean> {
+  return onUnauthorized?.() ?? Promise.resolve(false);
 }
 
 /** A stalled socket on bad signal would otherwise hang a screen forever; the
  * splash in particular had no way back. */
 const REQUEST_TIMEOUT = 10_000;
+/** The pause before a read dropped in transit goes out again. */
+const READ_RETRY_DELAY = 400;
+
+/** A deadline, ours or the caller's. `AbortSignal.timeout` rejects the fetch
+ * with a `TimeoutError`, not an `AbortError`, so testing the name alone
+ * reported every stalled request as `offline` — "is Tailscale on?" for what
+ * was a slow answer. The error's shape is still the browser's to choose — a
+ * phone reported "warm-up failed after 10000 ms", the deadline to the
+ * millisecond, as a failure — so the signal that carried the deadline is
+ * asked first: if it fired, this was a stall, whatever the rejection says. */
+function aborted(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  return error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError");
+}
 
 function withTimeout(signal: AbortSignal | null | undefined, ms: number): AbortSignal {
   const timeout = AbortSignal.timeout(ms);
@@ -246,22 +309,78 @@ function withTimeout(signal: AbortSignal | null | undefined, ms: number): AbortS
   return both.signal;
 }
 
+/**
+ * Put the connection to the host to work, answer unread. The browser keeps the
+ * HTTP/2 connection it had before the phone slept, and only finds out that it
+ * died by sending on it and waiting out a liveness ping. Sent the moment the
+ * app is back in front of the reader, that wait runs while they are still at
+ * the fingerprint sheet rather than after it, on the sign-in. `/healthz` is
+ * unauthenticated and the service worker leaves it alone.
+ */
+export function primeConnection(): void {
+  const started = performance.now();
+  traceConnect("warm-up sent");
+  const signal = AbortSignal.timeout(REQUEST_TIMEOUT);
+  void fetch("/healthz", { cache: "no-store", signal })
+    .then((response) => traceConnect(`warm-up ${response.status} after ${Math.round(performance.now() - started)} ms`))
+    .catch((error: unknown) => traceConnect(`warm-up ${aborted(error, signal) ? "timed out" : "failed"} after ${Math.round(performance.now() - started)} ms`));
+}
+
+/**
+ * Where the time went on the way in: the warm-up, the lock's logout, each
+ * sign-in request with its outcome, stamped from the moment the app started
+ * or last came to the front. The slow "Connecting…" splash and the failure
+ * splash show it, so a slow unlock can be read off the phone instead of
+ * guessed at from the desktop.
+ */
+let traceOrigin = 0;
+let trace: string[] = [];
+const TRACE_LINES = 24;
+
+export function traceConnect(event: string, restart = false): void {
+  const now = performance.now();
+  if (restart) {
+    traceOrigin = now;
+    trace = [];
+  }
+  trace = [...trace, `${((now - traceOrigin) / 1000).toFixed(1)} s  ${event}`].slice(-TRACE_LINES);
+}
+
+export function connectTrace(): readonly string[] {
+  return trace;
+}
+
 /** `timeoutMs` overrides the default deadline for the one route that needs a
  * longer one (see `getAgentStatus`); everything else keeps `REQUEST_TIMEOUT`,
  * because a screen with no way back is worse than a failed request. */
-export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(path, {
+export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT, retried = false): Promise<T> {
+  let signal: AbortSignal | undefined;
+  const send = () => {
+    signal = withTimeout(init?.signal, timeoutMs);
+    return fetch(path, {
       ...init,
       credentials: "same-origin",
       cache: "no-store",
-      signal: withTimeout(init?.signal, timeoutMs),
+      signal,
       headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     });
+  };
+  let response: Response;
+  try {
+    response = await send();
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw new ApiError(0, "timeout");
-    throw new ApiError(0, "offline");
+    if (aborted(error, signal)) throw new ApiError(0, "timeout");
+    // A read the network dropped before any answer — the browser abandons
+    // what is in flight when the phone's network changes, which is what the
+    // Tailscale app bringing its tunnel back after a wake looks like — goes
+    // out once more. Only a read: a write may have landed before the drop.
+    if ((init?.method ?? "GET").toUpperCase() !== "GET" || init?.signal?.aborted) throw new ApiError(0, "offline");
+    await new Promise((resolve) => { setTimeout(resolve, READ_RETRY_DELAY); });
+    try {
+      response = await send();
+    } catch (again) {
+      throw new ApiError(0, aborted(again, signal) ? "timeout" : "offline");
+    }
   }
   let body: { error?: string } | undefined;
   try {
@@ -270,7 +389,8 @@ export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUE
     body = undefined;
   }
   if (response.status === 401 && !path.startsWith("/api/v1/auth/") && path !== "/api/v1/pair") {
-    onUnauthorized?.();
+    // Once: a 401 on the retry means the renewed session is refused too.
+    if (!retried && await onUnauthorized?.()) return api<T>(path, init, timeoutMs, true);
   }
   if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
   // A truncated body on a 200 used to become `{}` and reach callers as `T`,
@@ -308,6 +428,29 @@ export function reportSentPrompt(tabId: string, message: string): Promise<unknow
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/prompt`, { method: "POST", body: JSON.stringify({ message }) });
 }
 
+/** `POST /api/v1/tabs/{id}/undo-clear` — take back this agent tab's last
+ * `/clear`: the desktop types the resume of the conversation it ended (the
+ * session id never comes here). `409 nothing_to_undo` once the session has
+ * moved on. A bridge call, so it needs desktop Eldrun open. */
+export function undoClear(tabId: string): Promise<{ undone: boolean }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/undo-clear`, { method: "POST" });
+}
+
+/** `POST /api/v1/tabs/{id}/sign-in-callback` — the address the phone's
+ * browser ended on after an agent's sign-in redirected it to `localhost`,
+ * for the desktop to deliver to the CLI waiting there. The sidecar does it
+ * itself, so this works with the desktop window closed. */
+export function finishSignIn(tabId: string, url: string): Promise<{ delivered: boolean }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/sign-in-callback`, { method: "POST", body: JSON.stringify({ url }) });
+}
+
+/** `POST /api/v1/tabs/{id}/sign-in` — a sign-in tab for the CLI this agent
+ * tab runs, beside it; the desktop picks the login command from the tab's
+ * own. `alternate` asks for the CLI's other way in. */
+export function openSignInTab(tabId: string, alternate: boolean, idempotencyKey: string): Promise<{ tab: TabRow }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/sign-in`, { method: "POST", body: JSON.stringify({ alternate, idempotency_key: idempotencyKey }) });
+}
+
 /** Which side of the anchor tab a dragged row lands on — the desktop's own
  * `reorderTabInScope` vocabulary, so both surfaces mean one thing by a drop. */
 export type TabPlace = "before" | "after";
@@ -331,6 +474,17 @@ export function reorderTab(tabId: string, anchorId: string, place: TabPlace): Pr
  * the rename above it is a bridge call, so it needs desktop Eldrun open. */
 export function closeTab(tabId: string): Promise<{ closed: boolean }> {
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "DELETE" });
+}
+
+/** `POST /api/v1/projects/{id}/tabs/reopen` — bring back a closed agent tab
+ * (the newest, or the one `closedId` names) on the desktop, resuming its
+ * conversation, as the desktop's own "Reopen closed agent tab" does. Answers
+ * with the reopened tab's row; `409 nothing_to_reopen` once it is gone. */
+export function reopenTab(projectId: string, closedId?: string): Promise<{ tab: TabRow }> {
+  return api(`/api/v1/projects/${encodeURIComponent(projectId)}/tabs/reopen`, {
+    method: "POST",
+    body: JSON.stringify(closedId ? { closed_id: closedId } : {}),
+  });
 }
 
 const schedulePath = (tabId: string) => `/api/v1/tabs/${encodeURIComponent(tabId)}/schedules`;
@@ -391,11 +545,34 @@ export async function getAgentStatus(tabId: string, refresh = false): Promise<Ag
 }
 
 /** One turn of an agent tab's stored conversation, as the desktop reads it
- * off the CLI's own transcript (`services::agent_transcript`). */
-export interface TranscriptEntry { kind: "prompt" | "answer"; text: string; at?: string; cut?: boolean }
+ * off the CLI's own transcript (`services::agent_transcript`). An `agent`
+ * entry is a subagent the agent spawned: `text` is what it was sent to do,
+ * `role` its kind, and `subagent` the handle that reads its own conversation
+ * (`getTranscript`) — absent until its CLI has recorded where that lives. */
+export interface TranscriptEntry {
+  kind: "prompt" | "answer" | "agent";
+  text: string;
+  at?: string;
+  cut?: boolean;
+  subagent?: string;
+  role?: string;
+  /** On an `answer`: the plan the agent put up for approval (Claude's
+   * `ExitPlanMode`), set apart from its ordinary answers. */
+  plan?: boolean;
+  /** Phone-only, never on the wire: a prompt sent from here that the session
+   * has not recorded yet (`terminal/pendingPrompts`), by its id — and whether
+   * the link failed to deliver it, or is trying again. */
+  pending?: number;
+  failed?: boolean;
+  retrying?: boolean;
+  /** Phone-only: when a pending prompt left this phone (its bubble's time;
+   * `at` on it is only its place). */
+  sentAt?: string;
+}
 export interface SessionTranscript {
   available: boolean;
-  /** Why not, when unavailable: `unsupported`, `no_session`, `no_transcript`, `read_failed`. */
+  /** Why not, when unavailable: `unsupported`, `no_session`, `no_transcript`,
+   * `no_subagent`, `read_failed`. */
   reason?: string;
   /** Hand back on the next read to be answered `unchanged`. */
   version?: string;
@@ -421,11 +598,14 @@ export interface SessionUsage {
 /** `GET /api/v1/tabs/{id}/transcript` — the Focus view's stored-session feed.
  * `version` is what the last answer carried: while the transcript file has
  * not moved the desktop answers `unchanged` and no turns cross the link, which
- * is what makes polling it while the agent works affordable on cellular. */
-export async function getTranscript(tabId: string, version?: string, limit?: number, signal?: AbortSignal): Promise<SessionTranscript> {
+ * is what makes polling it while the agent works affordable on cellular.
+ * `subagent`, the handle on an `agent` entry, reads that subagent's own
+ * conversation instead. */
+export async function getTranscript(tabId: string, version?: string, limit?: number, signal?: AbortSignal, subagent?: string): Promise<SessionTranscript> {
   const query = new URLSearchParams();
   if (version) query.set("version", version);
   if (limit) query.set("limit", String(limit));
+  if (subagent) query.set("subagent", subagent);
   const suffix = query.size > 0 ? `?${query}` : "";
   const { transcript } = await api<{ transcript: SessionTranscript }>(
     `/api/v1/tabs/${encodeURIComponent(tabId)}/transcript${suffix}`,
@@ -442,6 +622,13 @@ export interface InboxAttachment { name: string; reference: string; size: number
 /** Mirrors the desktop's `inbox::MAX_INBOX_FILE`; checked here first so an
  * oversized pick fails before any bytes leave the phone. */
 export const MAX_INBOX_FILE = 24 * 1024 * 1024;
+/** The `accept` of every "a file from this phone" picker. A bare file input
+ * reads to Android Chrome as media-only: it offers the camera twice and the
+ * photo picker, with no way into the phone's files. Naming a non-media family
+ * next to the media ones makes it hand the pick to the system file chooser
+ * instead, which still lists the gallery and the camera. The wildcards cover
+ * every type between them — an unknown file is `application/octet-stream`. */
+export const ANY_FILE_ACCEPT = "application/*,text/*,image/*,video/*,audio/*";
 /** A photo over a cellular link is not a 10-second request. */
 const UPLOAD_TIMEOUT = 120_000;
 
@@ -507,7 +694,15 @@ export async function attachDesktopImage(tabId: string, imageId: string): Promis
  * (`outbox.rs`) — the mirror of the inbox. `name` is the leaf the desktop
  * validated and the only thing the phone hands back; `kind` is what the
  * bytes say, not the extension; `modified` is unix seconds. */
-export interface OutboxFile { name: string; kind: string; size: number; modified: number }
+export interface OutboxFile {
+  name: string; kind: string; size: number; modified: number;
+  /** Sent by `eldrun-send` from the tab this listing was read through — the
+   * one chat that shows it. Absent otherwise; the gallery lists every file. */
+  from_tab?: boolean;
+  /** What the file is fetched by when that is not its name: a project file's
+   * sealed token (`ProjectFileEntry.token`). Outbox files have none. */
+  ref?: string;
+}
 
 /** Which door onto one project's outbox a read goes through: the session the
  * files were sent from (the Focus screen), or the project itself (the project
@@ -535,6 +730,57 @@ export function outboxFileUrl(scope: OutboxScope, name: string, download = false
   return `${outboxBase(scope)}/${encodeURIComponent(name)}${download ? "?download=1" : ""}`;
 }
 
+/** Where the full-screen viewer reads a file from: one project's outbox (by
+ * its tab or the project), or — `files` — the project's own tree through the
+ * read-only file browser, where a file is fetched by its sealed `ref`. */
+export type ViewerScope = OutboxScope | { files: string };
+
+/** The URL one file loads from, for whichever door `scope` names. */
+export function viewerFileUrl(scope: ViewerScope, file: OutboxFile, download = false): string {
+  if ("files" in scope) {
+    return `/api/v1/projects/${encodeURIComponent(scope.files)}/files/raw?f=${encodeURIComponent(file.ref ?? "")}${download ? "&download=1" : ""}`;
+  }
+  return outboxFileUrl(scope, file.name, download);
+}
+
+/** Open one of the file URLs above in the browser's own tab (its PDF viewer).
+ * From the installed app that tab is a navigation from outside the site, so
+ * the `SameSite=Strict` session cookie stays behind and the file answered
+ * `authentication_required`; the URL goes out with a short-lived ticket for
+ * exactly that file instead (`POST /api/v1/open-ticket`). If none can be had
+ * the plain URL still opens — in a browser tab of the site the cookie rides. */
+export async function openOutside(url: string): Promise<void> {
+  let target = url;
+  try {
+    const minted = await api<{ url?: unknown }>("/api/v1/open-ticket", { method: "POST", body: JSON.stringify({ url }) });
+    if (typeof minted.url === "string") target = minted.url;
+  } catch (error) {
+    // A mobile host older than the ticket route knows the path only as a
+    // static GET: a bodiless 405 (or 404). The plain URL would only show the
+    // browser `authentication_required` there, so say why instead.
+    if (error instanceof ApiError && error.code === "request_failed" && (error.status === 404 || error.status === 405)) {
+      window.alert(translate(useI18nStore.getState().lang, "mobile.open.hostOutdated"));
+      return;
+    }
+  }
+  window.open(target, "_blank", "noopener");
+}
+
+/** One row of a project folder (`files.rs`): `token` is a sealed path the
+ * phone can only hand back, `kind` is `"dir"` or the media type the file's
+ * first bytes announce, `modified` and `created` are unix seconds — `created`
+ * missing where the desktop's filesystem keeps no birth time. */
+export interface ProjectFileEntry { token: string; name: string; kind: string; size: number; modified: number; created?: number }
+export interface ProjectFileListing { entries: ProjectFileEntry[]; truncated: boolean }
+
+/** `GET /api/v1/projects/{id}/files[?dir=<token>]` — one folder of the
+ * project, read-only; no `dir` is the project's root. Answers only while the
+ * desktop's "Project files on the phone" switch is on (`files_off` else). */
+export async function listProjectFiles(projectId: string, dir: string | undefined, signal?: AbortSignal): Promise<ProjectFileListing> {
+  const query = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  return api<ProjectFileListing>(`/api/v1/projects/${encodeURIComponent(projectId)}/files${query}`, { signal });
+}
+
 /** `DELETE …/outbox/{name}` — drop one of those files. The sidecar deletes
  * only a leaf its own listing handed out, and the route carries the
  * exact-origin check every mutating one does; the caller drops the row it
@@ -545,19 +791,20 @@ export async function deleteOutboxFile(scope: OutboxScope, name: string): Promis
 
 /** POSTs a raw file to one of the desktop's drop boxes and returns the status
  * and JSON body, mapping a refusal to the desktop's wire code. */
-async function postFile<T>(url: string, file: Blob): Promise<[number, T | undefined]> {
+async function postFile<T>(url: string, file: Blob, retried = false): Promise<[number, T | undefined]> {
   let response: Response;
+  const signal = AbortSignal.timeout(UPLOAD_TIMEOUT);
   try {
     response = await fetch(url, {
       method: "POST",
       body: file,
       credentials: "same-origin",
       cache: "no-store",
-      signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
+      signal,
       headers: { "Content-Type": file.type || "application/octet-stream" },
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw new ApiError(0, "timeout");
+    if (aborted(error, signal)) throw new ApiError(0, "timeout");
     throw new ApiError(0, "offline");
   }
   let body: (T & { error?: string }) | undefined;
@@ -566,7 +813,7 @@ async function postFile<T>(url: string, file: Blob): Promise<[number, T | undefi
   } catch {
     body = undefined;
   }
-  if (response.status === 401) onUnauthorized?.();
+  if (response.status === 401 && !retried && await onUnauthorized?.()) return postFile<T>(url, file, true);
   if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
   return [response.status, body];
 }
@@ -574,6 +821,18 @@ async function postFile<T>(url: string, file: Blob): Promise<[number, T | undefi
 export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
   const [status, body] = await postFile<{ attachment?: InboxAttachment }>(
     `/api/v1/tabs/${encodeURIComponent(tabId)}/inbox?name=${encodeURIComponent(name)}`,
+    file,
+  );
+  if (!body?.attachment?.reference) throw new ApiError(status, "malformed_response");
+  return body.attachment;
+}
+
+/** `POST /api/v1/projects/{id}/inbox` — the project screen's **＋ → Send a
+ * file**: the same drop box as `uploadToInbox`, named by the project because
+ * that screen has no tab to name. */
+export async function uploadToProjectInbox(projectId: string, file: Blob, name: string): Promise<InboxAttachment> {
+  const [status, body] = await postFile<{ attachment?: InboxAttachment }>(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/inbox?name=${encodeURIComponent(name)}`,
     file,
   );
   if (!body?.attachment?.reference) throw new ApiError(status, "malformed_response");

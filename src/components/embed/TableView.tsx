@@ -20,6 +20,7 @@ import {
   insertRowAfter,
   deleteRow,
   columnWidths,
+  cellToneColor,
   DELIMITER_CANDIDATES,
   type ParsedTable,
 } from "../../lib/viewers/table";
@@ -74,13 +75,22 @@ const HEADER_BG = "var(--bg-header-solid, var(--bg-panel))";
  *  enough that the zebra stripe still shows through it, so the two tints stack),
  *  and 2px accent edge-lines drawn with an inset box-shadow so the band gains no
  *  width and header/body stay column-aligned. Matches the system monitor's table
- *  (`.sysmon-table th.sorted` / `td.sorted`). */
-const SORTED_HEADER_BG = "color-mix(in srgb, var(--accent) 30%, var(--bg-header-solid))";
-const SORTED_CELL_BG = "color-mix(in srgb, var(--accent) 8%, var(--bg-panel))";
-const SORTED_CELL_BG_STRIPE = "color-mix(in srgb, var(--accent) 15%, var(--bg-panel))";
+ *  (`.sysmon-table th.sorted` / `td.sorted`).
+ *
+ *  The grid's colours are document colour, not chrome: a theme that declares
+ *  `--doc-*` hues (plain `dark`/`light`, whose --accent is the ink) gets blue
+ *  column names and a blue sort band with a yellow arrow; every other theme
+ *  keeps its accent. */
+const TABLE_ACCENT = "var(--doc-blue, var(--accent))";
+const SORTED_HEADER_BG = `color-mix(in srgb, ${TABLE_ACCENT} 30%, var(--bg-header-solid))`;
+const SORTED_CELL_BG = `color-mix(in srgb, ${TABLE_ACCENT} 8%, var(--bg-panel))`;
+const SORTED_CELL_BG_STRIPE = `color-mix(in srgb, ${TABLE_ACCENT} 15%, var(--bg-panel))`;
 /** The accent edge-lines bracketing the sorted column, as an inset shadow so they
  *  cost no layout width (a real border would desync the measured column widths). */
-const SORTED_EDGE = "inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent)";
+const SORTED_EDGE = `inset 2px 0 0 ${TABLE_ACCENT}, inset -2px 0 0 ${TABLE_ACCENT}`;
+const HEADER_TEXT = "var(--doc-blue, var(--text-secondary))";
+const HEADER_TEXT_SORTED = "var(--doc-blue, var(--text-primary))";
+const SORT_ARROW = "var(--doc-yellow, var(--accent))";
 /** Sentinel `SortSpec.col` for the row-number gutter: it sorts on each row's
  *  source index, not a cell value, so it needs a column id no real column has. */
 const GUTTER_SORT_COL = -1;
@@ -847,7 +857,7 @@ export function TableView({
                   >
                     <span aria-hidden="true">#</span>
                     {gutterSorted && (
-                      <span style={{ color: "var(--accent)", fontWeight: 700 }}>
+                      <span style={{ color: SORT_ARROW, fontWeight: 700 }}>
                         {sort!.dir === "asc" ? "▲" : "▼"}
                       </span>
                     )}
@@ -899,7 +909,7 @@ export function TableView({
                             cursor: "var(--cur-pointer, pointer)",
                             userSelect: "none",
                             fontWeight: active ? 700 : 600,
-                            color: active ? "var(--text-primary)" : "var(--text-secondary)",
+                            color: active ? HEADER_TEXT_SORTED : HEADER_TEXT,
                           }}
                         >
                           <span
@@ -911,7 +921,7 @@ export function TableView({
                           >
                             {header[c] ?? ""}
                             {active && (
-                              <span style={{ color: "var(--accent)", fontWeight: 700 }}>
+                              <span style={{ color: SORT_ARROW, fontWeight: 700 }}>
                                 {sort!.dir === "asc" ? " ▲" : " ▼"}
                               </span>
                             )}
@@ -984,7 +994,7 @@ export function TableView({
                       // Opacity dims only the number, not the cell — a translucent
                       // sticky gutter would let the scrolling body cells bleed
                       // through it. The background stays solid.
-                      color: "var(--text-secondary, var(--text-primary))",
+                      color: "var(--doc-grey, var(--text-secondary, var(--text-primary)))",
                     }}
                   >
                     {/* The source row number, not the position on screen: it is the
@@ -1043,6 +1053,7 @@ export function TableView({
                           textOverflow: "ellipsis",
                           verticalAlign: "middle",
                           cursor: editable ? "text" : "default",
+                          color: isEditing ? undefined : cellToneColor(value),
                         }}
                       >
                         {isEditing ? (

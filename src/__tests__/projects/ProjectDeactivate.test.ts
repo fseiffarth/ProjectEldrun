@@ -130,12 +130,9 @@ describe("project deactivation", () => {
     expect(mocks.message).not.toHaveBeenCalled();
   });
 
-  it("hands the window to the next open project, never to the Trash", async () => {
-    // The Trash sits first in the list and is always "active"; closing the current
-    // project used to make it current. Nothing else open → Trash is the fallback.
+  it("hands the window to the next open project, or to none", async () => {
     useProjectsStore.setState({
       projects: [
-        project("eldrun-trash", "active", 0),
         project("a", "current", 1),
         project("b", "active", 2),
         project("c", "inactive", 3),
@@ -147,12 +144,12 @@ describe("project deactivation", () => {
     expect(useProjectsStore.getState().activeId).toBe("b");
 
     useProjectsStore.setState({
-      projects: [project("eldrun-trash", "active", 0), project("b", "current", 1)],
+      projects: [project("b", "current", 1)],
       activeId: "b",
     });
     useTabsStore.setState({ tabsByScope: { b: [] } });
     await useProjectsStore.getState().deactivateProject("b");
-    expect(useProjectsStore.getState().activeId).toBe("eldrun-trash");
+    expect(useProjectsStore.getState().activeId).toBeNull();
   });
 
   it("does not stop anything when confirmation is declined", async () => {

@@ -20,7 +20,7 @@ import { customFontPath, fontKey, updateObjects } from "../../../lib/viewers/dec
 import { FontField } from "./FontField";
 import { ALIGN_KEYS } from "./DeckThemePanel";
 import { useT } from "../../../lib/i18n";
-import { EyeIcon, LockIcon } from "../../common/icons/Icon";
+import { ArrowLeftIcon, ArrowRightIcon, ArrowsHorizontalIcon, EyeIcon, LockIcon } from "../../common/icons/Icon";
 
 export interface DeckInspectorProps {
   objects: ObjectList;
@@ -246,7 +246,7 @@ export function DeckInspector({
                 }
                 title={t("deckInspector.alignTitle", { align: t(ALIGN_KEYS[a]) })}
               >
-                {a === "left" ? "⬅" : a === "center" ? "↔" : "➡"}
+                {a === "left" ? <ArrowLeftIcon /> : a === "center" ? <ArrowsHorizontalIcon /> : <ArrowRightIcon />}
               </button>
             ))}
             <label className="deck-field deck-field-color">

@@ -347,6 +347,9 @@ fn sanitize_untrusted_layout(tabs: &mut [TabEntry]) {
     sanitize_loaded_layout(tabs);
     for tab in tabs {
         tab.extra.remove(SCHEDULE_TARGET_KEY);
+        // A relaunchable local-model tab is started from the state dir's
+        // layout only; a folder copy never brings one back.
+        tab.extra.remove(LOCAL_LAUNCH_KEY);
     }
 }
 
@@ -370,6 +373,7 @@ pub fn sanitize_tab_layout(
     for tab in tabs.iter_mut() {
         if known.contains(&tab.cmd) {
             rebuild_resume_args(tab, custom);
+            keep_valid_local_launch(tab);
             continue;
         }
         eprintln!(
@@ -386,10 +390,48 @@ pub fn sanitize_tab_layout(
             "args",
             HOST_BOUND_UID_KEY,
             SCHEDULE_TARGET_KEY,
+            LOCAL_LAUNCH_KEY,
         ] {
             tab.extra.remove(key);
         }
     }
+}
+
+/// Drop a persisted `localLaunch` unless it is a local-model tab's launch line
+/// Eldrun itself builds for the driver and model it names
+/// (`commands::ollama::local_launch_line_ok`). The field is what lets such a
+/// tab restore at all — the frontend relaunches it with `localLaunch.args` —
+/// so, like `resumeArgs`, it is an argv for a host-bound agent CLI and is never
+/// trusted from disk as written. Without it the tab is simply not restorable.
+fn keep_valid_local_launch(tab: &mut TabEntry) {
+    let Some(launch) = tab.extra.get(LOCAL_LAUNCH_KEY) else {
+        return;
+    };
+    let local_agent = tab.extra.get("kind").and_then(Value::as_str) == Some("local_agent");
+    if !(local_agent && local_launch_ok(launch, &tab.cmd)) {
+        tab.extra.remove(LOCAL_LAUNCH_KEY);
+    }
+}
+
+/// Whether a persisted `localLaunch` value (`{driver, model, args}`) is a line
+/// Eldrun builds for `cmd`. Shared with the phone's catalog, which reads the
+/// same file raw.
+pub(crate) fn local_launch_ok(launch: &Value, cmd: &str) -> bool {
+    let (Some(driver), Some(model), Some(args)) = (
+        launch.get("driver").and_then(Value::as_str),
+        launch.get("model").and_then(Value::as_str),
+        launch.get("args").and_then(Value::as_array),
+    ) else {
+        return false;
+    };
+    let Some(args) = args
+        .iter()
+        .map(|a| a.as_str().map(str::to_string))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    crate::commands::ollama::local_launch_line_ok(driver, model, cmd, &args)
 }
 
 /// Replace a known-command entry's persisted `resumeArgs` with the value its
@@ -599,6 +641,10 @@ const HOST_BOUND_UID_KEY: &str = "hostBoundUid";
 /// Stable binding into local-only `agent_tasks.json`. Never exported/adopted.
 const SCHEDULE_TARGET_KEY: &str = "scheduleTargetId";
 
+/// A local-model tab's driver, model and launch argv (`TabEntry.localLaunch`),
+/// persisted so it restores. Validated on every load; never adopted.
+const LOCAL_LAUNCH_KEY: &str = "localLaunch";
+
 /// `<project>/.eldrun/sessions/` — where the **export** copies of the session
 /// files live (and where `filetabs.json` / `layout.json` / `windows.json` still
 /// live outright; none of those is executable intent).
@@ -716,6 +762,36 @@ mod tests {
             );
             assert!(tabs[0].extra.contains_key("env"), "'{cmd}' keeps env");
         }
+    }
+
+    #[test]
+    fn a_local_launch_survives_only_as_a_line_eldrun_builds() {
+        let launch = |cmd: &str, args: Value| {
+            let mut tab = entry(cmd);
+            tab.extra.insert(
+                LOCAL_LAUNCH_KEY.to_string(),
+                serde_json::json!({ "driver": "claude", "model": "qwen3:8b", "args": args }),
+            );
+            tab
+        };
+        let mut tabs = vec![
+            launch("ollama", serde_json::json!(["launch", "claude", "--model", "qwen3:8b"])),
+            launch("ollama", serde_json::json!(["launch", "claude", "--model", "qwen3:8b", "--yes"])),
+            launch("ollama", serde_json::json!(["serve"])),
+            launch("/tmp/pwn", serde_json::json!(["launch", "claude", "--model", "qwen3:8b"])),
+        ];
+        // Only a local-model tab carries one.
+        let mut shell = launch("ollama", serde_json::json!(["launch", "claude", "--model", "qwen3:8b"]));
+        shell.extra.insert("kind".to_string(), Value::String("shell".to_string()));
+        tabs.push(shell);
+        sanitize_tab_layout(&mut tabs, &known(), &no_custom());
+        let kept: Vec<bool> = tabs.iter().map(|t| t.extra.contains_key(LOCAL_LAUNCH_KEY)).collect();
+        assert_eq!(kept, [true, false, false, false, false]);
+
+        // A folder copy never brings one back, valid or not.
+        let mut tabs = vec![launch("ollama", serde_json::json!(["launch", "claude", "--model", "qwen3:8b"]))];
+        sanitize_untrusted_layout(&mut tabs);
+        assert!(!tabs[0].extra.contains_key(LOCAL_LAUNCH_KEY));
     }
 
     #[test]

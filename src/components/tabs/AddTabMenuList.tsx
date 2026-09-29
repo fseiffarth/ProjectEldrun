@@ -4,6 +4,7 @@ import { MenuShortcut } from "../common/MenuShortcut";
 import type { ChordDescriptor, ShortcutAction } from "../../lib/shortcuts/shortcuts";
 import { isUntested, type UntestedId } from "../../lib/untested";
 import { useT } from "../../lib/i18n";
+import { WarningIcon } from "../common/icons/Icon";
 
 /** One pickable row in the add-tab menu. */
 export interface AddMenuEntry {
@@ -31,6 +32,8 @@ export interface AddMenuEntry {
   shortcut?: ShortcutAction | ChordDescriptor;
   /** A fly-out list opened by this row rather than an immediate tab choice. */
   moreEntries?: AddMenuEntry[];
+  /** The fly-out's heading (defaults to the row's label). */
+  moreTitle?: string;
   onPick: () => void;
 }
 
@@ -80,8 +83,9 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
   const moreTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const q = query.trim().toLowerCase();
 
-  const openMoreMenu = (label: string, entries: AddMenuEntry[], trigger?: HTMLButtonElement | null) => {
-    const anchor = trigger ?? moreTriggerRefs.current.get(label);
+  // Fly-out triggers are keyed `<group>/<row key>`: a group can hold more than
+  // one (Agents has "More agents…" and "Cloud session").
+  const openMoreMenu = (label: string, entries: AddMenuEntry[], anchor?: HTMLButtonElement | null) => {
     if (!anchor) return;
     setMorePos(null);
     setMoreMenu({ label, entries, anchor: anchor.getBoundingClientRect() });
@@ -116,8 +120,9 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
                   label: g.moreLabel!,
                   dot: "…",
                   color: "var(--text-muted)",
+                  moreTitle: g.label,
                   moreEntries,
-                  onPick: () => openMoreMenu(g.label, moreEntries),
+                  onPick: () => openMoreMenu(g.label, moreEntries, moreTriggerRefs.current.get(`${g.label}/__more__`)),
                 },
               ]
             : compact,
@@ -215,7 +220,14 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
             setCursor(Math.max(0, pickable.length - 1));
           } else if (e.key === "Enter" && active) {
             e.preventDefault();
-            active.onPick();
+            if (active.moreEntries) {
+              const group = visible.find((g) => g.entries.includes(active));
+              openMoreMenu(
+                active.moreTitle ?? active.label,
+                active.moreEntries,
+                group && moreTriggerRefs.current.get(`${group.label}/${active.key}`),
+              );
+            } else active.onPick();
           } else if (e.key === "Escape" && query) {
             // First Escape clears the query; only an empty-query Escape is
             // allowed to bubble on to the menu's document-level close handler.
@@ -236,7 +248,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
               key={e.key}
               ref={(node) => {
                 if (e === active) activeRef.current = node;
-                if (e.moreEntries && node) moreTriggerRefs.current.set(g.label, node);
+                if (e.moreEntries && node) moreTriggerRefs.current.set(`${g.label}/${e.key}`, node);
               }}
               className={`tab-new-menu-item${e === active ? " enter-target" : ""}${
                 isUntested(e.untested) ? " untested" : ""
@@ -244,7 +256,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
               disabled={e.disabled}
               onClick={(event) =>
                 e.moreEntries
-                  ? openMoreMenu(g.label, e.moreEntries, event.currentTarget)
+                  ? openMoreMenu(e.moreTitle ?? e.label, e.moreEntries, event.currentTarget)
                   : e.onPick()
               }
               // The pointer owns the same cursor the keys do. Guarded on an
@@ -264,7 +276,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
               {e.label}
               {e.caution && (
                 <span className="tab-new-menu-caution" title={e.caution} aria-label={e.caution}>
-                  ⚠
+                  <WarningIcon />
                 </span>
               )}
               {e.untested && <UntestedTag id={e.untested} />}
@@ -302,7 +314,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
                 {e.label}
                 {e.caution && (
                   <span className="tab-new-menu-caution" title={e.caution} aria-label={e.caution}>
-                    ⚠
+                    <WarningIcon />
                   </span>
                 )}
                 {e.untested && <UntestedTag id={e.untested} />}

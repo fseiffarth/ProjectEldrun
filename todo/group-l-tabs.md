@@ -39,8 +39,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     (`attachGroup` with the resolved edge/center target) — released outside the main
     window or on Escape, the popout stays floating. A plain (non-Ctrl) tab-bar drag
     still hands off to the WM for a native window move.
-    Plan/reviews: `docs/group_l_42_detach_plan.md`,
-    `docs/group_l_42_detach_plan_review.md`, `docs/group_l_42_detach_review_code.md`.
+    Code review: `docs/group_l_42_detach_review_code.md`.
     *Files: `src/stores/detached.ts`, `src/stores/tabs.ts`,
     `src/components/layout/DetachedApp.tsx` / `DetachedCenterPanel.tsx` /
     `AppShell.tsx`, `src/components/tabs/TabBar.tsx`,
@@ -243,6 +242,94 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
 
+213a. **Live-QA steering levels, new-tab keys, region cursor and status
+    jumps.** ✅ Implemented · 🧪 Awaiting live QA (2026-09-28). Steering is
+    now a hierarchy: it opens on the projects (←/→ switch project, 1–9 jump,
+    ↓ in), then subwindows (←/→ between them; with one subwindow ←/→ step its
+    tabs), then tabs (↓ in, ↑/Esc back out). Inside a pane: N shell, M monitor,
+    1–9 agents (the legend names them), + opens the pane's + menu. On the
+    projects: N new-project dialog, M/C/T mail/calendar/to-do (only when
+    enabled). E opens the side panel. In a panel/overlay/menu a highlight
+    walks with ↑/↓, Enter presses (a text field gets the caret and steering
+    exits), ←/→ switch the side panel's view, Esc closes what steering opened.
+    Q/R/D (Shift: back) jump to the next tab needing an answer / working /
+    done in any project. Verify: the highlight is visible and lands on real
+    controls in each surface (file tree rows, git view, mail list, calendar,
+    board, + menu rows and fly-outs); Enter on a + menu row opens that tab;
+    the legend's title names the level and its counts match the pill bars.
+    *Files: `src/hooks/useKeyboard.ts`, `src/stores/keyboardSteering.ts`,
+    `src/lib/shortcuts/steeringRegion.ts` / `statusJump.ts` / `shortcuts.ts`
+    (`STEERING_KEYS`), `src/components/layout/SteeringLegend.tsx`,
+    `src/components/tabs/TabBar.tsx` (`menu` request, slot labels).*
+    - [x] 🤖 Automated test — `src/__tests__/shell/SteeringLevels.test.tsx`
+      (levels, new-tab requests, station digits, status jumps, legend table,
+      region cursor with a faked layout).
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+213b. **Live-QA steering's Shift+Space entry, tab-level start and E S D F.**
+    ✅ Implemented · 🧪 Awaiting live QA (2026-09-29). The default chord is now
+    Shift+Space (was Ctrl+Shift+Space); within 400 ms of a typed character it
+    stays a plain space ("I am" with Shift still held). The mode opens on the
+    current project's tabs; ↑ climbs to subwindows → projects (skipping the
+    subwindow level when there is only one). E S D F double ↑ ← ↓ →
+    everywhere, region cursor included; Space, Esc or Enter leave from any
+    tab-bar level. Keys that moved off E/S/D/F: side panel E→B, settings
+    S→`,`, done jump D→X, file viewer F→V. In the + menu (and any region) `/`
+    puts the caret in its search field and leaves steering; nothing focuses
+    the search on its own. Verify: Shift+Space from a focused terminal enters,
+    fast "I am" / "Hello World" typing never does; S/F switch tabs at once; +
+    then D/E walk the rows, `/` then typing filters; Space exits.
+    *Files: `src/hooks/useKeyboard.ts`, `src/stores/keyboardSteering.ts`,
+    `src/lib/shortcuts/shortcuts.ts` / `steeringRegion.ts`.*
+    - [x] 🤖 Automated test — `src/__tests__/shell/SteeringLevels.test.tsx`
+      (tab-level start, E S D F, Space exit, typing-burst guard, `/` search).
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+213c. **Live-QA: every key rebindable, steering keys included.** ✅ Implemented
+    · 🧪 Awaiting live QA (2026-09-29). Settings → Keyboard Shortcuts now lists
+    every key: the former fixed ones (F11, the panel toggle, Esc out of pane
+    fullscreen, Ctrl +/−/0 zoom) in *Window & view*, the terminal's
+    Ctrl+Shift+C/V/X, the editor's Ctrl+F/R/Space/Z/Y/S and Ctrl+Shift+C, and
+    the steering-mode keys per level (two keys per action, `settings.steering_keys`).
+    × turns a chord off or drops a steering key; the panel toggle captures a
+    lone Super tap on Linux (press + release). F9 still toggles the panels
+    while the toggle is at its Super default; redo still takes Ctrl+Shift+Z at
+    its default. Verify: rebind steering's "Right" to L — the legend shows it,
+    F no longer steps, L does; unbind Space and leave with Enter; rebind F11 to
+    F10 in the main window, a popout and a presenter, from a focused terminal
+    too; rebind zoom in and check window / agent font / editor text; rebind
+    the panel toggle to a lone Super on GNOME and to F10 on Cinnamon.
+    *Files: `src/lib/shortcuts/shortcuts.ts` / `steeringBindings.ts`,
+    `src/hooks/useKeyboard.ts`, `src/components/layout/SettingsPanel.tsx`.*
+    - [x] 🤖 Automated test — `SteeringBindings`, `SteeringLevels` (rebound
+      keys act), `Shortcuts` (zoom/unbound/lone Super), `SuperKeyOwnership`
+      (panel-toggle rebind), `schema_edge_cases` (steering_keys round-trip).
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
 215. **Live-QA one-click installs in the root console.** ✅ Implemented · 🧪
     Awaiting live QA. Every one-click install (`runInstallInTab`: Ollama/agent
     CLI installs, the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login,
@@ -429,6 +516,15 @@ correctness/UX work atop the same layout model #42 detaches.*
   shows `caldav_href`. Switch the agent fence off for root: the ⚿ badge gains ⚠
   and the review strip says review is not enforced. Open a reader draft with
   recipients: the composer shows the recipients warning.
+- [ ] **Root MCP token is inherited by everything the agent runs** (open,
+  2026-09-23). The token reaches Claude/Codex/Vibe through the process
+  environment (`${ELDRUN_ROOT_MCP_TOKEN}`, `bearer_token_env_var`,
+  `api_key_env`), so hooks, package scripts, Makefiles and `curl` inside the tab
+  can call the tools as the tab; the schedule token is the same for project
+  agents. Documented (`docs/context/root_console.md`, *Known limit,
+  inherited*; audit help text). Closing it needs the CLI to read the secret
+  from a 0600 file and scrub the variable before spawning children — file
+  upstream requests, or wrap the CLI once one supports a token file.
 - [ ] **Root MCP `calendar_import_ics` — live QA** (implemented 2026-09-21, not
   run live; pill `rootReview.icsImport`). After the updated backend is running,
   give a root agent an `.ics` and ask it to import it: the reply must say

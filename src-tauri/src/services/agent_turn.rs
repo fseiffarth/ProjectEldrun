@@ -34,13 +34,20 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-use crate::services::agent_session::{live_sessions_dir, project_live_sessions_dir};
+use crate::services::agent_session::{
+    live_sessions_dir, project_live_sessions_dir, read_live_source_in, LIVE_SOURCE_SUFFIX,
+};
 
 /// Suffix of the per-tab turn record beside the session record (`<uid>.turn`).
 pub const TURN_SUFFIX: &str = ".turn";
 
 /// The event the frontend listens for: `{ id: <pty id>, state: <word> }`.
 pub const TURN_EVENT: &str = "agent-turn";
+
+/// How the tab's session just (re)started, relayed from the hook's source
+/// record: `{ id: <pty id>, source: "startup" | "resume" | "clear" | "compact" }`.
+/// A `clear` is what offers the terminal's "Undo clear".
+pub const ROLL_EVENT: &str = "agent-session-roll";
 
 /// What the hook script may write. `Idle` (a `SessionEnd`) means the agent is
 /// gone and the tab is back to whatever its bytes say.
@@ -88,9 +95,13 @@ fn bindings() -> &'static Mutex<HashMap<String, String>> {
 /// forget any turn record an earlier run of that tab left behind — a resumable
 /// tab keeps its uid across relaunches, and a `working` written before a crash
 /// or quit would otherwise be the first thing the watcher reports for it.
-pub fn bind_tab(uid: &str, pty_id: &str, project_id: Option<&str>) {
+///
+/// Returns whether that record held a turn still in flight: the previous
+/// process of this tab died mid-turn (a quit SIGKILLs agents, so no `Stop` or
+/// `SessionEnd` ever overwrote it), and the tab starts out interrupted.
+pub fn bind_tab(uid: &str, pty_id: &str, project_id: Option<&str>) -> bool {
     if uid.is_empty() || uid.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-')) {
-        return;
+        return false;
     }
     // One PTY, one uid: a respawn under a new uid must not leave the old key
     // pointing at this PTY, nor its turn state and job flag behind it.
@@ -98,7 +109,20 @@ pub fn bind_tab(uid: &str, pty_id: &str, project_id: Option<&str>) {
     bindings().lock().unwrap().insert(uid.to_string(), pty_id.to_string());
     states().lock().unwrap().remove(uid);
     jobs().lock().unwrap().remove(uid);
+    let cut_off = records_hold_turn_in_flight(&record_paths(uid, project_id));
     clear_record(uid, project_id);
+    cut_off
+}
+
+/// Whether any of a tab's turn records says `working` or `decision` — a turn
+/// begun and never ended.
+fn records_hold_turn_in_flight(paths: &[PathBuf]) -> bool {
+    paths.iter().any(|p| {
+        std::fs::read_to_string(p)
+            .ok()
+            .and_then(|text| parse_turn_record(&text))
+            .is_some_and(|state| matches!(state, TurnState::Working | TurnState::Decision))
+    })
 }
 
 /// Drop the binding(s) of a PTY that is gone, and whatever was recorded about
@@ -142,8 +166,13 @@ pub fn clear_record(uid: &str, project_id: Option<&str>) {
 
 /// The uid a record path stands for, or `None` for any other file.
 fn uid_of(path: &Path) -> Option<String> {
+    uid_with_suffix(path, TURN_SUFFIX)
+}
+
+/// The uid a `<uid><suffix>` record path stands for.
+fn uid_with_suffix(path: &Path, suffix: &str) -> Option<String> {
     let name = path.file_name()?.to_str()?;
-    let uid = name.strip_suffix(TURN_SUFFIX)?;
+    let uid = name.strip_suffix(suffix)?;
     if uid.is_empty() || uid.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-')) {
         return None;
     }
@@ -160,6 +189,23 @@ pub fn resolve_event(path: &Path) -> Option<(String, TurnState)> {
     let text = std::fs::read_to_string(path).ok()?;
     let state = parse_turn_record(&text)?;
     Some((pty, state))
+}
+
+/// What a write of a session's source record (`<uid>.src`, see
+/// `agent_session::LIVE_SOURCE_SUFFIX`) means for the window: the PTY and how
+/// the tab's session just (re)started. `None` for any other file, a tab of
+/// another run, or a word the hook should not have written.
+pub fn resolve_roll_event(path: &Path) -> Option<(String, String)> {
+    let uid = uid_with_suffix(path, LIVE_SOURCE_SUFFIX)?;
+    let pty = pty_for(&uid)?;
+    let source = read_live_source_in(path.parent()?, &uid)?;
+    Some((pty, source))
+}
+
+#[derive(serde::Serialize, Clone)]
+struct RollPayload {
+    id: String,
+    source: String,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -404,7 +450,10 @@ pub fn start(app: AppHandle) {
                 return;
             }
             for p in ev.paths {
-                if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(TURN_SUFFIX)) {
+                if p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with(TURN_SUFFIX) || n.ends_with(LIVE_SOURCE_SUFFIX))
+                {
                     let _ = tx.send(p);
                 }
             }
@@ -429,6 +478,12 @@ pub fn start(app: AppHandle) {
         loop {
             match rx.recv_timeout(JOB_POLL) {
                 Ok(path) => {
+                    // A source record says how the session rolled (a `/clear`,
+                    // a `/resume`); it carries no turn state.
+                    if let Some((id, source)) = resolve_roll_event(&path) {
+                        let _ = app.emit(ROLL_EVENT, RollPayload { id, source });
+                        continue;
+                    }
                     if let (Some((id, state)), Some(uid)) = (resolve_event(&path), uid_of(&path)) {
                         note_state(&uid, state);
                         // The flag beside a brand-new verdict is this moment's,
@@ -504,13 +559,27 @@ mod tests {
     }
 
     #[test]
+    fn a_leftover_record_mid_turn_reads_as_cut_off() {
+        let dir = std::env::temp_dir().join(format!("eldrun-turn-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("a.turn");
+        let slice = dir.join("b.turn");
+        assert!(!records_hold_turn_in_flight(&[root.clone(), slice.clone()]));
+        for (word, cut) in [("working 1", true), ("decision 2", true), ("done 3", false), ("idle 4", false), ("", false)] {
+            std::fs::write(&slice, word).unwrap();
+            assert_eq!(records_hold_turn_in_flight(&[root.clone(), slice.clone()]), cut, "{word:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn rebinding_a_pty_forgets_its_previous_uid_and_refuses_a_bad_one() {
         let pty = "proj-b:agent-turn-2";
         bind_tab("old-uid-2", pty, None);
         bind_tab("new-uid-2", pty, None);
         assert_eq!(pty_for("old-uid-2"), None);
         assert_eq!(pty_for("new-uid-2").as_deref(), Some(pty));
-        bind_tab("../escape", pty, None);
+        assert!(!bind_tab("../escape", pty, None));
         assert_eq!(pty_for("../escape"), None);
         assert_eq!(pty_for("new-uid-2").as_deref(), Some(pty));
         on_tab_gone(pty);

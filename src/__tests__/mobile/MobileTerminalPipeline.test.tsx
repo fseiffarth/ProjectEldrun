@@ -194,14 +194,15 @@ describe("Eldrun Mobile terminal pipeline", () => {
     expect(composer().value).toBe("");
   });
 
-  it("starts a Codex conversation with its /new command", async () => {
+  it("starts a Codex conversation with /clear, not the /new that asks where to run", async () => {
     const codex = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
     render(<Terminal tab={codex} back={() => {}} />);
     await act(async () => {});
 
     fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
     await settle(350);
-    expect(sentAgentInput()).toContain("/new\r");
+    expect(sentAgentInput()).toContain("/clear\r");
+    expect(sentAgentInput()).not.toContain("/new");
   });
 
   it("drops a retryable close's explanation once the session is back", async () => {

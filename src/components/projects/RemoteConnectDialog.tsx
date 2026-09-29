@@ -23,6 +23,7 @@ import { useVpnSectionVisible } from "../../stores/remote/vpn/vpnStatus";
 import { VpnTunnelUpNotice } from "../common/VpnTunnelUpNotice";
 import { formatRemoteTarget, resolveLocalMirror, type ProjectEntry } from "../../types";
 import { useT } from "../../lib/i18n";
+import { TerminalIcon } from "../common/icons/Icon";
 
 /**
  * Centered "Connect" modal for an existing remote (SSH) project — the single
@@ -605,7 +606,7 @@ function RemoteConnectDialogInner({
                   title={t("remoteConnect.vpnTermBtnTitle")}
                   onClick={() => void startVpnTerm()}
                 >
-                  <span className="dialog-connect-btn-icon" aria-hidden="true">▶_</span>
+                  <span className="dialog-connect-btn-icon" aria-hidden="true"><TerminalIcon /></span>
                   {vpnTerm ? t("remoteConnect.vpnTermOpenBelow") : t("remoteConnect.vpnTermOpenBtn")}
                 </button>
                 {vpnTerm && (
@@ -821,7 +822,7 @@ function RemoteConnectDialogInner({
                 title={t("remoteConnect.sshTermBtnTitle")}
                 onClick={() => void startSshTerm()}
               >
-                <span className="dialog-connect-btn-icon" aria-hidden="true">▶_</span>
+                <span className="dialog-connect-btn-icon" aria-hidden="true"><TerminalIcon /></span>
                 {sshTerm ? t("remoteConnect.sshTermOpenBelow") : t("remoteConnect.sshTermOpenBtn")}
               </button>
               {sshTerm && !connected && (

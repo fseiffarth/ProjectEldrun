@@ -41,7 +41,7 @@ after user confirmation. See [verification](todo/group-y-verification.md),
 [sessions](todo/group-f-session.md), [remote/HPC](todo/group-g-remote.md),
 [mail](todo/group-j-mail.md), [CalDAV](todo/group-x-caldav.md),
 [presenter](todo/group-v-presenter.md), and
-[Mobile acceptance work](docs/eldrun_mobile_agent_plan.md).
+[Mobile acceptance work](todo/group-h-crossplatform.md).
 
 ## Reliability and Maintenance
 
@@ -187,9 +187,9 @@ queue before handing it to the unfenced login shell.
 
 1. **Dependency audit in CI — done 2026-09-18.** `.github/workflows/security.yml`
    runs `cargo audit` and `npm audit --omit=dev` on every push/PR and weekly,
-   as a blocking job, beside CodeQL (JS/TS, Rust, Actions → Security tab) and
-   a full-history gitleaks scan (`.gitleaksignore` holds triaged false
-   positives). The first findings (h2, rustls, quick-xml via
+   as a blocking job, beside CodeQL (JS/TS, Rust, Actions → Security tab). A
+   full-history gitleaks scan (`.gitleaksignore` holds triaged false
+   positives) runs in `ci-cd.yml`, where the release job waits on it. The first findings (h2, rustls, quick-xml via
    calamine/plist/xcb/wayland-scanner, dompurify, mermaid) were cleared when
    it landed. This matters
    most for the parsers facing untrusted input: ammonia/html5ever, the
@@ -229,12 +229,15 @@ queue before handing it to the unfenced login shell.
 
 ## Longer-Term Direction
 
-- **Eldrun Server — plan only.** Shared calendar/board and project collaboration
-  would use provisioned SSH, CalDAV, and bare Git repositories. Recheck the
-  plan's older prerequisites against current storage/CalDAV code before starting;
-  writable project sharing remains gated on the documented Git trust boundary.
-  See [server tasks](todo/group-z-server.md) and the
-  [server plan](docs/eldrun_server_plan.md).
+- **Eldrun Server — plan only.** One Linux server running every user's
+  projects, terminals and agents, with desktop browser and phone as thin
+  clients. Each user gets a daemon under their own uid and signs in to their
+  own agent CLIs. Shared projects are a bare hub repo with a clone per member.
+  Mail, calendar and todo are per user; mail stays private, while calendars
+  and todo lists can be opened to others. The first step is moving live state
+  out of the desktop window into the headless Mobile sidecar, which pays off
+  on the desktop alone. See the
+  [server plan](docs/eldrun_hosted_plan.md).
 - **Broader desktop integration.** Linux X11 remains the reference. Validate the
   implemented KDE Wayland, Windows, and macOS backends before claiming parity
   from real use. Other Wayland compositors still need their own backends; macOS

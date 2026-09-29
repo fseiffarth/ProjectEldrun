@@ -20,7 +20,7 @@ function Frame({ className, children }: IconProps & { children: React.ReactNode 
       aria-hidden="true"
       focusable="false"
     >
-      <g stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
         {children}
       </g>
     </svg>

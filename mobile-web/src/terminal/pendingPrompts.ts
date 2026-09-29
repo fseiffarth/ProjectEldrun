@@ -22,6 +22,20 @@ export interface PendingPrompt {
    * copy of the same words after older turns left the window the phone
    * reads. */
   after?: string;
+  /** The last record visible when sent. Codex rollouts can contain records
+   * without timestamps, so the clock alone cannot hold this insertion point. */
+  anchor?: TranscriptEntry;
+  /** Which copy of that record was the anchor, if its text repeated. */
+  anchorSeen: number;
+  /** When it left this phone (RFC 3339): the time its bubble shows. */
+  sentAt?: string;
+  /** The link never acknowledged one of its input frames: the words did not
+   * reach the session. The bubble stays where it is and says so, with a
+   * resend beside it — it is never removed or moved. The session's own
+   * record of the prompt overrules this (`withPending`). */
+  failed?: boolean;
+  /** A resend is on its way and waiting for its acknowledgement. */
+  retrying?: boolean;
 }
 
 /** At most this many are held; the oldest goes first. */
@@ -40,11 +54,16 @@ function isCopy(entry: TranscriptEntry, text: string): boolean {
 /** The pending prompt for `text`, sent against `entries`. */
 export function pendingPrompt(id: number, text: string, entries: readonly TranscriptEntry[]): PendingPrompt {
   const stamps = entries.map((entry) => entry.at).filter((at): at is string => !!at);
+  const anchor = entries[entries.length - 1];
   return {
     id,
     text: text.trim(),
     seen: entries.filter((entry) => isCopy(entry, text)).length,
     after: stamps.length ? stamps.reduce((a, b) => (b > a ? b : a)) : undefined,
+    anchor,
+    anchorSeen: anchor ? entries.filter((entry) => entry.kind === anchor.kind
+      && entry.text === anchor.text && entry.at === anchor.at).length : 0,
+    sentAt: new Date().toISOString(),
   };
 }
 
@@ -68,13 +87,19 @@ function recordOf(prompt: PendingPrompt, entries: readonly TranscriptEntry[]): n
 export function withPending(entries: readonly TranscriptEntry[], pending: readonly PendingPrompt[]): TranscriptEntry[] {
   if (pending.length === 0) return entries as TranscriptEntry[];
   const shown = [...entries];
+  let lastSlot = -1;
+  // A prompt the session recorded reached it, whatever the link said.
+  const arrived = new Set<number>();
   for (const prompt of pending) {
     const record = recordOf(prompt, shown);
-    if (record >= 0) shown.splice(record, 1);
+    if (record >= 0) {
+      shown.splice(record, 1);
+      arrived.add(prompt.id);
+    }
   }
   for (const prompt of pending) {
     // After the last entry at or before the send — an entry without a stamp
-    // stands at the one before it (as `placeOutbox` reads them), and an
+    // stands at the one before it (as `outboxPosts` reads them), and an
     // earlier held prompt carries the same stamp, so two sent in a row keep
     // their order. Nothing stamped to go by: the end.
     let slot = shown.length;
@@ -87,7 +112,32 @@ export function withPending(entries: readonly TranscriptEntry[], pending: readon
         if (time !== undefined && time <= after) slot = index + 1;
       });
     }
-    shown.splice(slot, 0, { kind: "prompt", text: prompt.text, at: after });
+    // An unstamped answer written after the send inherits an older record's
+    // timestamp in the scan above. Use the actual last visible record when it
+    // is still present; the timestamp path remains useful if the bounded
+    // transcript has since dropped that record. With no anchor or timestamp,
+    // the session was empty when sent: every later record belongs below it.
+    if (!prompt.anchor && after === undefined) slot = 0;
+    if (prompt.anchor) {
+      let anchor = -1;
+      let seen = 0;
+      shown.forEach((entry, index) => {
+        if (entry.kind === prompt.anchor?.kind && entry.text === prompt.anchor?.text
+          && entry.at === prompt.anchor?.at && ++seen === prompt.anchorSeen) anchor = index;
+      });
+      if (anchor >= 0) slot = anchor + 1;
+    }
+    slot = Math.max(slot, lastSlot + 1);
+    shown.splice(slot, 0, {
+      kind: "prompt",
+      text: prompt.text,
+      at: after,
+      pending: prompt.id,
+      ...(prompt.sentAt ? { sentAt: prompt.sentAt } : {}),
+      ...(prompt.failed && !arrived.has(prompt.id) ? { failed: true } : {}),
+      ...(prompt.retrying && !arrived.has(prompt.id) ? { retrying: true } : {}),
+    });
+    lastSlot = slot;
   }
   return shown;
 }

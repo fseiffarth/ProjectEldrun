@@ -25,7 +25,7 @@ const staged = (over: Partial<StagedIcsImport> = {}): StagedIcsImport =>
 const initial = useRootReviewStore.getState();
 beforeEach(() => {
   vi.clearAllMocks();
-  useRootReviewStore.setState({ ...initial, proposals: [], imports: [staged()], count: 0 });
+  useRootReviewStore.setState({ ...initial, proposals: [], imports: [staged()], count: 0, imported: [], error: null });
   invoke.mockImplementation(async (command: string, args: Record<string, { id: string }>) => {
     if (command === "root_mcp_review_list" || command === "root_mcp_import_list") return [];
     if (command === "create_calendar") return { ...args.calendar, id: "cal" };
@@ -43,16 +43,53 @@ describe("a calendar file staged by a root agent", () => {
     expect(screen.queryByRole("button", { name: /Approve all/ })).toBeNull();
   });
 
-  it("imports the reported text into a calendar marked imported, staged copy dropped first", async () => {
+  it("imports the reported text into a calendar marked imported, then drops the staged copy", async () => {
     render(<RootReviewStrip />);
     fireEvent.click(screen.getByRole("button", { name: "Import" }));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_event", expect.anything()));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("root_mcp_import_remove", { id: "a".repeat(64) }));
     const commands = invoke.mock.calls.map((c) => c[0]);
-    expect(commands.indexOf("root_mcp_import_remove")).toBeLessThan(commands.indexOf("create_calendar"));
-    expect(invoke).toHaveBeenCalledWith("root_mcp_import_remove", { id: "a".repeat(64) });
+    expect(commands.indexOf("create_calendar")).toBeLessThan(commands.indexOf("create_event"));
+    expect(commands.indexOf("create_event")).toBeLessThan(commands.indexOf("root_mcp_import_remove"));
     expect(invoke).toHaveBeenCalledWith("create_calendar", {
       calendar: expect.objectContaining({ name: "Conf‮", imported: true, readonly: false }),
     });
+    expect(useRootReviewStore.getState().imported).toEqual(["a".repeat(64)]);
+  });
+
+  it("keeps the card and removes the partial calendar when a row fails, and never imports twice", async () => {
+    invoke.mockImplementation(async (command: string, args: Record<string, { id: string }>) => {
+      if (command === "root_mcp_review_list") return [];
+      if (command === "root_mcp_import_list") return [staged()];
+      if (command === "create_calendar") return { ...args.calendar, id: "cal" };
+      if (command === "create_event") throw new Error("disk full");
+      return undefined;
+    });
+    render(<RootReviewStrip />);
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar", { id: "cal" }));
+    expect(invoke).not.toHaveBeenCalledWith("root_mcp_import_remove", expect.anything());
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("disk full");
+    expect(alert.textContent).toContain("removed the partial calendar");
+    // The card is still there, with a live ✓ for another try.
+    expect((screen.getByRole("button", { name: "Import" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(useRootReviewStore.getState().imported).toEqual([]);
+    // Once imported in this window, a card that lingers (its removal failed)
+    // has no second ✓.
+    invoke.mockImplementation(async (command: string, args: Record<string, { id: string }>) => {
+      if (command === "root_mcp_review_list") return [];
+      if (command === "root_mcp_import_list") return [staged()];
+      if (command === "create_calendar") return { ...args.calendar, id: "cal2" };
+      if (command === "create_event") return { ...args.event, id: "ev" };
+      if (command === "root_mcp_import_remove") throw new Error("gone already");
+      return undefined;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    await waitFor(() => expect(useRootReviewStore.getState().imported).toEqual(["a".repeat(64)]));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Import" }) as HTMLButtonElement).disabled).toBe(true));
+    const creates = invoke.mock.calls.filter(([c]) => c === "create_calendar").length;
+    await useRootReviewStore.getState().importStaged(staged(), "Imported");
+    expect(invoke.mock.calls.filter(([c]) => c === "create_calendar").length).toBe(creates);
   });
 
   it("discards without importing, and refuses text that is not a calendar", async () => {

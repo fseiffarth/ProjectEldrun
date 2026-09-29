@@ -462,3 +462,42 @@ export function columnWidths(rows: string[][], width: number): number[] {
   }
   return widths.map((w) => Math.min(w, MAX_WIDTH_CH));
 }
+
+/** What a cell's text reads as, for colouring: a number, a boolean, a
+ *  missing-value marker, a date/time, a URL — or `null`, plain text. */
+export type CellTone = "num" | "bool" | "null" | "date" | "url";
+
+const CELL_BOOL = /^(true|false)$/i;
+const CELL_NULL = /^(null|none|nil|nan|na|n\/a)$/i;
+const CELL_DATE = /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+const CELL_URL = /^https?:\/\/\S+$/i;
+
+/** Classify one cell by its text alone (not its column), so a stray `n/a` in a
+ *  numeric column still reads as missing. A blank cell is plain. */
+export function cellTone(value: string): CellTone | null {
+  const t = value.trim();
+  if (t === "") return null;
+  if (Number.isFinite(Number(t))) return "num";
+  if (CELL_BOOL.test(t)) return "bool";
+  if (CELL_NULL.test(t)) return "null";
+  if (CELL_DATE.test(t)) return "date";
+  if (CELL_URL.test(t)) return "url";
+  return null;
+}
+
+/** The colour a tone paints with: the theme's document hue when it declares
+ *  one (the `--doc-*` set, plain `dark`/`light` today), else the cell's own text
+ *  colour — every other theme renders the grid exactly as before. */
+export const CELL_TONE_COLOR: Record<CellTone, string> = {
+  num: "var(--doc-yellow, currentColor)",
+  bool: "var(--doc-purple, currentColor)",
+  null: "var(--doc-grey, currentColor)",
+  date: "var(--doc-cyan, currentColor)",
+  url: "var(--doc-link, currentColor)",
+};
+
+/** Inline `color` for a cell, or `undefined` for plain text. */
+export function cellToneColor(value: string): string | undefined {
+  const tone = cellTone(value);
+  return tone ? CELL_TONE_COLOR[tone] : undefined;
+}

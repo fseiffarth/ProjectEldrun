@@ -103,7 +103,14 @@ export interface MailAiPrefs {
    *  MCP tools. Unset = off. The opposite consent to every switch above: what
    *  such an agent reads is sent to its cloud provider. */
   agent_access?: boolean;
+  /** How much `agent_access` opens: the messages the user marked for agents
+   *  (the store's `agent_marks`) or the whole account. Unset = `"marked"`, so
+   *  a switch turned on before this field existed reads as the narrower
+   *  consent (`docs/mail_mcp_plan.md` §1). */
+  agent_scope?: MailAgentScope;
 }
+
+export type MailAgentScope = "marked" | "all";
 
 /**
  * What the keychain actually did. Never collapse this to a bare account —
@@ -491,6 +498,21 @@ export interface MailHeaderPage {
   scanned?: number;
 }
 
+/**
+ * One page of a server-backed folder search (`mailSearch`): the header page
+ * plus whether the server was reached and whether matches were capped.
+ *
+ * `remote` is false when the answer came from downloaded mail only — offline,
+ * no saved password, or the server refused — and the list says so, because a
+ * truncated answer that looks complete is the one thing a search must never
+ * produce.
+ */
+export interface MailSearchPage extends MailHeaderPage {
+  remote: boolean;
+  /** The server found more matches than this bounded search could backfill. */
+  partial: boolean;
+}
+
 export interface MailAttachmentMeta {
   part_id: string;
   /** Already run through the backend's `sanitize_attachment_name`. */
@@ -542,6 +564,12 @@ export interface StagedAttachment {
   filename: string;
   mime: string;
   size: number;
+  /** `"agent"` for a file a root agent attached by project and path; absent
+   *  for the user's own pick (and for every row from before the field). */
+  origin?: string;
+  /** An agent file's `<project name>/<relative path>` — the chip's text, so a
+   *  `paper.pdf` from one project is not taken for another's. */
+  source?: string;
 }
 
 export interface MailDraft {
@@ -559,6 +587,9 @@ export interface MailDraft {
    *  `"reader"` (a contained reader, which reads mail from outside). A save
    *  from the composer clears it. */
   origin?: string;
+  /** Addresses a root agent suggested. Never in `to` and never read by a send:
+   *  the composer offers each as a pill the user adds with a click. */
+  suggested_to?: string[];
 }
 
 export interface MailSendResult {
@@ -652,4 +683,69 @@ export interface MailAiClassifyReport {
   scanned: number;
   matched: Array<{ message_id: string; priority: string; reason: string }>;
   dry_run: boolean;
+}
+
+// ── Address book ─────────────────────────────────────────────────────────────
+
+/** Thunderbird's two built-in books: `personal` is curated by the user,
+ *  `collected` is filled from sent mail. */
+export type MailContactBook = "personal" | "collected";
+
+export interface MailContactPhone {
+  /** `mobile` | `work` | `home` | `fax` | `pager` | "" — free text on import. */
+  kind: string;
+  number: string;
+}
+
+/**
+ * One address-book card. `emails` are bare addr-specs the backend validated
+ * with the composer's own recipient check; the first is the primary one.
+ * `popularity` / `last_used` are the backend's (bumped on each send), never
+ * the editor's.
+ */
+export interface MailContact {
+  id: string;
+  book: MailContactBook;
+  display_name: string;
+  first_name: string;
+  last_name: string;
+  nickname: string;
+  emails: string[];
+  phones: MailContactPhone[];
+  organization: string;
+  job_title: string;
+  address: string;
+  website: string;
+  /** `YYYY-MM-DD`, or `--MM-DD` without a year. */
+  birthday: string;
+  notes: string;
+  popularity: number;
+  last_used: number;
+  created: number;
+  updated: number;
+}
+
+/** A mailing list: a name that expands to its member addresses. */
+export interface MailContactList {
+  id: string;
+  name: string;
+  nickname: string;
+  description: string;
+  members: string[];
+}
+
+export interface MailContactsView {
+  contacts: MailContact[];
+  lists: MailContactList[];
+  /** Add outgoing addresses no card holds to the Collected book. */
+  collect_outgoing: boolean;
+}
+
+export interface MailContactsImportReport {
+  cancelled: boolean;
+  added: number;
+  merged: number;
+  skipped: number;
+  /** Mailing lists added or extended (Thunderbird imports only). */
+  lists: number;
 }

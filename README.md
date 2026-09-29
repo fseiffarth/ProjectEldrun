@@ -1,25 +1,51 @@
-![Eldrun logo](src/assets/logo-white.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="src/assets/logo-wordmark-white.svg">
+  <img alt="Eldrun logo" src="src/assets/logo-wordmark.svg">
+</picture>
 
-# Eldrun
-
-See [STATUS.md](STATUS.md) for what has been live-verified and
-[ROADMAP.md](ROADMAP.md) for remaining work.
-
-**A project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and AI agent terminals — as a single unit when you switch projects, and runs any of those projects on a remote machine or HPC cluster as if it were sitting on your laptop.**
+# You open projects not applications
 
 [![CI](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](#license)
 [![Release](https://img.shields.io/github/v/release/fseiffarth/ProjectEldrun)](https://github.com/fseiffarth/ProjectEldrun/releases)
+![Status: Alpha](https://img.shields.io/badge/status-alpha-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri)
 
+## Introduction
 
-> **You don't open applications — you open projects.**
-> **And you don't move to the machine your work runs on — the project takes it
-> with you.**
-> **And whichever agent you run, you answer it from your phone.**
+Eldrun is a project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and especially AI agent terminals — as a single unit when you switch projects.
 
-Eldrun stands on **three pillars**.
+| **Who should try Eldrun** | **Who should look elsewhere** |
+| --- | --- |
+| You work across several projects and want each one to bring back its own desktop, files, apps, and agent sessions. | Your main need is an autonomous agent platform that dispatches, supervises, and recovers multi-day work without your involvement. |
+| You work on multiple remote machines or an HPC cluster over SSH and want easy reconnection and simple distribution of tasks across machines. | You want Eldrun to manage the agent workflow. Eldrun is a project workspace and control cockpit, not an autonomous agent scheduler. |
+| You want to monitor or answer your agents from your phone independently of developer apps. | |
+| You need structure and control and are tired of switching between your agent tabs. You use many different models (claude, openai, meta, google, ...) in parallel. | |
+
+## Get started
+
+1. **Install.** Grab a package from the
+   [latest release](https://github.com/fseiffarth/ProjectEldrun/releases/latest)
+   (see [Download](#download)) or [build from source](#building-from-source).
+   Nothing else is required; [optional tools](#optional-tools) unlock single
+   features.
+2. **Add a project.** Click **+** in the project bar. **New project** creates
+   `~/eldrun/projects/<name>/` with Git and agent docs (`AGENTS.md`,
+   `CLAUDE.md`, `GEMINI.md`) already in place; **Import project** registers an
+   existing folder in place, or copies or moves it.
+3. **Start working.** Opening a project gives you a tab running your default
+   agent. Set that command in **Settings**; any new tab can pick another
+   installed agent CLI or a plain shell.
+4. **Switch projects.** Click another project pill: its windows, tabs, files,
+   and layout come back, and the previous project's desktop is parked until you
+   return.
+5. **Go further when you need it.** Point a project at an
+   [SSH host or HPC cluster](#remote-machines--hpc-clusters-the-second-differentiator),
+   or opt a project into [Eldrun Mobile](#every-agent-from-your-phone-the-third-differentiator)
+   (**Settings**, needs Tailscale) to answer your agents from your phone.
+
+## Three pillars
 
 **One project = one desktop.** Eldrun is a project-centric desktop layer, not
 just an app that launches or embeds other apps: projects own their windows and
@@ -74,6 +100,9 @@ and Windows/macOS are CI-built with real-hardware checks still pending
 [Vision](#vision) ·
 [License](#license)
 
+See [STATUS.md](STATUS.md) for what has been live-verified and
+[ROADMAP.md](ROADMAP.md) for remaining work.
+
 ## At a glance
 
 ![Eldrun functionality map](screenshots/eldrun-functionality.svg)
@@ -86,7 +115,7 @@ sending you to another window — every one of those agent tabs is also readable
 and answerable from a phone through Eldrun Mobile, whichever vendor it belongs
 to. Alongside them sit the side panel (Files · Git
 · Search · Apps · Agents) and the header, where mail, the calendar, the to-do board, the
-machine hub, and the VPN live next to the global app toolbar. **③** the
+machine hub, and the VPN live. **③** the
 project-desktop layer — window parking, default-app mapping, time tracking and
 its daily recap, external windows, pop-out tab windows — follows the active
 project automatically. **④** and the project carries the machines it runs on:
@@ -325,12 +354,17 @@ does not have to ship a phone app for the agent you are running.
   screen reaches the whole gallery from its header as well as from the shelf
   under its tab cards. Share is available where the phone browser supports
   file sharing; stdin works with `command | eldrun-send -n tests.log`.
+- **Project files, read-only** (opt-in, off by default): a left→right swipe on
+  the phone's project screen, or from the left third of a tab's Focus view,
+  opens a drawer that walks the project's folders
+  and opens files in the same viewer. Folders and files travel as sealed
+  tokens, never paths; `.git`, `.eldrun`, `.env…` and symlinks are left out,
+  and nothing can be changed.
 - The phone gets a touch terminal (readable-screen mode, touch scrolling, a
   composer, voice input), a to-do board, Alerts with Done actions, opt-in mail
   flag/reply actions, last-tab restore, an offline app shell, and a local lock.
   Project boxes are selectable scopes too. Access is granted **per project**;
-  remote and VM projects are excluded, as are containerized ones — with the Trash workspace as the single
-  deliberate exception.
+  remote, VM and containerized projects are excluded.
 - A desktop header control shows host status; Settings carries the opt-in, the
   security-health readout, and one-click terminal setup.
 
@@ -442,8 +476,8 @@ with availability and model capability checks.
 
 - **Project creation and import**: the `+` button creates a new git-backed
   project or imports an existing directory (keep in place, copy, or move).
-- **Project switcher**: the header's scope picker selects projects, boxes, Root,
-  and Trash. Project pills show activity and pending decisions; hover to inspect
+- **Project switcher**: the header's scope picker selects projects, boxes, and
+  Root. Project pills show activity and pending decisions; hover to inspect
   the path, Git state, today's active time, and live CPU%.
 - **Project boxes (meta-project grouping)**: temporarily join two or more
   projects into a *box* — its own pill in the switcher — for side-by-side file
@@ -470,7 +504,7 @@ with availability and model capability checks.
   the chosen provider's CLI — `gh` or `glab` — installed, with authentication
   from the CLI or a saved token under Settings → Git hosting.
 
-### Isolation tiers: container, VM, and the Trash workspace
+### Isolation tiers: container and VM
 
 A project's tabs run in one of four trust tiers, and the tier is a property of
 the project rather than a different way of working.
@@ -490,11 +524,6 @@ the project rather than a different way of working.
   port, and from there is an ordinary remote project — with **no shared
   filesystem**, an inverted sync posture, and an egress switch. *(Implemented;
   never live-booted.)*
-- **Trash** — a permanent, built-in workspace pill for disposable agents you
-  don't want anywhere near a real project. It is created and repaired on every
-  project-list save, so ordinary project operations cannot archive or weaken it,
-  and it is containerized for **all** tabs (not just agents), so a stale shell
-  in it can never become a host escape.
 
 Local agent tabs also have a default-on **agent fence**: bubblewrap on Linux
 and `sandbox-exec` on macOS, with writable access limited to allowed project
@@ -587,7 +616,7 @@ app until they land.
 | **Markdown** | `.md` `.markdown` `.mdx` | ✅ Shipping | Rendered preview with an Edit/Preview toggle; links to local files are clickable. Fenced `mermaid` code blocks render as diagrams and `$…$`/`$$…$$` as math (KaTeX with `trust: false`, mermaid script-free). Remote images load only on request. |
 | **YAML / JSON** | `.yaml` `.yml` `.json` | ✅ Shipping | Editable structure tree with a Tree/Source toggle: retype a value, rename a key, add a key or list item (with a type picker), reorder, delete. Both of YAML's syntaxes are first-class — block (`key:`) and flow (`{a: 1}`, which is exactly JSON, on one line or spread over many) — and each keeps the style it is written in. The tree edits the file's own text, so comments, quoting and layout survive an edit; it withholds the affordance rather than botch a construct it can't rewrite (anchors, merge keys). Source is the full code editor. |
 | **BibTeX bibliography** | `.bib` `.bibtex` | ✅ Shipping (untested) | Card list with a Cards/Source toggle: one card per entry, its `field = {value}` pairs as editable rows. Retype a value, rename a field or the citation key, change the entry type, add or delete a field, delete an entry, add a new entry, copy a citation key. A filter box searches every key, type and field value (a real bibliography is thousands of records), and cards fold individually — both survive reopening the tab. Like the YAML tree it edits the file's own text, so field order, brace-protected `{DNA}` capitalization, `"…"` quoting, alignment and `%` comments survive an edit; a value it can't rewrite safely (a `@string` macro, a `#` concatenation) is shown read-only rather than mangled, and text outside every entry is reported rather than hidden. Duplicate citation keys are flagged. Source is the full code editor. |
-| **LaTeX** | `.tex` | ✅ Shipping | Opens as a **single workspace tab per document**: a left sidebar of the main file's `\input` children and graphics switches the center in-tab, and the compiled PDF opens as its own tab tied to the source. Code editor + compile (when a TeX engine is on `PATH`, shell-escape stripped); `\ref`/`\cite` completion from `\label` keys and `.bib` entries; parsed compile errors jump to the line; bidirectional SyncTeX sync across tiled or detached panes. Typeset fragment hover previews and Beamer overlay controls have project-wide toggles; build with `Ctrl+Shift+B`. |
+| **LaTeX** | `.tex` | ✅ Shipping | Opens as a **single workspace tab per document**: a left sidebar of the main file's `\input` children and graphics switches the center in-tab, and the compiled PDF opens as its own tab tied to the source. Code editor + compile (when a TeX engine is on `PATH`, shell-escape stripped); `\ref`/`\cite` completion from `\label` keys and `.bib` entries; parsed compile errors jump to the line; bidirectional SyncTeX sync across tiled or detached panes. `Ctrl+Click` anywhere on an `\input{…}`-style command opens that file (no compile needed); elsewhere it jumps to that spot in the PDF, once one has been compiled. Compile always rebuilds (latexmk `-g`), even when latexmk sees nothing changed. Typeset fragment hover previews and Beamer overlay controls have project-wide toggles; build with `Ctrl+Shift+B`. |
 | **PDF** | `.pdf` | ✅ Shipping | Rendered with a themed zoom toolbar. Blacking text out (untested) is a real redaction, not a black rectangle: drag over anything — or search and black out every hit in one click — and saving *rasterises* the pages you marked, so the covered text is gone from the file rather than hidden under a shape that any copy, extract or annotation delete would lift. Only marked pages are flattened; the rest keep their text. Marks are undoable, follow the page if you reorder it, and touch the file only when you confirm the save. |
 | **Presentation deck** | `.eldeck.json` | ✅ Shipping (experimental, untested) | Native slide authoring over a PDF or LaTeX base: layered objects, build steps, speaker notes, and PDF export. Present in-tab or across two displays. Behind `deck_presenter`. |
 | **Images** | `.png` `.jpg` `.bmp` `.webp` … | ✅ Shipping | Zoom-to-cursor / pan; draggable out as an OS drop source. An **Annotate** overlay adds freehand pen, rectangle, arrow, and text markup with colour/width controls, undo, and clear, then flattens it into a saved copy (`…-annotated.png`, or overwrite for a `.png`). |
@@ -643,16 +672,8 @@ restarting Eldrun) restores your position instead of jumping to the top.
 
 ### Interface and learning
 
-- **Global app toolbar**: cross-project roles — Browser, Password Manager, Video
-  Conferencing, Media Player, Notes, Screenshot, Screen Recorder, Chat — with
-  launch-or-raise and icon resolution. The Screenshot role launches straight into
-  interactive region selection when the configured tool supports it. Mail,
-  Calendar, File Manager, System Monitor, and the Print Manager have been retired
-  from this bar because Eldrun now renders them itself (see
-  [Workspace apps](#workspace-apps)); an existing `settings.json` keeps the
-  configured commands, so a role that comes back finds them.
-- **Hover-revealed panels**: the global app bar and file side panel appear on
-  pointer hover and disappear when the pointer leaves, keeping the center
+- **Hover-revealed panels**: the file side panel appears on
+  pointer hover and disappears when the pointer leaves, keeping the center
   terminal unobstructed; the side panel can also be pinned permanently open.
 - **Appearance and responsiveness**: a Theme Customizer with saved presets,
   keyboard steering and shortcut help, Fast mode, and Energy Saver. Hidden

@@ -15,6 +15,8 @@ import {
   insertRowAfter,
   deleteRow,
   columnWidths,
+  cellTone,
+  cellToneColor,
 } from "../../lib/viewers/table";
 
 describe("parseDelimited — basics", () => {
@@ -452,5 +454,30 @@ describe("columnWidths", () => {
 
   it("clamps a very wide column so one essay cell can't run the table off screen", () => {
     expect(columnWidths([["x"], ["y".repeat(500)]], 1)).toEqual([48]);
+  });
+});
+
+describe("cellTone", () => {
+  it("classifies a cell by its text", () => {
+    expect(cellTone(" 42 ")).toBe("num");
+    expect(cellTone("-1.5e3")).toBe("num");
+    expect(cellTone("TRUE")).toBe("bool");
+    expect(cellTone("n/a")).toBe("null");
+    expect(cellTone("NULL")).toBe("null");
+    expect(cellTone("2024-05-01")).toBe("date");
+    expect(cellTone("2024-05-01T12:30:00Z")).toBe("date");
+    expect(cellTone("https://example.org/x")).toBe("url");
+  });
+
+  it("leaves blanks and prose plain", () => {
+    expect(cellTone("")).toBeNull();
+    expect(cellTone("   ")).toBeNull();
+    expect(cellTone("Ada Lovelace")).toBeNull();
+    expect(cellTone("Infinity")).toBeNull();
+    expect(cellToneColor("Ada")).toBeUndefined();
+  });
+
+  it("falls back to the cell's own colour where a theme has no document hues", () => {
+    expect(cellToneColor("7")).toBe("var(--doc-yellow, currentColor)");
   });
 });

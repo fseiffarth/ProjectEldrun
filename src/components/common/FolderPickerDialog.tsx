@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { sanitizeName } from "../projects/scaffold";
 import { useT } from "../../lib/i18n";
 import { isPathWithin } from "../../lib/paths";
-import { FolderIcon } from "./icons/Icon";
+import { ArrowUpIcon, FolderIcon } from "./icons/Icon";
 
 /** One subdirectory row, mirroring the Rust `DirEntry` (commands::fs). */
 interface DirEntry {
@@ -160,7 +160,7 @@ export function FolderPickerDialog({ initialPath, boundPath, title, confirmLabel
             onClick={() => listing?.parent && load(listing.parent, bound)}
             title={t("folderPicker.upOneFolder")}
           >
-            ⬆ {t("folderPicker.up")}
+            <ArrowUpIcon /> {t("folderPicker.up")}
           </button>
           <span className="folder-picker-cur" title={cur}>{cur || "…"}</span>
           {allowCreateFolder && (

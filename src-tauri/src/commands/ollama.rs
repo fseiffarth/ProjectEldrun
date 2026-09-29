@@ -3503,6 +3503,8 @@ pub async fn prepare_local_agent(model: String) -> Result<LocalAgentPrep, String
     cfg.push_str(&ollama_model_block(&model, &alias));
 
     std::fs::write(&config_path, cfg).map_err(|e| format!("write vibe_local config: {e}"))?;
+    crate::services::agent_session::register_vibe_hook_in(&vibe_home)
+        .map_err(|e| format!("register vibe session hook: {e}"))?;
 
     Ok(LocalAgentPrep {
         vibe_home: vibe_home.to_string_lossy().into_owned(),
@@ -3739,6 +3741,53 @@ fn fallback_spec(driver: &LocalDriver, model: &str, extra: &[&str]) -> Option<Lo
             .map(|a| a.replace("{model}", model))
             .collect(),
     })
+}
+
+/// Whether `cmd args` is a launch line [`prepare_local_launch`] can have
+/// produced for `driver` and `model` — the check a persisted local-model tab
+/// (`localLaunch` in `terminals.json`) passes before a restore may run it again
+/// (`services::terminal_service`), and before the phone may attach to it
+/// (`services::mobile_control::discovery`).
+///
+/// It enumerates the forms instead of re-resolving: `ollama launch`, the direct
+/// fallback with or without the reasoning-off override, and Codex's catalog
+/// pair after either. So it probes nothing, and a line written while
+/// `ollama launch` existed stays valid after a downgrade — it then fails at
+/// spawn, exactly as a fresh launch would. A model that could read as a flag
+/// is refused although `validate_model_name` lets a leading `-` through.
+pub(crate) fn local_launch_line_ok(driver: &str, model: &str, cmd: &str, args: &[String]) -> bool {
+    let Some(driver) = LOCAL_DRIVERS.iter().find(|d| d.id == driver) else {
+        return false;
+    };
+    if validate_model_name(model).is_err() || model != model.trim() || model.starts_with('-') {
+        return false;
+    }
+    if let Some(sub) = driver.launch_sub {
+        if cmd == "ollama" && args == ["launch", sub, "--model", model] {
+            return true;
+        }
+    }
+    let catalog = driver
+        .wants_local_catalog
+        .then(|| catalog_arg_pair(&local_catalog_path(model)));
+    [&[][..], driver.non_thinking_args.unwrap_or(&[])]
+        .iter()
+        .filter_map(|extra| fallback_spec(driver, model, extra))
+        .any(|spec| {
+            spec.cmd == cmd
+                && (args == spec.args
+                    || catalog.as_ref().is_some_and(|pair| {
+                        args.len() == spec.args.len() + pair.len()
+                            && args[..spec.args.len()] == spec.args[..]
+                            && args[spec.args.len()..] == pair[..]
+                    }))
+        })
+}
+
+/// The CLI a local driver runs (`claude` for `"claude"`), for naming the agent
+/// of a persisted local-model tab whose own `cmd` may be `ollama`.
+pub(crate) fn local_driver_bin(driver: &str) -> Option<&'static str> {
+    LOCAL_DRIVERS.iter().find(|d| d.id == driver).map(|d| d.bin)
 }
 
 /// The extra args this driver needs for `model`, and whether they force the
@@ -4031,19 +4080,34 @@ pub async fn prepare_local_launch(agent: String, model: String) -> Result<LocalL
 /// write one. See [`write_local_catalog`].
 fn local_catalog_args(model: &str, thinking: Option<bool>) -> Vec<String> {
     match write_local_catalog(model, thinking) {
-        Ok(path) => vec![
-            "-c".to_string(),
-            // `model_catalog_json=<toml string>`. A JSON string literal is a
-            // valid TOML basic string, and serde does the escaping — the path
-            // is Eldrun's own but it descends from `$HOME`, which we do not get
-            // to assume is free of quotes or backslashes.
-            format!(
-                "model_catalog_json={}",
-                serde_json::Value::from(path.to_string_lossy().as_ref())
-            ),
-        ],
+        Ok(path) => catalog_arg_pair(&path),
         Err(_) => Vec::new(),
     }
+}
+
+/// `-c model_catalog_json=<toml string>` for `path`. A JSON string literal is
+/// a valid TOML basic string, and serde does the escaping — the path is
+/// Eldrun's own but it descends from `$HOME`, which we do not get to assume is
+/// free of quotes or backslashes.
+fn catalog_arg_pair(path: &std::path::Path) -> Vec<String> {
+    vec![
+        "-c".to_string(),
+        format!(
+            "model_catalog_json={}",
+            serde_json::Value::from(path.to_string_lossy().as_ref())
+        ),
+    ]
+}
+
+/// Where [`write_local_catalog`] keeps `model`'s catalog.
+fn local_catalog_path(model: &str) -> std::path::PathBuf {
+    crate::paths::home_dir()
+        .join(".local")
+        .join("share")
+        .join("eldrun")
+        .join("codex_local")
+        .join(sanitize_alias(model))
+        .join("model.json")
 }
 
 /// Write the model-metadata catalog Codex asks for, into **Eldrun's own** state
@@ -4064,14 +4128,10 @@ fn local_catalog_args(model: &str, thinking: Option<bool>) -> Vec<String> {
 /// reasoning level may be offered at all.
 fn write_local_catalog(model: &str, thinking: Option<bool>) -> Result<std::path::PathBuf, String> {
     validate_model_name(model)?;
-    let dir = crate::paths::home_dir()
-        .join(".local")
-        .join("share")
-        .join("eldrun")
-        .join("codex_local")
-        .join(sanitize_alias(model));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("catalog dir: {e}"))?;
-    let path = dir.join("model.json");
+    let path = local_catalog_path(model);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("catalog dir: {e}"))?;
+    }
 
     let body = local_catalog_json(
         model,
@@ -4770,6 +4830,46 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn a_persisted_local_launch_line_must_be_one_eldrun_builds() {
+        let v = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let m = "qwen3-coder:30b";
+        // `ollama launch`, for a driver that has it.
+        assert!(local_launch_line_ok("claude", m, "ollama", &v(&["launch", "claude", "--model", m])));
+        assert!(local_launch_line_ok("droid", m, "ollama", &v(&["launch", "droid", "--model", m])));
+        // Direct fallbacks, with and without the reasoning-off override.
+        assert!(local_launch_line_ok("opencode", m, "opencode", &v(&["--model", &format!("ollama/{m}")])));
+        let codex = fallback_spec(
+            LOCAL_DRIVERS.iter().find(|d| d.id == "codex").unwrap(),
+            m,
+            &["-c", "model_reasoning_effort=\"none\""],
+        )
+        .unwrap();
+        assert!(local_launch_line_ok("codex", m, "codex", &codex.args));
+        // Codex's catalog pair rides after either form, and only the path
+        // Eldrun writes it to.
+        let mut with_catalog = codex.args.clone();
+        with_catalog.extend(catalog_arg_pair(&local_catalog_path(m)));
+        assert!(local_launch_line_ok("codex", m, "codex", &with_catalog));
+        let mut elsewhere = codex.args.clone();
+        elsewhere.extend(catalog_arg_pair(std::path::Path::new("/tmp/x.json")));
+        assert!(!local_launch_line_ok("codex", m, "codex", &elsewhere));
+
+        // Anything else is refused: another sub, another model, an extra
+        // flag, a driver without a fallback run directly, an unknown driver,
+        // a model that reads as a flag, and a line of another driver.
+        assert!(!local_launch_line_ok("claude", m, "ollama", &v(&["launch", "codex", "--model", m])));
+        assert!(!local_launch_line_ok("claude", m, "ollama", &v(&["launch", "claude", "--model", "other"])));
+        assert!(!local_launch_line_ok("claude", m, "ollama", &v(&["launch", "claude", "--model", m, "--yes"])));
+        assert!(!local_launch_line_ok("claude", m, "claude", &v(&["--model", m])));
+        assert!(!local_launch_line_ok("vibe", m, "vibe", &[]));
+        let flag = "--dangerously-skip-permissions";
+        assert!(!local_launch_line_ok("claude", flag, "ollama", &v(&["launch", "claude", "--model", flag])));
+        assert!(!local_launch_line_ok("opencode", m, "ollama", &v(&["launch", "claude", "--model", m])));
+        assert_eq!(local_driver_bin("opencode"), Some("opencode"));
+        assert_eq!(local_driver_bin("nope"), None);
     }
 
     #[test]

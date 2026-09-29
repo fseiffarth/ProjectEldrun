@@ -9,6 +9,8 @@ import {
   type ComputeHost,
   type GitHostingInfo,
   type GitProvider,
+  type GitPushMcpLevel,
+  type GitPushMcpPolicy,
   type ProjectEntry,
   type PublishFrom,
   type RemoteSpec,
@@ -23,11 +25,13 @@ import {
   hydrateScopeFromDisk,
   isPtyTabKind,
   isRestorableTab,
+  isRelaunchableLocalTab,
   isResumableAgentTab,
   remoteHostIdOf,
   ROOT_SCOPE,
   toSavedTabEntry,
   useTabsStore,
+  type LocalLaunch,
   type SavedLayoutTree,
   type TabKind,
   type TabLocation,
@@ -47,7 +51,6 @@ import type { SavedPasswordState } from "../components/projects/useSavedCredenti
 import { IS_WINDOWS } from "../lib/platform";
 import { shouldPersistLocalTab, shouldPersistTab } from "../lib/terminal/tmuxSession";
 import { translate, useI18nStore } from "../lib/i18n";
-import { TRASH_PROJECT_ID } from "../lib/projects/trashProject";
 
 function connectionsHeadless(): boolean {
   return useSettingsStore.getState().settings?.connections_headless ?? true;
@@ -698,15 +701,6 @@ function dropRemotePool(projectId: string): void {
   void invoke("remote_disconnect_all_hosts", { projectId }).catch(() => {});
 }
 
-/** First project matching `pick` that is not the Trash — `deactivateProject`'s
- *  successor choice, where the Trash may only ever be the last resort. */
-function successorAmong(
-  projects: ProjectEntry[],
-  pick: (entry: ProjectEntry) => boolean,
-): ProjectEntry | undefined {
-  return projects.find((entry) => entry.id !== TRASH_PROJECT_ID && pick(entry));
-}
-
 interface ProjectTmuxTarget {
   session: string;
   hostId: string | null;
@@ -741,7 +735,7 @@ export function projectTmuxTargets(
           localRunning,
           localPersistenceEnabled,
           !!project.eldrun_mobile_access,
-          isResumableAgentTab(tab),
+          isResumableAgentTab(tab) || isRelaunchableLocalTab(tab),
         ));
     const session = tab.tmuxAttach ?? (persistent ? tab.tmuxSession : undefined);
     if (!session) continue;
@@ -805,6 +799,9 @@ interface ProjectRuntimeSwitchedPayload {
      *  second remote session (see TabEntry.tmuxSession/tmuxAttach). */
     tmuxSession?: string;
     tmuxAttach?: string;
+    /** A relaunchable local-model tab's launch line (see TabEntry.localLaunch),
+     *  re-validated by the backend like the rest of the layout. */
+    localLaunch?: LocalLaunch;
     /** Host-bound container-exemption marker (see TabEntry.hostBoundUid, #150). */
     hostBoundUid?: string;
     /** The "never tmux-wrap this tab" marker (see TabEntry.ephemeral). */
@@ -883,10 +880,10 @@ interface ProjectsStore {
    *  (`true`/`false`), or clear the override (`null`) to inherit the global
    *  `agent_remote_control` setting. */
   setProjectRemoteControl: (id: string, remoteControl: boolean | null) => Promise<void>;
-  /** Force the local-agent filesystem fence on/off, or clear to inherit the
-   * global default. Running tabs keep their current boundary until respawn. */
-  setProjectAgentFence: (id: string, agentFence: boolean | null) => Promise<void>;
   setProjectScheduleMcp: (id: string, level: "off" | "propose" | "apply") => Promise<void>;
+  /** The agent-push policy (`services::git_push_mcp`): level and protected
+   *  branches; an omitted argument leaves that field alone. */
+  setProjectGitPushMcp: (id: string, level?: GitPushMcpLevel, protectedBranches?: string[]) => Promise<void>;
   /** Opt a remote project in/out of auto-connect (connect it silently on launch
    *  and activation). Only offered once the connect can complete with no prompt —
    *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
@@ -1440,7 +1437,6 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   },
 
   deactivateProject: async (id) => {
-    if (id === TRASH_PROJECT_ID) return;
     if (deactivatingProjects.has(id)) return;
     deactivatingProjects.add(id);
     try {
@@ -1513,18 +1509,11 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       const nextProjects = currentProjects.map((entry) =>
         entry.id === id ? { ...entry, status: "inactive" } : entry,
       );
-      // The successor is the first remaining open project — never the Trash. It
-      // sits first in the list with status "active" (it is always open), so the
-      // plain first-active pick used to hand the window to the Trash whenever the
-      // user closed the project they were working in. The Trash is a fallback only
-      // when nothing else is open.
+      // The successor is the first remaining open project.
       const nextActiveId =
         currentActiveId === id
-          ? (successorAmong(nextProjects, (entry) => entry.status === "active") ??
-              successorAmong(nextProjects, (entry) => entry.status !== "inactive") ??
-              nextProjects.find(
-                (entry) => entry.id === TRASH_PROJECT_ID && entry.status !== "inactive",
-              ))?.id ?? null
+          ? (nextProjects.find((entry) => entry.status === "active") ??
+              nextProjects.find((entry) => entry.status !== "inactive"))?.id ?? null
           : currentActiveId;
 
       // Persist status before exposing it in the UI. If this fails, the project
@@ -1686,17 +1675,14 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     patchProject(id, (project) => ({ ...project, remote_control: saved ?? undefined }));
   },
 
-  setProjectAgentFence: async (id, agentFence) => {
-    const saved = await invoke<boolean | null>("set_project_agent_fence", {
-      projectId: id,
-      agentFence,
-    });
-    patchProject(id, (project) => ({ ...project, agent_fence: saved ?? undefined }));
-  },
-
   setProjectScheduleMcp: async (id, level) => {
     await invoke("set_project_schedule_mcp", { projectId: id, level });
     patchProject(id, (project) => ({ ...project, schedule_mcp: level }));
+  },
+
+  setProjectGitPushMcp: async (id, level, protectedBranches) => {
+    const policy = await invoke<GitPushMcpPolicy>("set_project_git_push_mcp", { projectId: id, level: level ?? null, protected: protectedBranches ?? null });
+    patchProject(id, (project) => ({ ...project, git_push_mcp: policy }));
   },
 
   setProjectAutoConnect: async (id, enabled) => {
@@ -1927,6 +1913,7 @@ export function listenProjectRuntimeSwitched(): Promise<() => void> {
         // root/box restore copies had before `hydrateScopeFromDisk`).
         resumeArgs: t.resumeArgs,
         viewer: t.viewer,
+        localLaunch: t.localLaunch,
       }),
     );
     // Mount-free remote: defer restoring a remote project's tabs until its pooled

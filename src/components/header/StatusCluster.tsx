@@ -12,7 +12,6 @@ import { DevBuildIndicator } from "./DevBuildIndicator";
 import { useQuiesce, saverInterval, usePowerStore } from "../../stores/power";
 import { useSettingsStore } from "../../stores/settings";
 import {
-  isEscalated,
   summaryLamp,
   useHeaderStatusStore,
   type HeaderStatusKey,
@@ -36,21 +35,21 @@ import { useT } from "../../lib/i18n";
  * whole row back, and that choice PERSISTS (`header_status_expanded`) — a user
  * who wants the old bar clicks once, forever.
  *
- * What keeps the fold from hiding something that mattered is escalation: a
- * member reporting `attention`/`alert` renders in the bar regardless of the
- * collapsed state (see `stores/headerStatus` for why the escalating set is
- * deliberately narrow). So the resting bar is one lamp, and a bar with a problem
- * in it shows exactly the problem — which is more legible than five green lamps,
- * not less.
+ * Collapsed means ALL of it: a failing member folds away like a healthy one.
+ * The fold is the user's explicit choice to see one lamp, and popping members
+ * back out on `attention`/`alert` reflowed the bar under them. The problem is
+ * still said — the summary lamp takes the worst tone (red/amber) and the
+ * tooltip lists every member's line — it just does not claim the width back.
  *
  * Two structural notes:
  *  - Folding is `display: none` on a wrapper, NOT unmounting. Every member stays
- *    mounted and keeps polling, because a folded widget still has to be able to
- *    escalate itself — a Machines indicator that stopped watching while hidden
- *    could never come back out. It also means folding costs nothing and saves
- *    nothing at runtime: this is a width fix, not a polling fix.
- *  - Members render in a FIXED DOM order whether folded or not, so escalating
- *    never re-orders the survivors; a widget appears in the slot it always had.
+ *    mounted and keeps polling, because a folded widget still has to report the
+ *    tone the summary lamp shows — a Machines indicator that stopped watching
+ *    while hidden would leave the lamp green over a dead host. It also means
+ *    folding costs nothing and saves nothing at runtime: this is a width fix,
+ *    not a polling fix.
+ *  - Members render in a FIXED DOM order whether folded or not, so expanding
+ *    puts every widget back in the slot it always had.
  */
 
 /** Below this, folding is worse than the crowding: a one-item fold is a lamp
@@ -122,8 +121,8 @@ export function StatusCluster() {
   }
   if (batterySupported) {
     local.battery = {
-      // Only a flat battery on its own power is worth interrupting the fold for.
-      // On mains, or merely low-ish, it stays folded — a laptop at 35% is not news.
+      // Only a flat battery on its own power is worth reddening the summary lamp
+      // for. On mains, or merely low-ish, it is `ok` — a laptop at 35% is not news.
       tone: !onBattery ? "ok" : batteryPct != null && batteryPct <= 15 ? "alert" : "ok",
       label:
         batteryPct == null
@@ -134,16 +133,11 @@ export function StatusCluster() {
 
   const all: Partial<Record<HeaderStatusKey, HeaderStatusReport>> = { ...local, ...reports };
   const entries = Object.entries(all) as [HeaderStatusKey, HeaderStatusReport][];
-  const escalated = new Set(entries.filter(([, r]) => isEscalated(r.tone)).map(([k]) => k));
-  const foldableCount = entries.length - escalated.size;
-  const collapsed = !expanded && foldableCount >= MIN_FOLDABLE;
-  const folded = (key: HeaderStatusKey) => collapsed && !escalated.has(key);
+  const memberCount = entries.length;
+  const collapsed = !expanded && memberCount >= MIN_FOLDABLE;
 
   const toggleTitle = collapsed
-    ? [
-        t("statusCluster.expandTitle"),
-        ...entries.filter(([k]) => folded(k)).map(([, r]) => r.label),
-      ].join("\n")
+    ? [t("statusCluster.expandTitle"), ...entries.map(([, r]) => r.label)].join("\n")
     : t("statusCluster.collapseTitle");
 
   return (
@@ -152,38 +146,38 @@ export function StatusCluster() {
           than a readout, so it takes the row's head — the slot nearest the
           global-app buttons it used to live among — rather than being buried
           between the VPN lamp and the CPU meters. */}
-      <span className="status-cluster-item" data-folded={folded("alerts")}>
+      <span className="status-cluster-item" data-folded={collapsed}>
         <AlertsToggle />
       </span>
-      <span className="status-cluster-item" data-folded={folded("conn")}>
+      <span className="status-cluster-item" data-folded={collapsed}>
         {showConn && <ConnTypeIcon type={connKind ?? "wlan"} online={online} ssid={ssid} />}
       </span>
-      <span className="status-cluster-item" data-folded={folded("battery")}>
+      <span className="status-cluster-item" data-folded={collapsed}>
         {batterySupported && (
           <BatteryIndicator percentage={batteryPercentage} plugged={!onBattery} />
         )}
       </span>
-      <span className="status-cluster-item" data-folded={folded("mobile")}>
+      <span className="status-cluster-item" data-folded={collapsed}>
         <MobileIndicator />
       </span>
-      <span className="status-cluster-item" data-folded={folded("vpn")}>
+      <span className="status-cluster-item" data-folded={collapsed}>
         <VpnIndicator />
       </span>
-      <span className="status-cluster-item" data-folded={folded("machines")}>
+      <span className="status-cluster-item" data-folded={collapsed}>
         <MachinesIndicator />
       </span>
-      <span className="status-cluster-item" data-folded={folded("resources")}>
+      <span className="status-cluster-item" data-folded={collapsed}>
         <AppResourceDisplay />
       </span>
       {/* Dev checkouts only: a release build's backend answers no status and
           the chip renders nothing (see DevBuildIndicator). */}
-      <span className="status-cluster-item" data-folded={folded("devBuild")}>
+      <span className="status-cluster-item" data-folded={collapsed}>
         <DevBuildIndicator />
       </span>
       {/* The toggle only exists once there is something to fold: with a single
           member (or none) the cluster is already as small as it gets, and a
           chevron next to one lamp is pure noise. */}
-      {foldableCount >= MIN_FOLDABLE && (
+      {memberCount >= MIN_FOLDABLE && (
         <button
           type="button"
           className="global-apps-menu-btn status-cluster-toggle"

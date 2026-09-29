@@ -2,6 +2,10 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { isDetachedWindow } from "./detachedContext";
 import { ROOT_SCOPE, hydrateScopeFromDisk, useTabsStore, type TabEntry } from "./tabs";
+import { boxScopeId, useBoxesStore } from "./boxes";
+import { useProjectsStore } from "./projects";
+import { BOX_SCOPE_PREFIX } from "../lib/terminal/ptyId";
+import { resolveLocalMirror, resolveProjectDirectory } from "../types";
 
 /**
  * The **root console** — the root scope, reached as an overlay instead of as a
@@ -190,6 +194,14 @@ interface RootOverlayState {
   setFrame: (frame: RootOverlayFrame) => void;
   /** ⤢ / ⤡, and a double-click on the title bar. */
   toggleFilled: () => void;
+  /** Root tabs a one-click install opened (`runInstallInTab`), keyed by tab
+   *  key. The console's strip pulses them so the user can tell which of its
+   *  tabs is the one running what they just clicked. Session-only on purpose:
+   *  after a relaunch it is just a root shell. */
+  installTabs: Record<string, true>;
+  markInstallTab: (key: string) => void;
+  /** The user clicked the tab (they found it) or closed it. */
+  clearInstallTab: (key: string) => void;
 }
 
 export const useRootOverlayStore = create<RootOverlayState>((set) => ({
@@ -210,6 +222,15 @@ export const useRootOverlayStore = create<RootOverlayState>((set) => ({
       const filled = !s.filled;
       writePersistedFrame({ frame: s.frame, filled });
       return { filled };
+    }),
+  installTabs: {},
+  markInstallTab: (key) => set((s) => ({ installTabs: { ...s.installTabs, [key]: true } })),
+  clearInstallTab: (key) =>
+    set((s) => {
+      if (!s.installTabs[key]) return s;
+      const installTabs = { ...s.installTabs };
+      delete installTabs[key];
+      return { installTabs };
     }),
 }));
 
@@ -246,6 +267,51 @@ export function openTabInRootConsole(
     return;
   }
   void ensureRootScopeHydrated().then(open);
+}
+
+/**
+ * The project shell (Ctrl+Shift+S): the root console with a shell whose cwd is
+ * the active project's root — a box's folder while a box is the scope — on
+ * THIS machine. A remote project has only its local mirror here; one without a
+ * mirror, like the root scope itself, just opens the console. A root shell
+ * already sitting at that folder is brought to the front instead of a second
+ * one being spawned, so the chord is a way back to it too.
+ */
+export function openProjectShellInRootConsole(): void {
+  const { activeId, projects } = useProjectsStore.getState();
+  const { scope } = useTabsStore.getState();
+  const box = scope.startsWith(BOX_SCOPE_PREFIX)
+    ? useBoxesStore.getState().boxes.find((b) => boxScopeId(b.id) === scope)
+    : undefined;
+  const project = box ? undefined : projects.find((p) => p.id === activeId);
+  const cwd = box
+    ? box.folder ?? ""
+    : project?.remote
+      ? resolveLocalMirror(project) ?? ""
+      : resolveProjectDirectory(project);
+  const label = box?.name ?? project?.name ?? "";
+  if (!cwd) {
+    useRootOverlayStore.getState().show();
+    return;
+  }
+  const reuse = () => {
+    const existing = (useTabsStore.getState().tabsByScope[ROOT_SCOPE] ?? []).find(
+      (tab) =>
+        tab.kind === "shell" &&
+        !tab.cmd &&
+        !tab.initialInput &&
+        !tab.tmuxAttach &&
+        tab.cwd === cwd,
+    );
+    if (!existing) return false;
+    useRootOverlayStore.getState().show(existing.key);
+    return true;
+  };
+  const spawn = () => {
+    if (!reuse()) openTabInRootConsole({ label, cmd: "", args: [], env: {}, cwd, kind: "shell" });
+  };
+  if (isDetachedWindow() || ROOT_SCOPE in useTabsStore.getState().tabsByScope) spawn();
+  else void ensureRootScopeHydrated().then(spawn);
 }
 
 /**

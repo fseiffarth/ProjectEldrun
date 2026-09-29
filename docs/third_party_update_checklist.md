@@ -18,7 +18,7 @@ How to use it:
    comment first.
    For the agent CLIs those notes also exist as data, in
    `services::agent_versions::VERIFIED` (one row per *check*, not per agent —
-   Codex has three, because three surfaces were verified at three releases).
+   Codex has four, because four surfaces are verified separately).
    That is what makes "did anything move?" answerable:
    `cargo run --example agent_versions --manifest-path src-tauri/Cargo.toml`
    prints installed-vs-verified for every installed CLI and exits non-zero on
@@ -164,8 +164,10 @@ Claude's `/fast` — different thing.
   `elicitation_dialog` and `idle_prompt` off it; a renamed type means the
   decision lamp for a Claude tab falls back to the screen. The hook script
   greps those keys with `sed`, so a renamed key breaks resume silently.
-  Verified against Claude Code 2.1.251 — a `/clear` fires no Stop event; the
-  turn events against 2.1.272 by reading the binary's strings, not live.
+  Verified against Claude Code 2.1.282 (2026-09-25, live: a `/clear`'s
+  SessionStart carried `session_id` + `source: clear`, a Stop carried
+  `permission_mode`, and a `/clear` fires no Stop event); the turn events
+  against 2.1.272 by reading the binary's strings, not live.
 - Session logs: `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; `--resume` is
   emitted only when that file exists.
 - The model tag in the Agents views (`agent_session_model`) reads the tail of
@@ -180,12 +182,13 @@ Claude's `/fast` — different thing.
   `<command-name>…<command-args>` reads as `/name args`, `<bash-input>` as
   `! cmd`. A new wrapper tag shows up as a prompt until it is added here.
 - `/usage` in print mode returns a JSON envelope with `result` (panel text),
-  `is_error`, `num_turns: 0` (re-checked live against 2.1.272, 2026-09-15). The
+  `is_error`, `num_turns: 0` (re-checked live against 2.1.282, 2026-09-25). The
   panel text is parsed by `shared/usageReport.ts` for the phone's bars, the
   prompt chart's reset lines and auto-continue (five-hour / weekly windows,
   per-model lines) — a re-layout may cost figures. `resolveResetAt` places the
   reset phrase in time: 2.1.272 prints `resets Sep 15, 10:30pm (Europe/Berlin)`
-  (a year only when it is not the current one, the zone always) where earlier
+  (a year only when it is not the current one, the zone always; 2.1.282 drops
+  the minutes on the hour, `resets Sep 25, 1pm`) where earlier
   builds printed `resets 6:20pm` / `resets Mon 9am`. A shape it does not know
   resolves to nothing, which silently empties the chart's reset lines and
   leaves auto-continue unable to arm.
@@ -259,6 +262,16 @@ aliases, and anything about where or how credentials are stored.
 
 **Assumes**
 
+- **0.157.0 (2026-09-25) was checked from the binary's strings, not live** —
+  launching a Codex TUI from an agent tab was refused, so all four
+  `VERIFIED` rows moved to 0.157.0 on this evidence: `--help` still lists
+  `resume [SESSION_ID]` and `exec --skip-git-repo-check`; the binary still
+  carries `Select Model and Effort`, `Select Reasoning Level for`,
+  `More reasoning`, `Action Required`, the three approval labels quoted
+  below, the mode names, `session_meta` / `turn_context` / `user_message`,
+  the `active writer` message and `thread-writer-locks`. None of that proves
+  the screen layout, title timer or lock release still behave as described;
+  the next live check of each surface should say so here.
 - `codex resume <uuid>`; `codex exec --skip-git-repo-check <msg>` (warm-up).
 - Codex 0.154.0 reports an active writer when two processes resume one thread.
   An isolated offline app-server probe verified that killing the writer releases
@@ -297,7 +310,7 @@ aliases, and anything about where or how credentials are stored.
 - Preface commands `/new /compact /status`; `/status` is *not* available in
   exec mode, so there is no usage recipe.
 - The decision lamp reads Codex's screen off the PTY, and two habits of its
-  ratatui TUI are load-bearing (verified against 0.153.0):
+  ratatui TUI are load-bearing (verified against 0.153.0; 0.157.0 by strings):
   - **A blocked Codex is not a quiet Codex.** It keeps repainting its terminal
     title on a ~100ms timer — a braille frame while working, and while blocked
     an `ESC ] 0 ; [ ! ] Action Required BEL` alternating with `[ . ]`. Those
@@ -318,7 +331,8 @@ aliases, and anything about where or how credentials are stored.
     `agentPrompt.ts` matches the first word of each option; renaming the
     options away from yes/no/allow/cancel wording is what would break it.
 - Mobile: modes `working (silent) | plan | read only | auto | full access`;
-  Shift+Tab is sent as CSI-u. Verified against codex-cli 0.151.0.
+  Shift+Tab is sent as CSI-u. Verified against codex-cli 0.151.0 (0.157.0 by
+  strings).
 - Mobile's model sheet reads `/model` off the screen, and Codex answers it in
   **two steps** — `Select Model and Effort`, then `Select Reasoning Level for
   <model>` (whose row 5, "More reasoning…", opens a third). Each step is a
@@ -326,7 +340,7 @@ aliases, and anything about where or how credentials are stored.
   the highlight marked `›`; the sheet holds until a *different* list is drawn
   and closes when none is. Renumbering, dropping the heading, or drawing the
   next step without clearing the previous one is what would break it. Verified
-  against codex-cli 0.153.4.
+  against codex-cli 0.153.4 (0.157.0 by strings).
 
 **Verify**
 
@@ -393,12 +407,32 @@ The last-prompt line reads the screen echo, as for Gemini.
 | Aider | — | refused (no print mode) | `curl … aider.chat/install.sh` (uv) |
 | Kiro, Cline, OpenClaw, OpenHands, Plandex, SWE-agent, mini-SWE-agent, Mentat, gpt-engineer, Qoder | — | — | see `AGENTS` |
 
+Version probes (`agent_versions::VERSION_ARGV`) exist for Antigravity
+(`agy --version` → `1.2.9`) and Muse (`muse --version` →
+`Muse Code 1.3.0 (1.3.0-R3057.1)`) as well. Muse's launcher script starts a
+background self-update on any invocation once its interval has passed, so its
+probe sets `MUSE_NO_AUTO_UPDATE=1` (`VERSION_ENV`); a launcher that renames
+that switch turns the daily probe into an updater. Muse and Copilot have a
+recipe but no recorded check, so Manage CLIs calls them unverified.
+
 A fenced tab resumes only if its session store is mounted into the fence:
 `sandbox::agent_home_mounts` lists each continue-last agent's store (OpenCode
 `~/.local/share/opencode`, Qwen `~/.qwen/projects`, Copilot
 `~/.copilot/session-state`, Cursor `~/.cursor/chats`, Vibe `~/.vibe/logs`;
 Antigravity rides on `~/.gemini`). A CLI that moves its store breaks resume
 silently — re-check the path on update.
+
+Copilot's fenced sign-in (`services/copilot_auth.rs`) depends on its config
+layout: a `/login` with `storeTokenPlaintext` on writes the token to
+`~/.copilot/config.json` under `authTokens` (earlier 1.0.88 runtimes:
+`copilotTokens`; 0.0.x: `copilot_tokens`), keyed
+`"<host>:<login>"`, beside `lastLoggedInUser`; Copilot reads
+`COPILOT_GITHUB_TOKEN` before any stored login. Checked against 1.0.88. If a
+release moves the token, fenced tabs go back to asking for a login each time
+(nothing breaks). Check with `strings` on
+`~/.cache/copilot/pkg/linux-x64/<ver>/prebuilds/linux-x64/runtime.node | grep
+-E 'authTokens|storeTokenPlaintext'` and
+`cargo test --manifest-path src-tauri/Cargo.toml copilot_auth`.
 
 **OpenCode's minimal interface** is read by the phone since 2026-09-18
 (`mobile-web/src/terminal/openCodeMini.ts`, verified against 1.18.31 by live
@@ -416,7 +450,11 @@ the `fixed` flag in `agentModes.ts` be dropped.
 
 **Antigravity's model and effort** are read by the phone since 2026-09-20
 (`mobile-web/src/terminal/antigravity.ts`, verified against 1.2.7 by a pty
-capture). It assumes, of `agy`: the footer row under the input box, with
+capture; 1.2.9 by the binary's strings only, 2026-09-25 — `? for shortcuts`,
+`Switch Model`, `Search:`, `(current)` and the `items]` window note are all
+still in it). 1.2.11's changelog reworks the effort gauge in `/effort` and
+`/model`, so the slider below is the first thing to re-capture on that
+release. It assumes, of `agy`: the footer row under the input box, with
 `? for shortcuts` on the left and the model right-aligned, the reasoning effort
 after a ` · ` where the model has one (`Gemini 3.8 Flash · high`); the `/model`
 dialog's heading `Switch Model` and its `Search:` field; unnumbered rows, two
@@ -638,7 +676,7 @@ resolves; the package names above still resolve (`apt-cache policy <pkg>`,
 ## 7. bubblewrap (agent fence)
 
 **Where** `services/agent_fence.rs`, `src/lib/agents/agentFence.ts`,
-`docs/agent_fence_plan.md`.
+`docs/context/agent_authority.md`.
 
 **Assumes** `bwrap` flags `--ro-bind --ro-bind-try --bind --bind-try --dev
 --proc --tmpfs --symlink --unshare-pid --die-with-parent --chdir` — **not**

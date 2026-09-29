@@ -36,13 +36,27 @@ static CRASH_LOG_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32
 #[cfg(windows)]
 static CRASH_LOG_HANDLE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
+/// The short commit this binary was built from (`src-tauri/build.rs`), or
+/// "unknown" outside git. Written into every `=== STARTED` and crash header:
+/// the frozen dev binary is replaced on every commit, so the path a crash
+/// records is gone by the time anyone looks, and the commit is what
+/// `scripts/crash-symbolize.sh` needs to find the retained copy
+/// (`scripts/retain-dev-build.sh`).
+const BUILD_COMMIT: &str = match option_env!("ELDRUN_BUILD_COMMIT") {
+    Some(c) => c,
+    None => "unknown",
+};
+
 /// Install a panic hook + OS signal handlers that append to crash.log.
 fn install_crash_logger() {
     let state_dir = storage::state_dir();
     let _ = std::fs::create_dir_all(&state_dir);
     let path = state_dir.join("crash.log");
 
-    append_to_log(&path, &format!("=== STARTED {} ===", iso_now()));
+    append_to_log(
+        &path,
+        &format!("=== STARTED {} commit={} ===", iso_now(), BUILD_COMMIT),
+    );
 
     let path2 = path.clone();
     std::panic::set_hook(Box::new(move |info| {
@@ -275,7 +289,7 @@ fn fault_pc(_ctx: *mut libc::c_void) -> usize {
 }
 
 /// Format the context line under the crash header without allocating:
-/// `  at <UTC> pc=0x… tid=<n> thread=<comm> exe=<path> v<version>\n`.
+/// `  at <UTC> pc=0x… tid=<n> thread=<comm> exe=<path> v<version> commit=<sha>\n`.
 #[cfg(unix)]
 fn format_crash_context(pc: usize, buf: &mut [u8]) -> usize {
     let mut pos = 0;
@@ -326,6 +340,8 @@ fn format_crash_context(pc: usize, buf: &mut [u8]) -> usize {
     }
     pos = crash_push(buf, pos, b" v");
     pos = crash_push(buf, pos, env!("CARGO_PKG_VERSION").as_bytes());
+    pos = crash_push(buf, pos, b" commit=");
+    pos = crash_push(buf, pos, BUILD_COMMIT.as_bytes());
     crash_push(buf, pos, b"\n")
 }
 
@@ -1011,6 +1027,9 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     services::webkit_a11y::install();
 
+    // First, so nothing below creates the state dir with the umask's mode.
+    storage::ensure_private_state_dir();
+
     // Before the logger appends this run's `=== STARTED … ===` line, so the cap
     // is enforced against what previous runs left rather than a moment later.
     services::state_gc::cap_crash_log();
@@ -1227,10 +1246,6 @@ pub fn run() {
             // idempotent, so a race with the frontend's first load is benign.
             std::thread::spawn(|| {
                 commands::projects::migrate_legacy_projects();
-                let mut projects = commands::projects::get_projects().unwrap_or_default();
-                if let Err(e) = commands::projects::ensure_trash_project(&mut projects) {
-                    eprintln!("Trash project setup: {e}");
-                }
             });
             // One-shot: adopt every existing project's tab layout / `open_apps`
             // out of its project tree and into `<state_dir>/sessions/<id>/`.
@@ -1241,21 +1256,27 @@ pub fn run() {
             // run. See `services::terminal_service::migrate_project_sessions_once`.
             services::terminal_service::migrate_project_sessions_once();
             commands::projects::migrate_panel_prefs_once();
-            // A crashed run's staged agent transcripts go home BEFORE the window
-            // can restore a tab: the resume probe reads the host dir, and the
-            // stage root is wiped here too, so no fenced spawn can race it.
-            services::sandbox::harvest_and_clear_stage();
-            // Keep the Claude credential mirror in step with the host file:
-            // every fenced/contained tab is bound to the mirror's one inode, and
-            // Claude rotates the host file by rename, so without this a tab
-            // older than the last rotation reads a stale token and reports
-            // "Login expired" (see services::agent_creds). One detached thread
-            // — a notify watch plus a poll — holding no lock and no child; it
-            // dies with the process. Only the Linux fence and container mount
-            // the mirror (Seatbelt keeps the real file in place, Windows fences
-            // nothing), so only Linux has one to keep.
+            // A previous run's per-scope stage (private launcher dirs, Seatbelt
+            // profiles) is wiped BEFORE the window can restore a tab, so no
+            // fenced spawn can race it.
+            services::sandbox::clear_stage();
+            // The per-CLI login store (`services::agent_auth`): adopt the
+            // Claude mirror an older Eldrun kept, then keep every agent home's
+            // links in step with the store. One detached thread; dies with
+            // the process.
+            services::agent_install::migrate_legacy_stores();
+            // Once, at the first start with per-scope homes: this computer's
+            // logins and its ~/.claude, ~/.codex, ~/.gemini config, so no
+            // agent comes back signed out or without its instructions. Before
+            // the keeper and before any tab can spawn.
+            services::agent_auth::import_once();
+            services::agent_global::import_once();
+            services::agent_auth::start();
+            // Moves a fenced Copilot's `/login` token out of its private config
+            // into the keyring, for every later fenced Copilot tab (the fence
+            // hides the keyring Copilot would use). Linux only, like the fence.
             #[cfg(target_os = "linux")]
-            services::agent_creds::start();
+            services::copilot_auth::start();
             // Remove project containers a previous run left behind (a crash
             // skips the exit teardown). Off-thread: docker may be slow or
             // absent, and neither may block startup.
@@ -1315,6 +1336,7 @@ pub fn run() {
             commands::settings::save_settings,
             commands::settings::patch_settings,
             commands::settings::save_window_state,
+            commands::os_clock::os_clock_format,
             // Per-tab scheduled agent prompts. Definitions and receipts live in
             // local-only agent_tasks.json; the frontend owns wall-clock delivery.
             commands::agent_tasks::agent_schedules_list,
@@ -1384,8 +1406,11 @@ pub fn run() {
             commands::vm::remote_download_size,
             commands::vm::remote_download_to,
             commands::projects::set_project_remote_control,
-            commands::projects::set_project_agent_fence,
-            commands::projects::set_project_schedule_mcp,
+                        commands::projects::set_project_schedule_mcp,
+            commands::projects::set_project_git_push_mcp,
+            commands::root_mcp::git_push_mcp_proposals,
+            commands::root_mcp::git_push_mcp_decide,
+            commands::root_mcp::git_push_mcp_clear,
             commands::projects::set_project_mobile_access,
             commands::projects::sandbox_preflight,
             commands::python::python_interpreters,
@@ -1423,6 +1448,9 @@ pub fn run() {
             commands::projects::adopt_folder_tab_layout,
             commands::projects::root_work_dir,
             commands::root_mcp::root_mcp_status,
+            commands::root_mcp::help_search,
+            commands::root_mcp::help_read,
+            commands::root_mcp::help_topics,
             commands::root_mcp::root_mcp_security_status,
             commands::root_mcp::root_mcp_session_access,
             commands::root_mcp::root_mcp_session_revoke,
@@ -1537,6 +1565,7 @@ pub fn run() {
             commands::mail::mail_sync,
             commands::mail::mail_sync_cancel,
             commands::mail::mail_headers,
+            commands::mail::mail_search,
             commands::mail::mail_replies,
             commands::mail::mail_body,
             commands::mail::mail_flag,
@@ -1556,6 +1585,16 @@ pub fn run() {
             // menu writes, so nothing here reaches a server either.
             commands::mail::mail_filters_list,
             commands::mail::mail_filters_set,
+            commands::mail::mail_contacts_get,
+            commands::mail::mail_contact_upsert,
+            commands::mail::mail_contacts_delete,
+            commands::mail::mail_contact_list_upsert,
+            commands::mail::mail_contact_list_delete,
+            commands::mail::mail_contacts_set_collect,
+            commands::mail::mail_contacts_import,
+            commands::mail::mail_contacts_import_thunderbird,
+            commands::mail::mail_contacts_harvest_inbox,
+            commands::mail::mail_contacts_export,
             commands::mail::mail_filters_apply,
             // Local-model mail assistant (Group Q, #203–#208). Every one runs a
             // prompt against a loopback Ollama via `services::mail_ai`, which
@@ -1569,12 +1608,17 @@ pub fn run() {
             commands::mail::mail_draft_save,
             commands::mail::mail_agent_drafts,
             commands::mail::mail_draft_discard,
+            commands::mail::mail_agent_mark,
+            commands::mail::mail_agent_mark_folder,
+            commands::mail::mail_agent_mark_sender,
+            commands::mail::mail_agent_marks,
             commands::mail::mail_draft_send,
             commands::mail::mail_attach_pick,
             commands::mail::mail_attach_remove,
             commands::mail::mail_attachment_save,
             commands::mail::mail_attachment_save_to_project,
             commands::mail::mail_attachment_preview,
+            commands::mail::mail_staged_preview,
             // Encryption at rest (docs/mail_encryption_plan.md). Four verbs
             // rather than a toggle, because the states are not symmetric: a
             // store waiting for a passphrase, and one running memory-only
@@ -1746,6 +1790,7 @@ pub fn run() {
             commands::clipboard::clipboard_has_image,
             commands::clipboard::save_clipboard_image,
             commands::clipboard::copy_png_bytes_to_clipboard,
+            commands::clipboard::copy_text_to_clipboard,
             commands::screenshot::capture_screenshot,
             commands::screenshot::read_pending_screenshot,
             commands::screenshot::save_pending_screenshot,
@@ -1778,6 +1823,7 @@ pub fn run() {
             commands::printing::print_set_default,
             commands::printing::print_set_enabled,
             commands::printing::print_test_page,
+            commands::print_native::print_pdf_native,
             // Disk usage analyzer (commands::disk_usage)
             commands::disk_usage::disk_usage_scan,
             commands::disk_usage::disk_usage_cancel,
@@ -1795,6 +1841,9 @@ pub fn run() {
             // Terminal
             commands::terminal::pty_spawn,
             commands::terminal::agent_fence_status,
+            commands::terminal::copilot_fence_auth_status,
+            commands::terminal::copilot_fence_sign_out,
+            commands::terminal::agent_fence_marks,
             commands::terminal::register_host_bound_tab,
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
@@ -1809,6 +1858,7 @@ pub fn run() {
             commands::terminal::local_tmux_kill,
             commands::terminal::local_tmux_kill_eldrun_sessions,
             commands::terminal::local_tmux_rename,
+            commands::terminal::local_tmux_screen,
             commands::terminal::project_cpu_percent,
             // External apps / window tracking
             commands::apps::launch_app,
@@ -1850,6 +1900,8 @@ pub fn run() {
             commands::subwindow::snap_detached_window,
             commands::subwindow::sync_detached_scope,
             commands::subwindow::detached_window_is_parked,
+            commands::subwindow::detached_retire_ack,
+            commands::subwindow::detached_retire_ready,
             // The deck presenter's audience window (M#90)
             commands::presenter::open_presenter_window,
             commands::presenter::close_presenter_window,
@@ -1858,6 +1910,7 @@ pub fn run() {
             commands::workspace::workspace_name,
             commands::workspace::network_conn_type,
             commands::workspace::network_wifi_ssid,
+            commands::workspace::network_identity,
             // Project-runtime switching (replaces switch_project_windows)
             commands::project_runtime::switch_project_runtime,
             commands::project_runtime::load_side_panel_folder,
@@ -1872,6 +1925,8 @@ pub fn run() {
             commands::git::git_generate_commit_message,
             commands::git::git_commit,
             commands::git::git_push,
+            commands::git::git_release_preview,
+            commands::git::git_release_tag,
             commands::git_pull::git_fetch,
             commands::git_pull::git_pull_preview,
             commands::git_pull::git_pull_apply,
@@ -1886,6 +1941,7 @@ pub fn run() {
             commands::git::git_change_stats,
             commands::git::git_add_path,
             commands::git::git_log,
+            commands::git::git_log_search,
             commands::git::git_branches,
             commands::git::git_checkout,
             commands::git::git_commit_message,
@@ -1967,6 +2023,13 @@ pub fn run() {
             commands::agents::uninstall_agent,
             commands::agents::agent_warmup,
             commands::agents::claude_folder_trusted,
+            commands::agents::agent_logins,
+            commands::agents::agent_login_import,
+            commands::agents::agent_login_sign_out,
+            commands::agents::agent_global_status,
+            commands::agents::agent_global_import,
+            commands::agents::agent_global_set_codex_auto_review,
+            commands::agents::agent_global_open,
             commands::agents::agent_usage,
             commands::agents::agent_versions,
             commands::agents::dismiss_agent_version,
@@ -1974,6 +2037,7 @@ pub fn run() {
             commands::agents::agent_tab_last_prompt,
             commands::agents::agent_tab_recent_prompts,
             commands::agents::agent_tab_transcript,
+            commands::agents::agent_tab_undo_clear,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
             commands::ollama::ollama_gpu_status,
@@ -2083,7 +2147,9 @@ pub fn run() {
                     // number while it is still on screen.
                     if _app.get_webview_window(label).is_none() {
                         let reg = _app.state::<WindowRegistryState>();
-                        let wid = commands::subwindow::release_detached_entry(
+                        // A Wayland scope-out retire is an intended close whose
+                        // record stays for the respawn: released, not reported.
+                        let (wid, report) = commands::subwindow::on_detached_destroyed(
                             &mut reg.lock().unwrap(),
                             label,
                         );
@@ -2100,10 +2166,12 @@ pub fn run() {
                         // were stranded in a `detached: true` record with no
                         // window, no dock-back path, their PTYs running hidden,
                         // and the failure repeated at every launch.
-                        let _ = _app.emit(
-                            "detached-window-destroyed",
-                            serde_json::json!({ "label": label }),
-                        );
+                        if report {
+                            let _ = _app.emit(
+                                "detached-window-destroyed",
+                                serde_json::json!({ "label": label }),
+                            );
+                        }
                     }
                 }
             }
@@ -2116,6 +2184,10 @@ pub fn run() {
                 // listener with nothing behind it. Bounded (admin-socket
                 // timeouts), best-effort, and a no-op when Mobile is off.
                 tauri::async_runtime::block_on(commands::mobile_control::stop_host_for_exit());
+                // The root MCP listener: stop accepting, drain in-flight
+                // workers briefly, and drop every per-tab calendar copy so
+                // nothing of the endpoint outlives the quit.
+                commands::root_mcp::stop_for_exit();
                 // Abort every terminal's process subtree so no inner process (a
                 // dev server, a build, a training run) outlives Eldrun. Runs
                 // before the container teardown below, since a containerized

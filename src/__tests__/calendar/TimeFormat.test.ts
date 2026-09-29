@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultUse24h, resolveUse24h } from "../../lib/timeFormat";
+import { localeUses24h, osUse24hFrom } from "../../lib/osClock";
 import { formatStampTime, formatTime } from "../../lib/calendar/calendarTime";
 
 /**
  * The app-wide clock.
  *
- * Two questions, and the second is the one worth pinning: what a language
- * implies when nothing is set, and which of the three inputs wins when more than
- * one has an opinion.
+ * Three questions, and the last is the one worth pinning: what a language
+ * implies, what the OS's report says, and which input wins when more than one
+ * has an opinion.
  */
 
 describe("defaultUse24h", () => {
@@ -22,24 +23,49 @@ describe("defaultUse24h", () => {
 });
 
 describe("resolveUse24h", () => {
-  it("follows the language while nothing is set", () => {
-    expect(resolveUse24h(undefined, undefined, "en")).toBe(false);
-    expect(resolveUse24h(undefined, undefined, "de")).toBe(true);
-    // `null` is the same statement as absent — it is what clearing a setting
-    // leaves behind, and reading it as `false` would silently pick 12-hour.
-    expect(resolveUse24h(null, null, "de")).toBe(true);
+  it("follows the OS while nothing is set, whatever the language", () => {
+    // The case this default exists for: an English UI on a 24-hour desktop.
+    expect(resolveUse24h(undefined, undefined, true, "en")).toBe(true);
+    expect(resolveUse24h(undefined, undefined, false, "de")).toBe(false);
   });
 
-  it("lets an explicit choice beat the language, in both directions", () => {
-    // The half that a `?? false` read would get wrong: an English user who
-    // deliberately turned 24-hour on, and a German one who turned it off.
-    expect(resolveUse24h(true, undefined, "en")).toBe(true);
-    expect(resolveUse24h(false, undefined, "de")).toBe(false);
+  it("falls back to the language when the OS has no opinion", () => {
+    expect(resolveUse24h(undefined, undefined, null, "en")).toBe(false);
+    expect(resolveUse24h(undefined, undefined, undefined, "de")).toBe(true);
+    // `null` is the same statement as absent — it is what clearing a setting
+    // leaves behind, and reading it as `false` would silently pick 12-hour.
+    expect(resolveUse24h(null, null, null, "de")).toBe(true);
+  });
+
+  it("lets an explicit choice beat the OS and the language, in both directions", () => {
+    // The half that a `?? false` read would get wrong: a user who deliberately
+    // turned 24-hour on against a 12-hour OS, and one who turned it off.
+    expect(resolveUse24h(true, undefined, false, "en")).toBe(true);
+    expect(resolveUse24h(false, undefined, true, "de")).toBe(false);
   });
 
   it("carries the retired calendar-only key over, but never above a real choice", () => {
-    expect(resolveUse24h(undefined, true, "en")).toBe(true);
-    expect(resolveUse24h(false, true, "de")).toBe(false);
+    expect(resolveUse24h(undefined, true, false, "en")).toBe(true);
+    expect(resolveUse24h(false, true, null, "de")).toBe(false);
+  });
+});
+
+describe("osUse24hFrom", () => {
+  it("takes the desktop's explicit switch over its locale", () => {
+    expect(osUse24hFrom({ use24h: true, locale: "en-US" })).toBe(true);
+    expect(osUse24hFrom({ use24h: false, locale: "de-DE" })).toBe(false);
+  });
+
+  it("asks ICU about the locale when the desktop has no switch", () => {
+    expect(osUse24hFrom({ use24h: null, locale: "de-DE" })).toBe(true);
+    expect(osUse24hFrom({ use24h: null, locale: "en-US" })).toBe(false);
+  });
+
+  it("reads anything malformed as no opinion", () => {
+    expect(osUse24hFrom(undefined)).toBeNull();
+    expect(osUse24hFrom({ use24h: null, locale: null })).toBeNull();
+    expect(osUse24hFrom({ use24h: "yes" })).toBeNull();
+    expect(localeUses24h("not a locale!")).toBeNull();
   });
 });
 

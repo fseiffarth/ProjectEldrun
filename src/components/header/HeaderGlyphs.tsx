@@ -3,8 +3,8 @@
  * replace came from whichever fallback font had the code point, so each had
  * its own stroke weight (most of them heavy) and its own ink box. These share
  * one hand with the status cluster's phone (`MobileIndicator`): a 16-unit grid,
- * outlines only, rounded corners and caps. Stroke is 1.15 units because they
- * render at 20px, which lands them on the phone's ~1.4px line. Every glyph's
+ * outlines only, rounded corners and caps. Stroke is 0.95 units because they
+ * render at 20px, which lands them on the phone's ~1.2px line. Every glyph's
  * outline runs from y=2 to y=14, so they all stand the same height in the bar
  * — keep that when redrawing one.
  */
@@ -13,7 +13,7 @@ import type { ReactNode } from "react";
 
 const STROKE = {
   stroke: "currentColor",
-  strokeWidth: 1.15,
+  strokeWidth: 0.95,
   strokeLinecap: "round",
   strokeLinejoin: "round",
 } as const;
@@ -77,17 +77,6 @@ export function InboxGlyph({ className }: { className: string }) {
   );
 }
 
-export function AppsGlyph({ className }: { className: string }) {
-  return (
-    <Glyph className={className}>
-      <rect x="2" y="2" width="5" height="5" rx="1.2" {...STROKE} />
-      <rect x="9" y="2" width="5" height="5" rx="1.2" {...STROKE} />
-      <rect x="2" y="9" width="5" height="5" rx="1.2" {...STROKE} />
-      <rect x="9" y="9" width="5" height="5" rx="1.2" {...STROKE} />
-    </Glyph>
-  );
-}
-
 export function SettingsGlyph({ className }: { className: string }) {
   return (
     <Glyph className={className}>
@@ -98,5 +87,42 @@ export function SettingsGlyph({ className }: { className: string }) {
       />
       <circle cx="8" cy="8" r="1.9" {...STROKE} />
     </Glyph>
+  );
+}
+
+/** Two stacked server units — the global machines — for the Machines overlay's
+ *  bar (`header/MachinesOverlay`). On the shared 16-unit grid, y=2..14. */
+export function MachinesGlyph({ className }: { className: string }) {
+  return (
+    <Glyph className={className}>
+      <g {...STROKE}>
+        <rect x="2" y="2" width="12" height="5" rx="1.2" />
+        <rect x="2" y="9" width="12" height="5" rx="1.2" />
+        <path d="M4.5 4.5h.01M4.5 11.5h.01M8 4.5h3.5M8 11.5h3.5" />
+      </g>
+    </Glyph>
+  );
+}
+
+/** A processor chip — on-device compute — for the Models & agents button
+ *  (`layout/LocalModelMenu`) and the overlay it opens (`models/ModelsOverlay`).
+ *  The one glyph here NOT on the shared 16-unit `Glyph` grid: it keeps the
+ *  24-unit drawing and 1.4 stroke it had inline in the button, so the button
+ *  (sized to 19px by `svg.local-model-icon`) stays pixel-identical. */
+export function ModelsGlyph({ className }: { className: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="6" y="6" width="12" height="12" rx="2" />
+        <rect x="9.5" y="9.5" width="5" height="5" rx="0.8" />
+        <path d="M9 2.5V6M12 2.5V6M15 2.5V6M9 18v3.5M12 18v3.5M15 18v3.5M2.5 9H6M2.5 12H6M2.5 15H6M18 9h3.5M18 12h3.5M18 15h3.5" />
+      </g>
+    </svg>
   );
 }

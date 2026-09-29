@@ -1,10 +1,13 @@
 import { useMemo, useState } from "react";
 import { useRootReviewStore, type RootProposal, type ReviewRow, type StagedIcsImport } from "../../stores/rootReview";
 import { useT } from "../../lib/i18n";
+import { useTabsStore, type TabEntry } from "../../stores/tabs";
+import { splitPtyId } from "../../lib/terminal/ptyId";
 import { UntestedTag } from "../common/UntestedTag";
 import { useMailStore } from "../../stores/mail";
 import { inspectIcs } from "../../lib/calendar/icsSafety";
 import { IcsReportBody } from "../calendar/IcsImportReviewDialog";
+import { UndoIcon } from "../common/icons/Icon";
 
 /** Strip bidi overrides, zero-width controls and default-ignorable text. Keep
  * normal line breaks; rendering is always React text, never HTML/Markdown. */
@@ -15,6 +18,23 @@ export function stripInvisible(text: string): string {
       && !(cp < 32 && cp !== 9 && cp !== 10 && cp !== 13)
       && !(cp >= 127 && cp <= 159);
   }).join("");
+}
+/** The title of the tab a PTY id (`<scope>:<key>`) belongs to, while the
+ *  window still has that tab; `undefined` for a closed tab or a foreign id. A
+ *  proposal and an MCP session are both keyed by the PTY id, which is what the
+ *  cards used to show — a title is what the user recognises. */
+export function tabLabelForPty(s: { tabsByScope: Record<string, TabEntry[]> }, ptyId: string): string | undefined {
+  const split = splitPtyId(ptyId);
+  if (!split) return undefined;
+  const label = (s.tabsByScope[split.scope] ?? []).find((t: TabEntry) => t.key === split.key)?.label;
+  return label ? stripInvisible(label) : undefined;
+}
+/** A card's "which tab" line: the tab's title, falling back to the id. */
+function TabLine({ tab, created }: { tab: string; created: string }) {
+  const label = useTabsStore((s) => tabLabelForPty(s, tab));
+  return <div className="settings-help root-review-meta" title={stripInvisible(tab)}>
+    {label ?? stripInvisible(tab)} · {new Date(Number(created)).toLocaleString()}
+  </div>;
 }
 function display(value: unknown): string {
   return stripInvisible(typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "—");
@@ -87,7 +107,7 @@ const NONE_DRAFTS: ReturnType<typeof useMailStore.getState>["agentDrafts"] = [];
  */
 export function RootReviewStrip({ advisory = false, domain }: { advisory?: boolean; domain?: ReviewDomain }) {
   const t = useT();
-  const { error, busy, decide, applyAll, importStaged, discardStaged } = useRootReviewStore();
+  const { error, busy, decide, applyAll, importStaged, discardStaged, imported } = useRootReviewStore();
   const { proposals, imports, drafts } = useDomainReview(domain);
   const pending = proposals.filter((p) => p.status === "pending");
   const count = pending.length;
@@ -143,13 +163,11 @@ export function RootReviewStrip({ advisory = false, domain }: { advisory?: boole
               <UntestedTag id="rootReview.icsImport" />
               <span className="ollama-badge root-review-status">{t("rootReview.icsImport")}</span>
             </div>
-            <div className="settings-help root-review-meta">
-              {stripInvisible(staged.tab)} · {new Date(Number(staged.created)).toLocaleString()}
-            </div>
+            <TabLine tab={staged.tab} created={staged.created} />
             <p className="settings-help">{t("rootReview.icsImportHelp", { name })}</p>
             <IcsReportBody report={report} />
             <div className="root-review-actions">
-              <button className="root-review-btn approve" disabled={busy || !report.looksLikeIcs}
+              <button className="root-review-btn approve" disabled={busy || !report.looksLikeIcs || imported.includes(staged.id)}
                 title={t("icsReview.import")} aria-label={t("icsReview.import")}
                 onClick={() => void importStaged(staged, t("calendarPane.importedCalendarName"))}>✓</button>
               <button className="root-review-btn reject" disabled={busy}
@@ -177,7 +195,7 @@ export function RootReviewStrip({ advisory = false, domain }: { advisory?: boole
         {(group.key !== "decided" || showDecided) && <div className="settings-list root-review-cards">
         {group.items.map((proposal) => {
           const { rows, folded } = reviewRows(proposal);
-          const known = ["pending", "applied", "rejected", "conflicted", "undone"].includes(proposal.status);
+          const known = ["pending", "applied", "rejected", "conflicted", "undone", "failed"].includes(proposal.status);
           const status = known ? t(`rootReview.${proposal.status}` as "rootReview.pending") : stripInvisible(proposal.status);
           return <article key={proposal.id} className="settings-card root-review-card">
             <div className="root-review-card-head">
@@ -186,9 +204,7 @@ export function RootReviewStrip({ advisory = false, domain }: { advisory?: boole
               </span>
               <span className={`ollama-badge root-review-status${known ? ` ${proposal.status}` : ""}`}>{status}</span>
             </div>
-            <div className="settings-help root-review-meta">
-              {stripInvisible(proposal.tab)} · {new Date(Number(proposal.created)).toLocaleString()}
-            </div>
+            <TabLine tab={proposal.tab} created={proposal.created} />
             {proposal.mcp_access && proposal.mcp_caller && <p className="settings-help">{t("mcpSecurity.reviewScope", {
               calendars: proposal.mcp_access.calendars.all ? t("mcpSecurity.allScopes") : proposal.mcp_access.calendars.ids.length,
               projects: proposal.mcp_access.projects.all ? t("mcpSecurity.allScopes") : proposal.mcp_access.projects.ids.length,
@@ -199,6 +215,7 @@ export function RootReviewStrip({ advisory = false, domain }: { advisory?: boole
             {proposal.calendars.filter((c) => c.caldav_account_id).map((c) =>
               <p key={String(c.id)} className="root-review-notice">{t("rootReview.outbound", { name: display(c.name) })}</p>)}
             {proposal.status === "conflicted" && <p className="root-review-notice">{t("rootReview.conflict")}</p>}
+            {proposal.status === "failed" && <p className="root-review-notice">{t("rootReview.failedNote")}</p>}
             {/* Every pending card's actual rows stay visible, including in the
                 bulk-approval view. No agent summary substitutes for these. */}
             {proposal.status === "pending" || proposal.status === "conflicted"
@@ -223,7 +240,7 @@ export function RootReviewStrip({ advisory = false, domain }: { advisory?: boole
               </>}
               {proposal.status === "applied" && proposal.undo && <button className="root-review-btn undo" disabled={busy}
                 title={t("rootReview.undo")} aria-label={t("rootReview.undo")}
-                onClick={() => void decide(proposal, "undo")}>↩</button>}
+                onClick={() => void decide(proposal, "undo")}><UndoIcon /></button>}
             </div>
           </article>;
         })}

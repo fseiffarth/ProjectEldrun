@@ -51,11 +51,19 @@ const ELAPSED = /\b(\d+(?:\.\d+)?h(?:\s+\d+(?:\.\d+)?m)?|\d+(?:\.\d+)?m(?:\s+\d+
  * number in that row is the timer. */
 const TOKENS = /(\d+(?:\.\d+)?\s*[kKmM]?)\s*tokens\b/u;
 
+/** Whether one row is a busy row — the spinner or the interrupt hint. A
+ * dialog opened mid-turn is drawn right under Claude Code's spinner, so the
+ * select-prompt reader (`selectPrompt`) needs to know it is not the dialog's
+ * heading. */
+export function busyRow(text: string): boolean {
+  return BUSY_HINT.test(text) || CLAUDE_SPINNER.test(text);
+}
+
 /** The busy row's facts, or `null` when no row says the agent is working. */
 export function agentWork(lines: readonly { text: string }[]): WorkFacts | null {
   for (let index = lines.length - 1; index >= 0 && index >= lines.length - BUSY_WINDOW; index -= 1) {
     const text = lines[index].text;
-    if (!BUSY_HINT.test(text) && !CLAUDE_SPINNER.test(text)) continue;
+    if (!busyRow(text)) continue;
     const inside = BUSY_FACTS.exec(text)?.[1] ?? "";
     const elapsed = ELAPSED.exec(inside)?.[1];
     const tokens = TOKENS.exec(inside)?.[1].replace(/\s+/u, "");

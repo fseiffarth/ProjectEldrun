@@ -1,4 +1,4 @@
-/* global self, caches, fetch, URL, setTimeout */
+/* global self, caches, fetch, URL, URLSearchParams, setTimeout */
 /* The cache name carries THIS build's entry hash, stamped into the emitted
  * copy by `stampServiceWorker` in vite.mobile.config.ts.
  *
@@ -65,6 +65,15 @@ self.addEventListener("fetch", (event) => {
     if (cacheable) {
       const copy = response.clone(); caches.open(CACHE).then((cache) => cache.put(event.request, copy));
     }
+    /* A navigation the proxy answered *for* the sidecar is a miss, not a page:
+     * with the desktop closed, Tailscale Serve answers 502 with its own error
+     * page, and the phone rendered that instead of the app. The cached shell
+     * boots and then says, in the app's own words, that Eldrun Mobile isn't
+     * running on the desktop (`connection.ts`, `host_down`). The proxy's body
+     * is never stored — `cacheable` above already needs `ok`. */
+    if (navigation && (!response.ok || !isDocument)) {
+      return cached().then((hit) => hit || response);
+    }
     return response;
   });
   /* Hashed build output is immutable — the host serves it with a one-year
@@ -80,4 +89,59 @@ self.addEventListener("fetch", (event) => {
     setTimeout(() => resolve(cached().then((hit) => hit || attempt)), NETWORK_TIMEOUT);
   });
   event.respondWith(Promise.race([attempt, timeout]).catch(cached));
+});
+/* Notices pushed by the desktop (`mobile_control::push`): calendar reminders
+ * and agent turns. The payload was encrypted to this browser; the push service
+ * saw ciphertext only. Every push must show a notification — iOS revokes the
+ * subscription of a worker that swallows one — so a malformed payload still
+ * shows the generic line. A phone that chose "no details" gets no title: the
+ * line below is all it shows. Project and tab are the phone's own opaque ids. */
+const OPAQUE_ID = /^[A-Za-z0-9_-]{1,512}$/;
+function fallbackTitle(data) {
+  if (data.kind === "agent") return data.status === "done" ? "An agent finished its turn" : "An agent needs your answer";
+  return "Calendar reminder";
+}
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = {};
+  }
+  if (!data || typeof data !== "object") data = {};
+  const title = typeof data.title === "string" && data.title ? data.title : fallbackTitle(data);
+  const body = typeof data.body === "string" ? data.body : "";
+  const tag = typeof data.tag === "string" && OPAQUE_ID.test(data.tag) ? `eldrun-${data.tag}` : undefined;
+  const target = data.kind === "agent" && OPAQUE_ID.test(String(data.project)) && OPAQUE_ID.test(String(data.tab))
+    ? { section: "projects", projectId: data.project, tabId: data.tab }
+    : { section: data.kind === "agent" ? "projects" : "calendar" };
+  event.waitUntil(self.registration.showNotification(title, {
+    body,
+    tag,
+    // A question replacing an older notice for the same tab must still ring.
+    renotify: tag !== undefined,
+    icon: "/icons/icon-192.png",
+    data: target,
+  }));
+});
+/* A tap opens where the notice points — the Calendar, or the agent's tab: an
+ * open window is focused and told where to go; otherwise a fresh one starts
+ * there. */
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const place = event.notification.data || {};
+  const section = place.section === "projects" ? "projects" : "calendar";
+  const params = new URLSearchParams({ open: section });
+  if (typeof place.projectId === "string" && OPAQUE_ID.test(place.projectId)) params.set("project", place.projectId);
+  if (params.has("project") && typeof place.tabId === "string" && OPAQUE_ID.test(place.tabId)) params.set("tab", place.tabId);
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+      for (const client of windows) {
+        if (new URL(client.url).origin !== self.location.origin) continue;
+        client.postMessage({ type: "eldrun-open", section, projectId: params.get("project") || undefined, tabId: params.get("tab") || undefined });
+        return client.focus();
+      }
+      return self.clients.openWindow(`/?${params.toString()}`);
+    }),
+  );
 });

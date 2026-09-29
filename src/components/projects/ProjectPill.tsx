@@ -16,6 +16,7 @@ import {
 } from "../../types";
 import { useTimerStore } from "../../stores/timer";
 import { PillStatusBars } from "./PillStatusBars";
+import { PillTabMarks } from "./PillTabMarks";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { cmdToKind, isResumableAgentTab, isRestorableTab, useTabsStore } from "../../stores/tabs";
@@ -23,6 +24,7 @@ import { IS_LINUX, IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab, containerBuildShell, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore } from "../../stores/gitDirty";
+import { useAgentFenceMarksStore } from "../../stores/agentFenceMarks";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
 import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
@@ -39,6 +41,7 @@ import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
+import { useDialogs } from "../common/PromptDialogs";
 import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { VmSettingsDialog } from "./VmSettingsDialog";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/theme/categoryColor";
@@ -46,17 +49,17 @@ import { usePillDragStore } from "../../stores/drag/pillDrag";
 import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useBoxesStore } from "../../stores/boxes";
+import { boxColor } from "../../lib/theme/boxColor";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
-import { isTrashProject } from "../../lib/projects/trashProject";
-import { TrashProjectIcon } from "./TrashProjectIcon";
-import { PauseIcon } from "../common/icons/Icon";
+import { BoxSwatch, CheckboxIcon, PauseIcon, SquareIcon, UnlockIcon } from "../common/icons/Icon";
 import {
   agentFenceInstallCommand,
-  agentFenceLabelKey,
+  agentFenceMarkLevel,
   agentFenceReasonKey,
   type AgentFenceStatus,
 } from "../../lib/agents/agentFence";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface Props {
   project: ProjectEntry;
@@ -82,9 +85,10 @@ interface Props {
   shiftPx?: number;
   /** An Alt-drag is hovering THIS pill as a group (new-box) target. */
   groupHintActive?: boolean;
-  /** Names of the boxes this project is in (N:M overlay model): renders the
-   *  small box badge on the pill, tooltip naming them. Empty/absent = no badge. */
-  boxNames?: string[];
+  /** The boxes this project is in (N:M overlay model): one colour swatch per
+   *  box on the pill, in the box's own colour (`lib/theme/boxColor`), with a
+   *  tooltip naming them. Empty/absent = no badge. */
+  boxTags?: { id: string; name: string; color: string }[];
   /** Keyboard-steering station number (the digit that jumps here while the
    *  mode is active). Renders a small overlay chip — absolutely positioned so
    *  showing it never shifts the strip. Absent outside steering mode. */
@@ -353,7 +357,7 @@ function RenameWindow({
             )}
           </>
         )}
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={saving || folderBlocked}>
@@ -561,7 +565,7 @@ function PublishWindow({
           </div>
         ) : null}
 
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         {result && <div className="scaffold-empty">{result}</div>}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose}>{result ? t("common.close") : t("common.cancel")}</button>
@@ -702,7 +706,7 @@ function GitHostingWindow({
           </label>
         )}
 
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={saving || !info}>
@@ -770,7 +774,7 @@ function DisableGitWindow({
             }}
           />
         </label>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button
@@ -830,7 +834,7 @@ function ArchiveConfirmWindow({
             <> {t("pill.archiveRemoteNotTouchedPre")} <strong>{t("pill.notWord")}</strong> {t("pill.archiveRemoteNotTouchedPost")}</>
           )}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button
@@ -893,7 +897,7 @@ function ForgetConfirmWindow({
           <strong>{t("pill.notWord")}</strong> {t("pill.forgetDescPost")}
           {project.remote && <> {t("pill.forgetRemoteNote")}</>}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button
@@ -962,7 +966,7 @@ function DetachRemoteWindow({
         <p className="settings-help">
           {t("pill.detachDesc2Pre")} <strong>{t("pill.pairingWord")}</strong>{t("pill.detachDesc2Post")}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" autoFocus onClick={() => void run()} disabled={busy}>
@@ -1166,7 +1170,7 @@ function ContainerSettingsWindow({
             size="sm"
           />
         </label>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={busy}>
@@ -1217,7 +1221,7 @@ function UnpublishWindow({
           {" "}{providerName(project.git_provider)} {t("pill.unpublishDesc3")} <strong>{t("pill.notWord")}</strong>{" "}
           {t("pill.unpublishDesc4")}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" autoFocus onClick={() => void run()} disabled={busy}>
@@ -1278,7 +1282,7 @@ function VisibilityWindow({
           {t("pill.flipVisibility1")} <strong>{t(current === "public" ? "pill.visPublic" : "pill.visPrivate")}</strong> {t("pill.flipVisibility2")}{" "}
           <strong>{t(target === "public" ? "pill.visPublic" : "pill.visPrivate")}</strong> {t("pill.flipVisibility3")} <code>{cli} repo edit</code>. {t("pill.flipVisibility4")}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         {result && <div className="scaffold-empty">{result}</div>}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose}>{result ? t("common.close") : t("common.cancel")}</button>
@@ -1396,7 +1400,7 @@ function MigrateProviderWindow({
           {providerName(project.git_provider)} {t("pill.migrateDesc4")}{" "}
           <strong>{t("pill.leftIntact")}</strong> {t("pill.migrateDesc5")} <code>origin-old</code>{t("pill.migrateDesc6")}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         {result && <div className="scaffold-empty">{result}</div>}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose}>{result ? t("common.close") : t("common.cancel")}</button>
@@ -1421,7 +1425,7 @@ export function ProjectPill({
   onReorder,
   onGroup,
   onAssignToBox,
-  boxNames,
+  boxTags,
   isDragged,
   dragDx,
   shiftPx,
@@ -1475,20 +1479,22 @@ export function ProjectPill({
   const [movePickerInitial, setMovePickerInitial] = useState<string | null>(null);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
-  const trashProject = isTrashProject(project);
   const categories = projectCategories(project);
   const catColor = primaryCategoryColor(categories);
 
   const timerPaused = useTimerStore((s) => s.paused);
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
+  const fenceMark = useAgentFenceMarksStore((s) => s.byId[project.id]);
+  const fenceMarkLevel = agentFenceMarkLevel(fenceMark);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
   const renameProject = useProjectsStore((s) => s.renameProject);
   const renameProjectFolder = useProjectsStore((s) => s.renameProjectFolder);
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
-  const setProjectAgentFence = useProjectsStore((s) => s.setProjectAgentFence);
   const setProjectScheduleMcp = useProjectsStore((s) => s.setProjectScheduleMcp);
+  const setProjectGitPushMcp = useProjectsStore((s) => s.setProjectGitPushMcp);
+  const { confirmAction, dialogs: pillDialogs } = useDialogs();
   const [agentFenceStatus, setAgentFenceStatus] = useState<AgentFenceStatus | null>(null);
   useEffect(() => {
     if (!contextMenu) return;
@@ -1503,7 +1509,7 @@ export function ProjectPill({
     return () => {
       cancelled = true;
     };
-  }, [contextMenu, project.id, project.agent_fence]);
+  }, [contextMenu, project.id]);
   const [showContainerSettings, setShowContainerSettings] = useState(false);
   // VM tier (`docs/vm_projects_plan.md`): the settings dialog, plus a light
   // running/off poll for the pill's VM glyph — a local registry read, only
@@ -1741,13 +1747,9 @@ export function ProjectPill({
 
   const handleMouseEnter = () => {
     if (contextMenu) return;
-    // The Trash pill has no project to report on — no path, no git, no tracked
-    // time — so it gets the plain descriptive tooltip below instead of the
-    // project hover card, which could only show a card full of blanks.
-    if (trashProject) return;
-    // Fast mode takes the same exit for a different reason: the card polls
-    // `project_cpu_percent` every 1.5 s for as long as the pointer rests, plus
-    // a scaffold probe per open. It falls back to the same plain tooltip.
+    // Fast mode skips the hover card: it polls `project_cpu_percent` every
+    // 1.5 s for as long as the pointer rests, plus a scaffold probe per open.
+    // It falls back to the pill's plain name tooltip.
     if (fastMode) return;
     if (!pillRef.current) return;
     void hover.open(pillRef.current.getBoundingClientRect());
@@ -1818,15 +1820,8 @@ export function ProjectPill({
    */
   const startPillDrag = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    // The Trash workspace is PINNED (ProjectSwitcher renders it outside the
-    // scrolling strip, in the row's fixed leading segment): there is no slot
-    // for it to be dragged into, its position is rewritten by the backend
-    // before every save, and boxing or multi-selecting a workspace that cannot
-    // be closed buys nothing. Returning before `preventDefault` leaves the
-    // native click intact, so `pill-main`'s own onClick still activates it.
-    if (trashProject) return;
     const pressed = e.target as HTMLElement;
-    if (pressed.closest(".pill-close-btn, .header-conn-lamps")) return;
+    if (pressed.closest(".pill-close-btn, .header-conn-lamps, .pill-fence-glyph, .pill-tab-marks")) return;
     // Ctrl/Cmd-click toggles the multi-selection (3b): no drag, no activation —
     // the whole gesture is the selection toggle. The suppressed native click
     // never reaches pill-main's onClick, so nothing else fires.
@@ -1985,7 +1980,8 @@ export function ProjectPill({
   return (
     <>
       {/* Hover popup — hidden while context menu is open (which calls hover.close). */}
-      {!contextMenu && !trashProject && !fastMode && <ProjectHoverCard project={project} state={hover} />}
+      {!contextMenu && !fastMode && <ProjectHoverCard project={project} state={hover} />}
+      {pillDialogs}
 
       {/* Right-click context menu */}
       {contextMenu && createPortal(
@@ -2145,8 +2141,9 @@ export function ProjectPill({
                   title={t(member ? "pill.leaveBoxTitle" : "pill.joinBoxTitle", { name: b.name })}
                 >
                   <span className="context-menu-checkmark" aria-hidden>
-                    {member ? "☑" : "☐"}
+                    {member ? <CheckboxIcon /> : <SquareIcon />}
                   </span>
+                  <BoxSwatch className="context-menu-box-swatch" color={boxColor(b)} />
                   {b.name}
                 </button>
               );
@@ -2345,22 +2342,14 @@ export function ProjectPill({
                     : "pill.remoteControlOff",
               )}
             </button>
+            {/* The fence is the only mode: this row states it and cannot
+                switch it (the unfenced way is the root console's Host session). */}
             <button
               className="untested"
-              onClick={() => {
-                setContextMenu(null);
-                void setProjectAgentFence(
-                  project.id,
-                  project.agent_fence === undefined
-                    ? false
-                    : project.agent_fence === false
-                      ? true
-                      : null,
-                );
-              }}
+              onClick={() => setContextMenu(null)}
               title={t("pill.agentFenceMenuTitle")}
             >
-              {t(agentFenceLabelKey(project.agent_fence))}
+              {t("pill.agentFenceStatus")}
               {agentFenceStatus &&
                 !agentFenceStatus.enforced &&
                 agentFenceReasonKey(agentFenceStatus.reason) && (
@@ -2370,7 +2359,13 @@ export function ProjectPill({
                     })}
                   </span>
                 )}
-              <UntestedTag id="projectPill.14" />
+              <UntestedTag id="pill.agentFenceStatus" />
+              {fenceMark && fenceMark.live_unfenced > 0 && (
+                <span className="pill-fence-live-note">
+                  {t("pill.agentFenceLiveUnfenced", { count: fenceMark.live_unfenced })}
+                  <UntestedTag id="pill.agentFenceMark" />
+                </span>
+              )}
             </button>
             <button
               className="untested"
@@ -2378,7 +2373,22 @@ export function ProjectPill({
                 setContextMenu(null);
                 const levels = ["off", "propose", "apply"] as const;
                 const current = levels.indexOf(project.schedule_mcp ?? "propose");
-                void setProjectScheduleMcp(project.id, levels[(current + 1) % levels.length]);
+                const next = levels[(current + 1) % levels.length];
+                // Widening into `apply` lets an agent's one-time prompt fire
+                // with no approval at all: that step asks first. Off → propose
+                // widens nothing the user has not yet seen, so it stays a click.
+                void (async () => {
+                  if (next === "apply") {
+                    const ok = await confirmAction({
+                      title: t("scheduleMcp.confirmApplyTitle"),
+                      body: t("scheduleMcp.confirmApplyBody", { project: project.name }),
+                      confirmLabel: t("scheduleMcp.apply"),
+                      danger: true,
+                    });
+                    if (!ok) return;
+                  }
+                  await setProjectScheduleMcp(project.id, next);
+                })();
               }}
               title={t("scheduleMcp.menuTitle")}
             >
@@ -2387,6 +2397,37 @@ export function ProjectPill({
               })}
               <UntestedTag id="scheduleMcp" />
             </button>
+            {!project.remote && (
+            <button
+              className="untested"
+              onClick={() => {
+                setContextMenu(null);
+                const levels = ["off", "propose", "apply"] as const;
+                const current = levels.indexOf(project.git_push_mcp?.level ?? "propose");
+                const next = levels[(current + 1) % levels.length];
+                // Apply lets an agent's push land with no card at all (the
+                // first push to a URL still asks): that step asks first.
+                void (async () => {
+                  if (next === "apply") {
+                    const ok = await confirmAction({
+                      title: t("gitPushMcp.confirmApplyTitle"),
+                      body: t("gitPushMcp.confirmApplyBody", { project: project.name }),
+                      confirmLabel: t("gitPushMcp.apply"),
+                      danger: true,
+                    });
+                    if (!ok) return;
+                  }
+                  await setProjectGitPushMcp(project.id, next);
+                })();
+              }}
+              title={t("gitPushMcp.menuTitle")}
+            >
+              {t("gitPushMcp.menuItem", {
+                level: t(`gitPushMcp.${project.git_push_mcp?.level ?? "propose"}`),
+              })}
+              <UntestedTag id="gitPushMcp" />
+            </button>
+            )}
             {IS_LINUX && agentFenceInstallCommand(agentFenceStatus) && (
                 <button
                   className="untested"
@@ -2771,7 +2812,7 @@ export function ProjectPill({
       <div
         ref={pillRef}
         data-pill-id={project.id}
-        className={`project-pill${trashProject ? " trash-project-pill" : ""}${active ? " active" : ""}${isSelected ? " is-selected" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
+        className={`project-pill${active ? " active" : ""}${isSelected ? " is-selected" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
         style={{
           ...(catColor ? { "--cat-color": catColor } : {}),
           ...(isDragged
@@ -2795,38 +2836,41 @@ export function ProjectPill({
         <button
           className="pill-main"
           onClick={onClick}
-          title={trashProject ? t("pill.trashProjectTitle") : fastMode ? project.name : undefined}
-          aria-label={trashProject ? t("pill.trashProjectTitle") : undefined}
+          title={fastMode ? project.name : undefined}
         >
-          {trashProject ? (
-            <TrashProjectIcon className="trash-project-icon" />
-          ) : (
-            <>
-              <span
-                className={`pill-folder-icon git-${gitDirty ?? "clean"}`}
-                aria-hidden
-              >
-                {/* The folder + its git color are shown ALWAYS — the git dirty state
-                    must never be hidden by an unrelated concern. A paused time-tracking
-                    timer is signalled non-destructively: a small ⏸ overlay badge (plus
-                    the pill's own `.timer-paused` dimming), never by swapping the icon
-                    out, which used to erase every pill's git colour the moment you
-                    paused the timer. */}
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-                  <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
-                </svg>
-                {timerPaused && <span className="pill-folder-pause"><PauseIcon /></span>}
-              </span>
-              <span className="project-pill-label">{project.name}</span>
-              {boxNames && boxNames.length > 0 && (
-                <span
-                  className="project-pill-boxdot"
-                  title={t("pill.inBoxes", { list: boxNames.join(", ") })}
-                >
-                  ▣
-                </span>
-              )}
-            </>
+          <span
+            className={`pill-folder-icon git-${gitDirty ?? "clean"}`}
+            aria-hidden
+          >
+            {/* The folder + its git color are shown ALWAYS — the git dirty state
+                must never be hidden by an unrelated concern. A paused time-tracking
+                timer is signalled non-destructively: a small ⏸ overlay badge (plus
+                the pill's own `.timer-paused` dimming), never by swapping the icon
+                out, which used to erase every pill's git colour the moment you
+                paused the timer. */}
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+              <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+            </svg>
+            {timerPaused && <span className="pill-folder-pause"><PauseIcon /></span>}
+          </span>
+          <span className="project-pill-label">{project.name}</span>
+          {boxTags && boxTags.length > 0 && (
+            <span
+              className="project-pill-boxdot"
+              title={t("pill.inBoxes", { list: boxTags.map((b) => b.name).join(", ") })}
+            >
+              {/* One swatch per box, in the box's colour — the same colour
+                  the box's own pill wears in the leading segment, so a
+                  member is matched to its box by eye, not by tooltip. */}
+              {boxTags.map((b) => (
+                <BoxSwatch
+                  key={b.id}
+                  className="project-pill-box-swatch"
+                  color={b.color}
+                  data-box-name={b.name}
+                />
+              ))}
+            </span>
           )}
         </button>
         {categories.length > 0 && (
@@ -2840,6 +2884,8 @@ export function ProjectPill({
             ))}
           </span>
         )}
+        {/* Important / Urgent tabs of this project (tab right-click menu). */}
+        <PillTabMarks scope={project.id} />
         {/* VM state glyph (`docs/vm_projects_plan.md`): the standard remote
             lamps already say "connected" — this adds the one thing they can't,
             whether the machine itself is up. Click opens the VM dialog. */}
@@ -2855,8 +2901,21 @@ export function ProjectPill({
             {vmRunning ? "▣" : "▢"}
           </button>
         )}
+        {/* Agent-fence marker: red while agents of this project run outside
+            the fence right now (measured, so a tab started before the fence
+            became the only mode counts). Opens the pill menu, whose fence row
+            says the same. */}
+        {fenceMarkLevel && (
+          <button
+            className={`pill-vm-glyph pill-fence-glyph is-${fenceMarkLevel}`}
+            title={t("pill.agentFenceGlyphLive", { count: fenceMark!.live_unfenced })}
+            onClick={handleContextMenu}
+          >
+            <UnlockIcon size={12} />
+          </button>
+        )}
         {project.remote && <RemoteConnMenu project={project} compact />}
-        {!trashProject && onClose && (
+        {onClose && (
           <button
             className="pill-close-btn"
             title={closeTitle ?? t("pill.closeProject")}

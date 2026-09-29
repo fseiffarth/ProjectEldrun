@@ -16,7 +16,6 @@ import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { CalendarGlyph } from "./HeaderGlyphs";
 import { mutedCalendarIds } from "../../lib/calendar/alarms";
-import { BellIcon } from "../common/BellIcon";
 import { VideoIcon } from "../common/icons/Icon";
 
 const MENU_ID = "calendar";
@@ -140,19 +139,20 @@ export function CalendarIndicator() {
   // day it is handed. The filter is here rather than inside `dayAgenda` because
   // the expansion is shared with the badge and the board's agenda rail, and this
   // is a rule about *this* list.
-  const days = useMemo(
-    () =>
-      enabled
-        ? dayAgenda(events, calendars, now, 2).map((day, i) =>
-            i === 0
-              ? { ...day, occurrences: day.occurrences.filter((occ) => !occurrenceStale(occ, now)) }
-              : day,
-          )
-        : [],
-    [enabled, events, calendars, now],
-  );
-
-  const muted = useMemo(() => mutedCalendarIds(calendars), [calendars]);
+  // A calendar whose alerts are off (`Calendar.alerts_off`) is left off this
+  // list too, not merely marked: the header is an alert surface, and a muted
+  // calendar's events still filling it would not be off. The calendar itself
+  // still shows them.
+  const days = useMemo(() => {
+    if (!enabled) return [];
+    const muted = mutedCalendarIds(calendars);
+    return dayAgenda(events, calendars, now, 2).map((day, i) => ({
+      ...day,
+      occurrences: day.occurrences.filter(
+        (occ) => !muted.has(occ.calendarId) && !(i === 0 && occurrenceStale(occ, now)),
+      ),
+    }));
+  }, [enabled, events, calendars, now]);
 
   if (!enabled) return null;
 
@@ -279,13 +279,6 @@ export function CalendarIndicator() {
                           <span className="cal-menu-title">
                             {occ.title || t("calendar.untitled")}
                           </span>
-                          {/* Not in the badge's number (`eventsLeftToday`): the
-                              mark is what lets the list still explain the count. */}
-                          {muted.has(occ.calendarId) ? (
-                            <span className="cal-menu-muted" title={t("calendar.indicatorMutedTitle")}>
-                              <BellIcon off />
-                            </span>
-                          ) : null}
                         </button>
                         {/* Direct connection: this is the whole reason to read
                             the day from the header rather than opening the

@@ -52,7 +52,7 @@ describe("SidePanel at the root scope", () => {
     expect(listedDirs().map((a) => a.projectDir)).toContain(ROOT_DIR);
     expect(container.textContent).toContain("Root");
     // No project behind it, so no project-settings door.
-    expect(container.textContent).not.toContain("⚙");
+    expect(container.querySelector('[title="Project settings"]')).toBeNull();
   });
 
   it("leaves a box scope on its multi-root view", async () => {

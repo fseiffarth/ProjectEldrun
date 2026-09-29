@@ -111,6 +111,34 @@ describe("Eldrun Mobile dictation session", () => {
     expect(speech.starts).toBe(1);
   });
 
+  it("lets the phone's speech service open its own microphone", async () => {
+    // Android's service handed a captured track listens and returns no words.
+    const track = { stop: vi.fn() };
+    const stream = { getAudioTracks: () => [track], getTracks: () => [track] };
+    const getUserMedia = vi.fn(() => Promise.resolve(stream));
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+    vi.stubGlobal("AudioContext", class {
+      createAnalyser() { return { fftSize: 0, getByteTimeDomainData() {} }; }
+      createMediaStreamSource() { return { connect() {} }; }
+      close() { return Promise.resolve(); }
+    });
+    const start = vi.fn();
+    class TrackRecognition extends FakeRecognition {
+      static available = vi.fn(() => Promise.resolve("unavailable" as const));
+      start(...track: unknown[]) { start(...track); super.start(); }
+    }
+    const handlers = {
+      onStart: vi.fn(), onResult: vi.fn(), onRestart: vi.fn(), onError: vi.fn(), onLevel: vi.fn(), onEnd: vi.fn(),
+    } satisfies DictationSessionHandlers;
+    startDictation(TrackRecognition as MobileSpeechRecognitionConstructor, { lang: "en-GB", local: false }, handlers);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledWith();
+    expect(handlers.onStart).toHaveBeenCalledTimes(1);
+    Reflect.deleteProperty(navigator, "mediaDevices");
+    vi.unstubAllGlobals();
+  });
+
   it("holds the screen awake for as long as it listens", async () => {
     const release = vi.fn(() => Promise.resolve());
     const request = vi.fn(() => Promise.resolve({ release }));

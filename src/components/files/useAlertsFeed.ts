@@ -211,7 +211,6 @@ export function useAlertsFeed(options?: AlertsFeedOptions): AlertsFeed {
   }, [wantEvents, wantTasks]);
 
   const urgentMail = useTodoStore((s) => (wantMail ? s.urgentMail : NO_MAIL));
-  const importantMail = useTodoStore((s) => (wantMail ? s.importantMail : NO_MAIL));
   const mailLoading = useTodoStore((s) => (wantMail ? s.urgentLoading : false));
   const mailError = useTodoStore((s) => (wantMail ? s.urgentError : null));
 
@@ -274,7 +273,6 @@ export function useAlertsFeed(options?: AlertsFeedOptions): AlertsFeed {
     () => ({
       now,
       urgentMail,
-      importantMail,
       events: occurrenceEvents,
       tasks,
       lookaheadDays,
@@ -285,7 +283,6 @@ export function useAlertsFeed(options?: AlertsFeedOptions): AlertsFeed {
     [
       now,
       urgentMail,
-      importantMail,
       occurrenceEvents,
       tasks,
       lookaheadDays,

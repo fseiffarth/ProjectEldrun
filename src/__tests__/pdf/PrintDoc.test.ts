@@ -20,6 +20,7 @@ import {
   thumbSizePx,
   contentBoxCm,
   rasterScaleFor,
+  PDF_PRINT_SCALE,
   loadPrintOptions,
   savePrintOptions,
   sanitizePrintOptions,
@@ -343,6 +344,12 @@ describe("rasterScaleFor", () => {
 
   it("survives a page with no measurable size", () => {
     expect(rasterScaleFor(0, 0, 2)).toBe(2);
+  });
+
+  it("rasterises an A4 sheet at full print resolution", () => {
+    // 300 dpi on paper; a cap that bit here would quietly print soft text again.
+    expect(PDF_PRINT_SCALE).toBeCloseTo(300 / 72);
+    expect(rasterScaleFor(595, 842, PDF_PRINT_SCALE)).toBe(PDF_PRINT_SCALE);
   });
 });
 

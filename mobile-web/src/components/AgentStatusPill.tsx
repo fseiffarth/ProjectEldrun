@@ -17,3 +17,10 @@ export const AGENT_STATUS_GLYPH: Record<AgentStatus, string> = {
 export function AgentStatusPill({ status }: { status: AgentStatus }) {
   return <small className={`agent-status ${status}`}><span className="agent-status-glyph" aria-hidden="true">{AGENT_STATUS_GLYPH[status]}</span>{status}</small>;
 }
+
+/** The same state as the bare glyph, for the project screen's tab cards, which
+ *  wear it on their left border. It has no word beside it, so the word is its
+ *  accessible name. */
+export function AgentStatusMark({ status }: { status: AgentStatus }) {
+  return <span className={`agent-status tab-card-status ${status}`} role="img" aria-label={status} title={status}>{AGENT_STATUS_GLYPH[status]}</span>;
+}

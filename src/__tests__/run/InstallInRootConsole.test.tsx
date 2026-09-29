@@ -33,7 +33,7 @@ beforeEach(() => {
     focusedGroupByScope: { root: null },
   });
   useProjectsStore.setState({ rootDir: "/home/u/eldrun/root", activeId: "p1", switchToast: null });
-  useRootOverlayStore.setState({ open: false });
+  useRootOverlayStore.setState({ open: false, installTabs: {} });
 });
 
 describe("runInstallInTab", () => {
@@ -57,6 +57,19 @@ describe("runInstallInTab", () => {
 
     expect(useProjectsStore.getState().activeId).toBe("p1");
     expect(useTabsStore.getState().scope).toBe("p1");
+  });
+
+  it("marks the install's tab so the console can pulse it, and only that tab", () => {
+    const shell = useTabsStore
+      .getState()
+      .addTabToScope("root", { label: "Shell", cmd: "", cwd: "/r", kind: "shell" });
+
+    runInstallInTab("Install LaTeX", "sudo apt-get install -y texlive", "bash");
+
+    const install = rootTabs().find((tab) => tab.key !== shell.key);
+    expect(useRootOverlayStore.getState().installTabs).toEqual({ [install!.key]: true });
+    useRootOverlayStore.getState().clearInstallTab(install!.key);
+    expect(useRootOverlayStore.getState().installTabs).toEqual({});
   });
 
   it("restores a root never opened this session before adding the install tab", async () => {

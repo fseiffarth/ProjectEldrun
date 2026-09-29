@@ -63,10 +63,6 @@ pub fn switch(
     next_local_file: Option<&str>,
     snapshot: &PreviousProjectSnapshot,
 ) -> Result<ProjectRuntimeSwitchedPayload, String> {
-    // Popouts are registered per TAB SCOPE, and the root scope's name is "root"
-    // — a `project_id` of `None` names it here (see `subwindow::ROOT_SCOPE`).
-    let next_scope = project_id.unwrap_or(crate::commands::subwindow::ROOT_SCOPE);
-
     // 1. Flush elapsed time for the previous project.
     if snapshot.flush_secs > 0.0 {
         if let Some(prev_id) = previous_project_id {
@@ -157,19 +153,11 @@ pub fn switch(
         window_service::hide_windows(&*ws.backend, &prev_wids);
     }
 
-    // 5b. #42: Tauri-level park of every popout that does NOT belong to the
-    //     scope being switched to (this project, or the root). Keyed by SCOPE,
-    //     not by the outgoing project id: a root popout registers under "root"
-    //     while a switch away from the root passes `None`, so the old
-    //     previous-project form never matched it. Un-parked in step 8b.
-    crate::commands::subwindow::hide_detached_windows(
-        app,
-        win_registry,
-        &{
-            let wins = win_registry.lock().unwrap();
-            window_service::detached_labels_by_scope(&wins.windows, next_scope).1
-        },
-    );
+    // 5b. (#42) Popout visibility is NOT decided here. The frontend's
+    //     `setScope` → `sync_detached_scope` is its one authority, for every
+    //     kind of scope change; this worker thread used to run the same sync
+    //     unordered against it, and a stale run could park the active scope's
+    //     popout (or, on Wayland, un-park another scope's over it).
 
     // 6. Save previous window session IDs to .eldrun/sessions/windows.json.
     if let Some(local_file) = previous_local_file {
@@ -194,18 +182,6 @@ pub fn switch(
         let ws = workspace.lock().unwrap();
         window_service::show_windows(&*ws.backend, &next_wids);
     }
-
-    // 8b. #42: Tauri-level un-park of the next scope's popouts (mirrors 5b).
-    //     On Wayland/null this un-hides them; on X11 it pairs with the desktop
-    //     un-park in step 8, and it restores the geometry captured at park time.
-    crate::commands::subwindow::show_detached_windows(
-        app,
-        win_registry,
-        &{
-            let wins = win_registry.lock().unwrap();
-            window_service::detached_labels_by_scope(&wins.windows, next_scope).0
-        },
-    );
 
     // 9. Collect opened window IDs and return the completed payload.
     let opened_window_ids = {

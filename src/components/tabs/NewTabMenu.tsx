@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
   BLOB_TAB_CMD,
   BROWSER_TAB_CMD,
@@ -12,11 +11,13 @@ import {
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
-import { PROJECT_FILES_TAB_CMD } from "../../stores/tabs";
+import { PROJECT_FILES_TAB_CMD, ROOT_SCOPE } from "../../stores/tabs";
 import {
+  AGENT_ITEMS,
   SHELL_ITEMS,
   TAB_ACCENT,
   agentMenuEntries,
+  buildStaticTabSpec,
   compactAgentMenuEntries,
   isFileTabKind,
   itemLabel,
@@ -27,9 +28,11 @@ import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useAddTabMenuData } from "./useAddTabMenuData";
 import { localModelMenuGroup, useLocalModelPlacement } from "./localModelGroup";
 import { useAgentWorktreePicker } from "./agentWorktrees";
+import type { CloudLaunch } from "../../lib/agents/cloudSessions";
+import { BOX_SCOPE_PREFIX } from "../../lib/terminal/ptyId";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
-import { registerHostBoundTab } from "../../lib/remote/hostBound";
+import { localLaunchTabSpec, vibeLocalTabSpec } from "../../lib/agents/localTabSpec";
 
 interface Props {
   /** Scope (project id or "root") the new tab belongs to. Feeds the shared
@@ -86,6 +89,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     vibeForLocalModel,
     compactAgentBins,
     customAgents,
+    agentOrder,
     installedCustom,
     boxMembers,
   } = useAddTabMenuData(scope);
@@ -113,6 +117,18 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     });
   };
 
+  // Cloud sessions clone a project's repository, so they are offered in a
+  // project's menu only — not the root console's or a box's.
+  const pickCloud =
+    scope !== ROOT_SCOPE && !scope.startsWith(BOX_SCOPE_PREFIX)
+      ? (item: StaticMenuItem, launch: CloudLaunch) => {
+          void worktreePicker.cloudSpecFor(item, launch).then((spec) => {
+            if (spec) onPick(spec);
+            onClose();
+          });
+        }
+      : undefined;
+
   const pickFixed = (spec: Omit<TabEntry, "key">) => {
     onPick(spec);
     onClose();
@@ -122,50 +138,18 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   const pickOllamaModel = async (model: string) => {
     onClose();
     try {
-      await invoke("ensure_ollama_running");
-      const { vibe_home, alias } = await invoke<{ vibe_home: string; alias: string }>(
-        "prepare_local_agent",
-        { model },
-      );
-      onPick({
-        label: model,
-        cmd: "vibe",
-        args: [],
-        // ELDRUN_LOCAL_MODEL: which model this tab drives, for the usage recap's
-        // per-model breakdown (VIBE_ACTIVE_MODEL is the resolved alias). A label,
-        // never an authority — the right to run outside the project's container
-        // is `hostBoundUid`, a marker the backend records in the state dir (#150).
-        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model },
-        cwd: projectCwd,
-        kind: "local_agent",
-        hostBoundUid: await registerHostBoundTab(scope),
-      });
+      onPick(await vibeLocalTabSpec(scope, model, projectCwd));
     } catch {
       /* ollama down / prep failed — don't create a broken tab */
     }
   };
 
   // Other agents drive the same model via `ollama launch` (or a direct fallback);
-  // the backend resolves the spawn command so the tab carries everything in cmd+args.
+  // `lib/agents/localTabSpec` resolves the spawn line.
   const pickLocalLaunch = async (agentId: string, label: string, model: string) => {
     onClose();
     try {
-      await invoke("ensure_ollama_running");
-      const { cmd, args } = await invoke<{ cmd: string; args: string[] }>(
-        "prepare_local_launch",
-        { agent: agentId, model },
-      );
-      onPick({
-        label: `${model} · ${label}`,
-        cmd,
-        args,
-        // cmd/args are the resolved launcher and name no model — record it here.
-        // Label only; the container exemption is `hostBoundUid` (#150).
-        env: { ELDRUN_LOCAL_MODEL: model },
-        cwd: projectCwd,
-        kind: "local_agent",
-        hostBoundUid: await registerHostBoundTab(scope),
-      });
+      onPick(await localLaunchTabSpec(scope, agentId, label, model, projectCwd));
     } catch {
       /* ollama launch unavailable / prep failed */
     }
@@ -192,7 +176,9 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               installedBuiltins: enabledAgents,
               installedCmds: installedCustom,
               customAgents,
+              agentOrder,
               pick: pickStatic,
+              pickCloud,
               onAddCustom: () => {
                 onClose();
                 onManageAgents();
@@ -204,7 +190,9 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 installedBuiltins: enabledAgents,
                 installedCmds: installedCustom,
                 customAgents,
+                agentOrder,
                 pick: pickStatic,
+                pickCloud,
                 onAddCustom: () => {
                   onClose();
                   onManageAgents();
@@ -214,6 +202,31 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               compactAgentBins,
             ),
           },
+          // The root console's Host session (`docs/context/agent_authority.md`):
+          // an agent with the user's full rights, for work that is not any
+          // project's — repairing the machine. Root scope only, never a default.
+          ...(scope === ROOT_SCOPE && enabledAgents
+            ? [{
+                label: t("newTabMenu.groupHostSession"),
+                entries: AGENT_ITEMS.filter((item) => enabledAgents.has(item.cmd)).map((item) => ({
+                  key: `host:${item.cmd}`,
+                  label: t("newTabMenu.hostSessionEntry", { label: item.label }),
+                  dot: "⚠",
+                  color: "var(--danger)",
+                  onPick: () => {
+                    const spec = buildStaticTabSpec(item, projectCwd, "", t);
+                    pickFixed({
+                      ...spec,
+                      label: t("newTabMenu.hostSessionLabel", { label: item.label }),
+                      // No `/rename`: the rename is typed blind and a fresh
+                      // unfenced home may open on Claude's trust question.
+                      initialInput: undefined,
+                      hostSession: true,
+                    });
+                  },
+                })),
+              }]
+            : []),
           ...(boxMembers.length > 0
             ? [{
                 label: t("newTabMenu.groupBoxMembers"),
@@ -223,7 +236,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                     label: t("newTabMenu.boxMemberFiles", { name: m.name }),
                     dot: "▤",
                     color: TAB_ACCENT.projectfiles,
-                    untested: "newTabMenu.boxMemberFiles",
                     onPick: () => {
                       onPick({
                         label: t("newTabMenu.boxMemberFiles", { name: m.name }),
@@ -240,7 +252,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                     key: `boxshell:${m.id}`,
                     label: t("newTabMenu.boxMemberShell", { name: m.name }),
                     color: TAB_ACCENT.shell,
-                    untested: "newTabMenu.boxMemberShell",
                     onPick: () => {
                       onPick({
                         label: t("newTabMenu.boxMemberShell", { name: m.name }),
@@ -298,7 +309,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 key: "monitor",
                 label: t("newTabMenu.itemSystemMonitor"),
                 color: TAB_ACCENT.monitor,
-                untested: "newTabMenu.itemSystemMonitor",
                 onPick: () =>
                   pickFixed({
                     label: t("newTabMenu.itemSystemMonitor"),
@@ -324,7 +334,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 key: "network",
                 label: t("newTabMenu.itemNetworkTraffic"),
                 color: TAB_ACCENT.network,
-                untested: "newTabMenu.itemNetworkTraffic",
                 onPick: () =>
                   pickFixed({
                     label: t("newTabMenu.itemNetworkTraffic"),
@@ -343,7 +352,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                   label: t("newTabMenu.itemProjects3d"),
                   dot: "◍",
                   color: TAB_ACCENT.projects3d,
-                  untested: "newTabMenu.itemProjects3d#root",
                   onPick: () =>
                     pickFixed({
                       label: t("newTabMenu.tabLabelProjects"),
@@ -361,7 +369,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("printing.title"),
               dot: "⎙",
               color: TAB_ACCENT.printing,
-              untested: "printing.title#2",
               onPick: () =>
                 pickFixed({
                   label: t("printing.title"),
@@ -383,7 +390,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("skillsLibrary.title"),
               dot: "◧",
               color: TAB_ACCENT.skillslibrary,
-              untested: "skillsLibrary.title",
               onPick: () =>
                 pickFixed({
                   label: t("skillsLibrary.title"),
@@ -403,7 +409,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("promptChart.heading"),
               dot: "⧗",
               color: TAB_ACCENT.promptchart,
-              untested: "promptChart.heading#2",
               onPick: () =>
                 pickFixed({
                   label: t("promptChart.heading"),
@@ -421,7 +426,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                   label: t("newTabMenu.browser"),
                   dot: "◎",
                   color: TAB_ACCENT.browser,
-                  untested: "newTabMenu.browser",
                   onPick: () =>
                     pickFixed({
                       label: t("newTabMenu.browser"),

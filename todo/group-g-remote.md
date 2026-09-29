@@ -26,7 +26,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
     switch. Requires `sshfs`/FUSE locally. **Runtime QA pending** (agents can't
     launch Eldrun); password/interactive auth out of scope for v1;
     project-removal unmount is a follow-up (no delete command exists yet — stale
-    mounts are cleaned up on next app exit). See `docs/ssh_projects_plan.md`.
+    mounts are cleaned up on next app exit).
     - *Test (e.g.):* add a project via SSH address against a key-auth host
       → folder browser lists the remote dir, the project mounts under
       `mounts/<id>/`, terminal cwd + file tree work on the remote files, and the
@@ -141,7 +141,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
       `services/openvpn.rs` (pkexec + askpass temp file + ready-marker wait,
       disconnect-all on exit) when `RemoteSpec.openvpn` is set. Rationale and the
       rejected alternatives (local-CLI-over-sshfs; per-command `ssh host -- …`
-      helper) are in `docs/ssh_projects_plan.md` → *Remote execution model*. This
+      helper) were in the removed `docs/ssh_projects_plan.md` (git history). This
       makes a **userspace** agent-CLI install on the remote load-bearing; the
       items below close the gaps.
       - [x] **Login-shell PATH for agent tabs.** `remote_command` now runs agent
@@ -349,9 +349,8 @@ container) — as opposed to the git **push** axis (#21/#22).*
     inside Docker containers~~ — **superseded 2026-07-13: this is now an
     evolution of the shipped agent sandbox (`services/sandbox.rs`), not a
     second containerization feature.** There is exactly one such feature.
-    Full plan (v2): `docs/docker_projects_plan.md`. **Implemented 2026-07-13
-    (38a–38e; 38f stays deferred; manual/live Docker QA pending — see the
-    plan's runtime checklist).** The `DockerSpec` /
+    Rationale: `docs/context/docker_containers.md`. **Implemented 2026-07-13
+    (38a–38e; 38f stays deferred; manual/live Docker QA pending ).** The `DockerSpec` /
     `docker_runtime.rs` / `docker_exec.rs` / `commands/docker.rs` design
     below (dated 2026-06-19) is **superseded** — kept struck through for
     history, do not implement it as written:
@@ -426,8 +425,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
       (container on an SSH host, composing with #28's `ssh_exec` wrapping —
       this is where the target-agnostic spawn-rewrite refactor below
       actually becomes load-bearing), Windows (#86).**
-    - [x] 🤖 Automated test — see `docs/docker_projects_plan.md` Tests
-      section (argv/state-machine assertions, no daemon needed): sandbox.rs
+    - [x] 🤖 Automated test (argv/state-machine assertions, no daemon needed): sandbox.rs
       unit suite (name/fingerprint/up-decision/create+exec argv/stage refresh)
       + `projects_commands.rs` toggle-preservation/legacy-spec tests
     - [ ] 🖐️ Manual test
@@ -516,8 +514,8 @@ container) — as opposed to the git **push** axis (#21/#22).*
       → Pursued in full by **#28e–#28j** below (mount-free remote projects).
 
 81. **Mount-free remote projects — replace sshfs with SSH/SFTP-native.**
-    📋 **Planned, not started.** Full plan + file:line map + exit criteria per
-    phase in **`docs/mountfree_remote_plan.md`** (read it first). Remote projects
+    📋 **Planned, not started.** Now built; see
+    `docs/context/remote_projects.md`. Remote projects
     drop the FUSE mount entirely: agent tabs over `ssh -tt`, file browsing/I-O
     over SFTP, git on the host over SSH. **Decisions (locked):** fully *replace*
     sshfs (no coexistence); git *runs over SSH* for remote projects. The keystone
@@ -777,8 +775,8 @@ container) — as opposed to the git **push** axis (#21/#22).*
         - [ ] ❌ Doesn't work on macOS
 
     - [x] **28p — Git lockstep hardening (#28n follow-up)** (2026-07-13; ✅ All
-      eight defects fixed · 🧪 Live-host QA still owed). Plan:
-      `docs/git_lockstep_hardening_plan.md`. Tracing the full local↔remote case
+      eight defects fixed · 🧪 Live-host QA still owed). Case matrix:
+      `docs/git_lockstep_case_matrix.md`. Tracing the full local↔remote case
       matrix over the shipped #28n code surfaced eight defects, two of them
       data-loss/correctness class. Root cause of most: **byte-sync
       (`sync_auto`) and git lockstep (`git_peer`) were blind to each other** —
@@ -1077,7 +1075,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
     sessions (incl. hand-started ones and orphans from a crashed Eldrun); click a
     row → open a shell tab that **attaches** (`tmux new-session -A -D -s <name>`),
     per-row kill/reveal. Renders in both the right panel and the Files tab for
-    free (one component). Plan: `docs/tmux_remote_plan.md`. `dtach`/`abduco`
+    free (one component). Rationale: `docs/context/tmux_sessions.md`. `dtach`/`abduco`
     (more transparent, less available) kept as a deferred alt backend.
     - [x] 🤖 Automated test — argv builder (`remote_command_off_is_unchanged`,
       `remote_command_tmux_wraps_shell_tab`/`_command_tab_preserving_prelude`/
@@ -1542,8 +1540,7 @@ untested tag until a VM has actually booted on this machine).
   surfacing.
 - [ ] Phase 5 (rest) — the **opt-in mirror flow** for an existing VM project
   (pair a local mirror later), **manual-pull-only** gating in `git_peer`
-  scheduling, and the view-diff-before-pull viewer (also on `ssh_sync_plan`'s
-  deferred list).
+  scheduling, and the view-diff-before-pull viewer (also deferred by the SSH local-sync work).
 - [x] Missing prerequisites are a **button**, not a sentence to retype
   (2026-09-07): `vm_doctor` now carries an `install_command` for the host
   packages it found missing (apt/brew/winget, arch-aware, arm64 firmware

@@ -16,7 +16,11 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-use super::{protocol::AdminDevice, store};
+use super::{
+    protocol::AdminDevice,
+    push::{Delivery, Notice, PushPrefs, PushStore},
+    store,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 const DEVICE_SCHEMA: u32 = 1;
@@ -32,7 +36,21 @@ const PAIR_CODE_ATTEMPTS: u8 = 5;
 /// so the live count is bounded by the device list.
 const MAX_RATE_BUCKETS: usize = 64;
 const CHALLENGE_TTL: u64 = 60;
-const SESSION_TTL: u64 = 12 * 60 * 60;
+/// A session slides: every authenticated request (`touch`) pushes its expiry
+/// this far out again. Sessions never touch disk, so a sidecar restart still
+/// invalidates every one of them — the phone re-logs in with its device key
+/// when that happens. What this window closes is the gap the idle lock cannot:
+/// an app the OS killed sends no `DELETE /auth/session`, and a fixed 12 h
+/// token then outlived the phone's own lock by hours.
+pub const SESSION_IDLE: u64 = 15 * 60;
+/// The absolute cap on one login, however active the phone stays.
+pub const SESSION_MAX: u64 = 12 * 60 * 60;
+/// How long an open ticket (`open_ticket`) lets its one URL be fetched. Long
+/// enough for the browser's PDF viewer to fetch it again or hand it to its
+/// download manager, short enough that a URL left in the browser's history is
+/// dead by the time anybody reads it there.
+pub const OPEN_TICKET_TTL: u64 = 5 * 60;
+const MAX_OPEN_TICKETS: usize = 64;
 
 fn now() -> u64 {
     SystemTime::now()
@@ -100,10 +118,27 @@ struct Challenge {
     expires_at: u64,
 }
 
+/// A URL the phone asked to open outside the PWA, where its `SameSite=Strict`
+/// session cookie does not go along: `target` (path and query) may be fetched
+/// while `session` lives and the ticket has not expired.
+#[derive(Clone)]
+struct OpenTicket {
+    session: String,
+    target: String,
+    expires_at: u64,
+}
+
 #[derive(Clone)]
 struct Session {
     device_id: String,
+    created_at: u64,
     expires_at: u64,
+}
+
+/// Where a session touched at `t` expires: the idle window from now, never
+/// past the cap counted from its login.
+fn session_deadline(created_at: u64, t: u64) -> u64 {
+    (t + SESSION_IDLE).min(created_at + SESSION_MAX)
 }
 
 pub struct AuthStore {
@@ -114,7 +149,11 @@ pub struct AuthStore {
     pairing: Option<PairCode>,
     challenges: HashMap<String, Challenge>,
     sessions: HashMap<String, Session>,
+    tickets: HashMap<String, OpenTicket>,
     attempts: HashMap<String, VecDeque<u64>>,
+    /// Web Push subscriptions, held here so revocation drops them in the same
+    /// call (`push.rs`).
+    push: PushStore,
 }
 
 impl AuthStore {
@@ -158,6 +197,7 @@ impl AuthStore {
         } else {
             DeviceFile::default()
         };
+        let push = PushStore::open(control_dir)?;
         Ok(Self {
             control_dir: control_dir.to_path_buf(),
             origin,
@@ -166,7 +206,9 @@ impl AuthStore {
             pairing: None,
             challenges: HashMap::new(),
             sessions: HashMap::new(),
+            tickets: HashMap::new(),
             attempts: HashMap::new(),
+            push,
         })
     }
 
@@ -179,6 +221,7 @@ impl AuthStore {
     fn sweep_expired(&mut self, t: u64) {
         self.challenges.retain(|_, c| c.expires_at >= t);
         self.sessions.retain(|_, s| s.expires_at >= t);
+        self.tickets.retain(|_, x| x.expires_at >= t);
     }
 
     /// Per-scope sliding window. A single global window meant 30 forged
@@ -336,11 +379,13 @@ impl AuthStore {
             .map_err(|_| "invalid_signature")?;
         device.last_seen_at = Some(now());
         let token = random_id::<32>()?;
-        let expires_at = now() + SESSION_TTL;
+        let created_at = now();
+        let expires_at = session_deadline(created_at, created_at);
         self.sessions.insert(
             token.clone(),
             Session {
                 device_id: device_id.into(),
+                created_at,
                 expires_at,
             },
         );
@@ -349,6 +394,8 @@ impl AuthStore {
         Ok((token, expires_at))
     }
 
+    /// The device behind a live session token, without extending it. The PTY
+    /// bridge's periodic re-check uses this: a tick is not the phone speaking.
     pub fn authenticate(&mut self, token: &str) -> Option<String> {
         let session = self.sessions.get(token)?.clone();
         if session.expires_at < now() {
@@ -356,6 +403,66 @@ impl AuthStore {
             return None;
         }
         Some(session.device_id)
+    }
+
+    /// `authenticate`, and the session slides: every authenticated HTTP request
+    /// and every frame the phone sends over its terminal socket lands here.
+    pub fn touch(&mut self, token: &str) -> Option<String> {
+        let t = now();
+        let session = self.sessions.get_mut(token)?;
+        if session.expires_at < t {
+            self.sessions.remove(token);
+            return None;
+        }
+        session.expires_at = session_deadline(session.created_at, t);
+        Some(session.device_id.clone())
+    }
+
+    /// A ticket that lets `target` — one path and query — be fetched without
+    /// the session cookie, for as long as the session behind `token` lives
+    /// and at most `OPEN_TICKET_TTL`. The browser's own PDF viewer is a
+    /// navigation handed over from the installed app, which the browser treats
+    /// as arriving from outside the site: the strict cookie stays behind.
+    pub fn open_ticket(&mut self, token: &str, target: &str) -> Result<String, String> {
+        self.authenticate(token).ok_or("authentication_required")?;
+        let t = now();
+        self.sweep_expired(t);
+        if self.tickets.len() >= MAX_OPEN_TICKETS {
+            if let Some(oldest) = self
+                .tickets
+                .iter()
+                .min_by_key(|(_, x)| x.expires_at)
+                .map(|(key, _)| key.clone())
+            {
+                self.tickets.remove(&oldest);
+            }
+        }
+        let ticket = random_id::<32>()?;
+        self.tickets.insert(
+            ticket.clone(),
+            OpenTicket {
+                session: token.into(),
+                target: target.into(),
+                expires_at: t + OPEN_TICKET_TTL,
+            },
+        );
+        Ok(ticket)
+    }
+
+    /// The device behind `ticket` when it was issued for exactly `target` and
+    /// neither it nor its session has ended. Using it does not slide the
+    /// session: a browser tab re-reading a PDF is not the phone speaking.
+    pub fn redeem_ticket(&mut self, ticket: &str, target: &str) -> Option<String> {
+        let entry = self.tickets.get(ticket)?;
+        if entry.expires_at < now() {
+            self.tickets.remove(ticket);
+            return None;
+        }
+        if entry.target != target {
+            return None;
+        }
+        let session = entry.session.clone();
+        self.authenticate(&session)
     }
 
     pub fn logout(&mut self, token: &str) {
@@ -384,6 +491,7 @@ impl AuthStore {
         self.sessions.retain(|_, s| s.device_id != device_id);
         self.challenges.retain(|_, c| c.device_id != device_id);
         self.save_devices()?;
+        self.push.forget_device(device_id)?;
         self.audit("revoked", Some(device_id));
         Ok(())
     }
@@ -394,6 +502,7 @@ impl AuthStore {
         self.challenges.clear();
         self.pairing = None;
         self.save_devices()?;
+        self.push.forget_all()?;
         let next = random_bytes::<32>()?;
         let key_path = self.control_dir.join("host.key");
         // Written beside and renamed over, never truncated in place: a crash
@@ -405,6 +514,47 @@ impl AuthStore {
         self.host_key = next.to_vec();
         self.audit("forgot_all", None);
         Ok(())
+    }
+
+    pub fn push(&self) -> &PushStore {
+        &self.push
+    }
+
+    /// Store this paired device's push subscription.
+    pub fn push_subscribe(
+        &mut self,
+        device_id: &str,
+        endpoint: &str,
+        p256dh: &str,
+        auth: &str,
+        prefs: PushPrefs,
+    ) -> Result<(), String> {
+        if !self.devices.devices.iter().any(|d| d.id == device_id) {
+            return Err("unknown device".into());
+        }
+        self.push.subscribe(device_id, endpoint, p256dh, auth, prefs)?;
+        self.audit("push_subscribed", Some(device_id));
+        Ok(())
+    }
+
+    pub fn push_unsubscribe(&mut self, device_id: &str) -> Result<(), String> {
+        self.push.forget_device(device_id)?;
+        self.audit("push_unsubscribed", Some(device_id));
+        Ok(())
+    }
+
+    /// The encrypted posts for one notice, to every paired device that
+    /// subscribed. The desktop's tag carries raw desktop ids, so the phone
+    /// gets a keyed digest of it — stable, so a repeat replaces rather than
+    /// stacks, and meaningless off this host.
+    pub fn push_deliveries(&mut self, notice: &Notice) -> Result<Vec<Delivery>, String> {
+        let tag = Base64UrlUnpadded::encode_string(&self.keyed(b"push-tag", notice.tag.as_bytes())[..12]);
+        let paired: Vec<String> = self.devices.devices.iter().map(|d| d.id.clone()).collect();
+        self.push.deliveries(notice, &tag, &paired)
+    }
+
+    pub fn push_forget_endpoint(&mut self, endpoint: &str) {
+        self.push.forget_endpoint(endpoint);
     }
 
     fn audit(&self, event: &str, device_id: Option<&str>) {
@@ -465,6 +615,35 @@ mod tests {
         assert_eq!(auth.authenticate(&token).as_deref(), Some(device.as_str()));
         auth.revoke(&device).expect("revoke");
         assert!(auth.authenticate(&token).is_none());
+    }
+
+    #[test]
+    fn an_open_ticket_opens_its_one_url_while_the_session_lives() {
+        let (_dir, mut auth) = store();
+        let signing = SigningKey::random(&mut OsRng);
+        let public = signing.verifying_key().to_public_key_der().expect("SPKI");
+        let public = Base64UrlUnpadded::encode_string(public.as_bytes());
+        let (code, _) = auth.create_pairing_code().expect("pairing code");
+        let device = auth.pair(&code, "Phone", &public).expect("paired");
+        let (nonce, payload, _) = auth.challenge(&device).expect("challenge");
+        let signature: Signature = signing.sign(payload.as_bytes());
+        let signature = Base64UrlUnpadded::encode_string(&signature.to_bytes());
+        let (token, _) = auth.login(&device, &nonce, &signature).expect("login");
+
+        assert!(auth.open_ticket("not-a-session", "/a").is_err());
+        let ticket = auth.open_ticket(&token, "/api/v1/x?f=1").expect("ticket");
+        assert_eq!(auth.redeem_ticket(&ticket, "/api/v1/x?f=1").as_deref(), Some(device.as_str()));
+        // Again, for the viewer's second read.
+        assert!(auth.redeem_ticket(&ticket, "/api/v1/x?f=1").is_some());
+        assert!(auth.redeem_ticket(&ticket, "/api/v1/x?f=2").is_none());
+        assert!(auth.redeem_ticket("forged", "/api/v1/x?f=1").is_none());
+
+        auth.tickets.get_mut(&ticket).expect("held").expires_at = now() - 1;
+        assert!(auth.redeem_ticket(&ticket, "/api/v1/x?f=1").is_none());
+
+        let ticket = auth.open_ticket(&token, "/api/v1/x?f=1").expect("ticket");
+        auth.logout(&token);
+        assert!(auth.redeem_ticket(&ticket, "/api/v1/x?f=1").is_none());
     }
 
     fn store() -> (tempfile::TempDir, AuthStore) {
@@ -552,6 +731,45 @@ mod tests {
         let reopened = AuthStore::open(dir.path(), "https://desk.example.ts.net".into())
             .expect("reopen after rotation");
         assert_eq!(reopened.host_key(), after.as_slice());
+    }
+
+    fn paired_login(auth: &mut AuthStore) -> (String, String) {
+        let signing = SigningKey::random(&mut OsRng);
+        let public = signing.verifying_key().to_public_key_der().expect("SPKI");
+        let public = Base64UrlUnpadded::encode_string(public.as_bytes());
+        let (code, _) = auth.create_pairing_code().expect("pairing code");
+        let device = auth.pair(&code, "Phone", &public).expect("paired");
+        let (nonce, payload, _) = auth.challenge(&device).expect("challenge");
+        let signature: Signature = signing.sign(payload.as_bytes());
+        let signature = Base64UrlUnpadded::encode_string(&signature.to_bytes());
+        let (token, _) = auth.login(&device, &nonce, &signature).expect("login");
+        (device, token)
+    }
+
+    #[test]
+    fn a_session_slides_with_every_touch_and_stops_at_the_cap() {
+        let (_dir, mut auth) = store();
+        let (device, token) = paired_login(&mut auth);
+        let t = now();
+        // A fresh login expires one idle window out, not twelve hours.
+        let first = auth.sessions[&token].expires_at;
+        assert!(first >= t + SESSION_IDLE - 1 && first <= t + SESSION_IDLE + 1);
+        // Pretend the phone has been quiet for most of the window, then speaks.
+        auth.sessions.get_mut(&token).unwrap().expires_at = t + 30;
+        assert_eq!(auth.touch(&token).as_deref(), Some(device.as_str()));
+        assert!(auth.sessions[&token].expires_at >= t + SESSION_IDLE - 1);
+        // A plain check does not slide it.
+        auth.sessions.get_mut(&token).unwrap().expires_at = t + 30;
+        assert_eq!(auth.authenticate(&token).as_deref(), Some(device.as_str()));
+        assert_eq!(auth.sessions[&token].expires_at, t + 30);
+        // Near the cap a touch cannot push past it.
+        auth.sessions.get_mut(&token).unwrap().created_at = t - SESSION_MAX + 60;
+        auth.touch(&token).expect("still live");
+        assert_eq!(auth.sessions[&token].expires_at, t + 60);
+        // Past its deadline the token is gone, touched or not.
+        auth.sessions.get_mut(&token).unwrap().expires_at = t - 1;
+        assert!(auth.touch(&token).is_none());
+        assert!(auth.authenticate(&token).is_none());
     }
 
     #[test]

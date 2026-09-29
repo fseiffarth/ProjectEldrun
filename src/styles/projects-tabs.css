@@ -295,6 +295,41 @@
   color: var(--text-primary);
 }
 
+/* Agent-fence marker: the VM glyph's box, red whenever it shows — `is-live`
+   (agents running outside the fence right now) and `is-off` (only the policy
+   for new tabs) alike. Red on hover too, so the box's hover can't wash it out. */
+.pill-fence-glyph,
+.pill-fence-glyph:hover {
+  color: var(--danger);
+}
+
+.pill-fence-live-note {
+  color: var(--danger);
+}
+
+/* Important / Urgent tabs of this project (PillTabMarks): the mail client's
+   marks and colours — `!` amber, `!!` red — kept on hover like the fence glyph. */
+.pill-tab-marks,
+.pill-tab-marks:hover {
+  width: auto;
+  min-width: 18px;
+  padding: 0 3px;
+  gap: 1px;
+  font-weight: 800;
+  letter-spacing: -0.06em;
+  color: var(--warning);
+}
+.pill-tab-marks.urgent,
+.pill-tab-marks.urgent:hover {
+  color: var(--danger);
+}
+.pill-tab-marks-count {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
 /* ── Box scope chip ─────────────────────────────────────────────────── */
 /* The ONE boxes control (components/projects/BoxScopeChip.tsx), pinned beside
    the root pill and outside the scrolling strip. Deliberately the .root-pill
@@ -312,7 +347,7 @@
      .project-pill and .root-pill do. */
   position: relative;
   /* 10px, the leading run's shared inset (see `.header-left`): the chip IS the
-     leading run now (root, Trash and the boxes all fold into it), so it keeps
+     leading run now (root and the boxes fold into it), so it keeps
      the inset the run had. */
   padding: 0 10px;
   border: none;
@@ -343,28 +378,28 @@
   white-space: nowrap;
 }
 
+/* The Eldrun logo — the same mark the drag grip wears at the bar's left edge —
+   standing for "all projects / the boxes" while the chip names no scope. */
 .box-chip-icon {
-  font-size: 12px;
-  line-height: 1;
-  color: var(--accent);
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--top-frame-text);
 }
 
-/* The marks the chip wears instead of ▣ when it names a built-in scope: the
-   app's own spark for the root terminal, the bin for Trash — the two glyphs
-   their pinned pills carried before both folded in here, at the same 18px the
-   Trash pill drew and without the pill's one-per-launch intro flourish (the
-   chip re-mounts its star on every trip back to root, and a logo that replays
-   its entrance on each visit is a tic, not a flourish). */
-.box-chip-star,
-.box-chip-trash-icon {
+/* The mark the chip wears instead of the logo when it names the root scope: the
+   app's own spark, the glyph its pinned pill carried before it folded in here,
+   at 18px and without the pill's one-per-launch intro flourish (the chip
+   re-mounts its star on every trip back to root, and a logo that replays its
+   entrance on each visit is a tic, not a flourish). */
+.box-chip-star {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
   color: inherit;
 }
 
-.box-chip-menu-star,
-.box-chip-menu-trash-icon {
+.box-chip-menu-star {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
@@ -375,6 +410,14 @@
   font-size: var(--text-xs);
   line-height: 1;
   opacity: 0.75;
+}
+
+/* "+N": the boxes past MAX_BOX_PILLS, which only the chip's list reaches. */
+.box-chip-overflow {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-secondary);
 }
 
 .box-chip:hover {
@@ -418,25 +461,56 @@
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-/* ── The selected box's own pill ────────────────────────────────────── */
-/* The box the chip's dropdown selected stands beside it as a control of its
-   own (BoxScopeChip.tsx): the chip picks, the pill IS the box — click it to
-   enter the box scope, drop a project on it to add a member, right-click it to
-   rename/edit/delete. Deliberately the SAME `.box-chip` box as its neighbour,
-   so the leading segment (★/🗑/▣ chip · box · hairline · projects) still reads
-   as one run; it only drops the caret it has no menu for and tightens the
-   inset, since the chip beside it already carries the run's 10px lead. */
+/* ── The box pills ──────────────────────────────────────────────────── */
+/* Every box stands beside the chip as a pill of its own (BoxScopeChip.tsx):
+   click it to enter the box scope, drop a project on it to add a member,
+   right-click it for rename / members / edit / delete. Deliberately the SAME
+   `.box-chip` box as the chip, so the leading segment (chip · boxes ·
+   hairline · projects) reads as one run; the pill only drops the caret it has
+   no menu for. Each pill carries its box's colour in `--box-color` (set
+   inline from `lib/theme/boxColor`) — the mark, the active line and the drop
+   tint all take it, and the members' swatches on the project pills match. */
+.box-pill-row {
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+}
+
 .box-scope-pill {
-  padding-left: 4px;
+  /* The project pill's own inset (`.pill-main`: 12px lead, 8px trail), so a
+     box pill and a project pill sit on the same rhythm. */
+  padding: 0 8px 0 12px;
 }
 
-/* Long box names get a little more room than the chip's own label: the pill
-   has nothing else to fit but the name and its member count. */
 .box-scope-pill .box-chip-main {
-  max-width: 180px;
+  gap: 6px;
+  max-width: 140px;
 }
 
-/* The hairline after the leading segment (★ · 🗑 · ▣ chip), before the scrolling
+.box-scope-pill .project-pill-box-swatch {
+  color: var(--box-color, var(--accent));
+}
+
+/* The box's slice is what the strip shows (its members), whether or not the
+   box's own tabs are on screen: named in full, like a project's pill while
+   one of its tabs is being visited. */
+.box-scope-pill.is-selected {
+  color: var(--text-primary);
+}
+
+/* The box's scope IS the current one: the accent line is the box's colour,
+   so the lit pill and its members' swatches say the same thing. */
+.box-scope-pill.active {
+  border-top-color: var(--box-color, var(--accent));
+}
+
+/* A project pill is being dragged over this box: dropping adds it. */
+.box-scope-pill.drag-over {
+  background-color: color-mix(in srgb, var(--box-color, var(--accent)) 22%, transparent);
+  box-shadow: inset 0 0 0 1px var(--box-color, var(--accent));
+}
+
+/* The hairline after the leading segment (★ · 🗑 · ⬡ chip), before the scrolling
    project pills — the visible edge between the fixed zone and the strip that
    moves under it. It was literally white, which is a divider that only exists on
    a dark header: on any light theme it was a white line on a near-white bar, and
@@ -451,8 +525,8 @@
 }
 
 /* The chip's dropdown — the only place boxes are listed. Portaled to the body
-   so it escapes the header's clipping, and wearing the switcher's own menu
-   chrome (.project-switcher-add-menu's shape) rather than a second look. */
+   so it escapes the header's clipping, and wearing the shared popover surface
+   (the `.context-menu` group below) rather than a second look. */
 .box-chip-menu {
   position: fixed;
   z-index: var(--z-menu);
@@ -460,9 +534,7 @@
   flex-direction: column;
   min-width: 170px;
   padding: 4px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  box-shadow: var(--shadow-3);
+  color: var(--text-primary);
 }
 
 .box-chip-menu button {
@@ -494,10 +566,30 @@
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.box-chip-menu-icon {
+/* A box row in the dropdown: the show-on-row checkbox, then the row's own
+   button (pick the box). Two buttons side by side, so a toggle never enters
+   the box. */
+.box-chip-menu-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.box-chip-menu-row > button:last-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.box-chip-menu button.box-chip-menu-pin {
+  width: 22px;
+  justify-content: center;
+  padding: 5px 0;
   color: var(--accent);
-  font-size: 11px;
-  line-height: 1;
+}
+
+.box-chip-menu-label {
+  padding: 3px 8px 1px;
+  font-size: 10px;
+  color: var(--text-secondary);
 }
 
 .box-chip-menu-name {
@@ -552,28 +644,46 @@
   padding: 1px 4px;
 }
 
-.project-box-member-count {
+/* The box swatches on a MEMBER pill (overlay model: member pills always
+   render individually; the swatches + their tooltip are what say "also in a
+   box"). One square per box, in the box's colour — the colour of the box's
+   own pill in the leading segment — so which box a member belongs to is read
+   by eye across the row. Hexagons (the box icon's shape), where the category
+   marks are round dots. */
+.project-pill-boxdot {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-  border-radius: var(--radius);
+  gap: 3px;
+  margin-left: 5px;
+  flex-shrink: 0;
 }
 
-/* The small box badge on a MEMBER pill (overlay model: member pills always
-   render individually; the badge + its tooltip are what say "also in a box"). */
-.project-pill-boxdot {
-  margin-left: 4px;
-  font-size: var(--text-xs);
-  line-height: 1;
-  color: var(--accent);
-  opacity: 0.85;
+/* The hexagon's rim (`BoxSwatch`), the half-tone ring the square swatch wore
+   as a box-shadow, so a light box colour still holds its edge. */
+.box-swatch {
+  flex-shrink: 0;
+  stroke: color-mix(in srgb, var(--bg-main) 50%, transparent);
+}
+
+.project-pill-box-swatch {
+  width: 10px;
+  height: 9px;
+}
+
+/* The same swatch in a menu row (a pill's Boxes group), before the box's name. */
+.context-menu-box-swatch {
+  display: inline-block;
+  width: 11px;
+  height: 10px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+/* A box pill's context menu carries the members checklist, so it can run
+   long: capped to the viewport and scrolling inside. */
+.box-pill-menu {
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
 }
 
 /* Multi-select ring (Ctrl/Cmd-click, 3b): the selection the "Box these…" menu
@@ -596,24 +706,52 @@
   width: min(440px, 92vw);
 }
 
+/* The member list reads as one inset field: the control surface and border of
+   the inputs above it, rows that highlight like menu items. */
 .box-editor .box-editor-members {
   max-height: 40vh;
   overflow-y: auto;
-  border: 1px solid var(--border-color, color-mix(in srgb, var(--text-primary) 18%, transparent));
-  border-radius: 6px;
-  padding: 4px 6px;
-  margin: 6px 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  padding: 4px;
+  margin-top: -6px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
-.box-editor .box-editor-member-row {
-  display: flex;
+/* A checkbox row, not a stacked field: undo `.project-dialog label`'s column
+   and `.project-dialog input`'s 34px text-field box on the checkbox. */
+.box-editor label.box-editor-member-row {
+  flex-direction: row;
   align-items: center;
   gap: 8px;
-  padding: 2px 4px;
+  min-height: 28px;
+  padding: 0 8px;
+  color: var(--text-primary);
+  font-size: 13px;
   cursor: var(--cur-pointer, pointer);
+}
+
+.box-editor label.box-editor-member-row:hover {
+  background: var(--control-hover-bg);
+}
+
+.box-editor .box-editor-member-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.box-editor .box-editor-member-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .box-editor .box-editor-empty {
@@ -626,7 +764,6 @@
   opacity: 0.85;
   border-left: 2px solid var(--accent);
   padding: 4px 8px;
-  margin-bottom: 10px;
 }
 
 .box-editor .box-editor-dissolve {
@@ -1194,6 +1331,67 @@
   outline: none;
 }
 
+/* ── Tab groups (`lib/tabStacks`, TabStackChip) ─────────────────────────────
+   Tabs sharing a group name fold into ONE chip in the strip: the name as a
+   tinted lozenge in the group's accent (its current or first tab's colour),
+   the current member's label beside it when the group holds the viewed tab,
+   and a member count. Hovering drops the member list below (`.tab-stack-menu`,
+   the shared menu chrome). The chip is a `.tab`, so the active rule, the
+   status ring and the reorder slot all apply to it unchanged. */
+.tab-stack-name {
+  flex-shrink: 0;
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tab-accent, var(--accent)) 24%, transparent);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.tab-stack-current {
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-stack-count {
+  flex-shrink: 0;
+  min-width: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.tab.tab-stack.stack-open .tab-stack-name {
+  background: color-mix(in srgb, var(--tab-accent, var(--accent)) 40%, transparent);
+}
+
+.tab-stack-menu {
+  min-width: 200px;
+  max-width: 360px;
+}
+.tab-stack-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab-new-menu-item.tab-stack-row.active {
+  border-color: var(--accent);
+}
+.tab-stack-row .tab-stack-row-close { opacity: 0.55; }
+.tab-stack-row:hover .tab-stack-row-close { opacity: 1; }
+/* The status glyphs outside a `.tab`: same colours as the ring's. */
+.tab-stack-row .tab-status-mark.working { --tab-status-color: var(--status-working); }
+.tab-stack-row .tab-status-mark.needs-decision,
+.tab-stack-row .tab-status-mark.decision { --tab-status-color: var(--status-decision); }
+.tab-stack-row .tab-status-mark.done { --tab-status-color: var(--status-done); }
+.tab-stack-row .tab-status-mark.interrupted { --tab-status-color: var(--status-interrupted); }
+
 /* ── Tab status ring ─────────────────────────────────────────────────────
    A tab shows agent state as a RING, drawn on an `::after` overlay so it never
    changes the tab's width and the text stays crisp. Three states from two
@@ -1205,6 +1403,8 @@
    - needs-decision (amber, solid): agent gone quiet with a choice/permission
      prompt on screen — shown on the viewed tab too, since an agent blocked on
      you stays blocked while you look at it.
+   - interrupted (`--status-interrupted`, solid): the user cut the agent's turn
+     off; held until its next turn starts, left off the viewed tab.
    Working and finished clear the moment the tab is viewed; a pending decision
    clears when it is ANSWERED.
 
@@ -1221,14 +1421,16 @@
    puts the ring above the tab's (transparent) background and below its label. */
 .tab.working,
 .tab.needs-decision,
-.tab.finished {
+.tab.finished,
+.tab.interrupted {
   position: relative;
   z-index: 0;
 }
 
 .tab.working::after,
 .tab.needs-decision::after,
-.tab.finished::after {
+.tab.finished::after,
+.tab.interrupted::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -1253,9 +1455,10 @@
 }
 .tab.needs-decision { --tab-status-color: var(--status-decision); }
 .tab.finished { --tab-status-color: var(--status-done); }
+.tab.interrupted { --tab-status-color: var(--status-interrupted); }
 
 /* The glyph leading the label (`TabStatusMark`): ▶ working, ? decision,
-   ✓ finished — the ring's state named, in the ring's own colour, so it no longer
+   ✓ finished, ■ interrupted — the ring's state named, in the ring's own colour, so it no longer
    has to be read from hue and stroke alone. Static, like the ring. */
 .tab-status-mark {
   flex-shrink: 0;
@@ -1275,6 +1478,36 @@
    once". */
 .tab-status-mark.working.shell {
   color: var(--status-shell-working);
+}
+
+/* A root-console tab a one-click install opened (`runInstallInTab`): an accent
+   ring that breathes until the tab is clicked, so the install stands out among
+   the console's other tabs. It is `::before` so it stacks with a status ring
+   (`::after`) rather than replacing it, and only its OPACITY animates — a solid
+   border, nothing blurred (WebKitGTK software path). */
+.tab.install-pending {
+  position: relative;
+  z-index: 0;
+}
+.tab.install-pending::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  animation: tab-install-pulse 1.4s ease-in-out infinite;
+}
+@keyframes tab-install-pulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tab.install-pending::before {
+    animation: none;
+  }
 }
 
 /* ── Project pill status bars ────────────────────────────────────────────
@@ -1403,6 +1636,10 @@
   background-color: var(--status-done);
 }
 
+.pill-status-bar.interrupted {
+  background-color: var(--status-interrupted);
+}
+
 /* Nothing in the agent-status vocabulary animates any more (see the
    `--status-*` block): the three states are three colours, at rest, so the
    reduced-motion and Energy Saver collapses that used to exist here have
@@ -1520,6 +1757,80 @@
   transition: background-color var(--transition), color var(--transition);
 }
 .tab-locality { cursor: var(--cur-pointer, pointer); }
+/* The root console's Host session (unfenced, full rights): a red pill on the
+   tab, always visible — it is the one tab that can reach the whole machine. */
+.tab-host-session {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--danger);
+  color: var(--bg);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+/* A tab's Important / Urgent mark (TabMarkBadge) — the mail client's glyphs
+   and colours — and its to-do card link. */
+.tab-mark-glyph {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.06em;
+  color: var(--warning);
+}
+.tab-mark-glyph.urgent {
+  color: var(--danger);
+}
+.tab-todo-link {
+  flex-shrink: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1;
+}
+button.tab-todo-link {
+  cursor: var(--cur-pointer, pointer);
+}
+/* The tab menu's mark rows: the glyph in the dot's slot, a check on the set one. */
+.tab-mark-menu-glyph {
+  flex: 0 0 16px;
+  text-align: center;
+  font-weight: 800;
+  letter-spacing: -0.06em;
+  color: var(--warning);
+}
+.tab-mark-menu-item.urgent .tab-mark-menu-glyph {
+  color: var(--danger);
+}
+.tab-mark-menu-check {
+  margin-left: auto;
+  color: var(--accent);
+}
+/* An agent tab's own session mode, read off its status line (TabAgentModeMarks):
+   PLAN in the secondary accent (the phone's Mode chip is the same violet), GOAL
+   in the accent. The HOST pill's shape, outlined rather than filled so the red
+   HOST stays the one loud pill on the strip. */
+.tab-mode-mark {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.tab-mode-mark.plan { color: var(--accent-secondary); }
+.tab-mode-mark.goal { color: var(--accent); }
 .tab-source { cursor: var(--cur-default, default); }
 .tab-locality.local,
 .tab-source.local { color: var(--success); }
@@ -1907,26 +2218,51 @@
 }
 
 /* No tabs in this group yet: the + is the sole entry point, so breathe it in
-   the accent colour to invite a first tab. Reuses the working-tab pulse so the
-   cue matches the rest of the tab bar. Hovering cancels the pulse so it settles
-   into the normal affordance once the user reaches for it. */
+   the accent colour to invite a first tab. Hovering cancels the pulse so it
+   settles into the normal affordance once the user reaches for it. Opacity
+   only. (It used to borrow the working-tab pulse; that keyframe went when tab
+   status became a static ring, and left this + pointing at nothing.) */
 .tab-new-btn.empty-hint {
   color: var(--accent);
-  animation: tab-working-pulse 1.6s ease-in-out infinite;
+  animation: tab-new-hint-pulse 1.6s ease-in-out infinite;
 }
 
 .tab-new-btn.empty-hint:hover {
   animation: none;
 }
 
+@keyframes tab-new-hint-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-new-btn.empty-hint {
+    animation: none;
+  }
+}
+
 /* One popover/menu surface for the whole app: context menus, the generic
-   dropdown (via .context-menu), the tab "+" menu and the project-switcher add
-   menu all read this. The individual rules keep only positioning / padding /
-   min-width. */
+   dropdown (via .context-menu), the tab "+" menu, the project-switcher add
+   menu, and the one-off popovers (box chip list, project search results, the
+   global-app editor, the run-arguments prompts, the git change tree, the
+   presenter's marker settings, the reminder popup) all read this. The
+   individual rules keep only positioning / padding / min-width.
+
+   No `position` here: every member places itself (fixed or absolute), which is
+   also what anchors the `::before` wash — and several of them are declared
+   EARLIER in the cascade (viewers.css, files-panel.css, above in this file),
+   where a grouped `position: relative` would win and unpin them. */
 .context-menu,
 .tab-new-menu,
-.project-switcher-add-menu {
-  position: relative;
+.project-switcher-add-menu,
+.box-chip-menu,
+.project-search-popover,
+.file-run-args,
+.file-viewer-run-args,
+.git-change-tree,
+.presentation-settings,
+.cal-alarm-popup {
   background: var(--bg-elevated);
   /* No boxed outline: a 1px frame around a tinted popover reads as a stray
      hairline ring drawn around the accent wash below, not as an edge. The
@@ -2193,8 +2529,47 @@ button:has(> .menu-shortcut) {
   box-shadow: 0 0 0 2px var(--bg-elevated), 0 0 0 3px var(--text-primary);
 }
 
+/* The box picker's custom chip: a label over a hidden native colour input,
+   so it wears the swatch shape and opens the platform picker on click. */
+.box-color-custom {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  background: conic-gradient(#d9556b, #e2b93b, #59b96a, #4fc3c3, #4aa3df, #c164d6, #d9556b);
+}
+
+.box-color-custom input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
 .tab-color-swatch--none {
   background: var(--control-bg);
+}
+
+/* The box pill's menu is a `.context-menu`, whose `.context-menu button` rule
+   (display:block; width:100%; min-height; padding) outranks the bare
+   `.tab-color-swatch`, so inside it every chip grew into a full-width row and
+   the palette ran ten rows tall. Put the chip's own box back, and drop the
+   menu scheme's hover underline, which is for full-width rows. */
+.context-menu .tab-color-swatch {
+  display: inline-block;
+  width: 18px;
+  min-height: 0;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+}
+.context-menu .tab-color-swatch:hover {
+  border-color: var(--text-primary);
+}
+.context-menu .tab-color-swatch.is-current {
+  border-color: var(--text-primary);
+}
+.context-menu .tab-color-swatch::after {
+  content: none;
 }
 
 .tab-new-menu-hint {
@@ -2206,8 +2581,9 @@ button:has(> .menu-shortcut) {
 
 /* #py right-click-Run "arguments" popover on a file-tree row. A transparent
    full-window backdrop catches the outside click that closes it; the panel is
-   pinned at the cursor (clamped on-screen by useClampToViewport). Canonical
-   panel chrome + explicit colours (a portal child inherits none). */
+   pinned at the cursor (clamped on-screen by useClampToViewport). The shared
+   popover surface (the `.context-menu` group) + an explicit colour (a portal
+   child inherits none). */
 .file-run-args-backdrop {
   position: fixed;
   inset: 0;
@@ -2221,11 +2597,7 @@ button:has(> .menu-shortcut) {
   gap: 6px;
   min-width: 240px;
   padding: 8px;
-  background: var(--bg-elevated);
   color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-3);
 }
 .file-run-args-label {
   font-size: 10px;
@@ -2764,6 +3136,29 @@ button:has(> .menu-shortcut) {
 .agent-schedule-attribution small { overflow-wrap: anywhere; }
 .agent-schedule-attribution .agent-schedule-pill { color: var(--accent); border: 1px dashed currentColor; }
 .agent-prompt-card[data-agent-authored="true"] { border-style: dashed; }
+
+/* ── Agent push requests (`services::git_push_mcp`) ─────────────────────────
+   One card per request, in the git bar and the Agents view: what would be
+   pushed, Push / Dismiss while pending, the outcome afterwards. */
+.git-push-proposals { display: flex; flex-direction: column; gap: 6px; width: 100%; margin: 4px 0; }
+.git-push-proposal {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px 8px; border: 1px dashed var(--accent); border-radius: var(--radius-sm, 6px);
+  font-size: var(--text-xs); color: var(--text-primary);
+}
+.git-push-proposal[data-status="pushed"] { border-style: solid; border-color: color-mix(in srgb, var(--success, var(--accent)) 60%, transparent); }
+.git-push-proposal[data-status="failed"] { border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.git-push-proposal-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.git-push-proposal-head .agent-schedule-pill { color: var(--accent); border: 1px dashed currentColor; }
+.git-push-proposal-sha, .git-push-proposal-url { font-family: var(--font-mono); overflow-wrap: anywhere; color: var(--text-secondary); }
+.git-push-proposal-confirm { color: var(--warning, var(--accent)); }
+.git-push-proposal-note, .git-push-proposal-message { margin: 0; overflow-wrap: anywhere; }
+.git-push-proposal-commits { margin: 0; padding-left: 16px; }
+.git-push-proposal-commits code { font-size: var(--text-xs); }
+.git-push-proposal-output { max-height: 200px; overflow: auto; margin: 0; padding: 4px 6px; font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-elevated, transparent); }
+.git-push-proposal-actions { display: flex; gap: 6px; }
+.git-push-mcp-level { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
+.git-push-mcp-protected { font-size: var(--text-xs); min-width: 14em; }
 
 /* ── Agent-tab state, painted on the row ─────────────────────────────────
    What an AGENT TAB is doing, in the tab ring's own palette (`--status-*`, see

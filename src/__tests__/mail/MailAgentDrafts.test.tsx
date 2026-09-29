@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(
 
 import { MailComposeDialog } from "../../components/mail/MailComposeDialog";
 import { RootReviewStrip } from "../../components/layout/RootReviewStrip";
+import { MailAgentDraftList } from "../../components/mail/MailAgentDraftList";
 import { useRootReviewStore } from "../../stores/rootReview";
 import { useMailStore } from "../../stores/mail";
 
@@ -22,7 +23,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   invoke.mockResolvedValue([]);
   useRootReviewStore.setState({ proposals: [], count: 0, busy: false, error: null });
-  useMailStore.setState({ agentDrafts: [], pendingDraft: null });
+  useMailStore.setState({ agentDrafts: [], mailTabs: [], activeMailTab: "inbox" });
 });
 afterEach(cleanup);
 
@@ -99,5 +100,31 @@ describe("drafts an agent wrote", () => {
     invoke.mockRejectedValueOnce("mail is locked");
     await useMailStore.getState().loadAgentDrafts();
     expect(useMailStore.getState().agentDrafts).toEqual([]);
+  });
+
+  it("the rail entry lists every account's drafts, each naming its account; a click opens the composer", () => {
+    const onOpen = vi.fn();
+    const d = draft({ to: ["bob@friends.example"], subject: "Offer‮" });
+    const other = draft({ id: "d2", account_id: "a2", to: ["eve@work.example"], subject: "Report" });
+    const labels: Record<string, string> = { a1: "Me", a2: "Work" };
+    render(
+      <MailAgentDraftList drafts={[d, other]} accountLabel={(x) => labels[x.account_id]} onOpen={onOpen} />,
+    );
+    expect(screen.getByText("bob@friends.example")).toBeTruthy();
+    expect(screen.getByText("eve@work.example")).toBeTruthy();
+    expect(screen.getByText("Me")).toBeTruthy();
+    expect(screen.getByText("Work")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Send/ })).toBeNull();
+    fireEvent.click(screen.getByText("Offer").closest(".mail-row")!);
+    expect(onOpen).toHaveBeenCalledWith(d);
+  });
+
+  it("an empty list says so; a draft without recipients says that, not blank", () => {
+    render(<MailAgentDraftList drafts={[]} accountLabel={() => undefined} onOpen={vi.fn()} />);
+    expect(screen.getByText("No agent drafts.")).toBeTruthy();
+    cleanup();
+    render(<MailAgentDraftList drafts={[draft({ body_text: "<b>Dear</b>" })]} accountLabel={() => undefined} onOpen={vi.fn()} />);
+    expect(screen.getByText("(no recipient)")).toBeTruthy();
+    expect(screen.getByText("<b>Dear</b>")).toBeTruthy();
   });
 });

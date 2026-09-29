@@ -18,14 +18,17 @@
 //!   [`git_merge_abort`] ends it.
 //!
 //! Merging and committing run the repo's hooks, so they are gated like commit
-//! and push (`require_hook_trust`); the branch fast-forward and the fetch pin
-//! hooks off (`reference-transaction` is the only hook they could fire).
+//! and push (`require_hook_trust`) and are the only calls here that go through
+//! `run_git_hooked`; everything else — the fetch, the branch fast-forward, the
+//! merge-state probes, the abort — runs with hooks pinned off like every other
+//! Eldrun git call (#862: the conflicted-file probe rewrites the index and would
+//! fire `post-index-change` on merely opening the Git panel).
 
 use std::path::{Path, PathBuf};
 
 use crate::commands::git::{
     check_rev, hardened_git_command_in, local_non_repo, require_hook_trust, run_git,
-    run_off_thread, scoped_token_config, NO_HOOKS_CONFIG,
+    run_git_hooked, run_off_thread, scoped_token_config,
 };
 use crate::services::remote::{remote_target_for_dir, RemoteTarget};
 
@@ -196,10 +199,7 @@ pub async fn git_fetch(project_dir: String, project_id: Option<String>) -> Resul
 
 /// `git fetch` in a local directory with push's scoped token auth.
 fn fetch_local(dir: &Path, token: Option<&str>, project_id: Option<&str>) -> Result<std::process::Output, String> {
-    let mut args: Vec<String> = NO_HOOKS_CONFIG
-        .iter()
-        .flat_map(|kv| ["-c".to_string(), (*kv).to_string()])
-        .collect();
+    let mut args: Vec<String> = Vec::new();
     if token.is_some() {
         let origins = crate::commands::git_hosting::token_origins(project_id, None);
         args.extend(scoped_token_config(&origins, "x-access-token"));
@@ -223,7 +223,7 @@ fn git_fetch_blocking(project_dir: String, project_id: Option<String>) -> Result
                 let token = crate::commands::git_hosting::effective_git_creds(&target.project_id).1;
                 fetch_local(&mirror, token.as_deref(), Some(&target.project_id))?
             }
-            None => run_git(Some(&target), &project_dir, &["-c", NO_HOOKS_CONFIG[0], "fetch"])?,
+            None => run_git(Some(&target), &project_dir, &["fetch"])?,
         }
     } else {
         let token = project_id
@@ -306,7 +306,7 @@ fn git_pull_apply_blocking(project_dir: String, branch: Option<String>, merge: b
         // A fetch from this very repo: refuses anything but a fast-forward, and
         // refuses a branch checked out in another worktree.
         let refspec = format!("{up}:refs/heads/{branch}");
-        let message = git_ok(t, &project_dir, &["-c", NO_HOOKS_CONFIG[0], "fetch", ".", &refspec])?;
+        let message = git_ok(t, &project_dir, &["fetch", ".", &refspec])?;
         return Ok(PullOutcome { conflicts: vec![], message });
     }
 
@@ -316,7 +316,7 @@ fn git_pull_apply_blocking(project_dir: String, branch: Option<String>, merge: b
     } else {
         vec!["merge", "--ff-only", &up]
     };
-    let out = run_git(t, &project_dir, &args)?;
+    let out = run_git_hooked(t, &project_dir, &args)?;
     if out.status.success() {
         return Ok(PullOutcome { conflicts: vec![], message: stdout_of(&out) });
     }
@@ -349,7 +349,7 @@ pub async fn git_merge_state(project_dir: String) -> Result<MergeState, String> 
 pub async fn git_merge_abort(project_dir: String) -> Result<(), String> {
     run_off_thread(move || {
         let target = remote_target_for_dir(&project_dir);
-        git_ok(target.as_ref(), &project_dir, &["-c", NO_HOOKS_CONFIG[0], "merge", "--abort"]).map(|_| ())
+        git_ok(target.as_ref(), &project_dir, &["merge", "--abort"]).map(|_| ())
     })
     .await
 }
@@ -369,7 +369,11 @@ fn git_merge_commit_blocking(project_dir: String) -> Result<(), String> {
         return Err(format!("{} file(s) still have conflicts: {}", left.len(), left.join(", ")));
     }
     require_hook_trust(t, &project_dir)?;
-    git_ok(t, &project_dir, &["commit", "--no-edit"]).map(|_| ())
+    let out = run_git_hooked(t, &project_dir, &["commit", "--no-edit"])?;
+    if !out.status.success() {
+        return Err(err_of(&out));
+    }
+    Ok(())
 }
 
 /// Both sides of one file for the `gitmerge` viewer, keyed by the file's

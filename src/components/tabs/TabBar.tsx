@@ -28,23 +28,39 @@ import {
   SHELL_ITEMS,
   TAB_ACCENT,
   agentMenuEntries,
+  agentShortcutSlots,
   buildStaticTabSpec,
   compactAgentMenuEntries,
   isFileTabKind,
   itemLabel,
   type StaticMenuItem,
 } from "./newTabItems";
-import { AddTabMenuList } from "./AddTabMenuList";
+import { AddTabMenuList, type AddMenuEntry, type AddMenuGroup } from "./AddTabMenuList";
 import { localModelMenuGroup, useLocalModelPlacement } from "./localModelGroup";
 import { TabColorPicker } from "./TabColorPicker";
+import { TabMarkBadge } from "./TabMarkBadge";
+import { TabMarkMenuItems } from "./TabMarkMenuItems";
 import { tabColorCss } from "../../lib/theme/tabColors";
 import { useAddTabMenuData } from "./useAddTabMenuData";
+import {
+  NEW_TAB_SHORTCUT_EVENT,
+  NEW_TAB_SLOTS_EVENT,
+  type NewTabRequest,
+  type NewTabShortcutDetail,
+  type NewTabSlotsDetail,
+} from "../../lib/shortcuts/newTabChord";
 import { useAgentWorktreePicker } from "./agentWorktrees";
+import type { CloudLaunch } from "../../lib/agents/cloudSessions";
+import { BOX_SCOPE_PREFIX } from "../../lib/terminal/ptyId";
 import { CustomAgentDialog } from "./CustomAgentDialog";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
+import { TabStackChip, type StackMember } from "./TabStackChip";
+import { stackNames, stripItems } from "../../lib/tabStacks";
+import { useDialogs } from "../common/PromptDialogs";
 import { useFastMode } from "../../lib/agents/fastMode";
 import {
+  TabAgentModeMarks,
   TabSourceBadge,
   TabStatusMark,
   TabTexLinkBadge,
@@ -54,20 +70,28 @@ import {
   type LocalityMenuState,
 } from "./TabLocalityBadges";
 import { texPdfPartner, useTexPdfCandidates } from "../../lib/viewers/tex/texPdfLink";
-import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/window/coords";
+import {
+  startCursorPoll,
+  desktopCursor,
+  desktopCoordinatesSupported,
+  type PhysPoint,
+} from "../../lib/window/coords";
+import { newDropToken, probeDropTarget } from "../../lib/window/dropClaim";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { closeTabWithConfirm } from "../../lib/remote/closeRemoteTab";
+import { reopenClosedAgentTab, useClosedAgentTabs } from "../../stores/agents/closedAgentTabs";
 import { registerHostBoundTab } from "../../lib/remote/hostBound";
-import { busyStateClass, useActivityStore } from "../../stores/activity";
+import { localLaunchTabSpec, vibeLocalTabSpec } from "../../lib/agents/localTabSpec";
+import { attentionStateClass, busyStateClass, useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { MenuShortcut } from "../common/MenuShortcut";
 import { useT } from "../../lib/i18n";
 import { useChordHint } from "../../lib/shortcuts/shortcutHint";
-import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { nextScheduleOccurrence } from "../../lib/agents/agentSchedule";
@@ -140,6 +164,9 @@ interface Props {
   filesReserveWidth?: number;
 }
 
+/** The + menu's one Shell row (the backend picks the OS shell). */
+const SHELL_ITEM = SHELL_ITEMS.find((i) => i.kind === "shell")!;
+
 export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth }: Props) {
   const t = useT();
   // Every control here has a keyboard twin in `useKeyboard`; the tooltip names
@@ -164,7 +191,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // The 3D project-blob tab is a root-scope feature, offered only once at least
   // one project exists (it has nothing to show otherwise).
   const scope = useTabsStore((s) => s.scope);
-  const trashScope = scope === TRASH_PROJECT_ID;
+  // Agent tabs closed in this scope, newest first — what "Reopen closed agent
+  // tab" (the tab menu, the + menu's Recently closed) brings back.
+  const closedAgentTabs = useClosedAgentTabs(scope);
   const hasProjects = useProjectsStore((s) => s.projects.length > 0);
   const showBlobItem = scope === "root" && hasProjects;
   const focusGroup = useTabsStore((s) => s.focusGroup);
@@ -176,6 +205,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const setActive = useTabsStore((s) => s.setActive);
   const renameTab = useTabsStore((s) => s.renameTab);
   const setTabColor = useTabsStore((s) => s.setTabColor);
+  const setTabStack = useTabsStore((s) => s.setTabStack);
   const addTab = useTabsStore((s) => s.addTab);
   const duplicateTab = useTabsStore((s) => s.duplicateTab);
   const ensureTab = useTabsStore((s) => s.ensureTab);
@@ -248,9 +278,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     localModelOffInRoot,
     localDrivers,
     enabledAgents,
+    defaultAgentBin,
     vibeForLocalModel,
     compactAgentBins,
     customAgents,
+    agentOrder,
     installedCustom,
     boxMembers,
   } = useAddTabMenuData(scope);
@@ -293,6 +325,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // #56: Shift+right-click on a tab enters inline rename mode for that key (no
   // menu, no prompt dialog). The label becomes a focused, text-selected <input>.
   const [editingKey, setEditingKey] = useState<string | null>(null);
+  // Right-click on a tab-group chip: its own menu (rename / ungroup / close).
+  const [stackMenu, setStackMenu] = useState<{ x: number; y: number; name: string } | null>(null);
+  // Naming a new tab group, renaming one, or renaming a tab hidden in one.
+  const { promptText, dialogs } = useDialogs();
   // The manage-custom-agents dialog the "+" menu's "Add custom…" opens.
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
   const [scheduleDialogKey, setScheduleDialogKey] = useState<string | null>(null);
@@ -453,6 +489,20 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     });
   }
 
+  // Cloud sessions clone a project's repository, so they are offered in a
+  // project's menu only — not the root console's or a box's.
+  const handleAddCloud =
+    scope !== "root" && !scope.startsWith(BOX_SCOPE_PREFIX)
+      ? (item: StaticMenuItem, launch: CloudLaunch) => {
+          setMenuPos(null);
+          void worktreePicker.cloudSpecFor(item, launch).then((spec) => {
+            if (!spec) return;
+            focusGroup(groupId);
+            addTab(spec);
+          });
+        }
+      : undefined;
+
   /** Box "+" menu: a Files (Project) tab rooted at ONE member (the viewer
    *  resolves the member's identity from the cwd — see ProjectFilesTab). */
   function handleAddBoxMemberFiles(m: { id: string; name: string; dir: string }) {
@@ -598,61 +648,74 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     setMenuPos(null);
   }
 
+  // The new-tab chords (`lib/shortcuts/newTabChord`) when this is the pane
+  // they target: the + menu rows' own handlers, so a chord opens exactly the
+  // tab a click would. The new tab is active in the focused pane, which is what
+  // hands its terminal the keyboard. Latest-render handlers via the ref, one
+  // listener per bar.
+  const onNewTabChord = useRef<(request: NewTabRequest) => boolean>(() => false);
+  const agentSlots = useRef<() => ReturnType<typeof agentShortcutSlots>>(() => []);
+  agentSlots.current = () =>
+    agentShortcutSlots({
+      installedBuiltins: enabledAgents,
+      installedCmds: installedCustom,
+      customAgents,
+      defaultAgentBin,
+      agentOrder,
+    });
+  onNewTabChord.current = (request) => {
+    if (request.kind === "monitor") {
+      handleAddMonitor();
+      return true;
+    }
+    if (request.kind === "menu") {
+      openAddMenu();
+      return true;
+    }
+    const item =
+      request.kind === "shell" ? SHELL_ITEM : agentSlots.current()[request.slot]?.item;
+    if (!item) return false;
+    handleAdd(item);
+    return true;
+  };
+  useEffect(() => {
+    const onRequest = (e: Event) => {
+      const { request, groupId: target } = (e as CustomEvent<NewTabShortcutDetail>).detail;
+      if (target === groupId && onNewTabChord.current(request)) e.preventDefault();
+    };
+    // Steering's legend names the agents behind 1–9 for the focused pane.
+    const onSlots = (e: Event) => {
+      const detail = (e as CustomEvent<NewTabSlotsDetail>).detail;
+      if (detail.groupId !== groupId) return;
+      detail.labels = agentSlots.current().map((slot) => slot?.item.label ?? null);
+    };
+    window.addEventListener(NEW_TAB_SHORTCUT_EVENT, onRequest);
+    window.addEventListener(NEW_TAB_SLOTS_EVENT, onSlots);
+    return () => {
+      window.removeEventListener(NEW_TAB_SHORTCUT_EVENT, onRequest);
+      window.removeEventListener(NEW_TAB_SLOTS_EVENT, onSlots);
+    };
+  }, [groupId]);
+
   async function handleOllamaModel(model: string) {
     setMenuPos(null);
     try {
-      await invoke("ensure_ollama_running");
-      const { vibe_home, alias } = await invoke<{ vibe_home: string; alias: string }>(
-        "prepare_local_agent",
-        { model },
-      );
+      const spec = await vibeLocalTabSpec(scope, model, projectCwd);
       focusGroup(groupId);
-      addTab({
-        label: model,
-        cmd: "vibe",
-        args: [],
-        // ELDRUN_LOCAL_MODEL records WHICH model this tab is driving, so the
-        // usage recap can break local agent tabs down by model — and ONLY that
-        // (#150): the right to run outside the project's container is granted by
-        // `hostBoundUid` below, registered as a file in the state dir, so a
-        // display-only change here can no longer hand out a container escape.
-        // `VIBE_ACTIVE_MODEL` carries the resolved alias, not necessarily the
-        // name the user picked.
-        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model },
-        cwd: projectCwd,
-        kind: "local_agent",
-        hostBoundUid: await registerHostBoundTab(scope),
-      });
+      addTab(spec);
     } catch {
       // Ollama not running or agent prep failed — don't create a tab with no model config.
     }
   }
 
   // Drive the active local model through a non-vibe coding agent (Claude Code,
-  // Codex, OpenCode, Droid). The backend resolves the spawn command — `ollama
-  // launch <agent> --model <model>` when available, else a direct fallback — so
-  // everything the tab needs is carried in cmd+args (no env to re-hydrate).
+  // Codex, OpenCode, Droid) — `lib/agents/localTabSpec`.
   async function handleLocalLaunch(agentId: string, label: string, model: string) {
     setMenuPos(null);
     try {
-      await invoke("ensure_ollama_running");
-      const { cmd, args } = await invoke<{ cmd: string; args: string[] }>(
-        "prepare_local_launch",
-        { agent: agentId, model },
-      );
+      const spec = await localLaunchTabSpec(scope, agentId, label, model, projectCwd);
       focusGroup(groupId);
-      addTab({
-        label: `${model} · ${label}`,
-        cmd,
-        args,
-        // Nothing else here names the model — cmd/args are the resolved launcher —
-        // so record it for the usage recap's per-model breakdown. It is a label,
-        // not an authority: see the `hostBoundUid` note above (#150).
-        env: { ELDRUN_LOCAL_MODEL: model },
-        cwd: projectCwd,
-        kind: "local_agent",
-        hostBoundUid: await registerHostBoundTab(scope),
-      });
+      addTab(spec);
     } catch {
       // ollama launch unavailable / agent prep failed — don't create a broken tab.
     }
@@ -693,6 +756,75 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   }
 
   // Right-click a tab → context menu; Shift+right-click → straight to rename.
+  // Whole-tab status ring (no dot, no width change, nothing animated —
+  // see `--status-*` in themes.css):
+  //  - working (green, dotted): PTY producing sustained output.
+  //  - finished (green, solid): an agent you're not looking at went quiet
+  //    with no prompt — the same work as above, done, its result unread.
+  //  - needs-decision (amber, solid): an agent went quiet with a
+  //    choice/permission prompt on its screen. Its own colour because it
+  //    is the one state that is about you rather than about the agent.
+  //  - interrupted (`--status-interrupted`, solid): you cut the agent's
+  //    turn off; it holds until the next turn starts. Like finished, it is
+  //    left off the viewed tab, whose screen already says "interrupted".
+  // Working wins. Working and finished are about output you HAVEN'T seen, so
+  // they never show on the viewed tab — its screen says it better. A pending
+  // decision is the exception: it's about an agent that is BLOCKED, and it
+  // stays blocked whether or not you're looking at it. The lamp holds until
+  // the prompt is answered, so a tab left on screen mid-prompt while you work
+  // elsewhere in the window still says so.
+  function tabStateClass(tab: TabEntry): string {
+    const isActive = tab.key === activeKey;
+    const ptyId = `${scope}:${tab.key}`;
+    const working = isPtyTabKind(tab.kind) && !isActive && !!busyByTab[ptyId];
+    const rawAttn =
+      tab.kind === "agent" || tab.kind === "local_agent"
+        ? attentionByTab[ptyId] ?? null
+        : null;
+    const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
+    return working ? busyStateClass(busyKindByTab[ptyId], tab.kind) : attentionStateClass(attn);
+  }
+
+  // Tab groups (`lib/tabStacks`): a tab joins one by name. "New tab group…"
+  // asks for the name; the group appears as a chip in the tab's place.
+  async function newStackFor(key: string) {
+    setTabMenu(null);
+    const name = await promptText({
+      title: t("tabStack.newTitle"),
+      label: t("tabStack.nameLabel"),
+      confirmLabel: t("tabStack.create"),
+    });
+    if (name) setTabStack(key, name);
+  }
+  async function renameStack(name: string) {
+    setStackMenu(null);
+    const next = await promptText({
+      title: t("tabStack.renameTitle"),
+      label: t("tabStack.nameLabel"),
+      initial: name,
+      unchanged: name,
+    });
+    if (!next) return;
+    for (const tb of tabs) if (tb.stack === name) setTabStack(tb.key, next);
+  }
+  function ungroupStack(name: string) {
+    setStackMenu(null);
+    for (const tb of tabs) if (tb.stack === name) setTabStack(tb.key, undefined);
+  }
+  // A tab folded into a chip has no label on screen to edit inline, so its
+  // rename goes through a dialog instead.
+  async function renameHiddenTab(key: string) {
+    const tab = tabs.find((tb) => tb.key === key);
+    if (!tab) return;
+    const label = await promptText({
+      title: t("common.rename"),
+      label: t("tabBar.renameAriaLabel"),
+      initial: tab.label,
+      unchanged: tab.label,
+    });
+    if (label) renameTab(key, label);
+  }
+
   function onTabContextMenu(event: React.MouseEvent, key: string, index: number) {
     event.preventDefault();
     event.stopPropagation();
@@ -702,6 +834,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     }
     setMenuPos(null); // close the add (+) menu if it was open
     setHoverTab(null); // and the hover card, so it doesn't sit atop the menu
+    setStackMenu(null);
     focusGroup(groupId);
     setTabMenu({ x: event.clientX, y: event.clientY, key, index });
   }
@@ -881,6 +1014,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       // WebKitGTK only this handler ever fires, so clearing early is a harmless
       // no-op there. The later `end()` calls become redundant no-ops.)
       useDragStore.getState().end();
+      // The release instant, for the coordinate-free claim below (a claimant
+      // compares it with the pointer events it has seen).
+      const releasedAt = Date.now();
       // Final physical cursor at release (a fresh read; falls back to the last poll
       // reading if the IPC fails). Mirrors FileTree: the last poll tick can be up to
       // ~16 ms stale — or `null` if released before the first tick — which would
@@ -964,6 +1100,32 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         lastClient.x >= window.innerWidth ||
         lastClient.y >= window.innerHeight;
       if (outside) {
+        // No desktop geometry (native Wayland): `phys` is null, so the popout
+        // hit-test above could not run — but a popout may well be under the
+        // cursor. Ask the windows of this scope to claim the release
+        // (`lib/window/dropClaim`); the one that receives the pointer answers
+        // with the pane under it, and the tab docks there. No answer keeps the
+        // free-space rule: a new window.
+        if (!phys && !(await desktopCoordinatesSupported())) {
+          const claim = await probeDropTarget({
+            token: newDropToken(getCurrentWindow().label),
+            scope: useTabsStore.getState().scope,
+            sourceLabel: getCurrentWindow().label,
+            tabKey: tab.key,
+            label: tab.label,
+            releasedAt,
+          });
+          if (claim?.groupId) {
+            const claimScope = useTabsStore.getState().scope;
+            useTabsStore
+              .getState()
+              .dockTabIntoDetached(claimScope, claim.groupId, tab.key, claim.target ?? undefined);
+            reseedDetached(claimScope, claim.groupId, tab.key);
+            playDetachFlyOut(lastClient.x, lastClient.y, tab.label, d.previewW, d.previewH);
+            useDragStore.getState().end();
+            return;
+          }
+        }
         popToNewWindow();
         return;
       }
@@ -1122,6 +1284,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     <div
       className={`tab-bar${isDropTarget ? " drop-target" : ""}`}
       data-group-id={groupId}
+      data-tab-count={tabs.length}
       onPointerDown={onBarPointerDown}
     >
       {/* Explicit detach grip — the sole handle for popping this subwindow out.
@@ -1154,40 +1317,59 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       {isDropTarget && tabs.length === 0 && (
         <Fragment key="drop-marker">{dropPlaceholder}</Fragment>
       )}
-      {tabs.map((tab, index) => {
+      {stripItems(tabs).map((item) => {
+        // The placeholder slot previewing where the dragged tab will land — shown
+        // immediately before the tab (or group chip) at the resolved insertion
+        // index. A chip stands at its first member's index, and the reorder
+        // target is read off `data-tab-index`, so a drop lands beside the chip.
+        const showMarkerBefore = isDropTarget && reorderIndex === item.index;
+        if (item.type === "stack") {
+          const members: StackMember[] = item.members.map((m) => ({
+            ...m,
+            stateClass: tabStateClass(m.tab),
+          }));
+          return (
+            <Fragment key={`stack:${item.name}`}>
+              {showMarkerBefore && dropPlaceholder}
+              <TabStackChip
+                name={item.name}
+                index={item.index}
+                members={members}
+                activeKey={activeKey}
+                suppressed={dragKey !== null || menuOpen || !!tabMenu || !!stackMenu}
+                onActivate={(key) => {
+                  focusGroup(groupId);
+                  setGroupActive(groupId, key);
+                }}
+                onCloseTab={(key) => closeTabWithConfirm(key)}
+                onTabContextMenu={(e, key, index) => {
+                  // No Shift shortcut here: inline rename needs a label on
+                  // screen, and this tab's is folded into the chip.
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setMenuPos(null);
+                  setHoverTab(null);
+                  focusGroup(groupId);
+                  setTabMenu({ x: e.clientX, y: e.clientY, key, index });
+                }}
+                onStackContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setMenuPos(null);
+                  setHoverTab(null);
+                  setTabMenu(null);
+                  focusGroup(groupId);
+                  setStackMenu({ x: e.clientX, y: e.clientY, name: item.name });
+                }}
+              />
+            </Fragment>
+          );
+        }
+        const { tab, index } = item;
         const isActive = tab.key === activeKey;
         const isDragging = dragKey === tab.key;
-        // The placeholder slot previewing where the dragged tab will land — shown
-        // immediately before the tab occupying the resolved insertion index.
-        const showMarkerBefore = isDropTarget && reorderIndex === index;
-        // Whole-tab status ring (no dot, no width change, nothing animated —
-        // see `--status-*` in themes.css):
-        //  - working (green, dotted): PTY producing sustained output.
-        //  - finished (green, solid): an agent you're not looking at went quiet
-        //    with no prompt — the same work as above, done, its result unread.
-        //  - needs-decision (amber, solid): an agent went quiet with a
-        //    choice/permission prompt on its screen. Its own colour because it
-        //    is the one state that is about you rather than about the agent.
-        // Working wins. Working and finished are about output you HAVEN'T seen, so
-        // they never show on the viewed tab — its screen says it better. A pending
-        // decision is the exception: it's about an agent that is BLOCKED, and it
-        // stays blocked whether or not you're looking at it. The lamp holds until
-        // the prompt is answered, so a tab left on screen mid-prompt while you work
-        // elsewhere in the window still says so.
-        const ptyId = `${scope}:${tab.key}`;
-        const working = isPtyTabKind(tab.kind) && !isActive && !!busyByTab[ptyId];
-        const rawAttn =
-          tab.kind === "agent" || tab.kind === "local_agent"
-            ? attentionByTab[ptyId] ?? null
-            : null;
-        const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
-        const stateClass = working
-          ? busyStateClass(busyKindByTab[ptyId], tab.kind)
-          : attn === "decision"
-            ? " needs-decision"
-            : attn === "done"
-              ? " finished"
-              : "";
+        // The status ring — see `tabStateClass`.
+        const stateClass = tabStateClass(tab);
         // Expose the kind colour to CSS on every tab (not just the active one)
         // so the top stripe reads as the tab-group colour consistently — plain
         // themes draw the rail above, fancy themes move it below. Inactive tabs
@@ -1266,6 +1448,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             ) : (
               <span className="tab-label">{tab.label}</span>
             )}
+            <TabMarkBadge tab={tab} />
+            <TabAgentModeMarks scope={scope} tab={tab} isActive={isActive} />
+            {tab.hostSession && (
+              <span className="tab-host-session" title={t("tab.hostSessionBadgeTitle")}>
+                {t("tab.hostSessionBadge")}
+              </span>
+            )}
             {(tab.kind === "agent" || tab.kind === "local_agent") && tab.scheduleTargetId && (() => {
               const enabled = (schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId)] ?? [])
                 .filter((schedule) => schedule.enabled);
@@ -1297,14 +1486,15 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               partner={texPdfPartner(texPdfTabs, tab)}
               onFocus={setActive}
             />
-            {/* There is deliberately no Plan/Auto badge here. An agent's
+            {/* There is deliberately no Plan/Auto TOGGLE here. An agent's
                 permission mode is the agent's own to set, through its own CLI
                 (Claude's shift+tab, Codex's mode picker) — Eldrun launches the
                 plain command and injects no mode flag. The badge that used to
                 sit here rewrote the tab's launch args, which respawned the PTY
                 on every flip; the mode a user sets inside the session still
                 survives a restart, because `services::agent_session` re-applies
-                the mode Claude's own hook recorded. */}
+                the mode Claude's own hook recorded. The PLAN/GOAL pills after
+                the label only SHOW what the session's status line says. */}
             {/* Locality badge — click to choose where this agent/shell tab runs:
                 the local mirror, the primary host, or (multi-host remote,
                 docs/multi_host_remote_plan.md) any worker machine. Only shown for
@@ -1443,6 +1633,24 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         >
           <AddTabMenuList
             groups={[
+              // Closed agent tabs first: bringing one back is the likelier
+              // reason to reach for "+" right after a close than a new one.
+              ...(closedAgentTabs.length > 0
+                ? [{
+                    label: t("newTabMenu.groupRecentlyClosed"),
+                    entries: closedAgentTabs.slice(0, 3).map((closed, i) => ({
+                      key: `reopen:${closed.id}`,
+                      label: closed.tab.label,
+                      dot: "↺",
+                      color: TAB_ACCENT[closed.tab.kind],
+                      shortcut: i === 0 ? ("reopenClosedTab" as const) : undefined,
+                      onPick: () => {
+                        setMenuPos(null);
+                        reopenClosedAgentTab(scope, closed.id);
+                      },
+                    })),
+                  }]
+                : []),
               {
                 label: t("newTabMenu.groupAgents"),
                 moreLabel: t("newTabMenu.moreAgents"),
@@ -1450,8 +1658,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   installedBuiltins: enabledAgents,
                   installedCmds: installedCustom,
                   customAgents,
-                  allowCustom: !trashScope,
                   pick: handleAdd,
+                  pickCloud: handleAddCloud,
+                  defaultAgentBin,
+                  agentOrder,
                   onAddCustom: () => {
                     setMenuPos(null);
                     setAgentDialogOpen(true);
@@ -1463,8 +1673,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     installedBuiltins: enabledAgents,
                     installedCmds: installedCustom,
                     customAgents,
-                    allowCustom: !trashScope,
                     pick: handleAdd,
+                    pickCloud: handleAddCloud,
+                    defaultAgentBin,
+                    agentOrder,
                     onAddCustom: () => {
                       setMenuPos(null);
                       setAgentDialogOpen(true);
@@ -1480,20 +1692,21 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               ...(boxMembers.length > 0
                 ? [{
                     label: t("newTabMenu.groupBoxMembers"),
-                    entries: boxMembers.flatMap((m) => [
+                    // Typed here and on the browser group below: through a
+                    // flatMap or a conditional spread the `untested` ids
+                    // otherwise widen to string and fail the whole list.
+                    entries: boxMembers.flatMap((m): AddMenuEntry[] => [
                       {
                         key: `boxfiles:${m.id}`,
                         label: t("newTabMenu.boxMemberFiles", { name: m.name }),
                         dot: "▤",
                         color: TAB_ACCENT.projectfiles,
-                        untested: "newTabMenu.boxMemberFiles#2",
                         onPick: () => handleAddBoxMemberFiles(m),
                       },
                       {
                         key: `boxshell:${m.id}`,
                         label: t("newTabMenu.boxMemberShell", { name: m.name }),
                         color: TAB_ACCENT.shell,
-                        untested: "newTabMenu.boxMemberShell#2",
                         onPick: () => handleAddBoxMemberShell(m),
                       },
                       ...(enabledAgents?.has("claude")
@@ -1501,9 +1714,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                             key: `boxagent:${m.id}`,
                             label: t("newTabMenu.boxMemberAgent", { name: m.name }),
                             color: TAB_ACCENT.agent,
-                            untested: "newTabMenu.boxMemberAgent",
                             onPick: () => handleAddBoxMemberAgent(m),
-                          }]
+                          } satisfies AddMenuEntry]
                         : []),
                     ]),
                   }]
@@ -1511,7 +1723,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               // Only offer agents whose binary is actually installed: Mistral/vibe
               // (checked against `vibeForLocalModel`) and the drivers the backend
               // already marks `available` — and only once the model is on the GPU.
-              ...(!trashScope ? [localModelMenuGroup({
+              localModelMenuGroup({
                 localModel,
                 localModelOffInRoot,
                 localDrivers,
@@ -1520,17 +1732,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 onVibe: (model) => void handleOllamaModel(model),
                 onLaunch: (id, label, model) => void handleLocalLaunch(id, label, model),
                 t,
-              })] : []),
-              ...(!trashScope ? [{
+              }),
+              {
                 label: t("newTabMenu.groupShell"),
-                entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({
-                  key: item.cmd || "shell",
-                  label: itemLabel(item, t),
-                  color: TAB_ACCENT[item.kind],
-                  onPick: () => handleAdd(item),
-                })),
-              }] : []),
-              ...(!trashScope ? [{
+                entries: [{
+                  key: "shell",
+                  label: itemLabel(SHELL_ITEM, t),
+                  color: TAB_ACCENT.shell,
+                  shortcut: "newShellTab",
+                  onPick: () => handleAdd(SHELL_ITEM),
+                }],
+              },
+              {
                 label: t("newTabMenu.groupFiles"),
                 entries: SHELL_ITEMS.filter((i) => isFileTabKind(i.kind)).map((item) => ({
                   key: item.cmd,
@@ -1539,20 +1752,21 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   disabled: !projectCwd,
                   onPick: () => handleAdd(item),
                 })),
-              }] : []),
+              },
               // All three are offered in every scope. System Monitor is
               // whole-machine and Disk Usage picks its own scan root; Network
               // Traffic used to be withheld from root as "per-project", but its
               // project half is only the remote one — a root tab renders exactly
               // what a LOCAL project's does, this machine's interfaces and
               // sockets, which is the one place a machine-wide question belongs.
-              ...(!trashScope ? [{
+              {
                 label: t("newTabMenu.groupMonitoring"),
                 entries: [
                   {
                     key: "monitor",
                     label: t("newTabMenu.itemSystemMonitor"),
                     color: TAB_ACCENT.monitor,
+                    shortcut: "newMonitorTab",
                     onPick: handleAddMonitor,
                   },
                   {
@@ -1574,8 +1788,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     onPick: handleAddNetwork,
                   },
                 ],
-              }] : []),
-              ...(!trashScope && showBlobItem
+              },
+              ...(showBlobItem
                 ? [{
                     label: t("newTabMenu.groupWorkspace"),
                     entries: [{
@@ -1587,46 +1801,43 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     }],
                   }]
                 : []),
-              ...(!trashScope ? [{
+              {
                 label: t("printing.title"),
                 entries: [{
                   key: "printing",
                   label: t("printing.title"),
                   dot: "⎙",
                   color: TAB_ACCENT.printing,
-                  untested: "printing.title#3",
                   onPick: handleAddPrinting,
                 }],
-              }] : []),
+              },
               // Offered at the root scope too since the personal install scope
               // exists: the catalog is machine state and a skill can be
               // installed for every project here without one being open. See
               // `NewTabMenu`, which carries the same entry.
-              ...(!trashScope ? [{
+              {
                 label: t("skillsLibrary.title"),
                 entries: [{
                   key: "skillslibrary",
                   label: t("skillsLibrary.title"),
                   dot: "◧",
                   color: TAB_ACCENT.skillslibrary,
-                  untested: "skillsLibrary.title#2",
                   onPick: handleAddSkills,
                 }],
-              }] : []),
+              },
               // The prompt chart's columns are this scope's agent tabs, and the
               // root scope has those too. See `NewTabMenu` for the same entry.
-              ...(!trashScope ? [{
+              {
                 label: t("promptChart.heading"),
                 entries: [{
                   key: "promptchart",
                   label: t("promptChart.heading"),
                   dot: "⧗",
                   color: TAB_ACCENT.promptchart,
-                  untested: "promptChart.heading#3",
                   onPick: handleAddPromptChart,
                 }],
-              }] : []),
-              ...(!trashScope && webBrowser
+              },
+              ...(webBrowser
                 ? [{
                     label: t("newTabMenu.browser"),
                     entries: [{
@@ -1634,10 +1845,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                       label: t("newTabMenu.browser"),
                       dot: "◎",
                       color: TAB_ACCENT.browser,
-                      untested: "newTabMenu.browser#2",
                       onPick: handleAddBrowser,
                     }],
-                  }]
+                  } satisfies AddMenuGroup]
                 : []),
               {
                 label: t("newTabMenu.groupProject"),
@@ -1689,8 +1899,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           <button
             className="tab-new-menu-item"
             onClick={() => {
-              setEditingKey(tabMenu.key);
+              const key = tabMenu.key;
               setTabMenu(null);
+              if (tabs.some((tb) => tb.key === key && tb.stack)) void renameHiddenTab(key);
+              else setEditingKey(key);
             }}
           >
             <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
@@ -1703,6 +1915,57 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             current={tabs.find((tab) => tab.key === tabMenu.key)?.color}
             onPick={(color) => setTabColor(tabMenu.key, color)}
           />
+          {/* Important / Urgent, and the to-do card link. */}
+          {(() => {
+            const menuTab = tabs.find((tb) => tb.key === tabMenu.key);
+            return menuTab ? (
+              <TabMarkMenuItems tab={menuTab} scope={scope} onDone={() => setTabMenu(null)} />
+            ) : null;
+          })()}
+          {/* Tab groups: join one of this bar's groups, start a new one, or
+              leave the one it is in. */}
+          {(() => {
+            const own = tabs.find((tb) => tb.key === tabMenu.key)?.stack;
+            return (
+              <>
+                {stackNames(tabs)
+                  .filter((name) => name !== own)
+                  .map((name) => (
+                    <button
+                      key={`stack:${name}`}
+                      className="tab-new-menu-item"
+                      onClick={() => {
+                        setTabStack(tabMenu.key, name);
+                        setTabMenu(null);
+                      }}
+                    >
+                      <span className="tab-new-menu-dot tab-new-menu-dot--accent">▤</span>
+                      {t("tabStack.addTo", { name })}
+                    </button>
+                  ))}
+                <button
+                  className="tab-new-menu-item"
+                  onClick={() => void newStackFor(tabMenu.key)}
+                >
+                  <span className="tab-new-menu-dot tab-new-menu-dot--accent">▤</span>
+                  {t("tabStack.newGroup")}
+                  <UntestedTag id="tabStack.newGroup" />
+                </button>
+                {own && (
+                  <button
+                    className="tab-new-menu-item"
+                    onClick={() => {
+                      setTabStack(tabMenu.key, undefined);
+                      setTabMenu(null);
+                    }}
+                  >
+                    <span className="tab-new-menu-dot tab-new-menu-dot--accent">▭</span>
+                    {t("tabStack.remove")}
+                  </button>
+                )}
+              </>
+            );
+          })()}
           {tabs.some((tab) => tab.key === tabMenu.key && canDuplicateTab(tab)) && (
             <button
               className="tab-new-menu-item"
@@ -1770,12 +2033,62 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("tabBar.closeToRight")}
           </button>
+          {closedAgentTabs.length > 0 && (
+            <button
+              className="tab-new-menu-item"
+              title={t("tabBar.reopenClosedTitle", { label: closedAgentTabs[0].tab.label })}
+              onClick={() => {
+                reopenClosedAgentTab(scope);
+                setTabMenu(null);
+              }}
+            >
+              <span className="tab-new-menu-dot tab-new-menu-dot--accent">↺</span>
+              {t("tabBar.reopenClosed")}
+              <UntestedTag id="tabBar.reopenClosed" />
+              <MenuShortcut chord="reopenClosedTab" />
+            </button>
+          )}
         </ContextMenuPortal>
       )}
+      {stackMenu && (
+        <ContextMenuPortal
+          x={stackMenu.x}
+          y={stackMenu.y}
+          onClose={() => setStackMenu(null)}
+          className="tab-new-menu"
+        >
+          <button
+            className="tab-new-menu-item"
+            onClick={() => void renameStack(stackMenu.name)}
+          >
+            <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
+            {t("tabStack.rename")}
+          </button>
+          <button
+            className="tab-new-menu-item"
+            onClick={() => ungroupStack(stackMenu.name)}
+          >
+            <span className="tab-new-menu-dot tab-new-menu-dot--accent">▭</span>
+            {t("tabStack.ungroup")}
+          </button>
+          <button
+            className="tab-new-menu-item"
+            onClick={() => {
+              const name = stackMenu.name;
+              setStackMenu(null);
+              tabs.filter((tb) => tb.stack === name).forEach((tb) => closeTabWithConfirm(tb.key));
+            }}
+          >
+            <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
+            {t("tabStack.closeAll")}
+          </button>
+        </ContextMenuPortal>
+      )}
+      {dialogs}
       {/* Styled tab hover card (matches the project pill popup). Suppressed
           mid-drag and while a menu is open so it never overlaps them. The card
           derives its own content from the tab + this window's stores. */}
-      {hoverTab && !fastMode && dragKey === null && !menuOpen && !tabMenu && (() => {
+      {hoverTab && !fastMode && dragKey === null && !menuOpen && !tabMenu && !stackMenu && (() => {
         const tab = tabs.find((tb) => tb.key === hoverTab.key);
         if (!tab) return null;
         return (

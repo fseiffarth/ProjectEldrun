@@ -51,13 +51,21 @@ beforeEach(() => {
   lock.biometric.mockResolvedValue(undefined);
   lock.configure.mockResolvedValue({ biometricEnrolled: true });
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  // Reduced motion: the unlock flourish is skipped and `onUnlocked` follows at
+  // once. The flourish's own test turns it back on.
+  reduceMotion(true);
 });
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   for (const fn of Object.values(lock)) fn.mockReset();
 });
+
+function reduceMotion(reduce: boolean) {
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: reduce && query.includes("reduce"), media: query }));
+}
 
 const type = (label: string | RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 
@@ -99,7 +107,8 @@ describe("Mobile local unlock — setup", () => {
     type(/New PIN/, "123456");
     type(/Confirm PIN/, "123456");
     fireEvent.click(screen.getByRole("button", { name: "Set PIN and verify device" }));
-    expect((await screen.findByText(/Choose a 6–12 digit PIN/)).textContent).toContain("Error");
+    // The lock's own sentence, as written — no `Error:` prefix from `String(error)`.
+    expect((await screen.findByText(/Choose a 6–12 digit PIN/)).textContent).toBe("Choose a 6–12 digit PIN.");
     expect(onUnlocked).not.toHaveBeenCalled();
     expect((screen.getByRole("button", { name: "Set PIN and verify device" }) as HTMLButtonElement).disabled).toBe(false);
   });
@@ -132,7 +141,7 @@ describe("Mobile local unlock — unlock", () => {
     render(<LocalUnlock setup={false} onUnlocked={onUnlocked} />);
     await screen.findByLabelText("PIN");
     type("PIN", "123456");
-    expect((await screen.findByText(/Incorrect PIN/)).textContent).toBe("Error: Incorrect PIN.");
+    expect((await screen.findByText(/Incorrect PIN/)).textContent).toBe("Incorrect PIN.");
     expect(onUnlocked).not.toHaveBeenCalled();
   });
 
@@ -186,6 +195,55 @@ describe("Mobile local unlock — unlock", () => {
     act(() => { window.dispatchEvent(new Event("focus")); });
     await waitFor(() => expect(onUnlocked).toHaveBeenCalledOnce());
     expect(lock.biometric).toHaveBeenCalledTimes(1);
+  });
+
+  it("lifts the mark above the fingerprint sheet while it is up, then plays the unlock before handing over", async () => {
+    lock.enrolled.mockResolvedValue(true);
+    reduceMotion(false);
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    let pass!: () => void;
+    lock.biometric.mockReturnValueOnce(new Promise<void>((resolve) => { pass = resolve; }));
+    const onUnlocked = vi.fn();
+    // The lock (setup === false) rises as a sheet over Home's shell rather
+    // than its own `<main>`, so the phase classes land on the sheet section.
+    const { container } = render(<LocalUnlock setup={false} onUnlocked={onUnlocked} />);
+    const sheet = container.querySelector(".local-unlock")!;
+    const backdrop = container.querySelector(".lock-sheet-backdrop")!;
+    fireEvent.click(await screen.findByRole("button", { name: "Unlock with fingerprint" }));
+    await waitFor(() => expect(sheet.classList.contains("verifying")).toBe(true));
+    // The backdrop takes the phase too, so the sheet fills the screen: left at
+    // the bottom it sat under Android's fingerprint sheet, over a black shell.
+    expect(backdrop.classList.contains("verifying")).toBe(true);
+    expect(screen.getByText("Touch the fingerprint sensor")).toBeTruthy();
+
+    act(() => pass());
+    await waitFor(() => expect(sheet.classList.contains("unlocked")).toBe(true));
+    expect(sheet.classList.contains("verifying")).toBe(false);
+    expect(screen.getByText("Unlocked")).toBeTruthy();
+    expect(onUnlocked).not.toHaveBeenCalled();
+    await waitFor(() => expect(onUnlocked).toHaveBeenCalledOnce(), { timeout: 3000 });
+  });
+
+  it("offers the PIN while the fingerprint prompt is up, withdrawing the prompt", async () => {
+    lock.enrolled.mockResolvedValue(true);
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    let signal: AbortSignal | undefined;
+    lock.biometric.mockImplementationOnce((given?: AbortSignal) => {
+      signal = given;
+      return new Promise<void>(() => {});
+    });
+    const onUnlocked = vi.fn();
+    const { container } = render(<LocalUnlock setup={false} onUnlocked={onUnlocked} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Unlock with fingerprint" }));
+    const sheet = container.querySelector(".local-unlock")!;
+    await waitFor(() => expect(sheet.classList.contains("verifying")).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: /Use PIN instead/ }));
+    expect(signal?.aborted).toBe(true);
+    expect(sheet.classList.contains("verifying")).toBe(false);
+    expect(screen.getByLabelText("PIN")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onUnlocked).not.toHaveBeenCalled();
   });
 
   it("explains a missing fingerprint option instead of leaving it out silently", async () => {

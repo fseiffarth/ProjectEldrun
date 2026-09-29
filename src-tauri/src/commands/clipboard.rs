@@ -1,4 +1,4 @@
-//! System-clipboard image bridge, in both directions:
+//! System-clipboard bridge (images both ways, plus terminal text out):
 //!
 //! - **In:** the file tree turns an image already on the OS clipboard into a PNG
 //!   file inside the project ([`clipboard_has_image`] / [`save_clipboard_image`]).
@@ -8,6 +8,8 @@
 //!   [`copy_png_bytes_to_clipboard`] put an image *on* the clipboard, so a
 //!   screenshot Eldrun files into the project — or a region selected in the PDF
 //!   viewer — is pasteable straight into a chat, an editor, or an agent tab.
+//!   [`copy_text_to_clipboard`] does the same for terminal text: OSC 52
+//!   requests and the user's own copies out of a pane.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -97,6 +99,70 @@ pub fn copy_image_to_clipboard(width: usize, height: usize, rgba: Vec<u8>) -> Re
     {
         let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
         cb.set_image(image).map_err(|e| e.to_string())
+    }
+}
+
+/// Longest text [`copy_text_to_clipboard`] takes. A terminal's OSC 52 request
+/// is capped far below this already (`OSC52_MAX_CHARS`); a longer user copy
+/// falls back to the webview. This bounds what the command itself will hold
+/// and serve.
+const MAX_CLIPBOARD_TEXT: usize = 1 << 20;
+
+fn check_clipboard_text(text: &str) -> Result<(), String> {
+    if text.len() > MAX_CLIPBOARD_TEXT {
+        return Err("text is too long for the clipboard".to_string());
+    }
+    Ok(())
+}
+
+/// Put text on the system clipboard.
+///
+/// For a terminal program's OSC 52 copy request (tmux copy-mode, an agent
+/// CLI's own copy command) and every copy the user makes in a terminal pane.
+/// The webview's `navigator.clipboard` writes only while WebKit still counts a
+/// click or key press as being handled: an OSC 52 request arrives with PTY
+/// output, so there it was always refused, and even mouse-up copies were
+/// dropped now and then — silently. The pane falls back to the webview only
+/// when this command fails.
+///
+/// Serves the text the way [`copy_image_to_clipboard`] serves an image: on Linux
+/// a thread owns the selection until another app takes it over. It reports back
+/// once it has a clipboard connection, so a missing clipboard is an error here,
+/// but a failure after that (the set itself) is silent. Off the main thread
+/// throughout: arboard can stall negotiating with X11 (see [`clipboard_has_image`]).
+#[tauri::command]
+pub async fn copy_text_to_clipboard(text: String) -> Result<(), String> {
+    check_clipboard_text(&text)?;
+
+    #[cfg(target_os = "linux")]
+    {
+        use arboard::SetExtLinux;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || match arboard::Clipboard::new() {
+            Ok(mut cb) => {
+                let _ = tx.send(Ok(()));
+                let _ = cb.set().wait().text(text);
+            }
+            Err(e) => {
+                let _ = tx.send(Err(e.to_string()));
+            }
+        });
+        tauri::async_runtime::spawn_blocking(move || {
+            rx.recv()
+                .unwrap_or_else(|_| Err("the clipboard thread ended early".to_string()))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+            cb.set_text(text).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
 }
 
@@ -205,6 +271,13 @@ mod tests {
         let reader = decoder.read_info().unwrap();
         let info = reader.info();
         assert_eq!((info.width, info.height), (2, 1));
+    }
+
+    #[test]
+    fn clipboard_text_is_capped() {
+        assert!(check_clipboard_text("hello").is_ok());
+        assert!(check_clipboard_text(&"x".repeat(MAX_CLIPBOARD_TEXT)).is_ok());
+        assert!(check_clipboard_text(&"x".repeat(MAX_CLIPBOARD_TEXT + 1)).is_err());
     }
 
     #[test]

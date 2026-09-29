@@ -101,6 +101,24 @@ export async function submitScheduledAgentMessage(
   return input.ptyId;
 }
 
+/**
+ * One session command (`/resume <id>`, …) submitted on its own, the way a
+ * prefix command goes in: it stamps input so its output reads as the tab
+ * working, but is not counted as a prompt asked.
+ */
+export async function submitScheduledAgentCommand(scheduleTargetId: string, command: string): Promise<string> {
+  const input = inputs.get(scheduleTargetId);
+  if (!input || !input.ready()) throw new Error("agent terminal is not ready");
+  const writes = agentInputWrites(command, bracketsAgentMessage(input.agent, input.bracketedPaste()));
+  if (writes.length === 0) throw new Error("command is empty");
+  input.noteInput?.();
+  for (let index = 0; index < writes.length; index += 1) {
+    await writePtyInput(input.ptyId, ENCODER.encode(writes[index]));
+    if (index + 1 < writes.length) await gap();
+  }
+  return input.ptyId;
+}
+
 export function _clearScheduledAgentInputsForTest(): void {
   inputs.clear();
 }

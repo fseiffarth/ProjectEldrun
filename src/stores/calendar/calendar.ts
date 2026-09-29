@@ -473,7 +473,7 @@ export function occurrenceStale(
  * A calendar with its alerts switched off (`alerts_off`) is not counted either:
  * the badge is the quietest alert the calendar has, and "don't interrupt me
  * about this one" that left a number on the header would not be off. Its events
- * stay on the hover list, marked with the struck bell, so the list still explains the number.
+ * are left off the header's list too (`CalendarIndicator`).
  */
 export function eventsLeftToday(
   events: CalendarEvent[],

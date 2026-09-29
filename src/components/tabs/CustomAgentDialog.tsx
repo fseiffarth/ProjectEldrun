@@ -5,6 +5,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { runInstallInTab } from "../../lib/installCommand";
 import { useT } from "../../lib/i18n";
 import type { CustomAgent } from "../../types";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface Props {
   onClose: () => void;
@@ -235,7 +236,7 @@ export function CustomAgentDialog({ onClose }: Props) {
           </p>
         </div>
 
-        {error && <div className="settings-error">{error}</div>}
+        {error && <ErrorNote className="settings-error" error={error} />}
 
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose}>{t("machines.done")}</button>

@@ -2015,6 +2015,8 @@ function pickToken(body: string, offset: number): string {
 export interface TexRefRange {
   start: number;
   end: number;
+  /** A hit-only range (see `texRefHitRanges`): clickable, never underlined. */
+  hit?: boolean;
 }
 
 /**
@@ -2026,6 +2028,34 @@ export interface TexRefRange {
  */
 export function texRefRanges(source: string): TexRefRange[] {
   const ranges: TexRefRange[] = [];
+  forEachTexRef(source, (_start, _end, tokens) => ranges.push(...tokens));
+  return ranges;
+}
+
+/**
+ * The rest of every reference `texRefRanges` underlines — the `\input` word, an
+ * option bracket, the braces, the commas — as hit-only ranges, so a Ctrl/⌘+click
+ * anywhere on the command follows it, not only a click on the path itself. They
+ * paint nothing; every offset in them lies inside the match `findTexRefAt` reads.
+ */
+export function texRefHitRanges(source: string): TexRefRange[] {
+  const ranges: TexRefRange[] = [];
+  forEachTexRef(source, (start, end, tokens) => {
+    let pos = start;
+    for (const t of tokens) {
+      if (t.start > pos) ranges.push({ start: pos, end: t.start, hit: true });
+      pos = t.end;
+    }
+    if (end > pos) ranges.push({ start: pos, end, hit: true });
+  });
+  return ranges;
+}
+
+/** Each live reference's match span and its trimmed token ranges, in order. */
+function forEachTexRef(
+  source: string,
+  visit: (start: number, end: number, tokens: TexRefRange[]) => void,
+): void {
   // Blanking comments keeps every offset stable (so the emitted ranges still
   // index the real source) while dropping a commented-out `\input{…}` from the
   // underlined-link set.
@@ -2035,18 +2065,19 @@ export function texRefRanges(source: string): TexRefRange[] {
     const braceStart = m.index + m[0].lastIndexOf("{") + 1;
     const body = m[2];
     // One range per non-empty comma-separated token (trimmed to the token).
+    const tokens: TexRefRange[] = [];
     let pos = 0;
     for (const part of body.split(",")) {
       const trimmedStart = part.length - part.trimStart().length;
       const trimmed = part.trim();
       if (trimmed) {
         const start = braceStart + pos + trimmedStart;
-        ranges.push({ start, end: start + trimmed.length });
+        tokens.push({ start, end: start + trimmed.length });
       }
       pos += part.length + 1; // account for the comma
     }
+    visit(m.index, m.index + m[0].length, tokens);
   }
-  return ranges;
 }
 
 /** A resolved reference: the absolute path to open and the viewer to render it

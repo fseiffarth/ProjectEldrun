@@ -71,6 +71,28 @@ export interface CardDrag {
 /** How many marked messages the rail asks for. A rail, not a second mailbox. */
 const RAIL_PAGE = 25;
 
+const COLLAPSED_COLUMNS_KEY = "eldrun.todo.collapsedColumns";
+
+function readCollapsedColumns(): Record<string, true> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(COLLAPSED_COLUMNS_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return {};
+    const out: Record<string, true> = {};
+    for (const id of parsed) if (typeof id === "string") out[id] = true;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeCollapsedColumns(columns: Record<string, true>) {
+  try {
+    localStorage.setItem(COLLAPSED_COLUMNS_KEY, JSON.stringify(Object.keys(columns)));
+  } catch {
+    // localStorage unavailable — the fold still holds for this session.
+  }
+}
+
 interface TodoStore {
   overlayOpen: boolean;
   openOverlay: () => void;
@@ -125,6 +147,17 @@ interface TodoStore {
   collapsedSteps: Record<string, true>;
   toggleSteps: (taskId: string, collapsed: boolean) => void;
 
+  /**
+   * Columns folded down to a narrow strip, by column id.
+   *
+   * Unlike a card's checklist this one **is** persisted (per machine, in
+   * localStorage): a folded column still shows its name and count, so nothing is
+   * hidden without saying so, and a Done column that unfolded itself every
+   * launch would be a chore rather than a layout.
+   */
+  collapsedColumns: Record<string, true>;
+  toggleColumn: (columnId: string, collapsed: boolean) => void;
+
   /** Optimistic placements, keyed by task id — the anti-snap-back overlay. */
   pendingOrder: Record<string, { column: string; rank: number }>;
   stageMove: (taskId: string, column: string, rank: number) => void;
@@ -173,6 +206,16 @@ export const useTodoStore = create<TodoStore>((set, get) => ({
       if (collapsed) next[taskId] = true;
       else delete next[taskId];
       return { collapsedSteps: next };
+    }),
+
+  collapsedColumns: readCollapsedColumns(),
+  toggleColumn: (columnId, collapsed) =>
+    set((s) => {
+      const next = { ...s.collapsedColumns };
+      if (collapsed) next[columnId] = true;
+      else delete next[columnId];
+      writeCollapsedColumns(next);
+      return { collapsedColumns: next };
     }),
 
   cardDrag: null,

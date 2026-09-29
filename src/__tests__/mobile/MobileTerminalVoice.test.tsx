@@ -125,7 +125,27 @@ describe("Eldrun Mobile terminal dictation", () => {
     expect(FakeRecognition.instances[1].lang).toBe("de-DE");
   });
 
-  it("forgets the dictated words once they are sent, while it keeps listening", async () => {
+  it("stops listening once the dictated words are sent", async () => {
+    render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await act(async () => {});
+    const speech = FakeRecognition.instances[0];
+    const abort = vi.spyOn(speech, "abort");
+    act(() => speech.onresult?.(finalResult("fix the login")));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Heard:/)).toBeNull();
+    expect(screen.queryByText(/Listening/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeTruthy();
+    // The aborted recognizer's handlers are gone: nothing more reaches the draft.
+    expect(speech.onresult).toBeNull();
+    expect((screen.getByRole("textbox", { name: "Message agent" }) as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("forgets the dictated words once they are cleared, while it keeps listening", async () => {
     render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});
 
@@ -133,10 +153,8 @@ describe("Eldrun Mobile terminal dictation", () => {
     await act(async () => {});
     const speech = FakeRecognition.instances[0];
     act(() => speech.onresult?.(finalResult("fix the login")));
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear the message" }));
 
-    // "Heard:" quoted the sent message for as long as the recognizer ran, and
-    // the next words were shown glued onto it.
     expect(screen.queryByText(/Heard:/)).toBeNull();
     expect(screen.getByRole("button", { name: "Stop dictation" })).toBeTruthy();
     act(() => speech.onresult?.(finalResult("and add a test")));
@@ -189,7 +207,24 @@ describe("Eldrun Mobile terminal dictation", () => {
     expect((FakeRecognition.instances[1] as LocalRecognition).processLocally).toBe(false);
   });
 
-  it("does not send earlier dictation again when the phone re-reads its results", async () => {
+  it("offers no on-device choice where the phone has no on-device model", async () => {
+    // Android's Chrome: the API is there, the model is not.
+    class RemoteOnlyRecognition extends FakeRecognition {
+      static available = vi.fn(() => Promise.resolve("unavailable" as const));
+      processLocally?: boolean;
+    }
+    Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: RemoteOnlyRecognition });
+    render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
+    const choice = screen.getByRole("menuitemcheckbox", { name: /phone's speech service/ });
+    expect(choice.getAttribute("aria-disabled")).toBe("true");
+    expect(choice.textContent).toContain("always dictates with the phone's speech service");
+    fireEvent.click(choice);
+    expect(localStorage.getItem("eldrun.mobile.voiceRemote")).toBeNull();
+  });
+
+  it("does not stage cleared dictation again when the phone re-reads its results", async () => {
     render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
@@ -206,7 +241,7 @@ describe("Eldrun Mobile terminal dictation", () => {
     }) as unknown as MobileSpeechRecognitionResultEvent;
 
     act(() => speech.onresult?.(reading(["fix the login", true])));
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear the message" }));
     act(() => speech.onresult?.(reading(["fix the login", true], ["and add a test", false])));
     expect(screen.getByRole("status").textContent).toBe("Heard: and add a test");
     act(() => speech.onresult?.(reading(["fix the login", true], ["and add a test", true])));

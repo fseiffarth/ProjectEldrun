@@ -105,6 +105,10 @@
      busy agent part at a glance; same dotted stroke, since it is still the
      "not finished yet" state. */
   --status-shell-working: var(--info);
+  /* An agent turn the user cut off (Esc / Ctrl+C mid-turn): neither finished
+     nor waiting, so neither of the agent colours. Solid, like the other two
+     states the agent is no longer working in. */
+  --status-interrupted: var(--danger);
   /* Header logo: pure black on light themes, pure white on dark. Defaulted on
      :root so the plain `dark` theme inherits #fff without redeclaring it. */
   --logo-color: #fff;
@@ -390,6 +394,25 @@
   --activity-2: #5e5e5e;
   --activity-3: #909090;
   --activity-4: #e8e8e8;
+  /* DOCUMENT HUES — the terminal's palette, handed to the viewers. Rule 4
+     above keeps chrome neutral, but a viewer's CONTENT is not chrome: a heading
+     level, a link, a YAML key, a keyword is structure the file itself states,
+     and with --accent as the ink every one of them rendered white on black.
+     These are the dark terminal's bright ANSI tier (TerminalView `dark`, the
+     GitHub-dark family — pastel enough not to glare on a pure-black ground,
+     every one well past 7:1), so a document and the shell beside it read as
+     one palette. `light` declares its own set. Read by the achromatic-pair
+     block at the end of viewers.css and,
+     as `var(--doc-*, fallback)`, by the CSV/SQLite grids — which is why only
+     a theme that wants them declares them. No chrome rule may use them. */
+  --doc-blue: #79c0ff;
+  --doc-link: #58a6ff;
+  --doc-green: #7ee787;
+  --doc-yellow: #e3b341;
+  --doc-purple: #d2a8ff;
+  --doc-cyan: #56d4dd;
+  --doc-red: #ff7b72;
+  --doc-grey: #8b949e;
 }
 
 /* ── Theme: light (white paper, black ink) ──────────────────────────── */
@@ -443,6 +466,17 @@
   --activity-2: #8f8f8f;
   --activity-3: #5a5a5a;
   --activity-4: #1c1c1c;
+  /* DOCUMENT HUES — `dark`'s set (see the note there), taken from the light
+     terminal's ANSI palette instead: the same hues dropped dark enough that
+     every one clears 4.5:1 on white. */
+  --doc-blue: #0550ae;
+  --doc-link: #0969da;
+  --doc-green: #1a7f37;
+  --doc-yellow: #9a6700;
+  --doc-purple: #8250df;
+  --doc-cyan: #1b7c83;
+  --doc-red: #d1242f;
+  --doc-grey: #6e7781;
 }
 
 /* ── The achromatic pair's header ───────────────────────────────────────
@@ -712,12 +746,28 @@
 [data-theme="light_lavender"] .settings-dialog,
 [data-theme="fancy_dark"] .stats-dialog,
 [data-theme="light_lavender"] .stats-dialog,
+[data-theme="fancy_dark"] .file-delete-dialog,
+[data-theme="light_lavender"] .file-delete-dialog,
 [data-theme="fancy_dark"] .context-menu,
 [data-theme="light_lavender"] .context-menu,
 [data-theme="fancy_dark"] .tab-new-menu,
 [data-theme="light_lavender"] .tab-new-menu,
 [data-theme="fancy_dark"] .project-switcher-add-menu,
-[data-theme="light_lavender"] .project-switcher-add-menu {
+[data-theme="light_lavender"] .project-switcher-add-menu,
+[data-theme="fancy_dark"] .box-chip-menu,
+[data-theme="light_lavender"] .box-chip-menu,
+[data-theme="fancy_dark"] .project-search-popover,
+[data-theme="light_lavender"] .project-search-popover,
+[data-theme="fancy_dark"] .file-run-args,
+[data-theme="light_lavender"] .file-run-args,
+[data-theme="fancy_dark"] .file-viewer-run-args,
+[data-theme="light_lavender"] .file-viewer-run-args,
+[data-theme="fancy_dark"] .git-change-tree,
+[data-theme="light_lavender"] .git-change-tree,
+[data-theme="fancy_dark"] .presentation-settings,
+[data-theme="light_lavender"] .presentation-settings,
+[data-theme="fancy_dark"] .cal-alarm-popup,
+[data-theme="light_lavender"] .cal-alarm-popup {
   backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate));
 }
@@ -780,7 +830,9 @@
 [data-theme="fancy_dark"] .settings-dialog,
 [data-theme="light_lavender"] .settings-dialog,
 [data-theme="fancy_dark"] .stats-dialog,
-[data-theme="light_lavender"] .stats-dialog {
+[data-theme="light_lavender"] .stats-dialog,
+[data-theme="fancy_dark"] .file-delete-dialog,
+[data-theme="light_lavender"] .file-delete-dialog {
   background: var(--glass-elevated);
   /* Glass fill only — no lit frame. The near-white hairline these surfaces used
      to wear read as a stray outline rather than a lit edge, so the glass themes
@@ -797,7 +849,21 @@
 [data-theme="fancy_dark"] .tab-new-menu,
 [data-theme="light_lavender"] .tab-new-menu,
 [data-theme="fancy_dark"] .project-switcher-add-menu,
-[data-theme="light_lavender"] .project-switcher-add-menu {
+[data-theme="light_lavender"] .project-switcher-add-menu,
+[data-theme="fancy_dark"] .box-chip-menu,
+[data-theme="light_lavender"] .box-chip-menu,
+[data-theme="fancy_dark"] .project-search-popover,
+[data-theme="light_lavender"] .project-search-popover,
+[data-theme="fancy_dark"] .file-run-args,
+[data-theme="light_lavender"] .file-run-args,
+[data-theme="fancy_dark"] .file-viewer-run-args,
+[data-theme="light_lavender"] .file-viewer-run-args,
+[data-theme="fancy_dark"] .git-change-tree,
+[data-theme="light_lavender"] .git-change-tree,
+[data-theme="fancy_dark"] .presentation-settings,
+[data-theme="light_lavender"] .presentation-settings,
+[data-theme="fancy_dark"] .cal-alarm-popup,
+[data-theme="light_lavender"] .cal-alarm-popup {
   background: var(--glass-elevated);
   border-top-color: var(--accent);
   box-shadow: var(--shadow-3);

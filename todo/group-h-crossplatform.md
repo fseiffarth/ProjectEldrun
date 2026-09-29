@@ -477,8 +477,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       verify nettop's CSV shape/permissions before writing the parser.
 
 32. **OS parity sweep (2026-09-16).** ✅ Code-complete, ⚠️ **none of it
-    verified live** — see `docs/os_parity_sweep_plan.md` for the full merged
-    plan, what was refuted, and what was deferred and why. Every item below
+    verified live** — deferred items are listed under 32z below. Every item below
     passed `cargo test`, clippy, the Windows cross-check (25 → 0 warnings),
     `npm run build`/`test`/`lint`.
     - [x] **32a — orphan containers swept on Windows.** The startup sweep
@@ -713,6 +712,32 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         - [ ] ❌ Doesn't work on Windows
         - [ ] ✅ Works on macOS
         - [ ] ❌ Doesn't work on macOS
+    - [ ] **32z — deferred from the sweep** (each needs live hardware or a
+      product call first):
+      - X11 backend on any X11 session — mutates the WM workspace count and
+        survives crashes; needs live XFCE/MATE/i3.
+      - KDE Wayland `info()` via D-Bus properties — needs live KWin.
+      - Intel/xe iGPU readout — `vram_total: Option` ripples through TS and
+        the remote parser.
+      - GNOME projector blanking via the portal Inhibit — needs a live GNOME.
+      - Distro hints beyond the fence — nothing else fails closed.
+      - Windows renderer restart — WebView2 shares renderers across
+        same-origin windows; one kill may take all.
+      - Container credential freshness on Windows — needs Docker Desktop to
+        see whether rename-over propagates.
+      - Windows shutdown time budget — measure teardown on hardware first.
+      - Roaming `%APPDATA%` state dir — needs a migration; niche.
+      - Phone-side "no terminals on Windows" copy — new mobile API field +
+        mobile-web i18n.
+      - Job Object for ConPTY children — needs hardware to see current crash
+        reaping.
+      - Keychain file read for fenced Claude on macOS — security trade-off;
+        probe on a Mac first.
+      - Login-shell PATH import on macOS — runs user rc files.
+      - `macOptionIsMeta`, ⌘\ panel toggle, fullscreen restore — product
+        decisions; breaks international Option input.
+      - `NSLocalNetworkUsageDescription`, richer macOS crash log — low value
+        vs. signal-handler risk.
 
 254. **The bare Super key belongs to the desktop, not to the OS.** ✅ Fixed
     2026-09-07, ⚠️ untested live. `useKeyboard` gated its lone Meta/Super panel
@@ -899,7 +924,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ad — `eldrun-send`: files from agent terminals to the phone** (2026-09-14;
-  implemented, pending live QA). See `docs/mobile_send_plan.md`. Local and
+  implemented, pending live QA). Local and
   container tabs get an installed command, scoped root env, and read-only
   mounts. Focus previews images/text/PDF and offers downloads and file sharing.
   After deliberately restarting Eldrun, verify on the tailnet:
@@ -1476,7 +1501,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
-- [~] **31x — Mobile Focus: the agent's pictures reach the phone** (2026-09-05;
+- [~] **31bd — Mobile Focus: the agent's pictures reach the phone** (2026-09-05;
   ✅ code-complete, automated tests passing — `outbox.rs` unit tests, the
   sidecar route test, `MobileTerminalOutbox.test.tsx`; ⚠️ needs live QA on a
   phone, and a rebuild + restart first: the sidecar gained two routes and the
@@ -1627,6 +1652,39 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual test — no Google "Use passkey?" sheet before the
+    fingerprint (2026-09-26). The credential is now device-bound
+    (`BIOMETRIC_SELECTION`, `residentKey: "discouraged"`, `client-device`
+    hint) instead of a Google Password Manager passkey; an old passkey record
+    is re-enrolled once after the next unlock (one extra fingerprint touch),
+    and the old passkey is signalled away (`signalUnknownCredential`). On
+    Android Chrome: after that one upgrade, locking and reopening goes
+    straight to the fingerprint, and the passkey no longer shows in Password
+    Manager
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual test — branded fingerprint wait (2026-09-27,
+    `mobile.lock.brandedSheet`). Android's sheet cannot be restyled, so the
+    lock screen dresses the space above it: while the sheet is up the form
+    steps aside, the mark lifts and grows with its rings turning and "Touch
+    the fingerprint sensor" breathing under it; on success the mark flares
+    gold and lifts away (~0.5 s) before the app opens. Check that nothing
+    sits under the sheet, a cancelled sheet brings the form back, and the
+    PIN unlock plays the same flourish
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31m — Mobile to-do board: sticky filters, FAB, hide archived**
   (2026-08-30; ✅ Code-complete, ⚠️ needs live QA on a phone).
@@ -1698,7 +1756,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
-- [~] **31ab — Close a tab from the phone** (2026-09-05; ✅ code-complete and
+- [~] **31be — Close a tab from the phone** (2026-09-05; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending — and a rebuild + restart first:
   the sidecar route, the desktop bridge and the embedded PWA all changed). The
   phone could open tabs and never put one away, so a week of sofa sessions
@@ -1755,7 +1813,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
-- [~] **31u — Mobile status chip: the session's state and the agent's own usage**
+- [~] **31bf — Mobile status chip: the session's state and the agent's own usage**
   (2026-09-02; ✅ code-complete and automated tests passing, ⚠️ phone QA
   pending — and a rebuild + restart first, since the phone serves the bundle
   baked into the binary). A **Status** chip joins ＋ / model / mode / ◷ Schedule
@@ -1892,7 +1950,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
-- [~] **31t — Mail writes from the phone: mark read/star and reply-only**
+- [~] **31bg — Mail writes from the phone: mark read/star and reply-only**
   (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ phone QA
   pending). Mail was the one companion surface with no write at all, and the
   reason was the outbound threat model, not the architecture. Two writes now
@@ -1918,7 +1976,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       arrive at the sender.
     - [ ] 🖐️ Manual test — flip a switch off while the phone has the message
       open; tap the control; expect the "Switched off in Eldrun" explanation.
-- [x] **31s — The phone's `done` tag clears when the tab is read** (2026-09-02;
+- [x] **31bh — The phone's `done` tag clears when the tab is read** (2026-09-02;
   ✅ verified live on the phone 2026-09-20). The
   `done` pill on the project screen is the desktop's own attention flag, and
   nothing on the phone ever retired it: opening the tab, reading the finished
@@ -2802,7 +2860,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   `MobileRootAccess.test.tsx`, `scopeCaption` in `MobileProjectOrder.test.tsx`;
   ⚠️ not verified on a phone, and it needs a rebuild + restart first: the
   sidecar's catalog changed and the phone serves the bundle baked into the
-  binary). Plan and rationale: `docs/mobile_root_plan.md`,
+  binary). Rationale:
   `docs/context/root_console.md` ("On the phone"). Root is a phone scope behind
   its own default-off switch (Settings → Eldrun Mobile → Root console) and a
   gate: with the root MCP tools on it is listed only while write review is
@@ -2819,6 +2877,491 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     seconds and an open root terminal detaches; back to "All writes" → it
     returns. Switch the root MCP tools off with review still weakened → the
     row is listed. Switch root access off → gone.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31ba — The gallery's pictures, cropped and stepped through** (2026-09-23;
+  ✅ code-complete, automated tests passing —
+  `MobileFocusOutboxGallery.test.tsx`; ⚠️ not verified on a phone, and the
+  phone serves the PWA baked into the binary, so it needs a rebuild + restart).
+  - **Thumbnails**: the tile styles went with the old strip in 31am, so a
+    gallery picture drew as a bare browser button around a stretched image.
+    A picture tile is again the picture alone, cropped to 4:3 with a border,
+    name and age under it — on the Focus gallery and the project shelf alike.
+  - **Stepping**: a picture opened full screen (`OutboxViewer`) steps through
+    the gallery's other pictures in place — ‹ › on the picture's edges, a
+    sideways swipe (a pinch or a mostly vertical drag is left alone), or the
+    arrow keys; the head reads `2 / 5 · 48 KB`. PDFs, texts and downloads are
+    skipped: they open their own way. The neighbours are fetched ahead so a
+    step does not land on a blank. Sizes read `1.4 MB` rather than `1434 KB`.
+  - [ ] 🖐️ Manual phone QA — `eldrun-send` three PNGs and a PDF from one tab,
+    open the gallery: the three pictures are cropped tiles of one shape, none
+    squashed. Tap the newest → `1 / 3`, no ‹; tap › → `2 / 3`; swipe left →
+    `3 / 3`, no ›; swipe right → back; drag down instead → nothing moves;
+    pinch → zooms, no step. ✕ lands on the grid. From the project screen's
+    shelf the same.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bb — The project screen's ＋ sends a document from the phone**
+  (2026-09-23; ✅ code-complete, automated tests passing —
+  `MobileNewTabSheet.test.tsx`, host test
+  `a_file_sent_from_the_project_screen_lands_in_that_projects_inbox`; ⚠️ not
+  verified on a phone — needs a rebuild + restart, the PWA is baked in).
+  - The ＋ sheet ends in **Send a file from this phone** (native picker, any
+    type, several at once). Each file goes raw to the new
+    `POST /api/v1/projects/{id}/inbox` — the same `.eldrun/inbox/` drop box
+    and limits as the Focus composer's + (31n), named by the project because
+    that screen has no tab. A row per pick under the header says
+    *In the project as @.eldrun/inbox/<stamp>-<name>* with **Copy** (puts the
+    `@reference ` on the clipboard for an agent's prompt) and ✕.
+  - [ ] 🖐️ Manual phone QA — open a project, ＋ → Send a file from this
+    phone, pick a PDF and a photo: the sheet closes, two rows say *Sending…*
+    then *In the project as @.eldrun/inbox/…*. Copy → paste into an agent
+    tab's composer → the agent reads the file. Also from a project with every
+    tab closed. A >24 MB pick fails at once with *is larger than 24 MB.*
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bc — Subagents in the Reader, opened and stepped through**
+  (2026-09-24; ✅ code-complete, automated tests passing —
+  `MobileTerminalSubagents.test.tsx`, `agent_transcript`/`opencode_store`
+  subagent tests, and a read of a real Claude session with two subagents;
+  ⚠️ not verified on a phone — needs `npm run package:dev` + relaunch, the
+  PWA and the backend are baked in. Pill: `mobile.focus.subagents`).
+  - Each subagent the agent spawned is a card in its place in the stored
+    session: kind (`Explore`, a Codex role · nickname, an OpenCode agent)
+    over its task. Tapping it opens that subagent's own conversation — its
+    task as the first prompt, its messages as bubbles, its own subagents as
+    cards — under a sticky bar: ‹ back up (to where that conversation was
+    scrolled), the task, and `‹ 1 of 3 ›` through the subagents beside it.
+    Sending a prompt from there goes back to the session.
+  - Per CLI: Claude `<session>/subagents/agent-<id>.jsonl` matched to its
+    `Agent` call by the `.meta.json` beside it; Codex `thread_spawn_edges`
+    in its state store (⚠️ no Codex subagent run exists on this machine —
+    shape read from the 0.156.1 binary, not a real run); OpenCode child
+    sessions by `parent_id`. The phone only ever holds a digest of the id,
+    looked up among the tab session's own subagents.
+  - [ ] 🖐️ Manual phone QA — in a Claude tab ask for two parallel Explore
+    agents. In the Reader two cards appear under the answer that spawned
+    them; tap the first → its task, then its messages; `1 of 2`, › → the
+    second; ‹ back → the session, scrolled where it was. While a subagent
+    is still working its conversation grows in place. Send a prompt from
+    inside a subagent → back in the session with the bubble. Repeat in a
+    Codex tab with multi-agent on, and an OpenCode tab (`@explore …`).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bi — Mobile ↔ desktop link hardening** (2026-09-24; ✅ code-complete,
+  automated tests passing — `auth.rs`, `pty_bridge.rs`, `limits.rs`,
+  `protocol.rs`, the mobile vitest suite; ⚠️ never run on a phone; the sidecar
+  and the bridge both changed, so a rebuild + restart first). The nine steps: input frames acked by the sidecar and a
+  lost prompt marked on its own bubble with Resend (1); sliding 15-min session
+  renewed silently on a 401 while the reader is active, PIN on every cold open,
+  `session_expired` told apart from `access_revoked` (2); the service worker
+  serves the cached shell on a proxy 502 (3); one failure vocabulary
+  (`connection.ts` `describeFailure`), usage errors as codes, the reconnect line
+  once per outage (4); the Reader stays for a tab with no session id yet (5);
+  `subscribed` replaces the calendar feed URL on the wire, calendar edits in a
+  sheet and deletes in the option sheet (6); a 5-minute idle deadline on every
+  sidecar socket, the history replay in ≤64 KB frames, a flooding pane sheds its
+  oldest output instead of closing the link (7); the Home list reloads on
+  show/online and on a slow retry (8); per-domain bridge mutation queues (9);
+  tmux `prefix None` on Eldrun sessions (decision 5). Not done from the plan:
+  the optional `calendar_writes`/`todo_writes` desktop switches (6, "consider")
+  — a CalDAV delete from the phone is still guarded by the confirm sheet alone.
+  - [ ] 🖐️ Manual phone QA — "every second unlock fails, Retry works" (2026-09-27, `mobile.link.unlockRetry`): leave the PWA past the 3-minute lock with the screen off for a few minutes, come back, unlock ten times in a row: each one connects (Connecting… may run ~10 s on a dead connection, then lands) and none shows the failure splash; when a splash does show, Retry connects without asking for the fingerprint again. Phone-bundle-only change: commit, let the dev build publish, pull to refresh.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — the lock sheet over Home (2026-09-27, `mobile.lock.homeSheet`): lock the phone (idle timeout or backgrounding past it), then reopen — the PIN/fingerprint form rises as a sheet over Home's own header and build line, not its own full screen; unlock still lands on the project list as before. Phone-bundle-only change: commit, let the dev build publish, pull to refresh.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — plan-mode tint on the Mode fact (2026-09-27, `mobile.focus.planModeMark`): in an open agent session, switch the CLI's own permission mode to plan (Shift+Tab or its picker) — the Mode button in the facts row fills purple while plan mode holds, and returns to plain once switched away. Phone-bundle-only change: commit, let the dev build publish, pull to refresh.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — open the PWA with the desktop closed: the app's own "Eldrun Mobile isn't running on your desktop" splash, never the proxy's 502 page (step 3).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — type a prompt, drop the phone to airplane mode within a second, wait a minute, reconnect: the bubble stays where it was, says "Not delivered", and Resend delivers it exactly once (step 1).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — `systemctl --user restart` the mobile host while reading a tab: no PIN screen, the terminal reconnects on its own; then leave the phone untouched past the 3-minute idle lock and come back: the PIN screen (step 2).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — kill the PWA from the app switcher and reopen: the PIN or fingerprint every time, and the reader lands back on the tab they had open (step 2).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — create an agent tab from the phone: it opens in the Reader, reads the screen until the agent's hook records a session, then paints the stored session without a tap (step 5).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — quit the desktop with the sidecar up, then open a project: prose ("Eldrun isn't running on your desktop."), never `Error: desktop_unavailable`; the status sheet's usage error reads as a sentence too (step 4).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — Calendar → Calendars → Edit opens a sheet with name and colour; Delete asks in the option sheet; a subscribed feed still says Subscribed (step 6).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — on the Projects tab, kill the sidecar, wait for the red notice, start it again: the list comes back on its own within half a minute, or at once when the app is brought back to the front (step 8).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — with a phone on cellular, run `yes` in a shell tab for ten seconds: the terminal keeps up or skips ahead, but never disconnects and replays the whole flood (step 7).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bj — The agent's pictures are chat messages again, WhatsApp-style** (2026-09-25;
+  ✅ code-complete, automated tests passing — `MobileOutboxPosts.test.ts`,
+  `MobileFocusOutboxGallery.test.tsx`; ⚠️ not verified on a phone). Reverses
+  31am's "never in the chat" at the user's request, but not back to 31bd's
+  file cards: what `eldrun-send` puts out shows in the Focus chat (stored
+  session) as a picture bubble — thin rim, no filename, the time over its
+  corner — and one send of several files is one album bubble (2 side by
+  side, 3 as one wide over two, 4+ as a 2×2 whose last tile reads "+N").
+  Non-picture files are slim cards in the same bubble. The 🖼 gallery stays.
+  - Placement (`mobile-web/src/terminal/outboxPosts.ts`): after the last
+    record written at or before the file's mtime; files ≤ 10 s apart with no
+    record between them are one post. Files older than the first shown record
+    (earlier sessions, truncated turns) stay gallery-only; the screen chat has
+    no times, so it shows none. The outbox is per project, so another tab of
+    the same project sending during this conversation also shows here.
+  - Needs the embedded PWA rebuilt (`npm run mobile:bundle`) and a desktop
+    restart to be served. Untested id `mobile.outbox.chat`.
+  - [ ] 🖐️ Manual phone QA — in a Claude tab ask "send me a screenshot to my
+    phone": within ~8 s a picture bubble appears after the agent's message
+    that preceded the send, in the picture's own shape, time in the corner;
+    tap → full screen. Then "send me three plots at once" → one album bubble
+    with three tiles. The 🖼 count still rises and the gallery lists them all.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+- [~] **31bk — Agent sign-in (`/login`) from the phone, every CLI** (2026-09-27;
+  ✅ code-complete, automated tests passing — `MobileSignIn.test.tsx`,
+  `mobile_control::sign_in` + host route test; ⚠️ not verified on a phone).
+  A CLI printing a sign-in link (OAuth/device markers only, bottom 40 lines)
+  gets a notice over the composer → **Sign in** sheet: *Open the sign-in
+  page* (a real link, so the phone's browser takes it) + Copy link, then by
+  flow — device code shown with Copy (Copilot, Qwen); a field for the code
+  the page ends on, typed into the session + Enter (Claude, Gemini,
+  Antigravity); a field for the `http://localhost:<port>/…` address the
+  phone's browser failed on, which the sidecar relays to the CLI's loopback
+  listener (`POST /api/v1/tabs/{id}/sign-in-callback`; Codex's ChatGPT
+  sign-in) — or nothing (Cursor polls). The Status sheet gains **Sign in**
+  for CLIs whose command is documented (Claude/Copilot `/login`,
+  Gemini/Qwen `/auth`); the `/` menu lists `/login`, `/logout`, `/auth`.
+  - Needs the PWA rebuilt and the backend restarted (the relay route is
+    sidecar code). Untested id `mobile.signIn`.
+  - Open: whether Gemini in the fence prints the paste-code flow or the
+    localhost one (no DISPLAY socket in the fence; either is handled);
+    Droid/Grok/Vibe sign-in shapes unverified.
+  - [ ] 🖐️ Manual phone QA — Claude tab → Status → Sign in → pick the
+    subscription row in the chat → notice → Sign in → open page, approve,
+    copy the code, paste → Send → Claude says Login successful and the
+    notice goes. Then a Codex tab signed out → "Sign in with ChatGPT" →
+    open page, approve → copy the failed localhost address → Finish
+    sign-in → Codex continues.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - **Rework 2026-09-28 — phone-only sign-in tabs** (✅ code-complete,
+    automated tests passing — `MobileSignInTab.test.tsx`,
+    `MobileSignInCreate.test.tsx`, `SignInLaunch.test.ts`,
+    `MobileLaunchOptions.test.tsx`, `mobile_control` host/protocol tests;
+    ⚠️ not verified on a phone). No TUI menu to find any more: a **sign-in
+    tab** runs the CLI's own login command in the flow a phone can finish
+    (`src/lib/agents/signInLaunch.ts`: Claude `auth login --claudeai`, or
+    `--console` as the other way in; Codex `login --device-auth`, or `login`
+    through the browser; Copilot `login --device-code`; Cursor `login`;
+    OpenCode `auth login`; Amp `login`; Gemini `NO_BROWSER`; the rest a plain
+    launch). Reached from Project ＋ → **Sign in to an agent** (each CLI's
+    shared-login state from `agent_auth`, Sign in / Sign in again / the other
+    way in), from an agent tab's new **"… needs you to sign in"** notice
+    (`readSignedOut`: Not logged in, Please run /login, Invalid API key, a
+    login-method screen), and from Status → Sign in. The sheet is now
+    numbered steps: one tap copies a device code and opens the page, a
+    **Paste the code / address** button reads the clipboard and sends it,
+    **Signed in ✓** with Done (which closes a login-command tab), and **Start
+    again** or the other way in when the login ended without success. New
+    routes: `POST /api/v1/tabs/{id}/sign-in`; `sign_in` on the create
+    request (`like_tab` sidecar-only); `sign_in` rows in launch-options.
+    Untested id `mobile.signIn.tab`. Needs the backend restarted (sidecar
+    routes + protocol fields); the PWA is rebuilt.
+    - Unverified CLI shapes: Codex `--device-auth` (the ChatGPT account may
+      need device-code sign-in allowed first — then use "Sign in through the
+      browser instead"), Cursor/OpenCode/Amp login output, what Claude's
+      `auth login` prints in the fence (expected: the manual URL + "Paste
+      code here if prompted").
+    - Switching accounts still needs Sign out on the desktop first (the
+      account guard refuses a different account's login).
+    - [ ] 🖐️ Manual phone QA — Project ＋ → Sign in to an agent: rows show
+      each CLI signed in / not. Claude → Sign in → the sheet waits, then
+      shows the page → open, approve, copy the code → back → Paste the code
+      → "Signed in to Claude ✓" → Done closes the tab and the row reads
+      Signed in. Copilot → Sign in → "Copy the code and open the page" →
+      paste on GitHub, approve → Signed in ✓. Codex → Sign in (device) or
+      "Sign in through the browser instead" → Finish. Then a Claude tab
+      that says "Not logged in" → notice → Sign in opens the sign-in tab.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+- [~] **31bl — Local-model agent tabs on the phone** (2026-09-28;
+  ✅ code-complete, automated tests passing — `MobileLocalAgents.test.tsx`,
+  `TabPersistFilter.test.ts`, `TmuxSessions.test.ts`, `ollama` /
+  `terminal_service` / `mobile_control` discovery + protocol tests;
+  ⚠️ not verified on a phone). Project ＋ gains the desktop "+"'s
+  **Local model · <model>** group (the `ollama_roles.tabs` model): Mistral
+  when installed, then every available driver (Claude Code, Codex, OpenCode,
+  Droid, OpenClaw), with the heavy-harness caution as a note. A model not on
+  the GPU still offers them; the start loads it (`load_ollama_model` gpu) and
+  the sheet says the first answer waits. Local-model tabs are listed on the
+  phone as agent tabs (named for the driver's CLI) and reattach like any
+  agent. For that, in a Mobile-access project/box: local tabs are tmux-wrapped
+  (`agent` token), and the `ollama launch` tabs record their launch line
+  (`TabEntry.localLaunch`) and so **restore after a desktop restart** — as a
+  fresh conversation after a clean quit (which reaps Eldrun's tmux
+  sessions); after a crash the tmux session still holds the agent. The
+  backend re-validates the line against its driver table on every load
+  (`ollama::local_launch_line_ok`); a folder copy never brings one back.
+  Tabs started before this, or outside a Mobile project, behave as before.
+  Untested id `mobile.newTab.local`. Needs the backend restarted (catalog,
+  protocol and sanitizer are Rust); the PWA is rebuilt.
+  - Not on Windows: local tabs there are never tmux-wrapped, so the phone
+    cannot attach (same as every local agent tab).
+  - [ ] 🖐️ Manual phone QA — set a "tabs" local model; in a Mobile project
+    Project ＋ → Local model group lists Mistral + the installed drivers →
+    Claude Code → the tab opens on the phone and answers; it shows on the
+    desktop as "<model> · Claude Code". Quit and restart desktop Eldrun →
+    the tab is back (a fresh conversation) and the phone lists it again;
+    a Mistral tab comes back resumed. With
+    the model unloaded, the group says it isn't on the GPU and a start loads
+    it.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bm — Calendar reminders as push notifications on the phone** (2026-09-28;
+  ✅ code-complete, automated tests passing — `push.rs` (RFC 8291 worked
+  example byte for byte, VAPID JWT verifies, host allowlist, revoke/forget-all
+  coupling), host route test, `CalendarAlarmPush.test.ts`,
+  `MobileCalendarReminders.test.tsx`; ⚠️ never sent through a real push
+  service or shown on a phone). Calendar → **Reminders** sheet on the phone:
+  Off / On, with event details / On, without details. The desktop's reminder
+  engine sends each fresh reminder (not snooze wake-ups, not muted calendars)
+  through admin `notify`; the sidecar encrypts per phone and POSTs to the
+  vendor push service; `sw.js` shows it and a tap opens Calendar. First use of
+  the Web Push channel from `docs/eldrun_mobile_future_plan.md` §A — agent
+  `question`/`done` edges can ride it next.
+  - Needs the sidecar updated (Settings → Mobile offers it after a rebuild)
+    and the PWA rebuilt (`npm run mobile:bundle`). Untested id
+    `mobile.calendar.push`.
+  - Open: whether Apple accepts the VAPID `sub` (the project's GitHub URL);
+    whether iOS delivers while the Home Screen app is fully closed.
+  - [ ] 🖐️ Manual phone QA — phone Calendar → Reminders → On, with event
+    details → allow notifications. On the desktop make an event 16 min out
+    with a 15-minute reminder; close Eldrun Mobile on the phone; within a
+    minute of the reminder the phone shows title · time · place. Tap → app
+    unlocks onto Calendar. Switch to "without details" → next reminder says
+    only "Calendar reminder". Revoke the phone on the desktop → no more.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bn — Agent questions and finished turns as push notifications** (2026-09-28;
+  ✅ code-complete, automated tests passing — `push.rs` (per-phone choices,
+  decrypted payloads carry only opaque ids when details are off, per-tab
+  cooldown), admin `agent_turn` test (unknown / phone-attached tab send
+  nothing), `MobileAgentTurnEdges.test.ts`, `MobileCalendarReminders.test.tsx`;
+  ⚠️ never shown on a phone). Rides 31bm's channel. The desktop bridge diffs
+  each phone-reachable agent tab's state (the one the phone's lists show) and
+  reports *into question* and *working → done*; the sidecar resolves the tab
+  through its catalog, skips it while a phone holds its terminal, and sends at
+  most one notice per tab per 30 s. The Reminders sheet became **This phone →
+  Notifications** (also Calendar → Reminders): Calendar on/off · Agents off /
+  questions / also finished turns · names and details or not. A tap opens the
+  agent's tab (after the unlock when locked). Untested id `mobile.push.title`.
+  - Needs the sidecar updated and the PWA rebuilt, like 31bm.
+  - Known: a finished turn on the tab in view on the desktop still notifies
+    (the desktop cannot tell whether anyone is at it); a notice without
+    details is English only (the service worker has no i18n).
+  - [ ] 🖐️ Manual phone QA — This phone → Notifications → Agents → When one
+    needs your answer. Leave the phone locked; in a phone-reachable project
+    have Claude ask a permission question → notification "Aurora · Claude —
+    Needs your answer" within seconds; tap → unlock → that tab. With the tab
+    open on the phone, the next question does not notify. Switch to "Also when
+    one finishes a turn" → a finished turn notifies. Revoke → nothing.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bo — Read-only project files on the phone** (2026-09-28;
+  ✅ code-complete, automated tests passing — `files.rs` (sealed tokens bound
+  to the project, no link anywhere on the path, hidden names, 500-entry cap,
+  24 MiB head for text), host test `the_file_browser_is_off_by_default_and_…`,
+  `MobileProjectFiles.test.tsx`; ⚠️ never run on a phone). Plan §D of
+  `docs/eldrun_mobile_future_plan.md`, re-evaluated: one host-wide switch
+  **Settings → Mobile → Project access → Project files on the phone** (default
+  off) instead of a per-project flag; files open in the outbox's viewer.
+  Untested ids `mobile.projectFiles`, `mobile.files.browse`.
+  - Needs the sidecar updated and the PWA rebuilt (`npm run backend:stale`).
+  - [ ] 🖐️ Manual phone QA — switch it on; on a Mobile project's screen a
+    left→right swipe slides the files drawer in from the left (no 📁 in the
+    header any more, 2026-09-28); a swipe starting right at the left edge
+    opens it too (unless Android's back gesture takes it). Inside an agent tab's
+    Focus view (2026-09-29) a swipe from the left third opens the drawer, one
+    from further right the status line; in a shell tab any swipe opens it;
+    Terminal view opens neither. A right→left swipe over it or a tap beside it
+    closes it, and a sideways drag on a card's ⠿ grip does not open it.
+    Walk into `src/` and back by the trail; open a `.md` (text
+    preview), a `.png` (full screen, pinch, step to the folder's next picture,
+    Save, Share), a PDF (browser tab, reading it — it said
+    `authentication_required` before its open ticket, 2026-09-29). `.git`, `.env` and a symlink are not
+    listed. Switch it off on the desktop → within ~5 s the swipe does nothing and
+    an open drawer is gone; a folder opened meanwhile says it was switched off.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bp — The phone's host updates itself at launch** (2026-09-28;
+  ✅ code-complete, unit test `a_launch_updates_a_host_that_is_behind_…`;
+  ⚠️ never seen live). `start_host_on_launch` reinstalls the sidecar copy
+  (`mobile_host_apply`) when this version has no copy, the copy is an earlier
+  build, or the answering host reports another version; on failure it starts
+  the old copy as before. Why: 31bo's project files stayed invisible behind an old copy
+  until Update host was clicked. A debug window copies its ~700 MB image on
+  each launch that is behind.
+  - [ ] 🖐️ Manual QA — with Mobile on, relaunch Eldrun after a new build →
+    `journalctl --user -u eldrun-mobile-host` shows a restart right after the
+    launch, Settings → Mobile no longer offers Update host, and a new route
+    (e.g. 31bo's project files) works without clicking anything. Relaunch again with no new
+    build → no restart.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)

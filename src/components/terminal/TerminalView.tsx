@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Terminal } from "@xterm/xterm";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -10,7 +11,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useT } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { cmdToKind, isDetachedPtyId, type TabKind } from "../../stores/tabs";
-import { isInterruptInput, lastPtyOutputAt, notePtySpawn, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
+import { isInterruptInput, lastPtyOutputAt, notePtySpawn, noteTurnCutOff, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
 import { useAgentTaskStore } from "../../stores/agents/agentTask";
 import { noteInput } from "../../lib/agents/promptCount";
 import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
@@ -24,10 +25,22 @@ import {
 } from "../../lib/terminal/terminalBus";
 import { hpcGuardRefusal } from "../../lib/remote/hpc/hpcGuard";
 import { useHpcGuardStore } from "../../stores/remote/hpc/hpcGuardPrompt";
+import { unfencedPlatformRefusal } from "../../lib/agents/agentFence";
+import { useUnfencedPlatformStore } from "../../stores/unfencedPlatformPrompt";
 import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, claudeLaunchName, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, suppressNativeContextMenu, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminal/terminalControl";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminal/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/agents/scheduledAgentInput";
+import { terminalYieldsChord } from "../../lib/shortcuts/terminalTabChord";
+import { terminalChordFor, zoomFor, type ShortcutMap } from "../../lib/shortcuts/shortcuts";
+import { copyableSelection, installMouseModeGuard, joinedSelectionText } from "../../lib/terminal/terminalSelection";
+import { keySelectHighlight, keySelectRange, keySelectStep, scrollToShow, startKeySelect, type KeySelectState } from "../../lib/terminal/keyboardSelect";
+import { findSignInRequest, findWrappedUrls, type SignInRequest } from "../../lib/terminal/terminalUrls";
+import { SIGN_IN_CARD_CLASS, TerminalSignInCard } from "./TerminalSignInCard";
+import { TerminalUndoClearCard } from "./TerminalUndoClearCard";
+import { UntestedTag } from "../common/UntestedTag";
+import { noteTypedClear, useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
+import { noteTypedLine } from "../../lib/agents/typedClear";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -36,6 +49,21 @@ import "@xterm/xterm/css/xterm.css";
 // arrays to a `Vec<u8>` command directly), avoiding the per-key `Array.from`.
 const PTY_ENCODER = new TextEncoder();
 const PTY_DECODER = new TextDecoder();
+
+/** Rows above the live screen still searched for a sign-in link: a flow that
+ *  printed a few lines after the link must not lose its card. */
+const SIGN_IN_SCROLLBACK_ROWS = 20;
+/** How far above a hovered row a hard-wrapped URL may have started. */
+const WRAPPED_URL_LOOKBACK_ROWS = 40;
+/** How long a click on a link waits before opening it: a second click in that
+ *  time makes it a double-click, which copies the link instead. */
+const LINK_OPEN_DELAY_MS = 300;
+
+/** Whether a pane-level mouse event came from the sign-in card, which the
+ *  terminal's own mouse handling must leave alone. */
+function fromSignInCard(e: Event): boolean {
+  return e.target instanceof Element && !!e.target.closest(`.${SIGN_IN_CARD_CLASS}`);
+}
 
 interface PtyScrollback {
   data: string;
@@ -88,6 +116,10 @@ interface Props {
   tmuxAttach?: string | null;
   /** Host-bound marker id (#150) — see `lib/remote/hostBound.ts`. */
   hostBoundUid?: string | null;
+  /** The root console's Host session: spawned unfenced in Eldrun's `host`
+   *  home (`PtyOptions.host_session`). Honoured by the backend only with no
+   *  project id. */
+  hostSession?: boolean;
   // Whether this pane is laid out on screen (single-mode active tab, or any
   // pane in grid mode). Drives display + xterm fit.
   visible: boolean;
@@ -115,6 +147,8 @@ interface Props {
   kind?: TabKind;
   /** Stable local-only target id for per-tab scheduled prompts. */
   scheduleTargetId?: string;
+  /** Bumped to respawn the PTY in place (`relaunchTabInScope`). */
+  relaunchSeq?: number;
 }
 
 function terminalTheme(scheme: string | undefined) {
@@ -356,7 +390,7 @@ function readAgentFontSize(): number {
   return DEFAULT_FONT_SIZE;
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false, kind: declaredKind, scheduleTargetId }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, hostSession = false, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false, kind: declaredKind, scheduleTargetId, relaunchSeq = 0 }: Props) {
   const viewerId = useRef(crypto.randomUUID()).current;
   const viewerUpdateSeq = useRef(0);
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
@@ -409,6 +443,26 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       program: program || t("terminal.silentStartShell"),
       s: SILENT_START_MS / 1000,
     });
+  // What the pane says when the Windows "full rights" acceptance was declined.
+  const unfencedDeclinedTextRef = useRef<() => string>(() => "");
+  unfencedDeclinedTextRef.current = () => t("unfencedPlatform.declined");
+
+  // The sign-in link the program on screen is waiting on (see
+  // `TerminalSignInCard`), and the links the user already closed the card for.
+  const [signIn, setSignIn] = useState<SignInRequest | null>(null);
+  // The session in this pane was just cleared: offer to take it back.
+  const undoClearOffered = useAgentClearUndoStore((state) => !!state.cleared[id]);
+  const dismissedSignIns = useRef(new Set<string>());
+  const signInCopiedRef = useRef(t("terminal.signIn.copied"));
+  signInCopiedRef.current = t("terminal.signIn.copied");
+  const linkCopiedRef = useRef(t("terminal.linkCopied"));
+  linkCopiedRef.current = t("terminal.linkCopied");
+  // What a copy the clipboard refused says — a copy must never fail silently,
+  // or the user pastes the old contents and learns nothing.
+  const copyFailedRef = useRef(t("terminal.copyFailed"));
+  copyFailedRef.current = t("terminal.copyFailed");
+  // Keyboard select (Ctrl+Shift+X) is on: shows its key legend over the pane.
+  const [keySelecting, setKeySelecting] = useState(false);
 
   const focusedRef = useRef(focused);
   visibleRef.current = visible;
@@ -460,9 +514,85 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     });
 
     const fit = new FitAddon();
-    const links = new WebLinksAddon();
+    // A click on a link opens it once the double-click window has passed; a
+    // double-click copies it instead (see `onMouseDownCapture`, which takes the
+    // second press away from xterm and from the agent pane's paste). xterm
+    // activates a link on each release, so the double-click's second release
+    // (`detail` 2) is ignored here. The hovered link is tracked because the
+    // second press has to know it is on one before xterm sees it.
+    let hoveredLink: string | null = null;
+    let linkOpenTimer: ReturnType<typeof setTimeout> | null = null;
+    const cancelLinkOpen = () => {
+      if (linkOpenTimer) clearTimeout(linkOpenTimer);
+      linkOpenTimer = null;
+    };
+    const activateLink = (event: MouseEvent, url: string) => {
+      if (event.detail > 1) return;
+      cancelLinkOpen();
+      linkOpenTimer = setTimeout(() => {
+        linkOpenTimer = null;
+        void invoke("open_external_url", { url }).catch(() => {});
+      }, LINK_OPEN_DELAY_MS);
+    };
+    const linkHover = {
+      hover: (_e: MouseEvent, url: string) => {
+        hoveredLink = url;
+      },
+      leave: () => {
+        hoveredLink = null;
+      },
+    };
+    const links = new WebLinksAddon(activateLink, linkHover);
+    // A URL an agent CLI cut across rows with hard newlines (a sign-in link,
+    // above all) is one link on every row it covers, opened whole. Registered
+    // before the web-links addon because the first provider with a link at the
+    // cell wins; it answers nothing for a URL that fits one row.
+    const wrappedLinks = term.registerLinkProvider({
+      provideLinks(row, reply) {
+        const buf = term.buffer.active;
+        const y = row - 1;
+        const hits = findWrappedUrls((n) => buf.getLine(n), term.cols, y - WRAPPED_URL_LOOKBACK_ROWS, y).filter(
+          (u) => u.start.y <= y && u.end.y >= y,
+        );
+        if (!hits.length) return reply(undefined);
+        reply(
+          hits.map((u) => ({
+            range: { start: { x: u.start.x + 1, y: u.start.y + 1 }, end: { x: u.end.x, y: u.end.y + 1 } },
+            text: u.url,
+            activate: activateLink,
+            hover: (e: MouseEvent) => linkHover.hover(e, u.url),
+            leave: linkHover.leave,
+          })),
+        );
+      },
+    });
     term.loadAddon(fit);
     term.loadAddon(links);
+
+    // Watch the screen for a sign-in link (`findSignInRequest`) and show the
+    // card while one is up. Only parsed output triggers a look — a hidden pane
+    // parses nothing (see `writeTerm`) and catches up when shown — and the look
+    // is coalesced so a streaming agent costs one scan per 300 ms at most. The
+    // card goes away with the link: a login that succeeded redraws the screen.
+    setSignIn(null);
+    let signInScanTimer: ReturnType<typeof setTimeout> | null = null;
+    const scanForSignIn = () => {
+      signInScanTimer = null;
+      const buf = term.buffer.active;
+      const found = findSignInRequest(
+        (n) => buf.getLine(n),
+        term.cols,
+        buf.baseY - SIGN_IN_SCROLLBACK_ROWS,
+        buf.baseY + term.rows - 1,
+      );
+      const next = found && !dismissedSignIns.current.has(found.url) ? found : null;
+      setSignIn((prev) =>
+        prev?.url === next?.url && prev?.wantsCode === next?.wantsCode ? prev : next,
+      );
+    };
+    const signInWatch = term.onWriteParsed(() => {
+      signInScanTimer ??= setTimeout(scanForSignIn, 300);
+    });
 
     termRef.current = term;
     registerTerminal(id, term);
@@ -754,6 +884,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (!isTerminalAutoReply(data)) {
         noteUserInput(id, isInterruptInput(data));
         if (noteInput(id, data) > 0) countSubmit();
+        // A typed `/clear` (or `/new`) offers "Undo clear" — the one way the
+        // window learns of it from an agent whose hooks say nothing.
+        if ((kind === "agent" || kind === "local_agent") && noteTypedLine(id, data)) noteTypedClear(id);
       }
       writePtyInput(id, PTY_ENCODER.encode(data)).catch(console.error);
     };
@@ -855,54 +988,95 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (!focusedRef.current) return true;
       const text = decodeOsc52Clipboard(data);
       if (text === null) return true;
-      navigator.clipboard?.writeText(text).catch(() => {});
-      useProjectsStore.setState({ switchToast: clipboardNoticeRef.current });
+      // Through the backend, not `navigator.clipboard`: this write comes with PTY
+      // output, not from a click or key, so the webview refuses it (see
+      // `copy_text_to_clipboard`). Announced only once the backend took it.
+      invoke("copy_text_to_clipboard", { text })
+        .then(() => useProjectsStore.setState({ switchToast: clipboardNoticeRef.current }))
+        .catch(() => {});
       return true;
     });
 
     // Copy-on-select: a mouse-made selection (drag, double/triple-click) copies
     // itself to the clipboard with no chord needed, matching most native
-    // terminals. Debounced so a drag firing onSelectionChange on every cell it
-    // crosses doesn't issue a clipboard write per event — only once ~60ms after
-    // the selection settles. Ctrl+Shift+C below stays as the explicit fallback
-    // (e.g. a selection made without the mouse never fires this).
+    // terminals. xterm fires `onSelectionChange` once, from inside its own
+    // mouseup handler, so the copy is made right there. Right-click on a
+    // selection, Ctrl+Shift+C and keyboard select copy explicitly.
     //
-    // The text is captured when the selection changes, not read back when the
-    // timer fires: an agent pane repaints under its own selection constantly, and
-    // a repaint that clears the highlight inside those 60ms would otherwise leave
-    // the drag having copied nothing at all. Releasing the button flushes the
-    // pending copy immediately (see `onDocMouseUp`), so a select-then-paste-
-    // elsewhere never races the debounce.
-    // Every copy the user makes — drag, Shift+drag, Ctrl+Shift+C — goes through
-    // here so each one is announced in the same transient toast the OSC 52 path
-    // uses, and only once the clipboard actually took it.
+    // The copied text rejoins the rows tmux and the agent CLIs wrapped
+    // (`copyableSelection`); an Alt-drag column selection is copied as drawn.
+    // Every copy the user makes goes through here so each one is announced in
+    // the same transient toast the OSC 52 path uses, once the clipboard took it
+    // — and a refused one says so.
+    //
+    // Through the backend first, like OSC 52: the webview's `navigator.clipboard`
+    // writes only while WebKit still counts the press as a user gesture, and it
+    // dropped some mouse-up copies outright — the "copy works sometimes" report.
+    // The webview stays as the fallback (and for text past the backend's cap).
     const copyToClipboard = (text: string) => {
-      navigator.clipboard
-        ?.writeText(text)
-        .then(() => {
-          useProjectsStore.setState({ switchToast: copiedNoticeRef.current(text) });
-        })
-        .catch(() => {});
+      const copied = () => useProjectsStore.setState({ switchToast: copiedNoticeRef.current(text) });
+      invoke("copy_text_to_clipboard", { text })
+        .then(copied)
+        .catch(() => (navigator.clipboard ? navigator.clipboard.writeText(text).then(copied) : Promise.reject()))
+        .catch(() => useProjectsStore.setState({ switchToast: copyFailedRef.current }));
     };
-    let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
-    let pendingSelection = "";
-    const flushSelectionCopy = () => {
-      if (selectionCopyTimer) {
-        clearTimeout(selectionCopyTimer);
-        selectionCopyTimer = null;
-      }
-      if (!pendingSelection) return;
-      const text = pendingSelection;
-      pendingSelection = "";
-      copyToClipboard(text);
-    };
+    let columnSelect = false;
+    // Keyboard select (see lib/terminal/keyboardSelect): the cursor and anchor
+    // while the mode is on, drawn with xterm's own selection. Its steps are not
+    // copies, so copy-on-select stands aside until Enter copies the result.
+    let keySelect: KeySelectState | null = null;
     term.onSelectionChange(() => {
-      const sel = term.getSelection();
-      if (!sel) return;
-      pendingSelection = sel;
-      if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
-      selectionCopyTimer = setTimeout(flushSelectionCopy, 60);
+      if (keySelect) return;
+      const sel = copyableSelection(term, columnSelect);
+      if (sel) copyToClipboard(sel);
     });
+    // Mouse-mode escapes from the program would otherwise wipe a selection —
+    // mid-drag included — whenever they arrive (see `installMouseModeGuard`).
+    const mouseModeGuard = installMouseModeGuard(term);
+
+    const drawKeySelect = () => {
+      if (!keySelect) return;
+      const { column, row, length } = keySelectHighlight(keySelect, term.cols);
+      term.select(column, row, length);
+      const top = scrollToShow(keySelect.cursor.y, term.buffer.active.viewportY, term.rows);
+      if (top !== null) term.scrollToLine(top);
+    };
+    const enterKeySelect = () => {
+      const buf = term.buffer.active;
+      keySelect = startKeySelect({ x: buf.cursorX, y: buf.baseY + buf.cursorY }, term.getSelectionPosition(), term.cols);
+      setKeySelecting(true);
+      drawKeySelect();
+    };
+    const leaveKeySelect = () => {
+      if (!keySelect) return;
+      keySelect = null;
+      setKeySelecting(false);
+      term.clearSelection();
+    };
+    // Copy what keyboard select holds (the cursor's row when nothing is
+    // anchored) and leave the mode.
+    const copyKeySelect = () => {
+      if (!keySelect) return;
+      const buf = term.buffer.active;
+      const text = joinedSelectionText((y) => buf.getLine(y), term.cols, keySelectRange(keySelect, term.cols));
+      leaveKeySelect();
+      if (text.trim()) copyToClipboard(text);
+    };
+    const onKeySelectKey = (e: KeyboardEvent) => {
+      if (!keySelect || e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return;
+      const buf = term.buffer.active;
+      const step = keySelectStep(keySelect, e, {
+        cols: term.cols,
+        rows: term.rows,
+        length: buf.length,
+        lineText: (y) => buf.getLine(y)?.translateToString(true) ?? "",
+      });
+      if (step.kind === "move") {
+        keySelect = step.state;
+        drawKeySelect();
+      } else if (step.kind === "copy") copyKeySelect();
+      else if (step.kind === "exit") leaveKeySelect();
+    };
 
     // Paste the OS clipboard into the running program. `term.paste` rather than a
     // raw `writePtyInput`: it normalizes newlines to CR and — when the program
@@ -962,17 +1136,35 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
 
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
+      // Keyboard select owns every key while it is on: nothing reaches the
+      // program (so an arrow never moves the agent's own cursor) and nothing
+      // bubbles to the window's chords (Esc leaves the mode, not fullscreen).
+      if (keySelect) {
+        e.preventDefault();
+        e.stopPropagation();
+        onKeySelectKey(e);
+        return false;
+      }
       // Ctrl +/-/0 zoom (agent panes only). preventDefault stops WebKit's own
       // page-zoom; returning false stops xterm forwarding the chord to the PTY;
       // stopPropagation stops the WINDOW-level per-window zoom handler (useKeyboard
       // / DetachedApp) from ALSO webview-zooming — an agent pane zooms its FONT, not
       // the whole window.
-      if (zoomable && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+      const overrides = useSettingsStore.getState().settings?.keyboard_shortcuts as ShortcutMap | undefined;
+      const zoom = zoomable ? zoomFor(e, overrides) : null;
+      if (zoom) {
         const cur = term.options.fontSize ?? DEFAULT_FONT_SIZE;
-        if (e.code === "Equal") { e.preventDefault(); e.stopPropagation(); applyFontSize(cur + 1, true); return false; }
-        if (e.code === "Minus") { e.preventDefault(); e.stopPropagation(); applyFontSize(cur - 1, true); return false; }
-        if (e.code === "Digit0") { e.preventDefault(); e.stopPropagation(); applyFontSize(DEFAULT_FONT_SIZE, true); return false; }
+        e.preventDefault();
+        e.stopPropagation();
+        applyFontSize(zoom === "in" ? cur + 1 : zoom === "out" ? cur - 1 : DEFAULT_FONT_SIZE, true);
+        return false;
       }
+      // Ctrl+Shift+←/→ (as bound): the pane's previous / next tab. Left unhandled
+      // so xterm neither sends it to the PTY nor cancels it, and the window's
+      // keyboard handler steps the tab (lib/shortcuts/terminalTabChord). Plain
+      // Shift+←/→ is deliberately left alone — an agent CLI (Codex) uses it.
+      // F11 (the window's fullscreen toggle, as bound) is handed over the same way.
+      if (terminalYieldsChord(e, overrides)) return false;
       // Shift+Tab in a Codex pane. xterm.js would send the legacy backtab, which
       // Codex's permission-mode cycle does not recognize — send the CSI-u form of
       // Tab+Shift it does read instead (see terminalControl.shiftTabForAgent).
@@ -983,20 +1175,23 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         writePtyInput(id, PTY_ENCODER.encode(CSI_U_SHIFT_TAB)).catch(console.error);
         return false;
       }
-      if (!e.ctrlKey || !e.shiftKey) return true;
-      // preventDefault on both chords: returning false only stops xterm, not the
-      // webview. WebKitGTK binds Ctrl+Shift+V to its own paste command, whose
-      // native `paste` event lands on xterm's textarea and pastes a second copy
-      // next to pasteClipboard's (the "pastes twice" report).
-      if (e.code === "KeyC") {
+      // Copy / paste / keyboard select — Ctrl+Shift+C / V / X unless rebound
+      // (`terminalChordFor`). preventDefault on each: returning false only
+      // stops xterm, not the webview. WebKitGTK binds Ctrl+Shift+V to its own
+      // paste command, whose native `paste` event lands on xterm's textarea
+      // and pastes a second copy next to pasteClipboard's (the "pastes twice"
+      // report).
+      const termChord = terminalChordFor(e, overrides);
+      if (termChord) {
         e.preventDefault();
-        const sel = term.getSelection();
-        if (sel) copyToClipboard(sel);
-        return false;
-      }
-      if (e.code === "KeyV") {
-        e.preventDefault();
-        pasteClipboard();
+        if (termChord === "terminalCopy") {
+          const sel = copyableSelection(term, columnSelect);
+          if (sel) copyToClipboard(sel);
+        } else if (termChord === "terminalPaste") {
+          pasteClipboard();
+        } else {
+          enterKeySelect();
+        }
         return false;
       }
       return true;
@@ -1230,13 +1425,16 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // replay can't ride an old input stamp into a "working"/"done" glow.
       notePtySpawn(id);
       const spawn = async () => {
-        const spawned = await invoke<{ named?: boolean } | null>("pty_spawn", {
-          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, agent: kind === "agent" || kind === "local_agent", project_id: projectId ?? null, schedule_target_id: scheduleTargetId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null, host_bound_uid: hostBoundUid ?? null },
+        const spawned = await invoke<{ named?: boolean; interrupted?: boolean } | null>("pty_spawn", {
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, agent: kind === "agent" || kind === "local_agent", project_id: projectId ?? null, schedule_target_id: scheduleTargetId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null, host_bound_uid: hostBoundUid ?? null, host_session: hostSession },
           sessionName: launchName,
         });
         // An older backend answers nothing: `named` absent types the line as before.
         launchNamed = spawned?.named === true;
         if (launchNamed) releaseHeldInput(true);
+        // The tab's last run died mid-turn (a quit or crash): mark it
+        // interrupted, as its resumed transcript will say.
+        if (spawned?.interrupted === true) noteTurnCutOff(id);
       };
       try {
         await spawn();
@@ -1258,6 +1456,27 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // holds a standing authorization once it is up
         // (`services::remote::connect_host`), which is the only distinction this
         // seam can make. So the retry is connect-then-spawn, not a flag.
+        // **A fence-less platform's refusal, made a one-time question.** On
+        // Windows `pty_spawn` refuses every local agent until the user has
+        // accepted, once, that agents there run with their full rights
+        // (`agent_fence::PlatformUnaccepted`). Every tab refused at the same
+        // moment — a restored session — shares the one prompt; accepting
+        // persists the answer, and the retry is the same spawn.
+        if (unfencedPlatformRefusal(e)) {
+          const accepted = await useUnfencedPlatformStore.getState().request();
+          if (cancelled) return;
+          if (!accepted) {
+            writeTerm(`\r\n\x1b[33m[${unfencedDeclinedTextRef.current()}]\x1b[0m\r\n`);
+            return;
+          }
+          try {
+            await spawn();
+            spawnState = "spawned";
+          } catch (retryErr) {
+            if (!cancelled) writeTerm(`\r\n\x1b[31m[spawn error: ${retryErr}]\x1b[0m\r\n`);
+          }
+          return;
+        }
         const refusal = hpcGuardRefusal(e);
         if (!refusal) {
           writeTerm(`\r\n\x1b[31m[spawn error: ${e}]\x1b[0m\r\n`);
@@ -1397,15 +1616,55 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (typeof size === "number") applyFontSize(size, false);
     };
 
-    // The two agent-pane mouse gestures (see `agentMouseDownAction`): a
-    // double-click pastes, and a plain drag selects even while the TUI holds the
-    // mouse. Bound on the CONTAINER in the capture phase, which is the only place
+    // The pane mouse gestures (see `agentMouseDownAction`): a plain drag selects
+    // even while the program holds the mouse — in every pane, since each local tab
+    // sits in a `mouse on` tmux — and in agent panes a double-click pastes. Bound on the CONTAINER in the capture phase, which is the only place
     // that runs before xterm's own listeners — they sit on the terminal element
     // it creates *inside* this container — so a "paste" press can be taken away
     // from the selection service entirely and a "select" press can be handed to it
     // wearing the modifier it looks for.
+    // Set by a right-click that copied: the `contextmenu` event that follows it
+    // belongs to that click and must neither open a menu nor reach xterm.
+    let swallowContextMenu = false;
     const onMouseDownCapture = (e: MouseEvent) => {
-      const action = agentMouseDownAction(e, term.modes.mouseTrackingMode !== "none");
+      if (fromSignInCard(e)) return;
+      swallowContextMenu = false;
+      // Right-click on selected text copies it and clears the highlight — the
+      // Windows Terminal / PuTTY gesture. With nothing selected the press goes
+      // on as before (to the program, which in Claude Code pastes).
+      if (e.button === 2 && (keySelect || term.hasSelection())) {
+        e.preventDefault();
+        e.stopPropagation();
+        swallowContextMenu = true;
+        if (keySelect) {
+          copyKeySelect();
+        } else {
+          const sel = copyableSelection(term, columnSelect);
+          term.clearSelection();
+          if (sel) copyToClipboard(sel);
+        }
+        return;
+      }
+      // Any other press hands selecting back to the mouse.
+      leaveKeySelect();
+      // A plain double-click on a link copies it, and only that: no open, no
+      // word selection, no agent-pane paste.
+      if (hoveredLink && e.button === 0 && e.detail === 2 && !(e.shiftKey || e.ctrlKey || e.altKey || e.metaKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        cancelLinkOpen();
+        invoke("copy_text_to_clipboard", { text: hoveredLink })
+          .then(() => useProjectsStore.setState({ switchToast: linkCopiedRef.current }))
+          .catch(() => {});
+        return;
+      }
+      const action = agentMouseDownAction(e, term.modes.mouseTrackingMode !== "none", zoomable);
+      if (e.button === 0 && action !== "paste") {
+        // Read before the "select" branch below re-defines a modifier on the
+        // event: Alt is what makes xterm draw a column selection.
+        columnSelect = e.altKey;
+        mouseModeGuard.beginDrag();
+      }
       if (action === "paste") {
         e.preventDefault();
         e.stopPropagation();
@@ -1419,24 +1678,46 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
     };
     // On the document, not the container: a drag that ends outside the pane (the
-    // usual way to grab the last line) releases there, and its copy should not
-    // wait out the debounce either.
-    const onDocMouseUp = () => flushSelectionCopy();
+    // usual way to grab the last line) releases there. A lost window focus ends
+    // it too, so a release the webview never saw cannot hold mouse modes back.
+    const onDocMouseUp = () => mouseModeGuard.endDrag();
     // Every pane, not just agent ones: whichever program grabbed the mouse owns
     // the right-click (see `suppressNativeContextMenu`). The element is captured
-    // here so the cleanup detaches from the node it attached to.
+    // here so the cleanup detaches both listeners from the node it attached to.
+    // Capture phase, so the menu of a copying right-click is kept from xterm's
+    // own handler (which would re-select the word under the pointer) as well.
     const contextMenuTarget = containerRef.current;
     const onContextMenu = (e: MouseEvent) => {
+      if (fromSignInCard(e)) return;
+      if (swallowContextMenu) {
+        swallowContextMenu = false;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       if (suppressNativeContextMenu(e, term.modes.mouseTrackingMode !== "none")) e.preventDefault();
     };
-    contextMenuTarget?.addEventListener("contextmenu", onContextMenu);
+    contextMenuTarget?.addEventListener("contextmenu", onContextMenu, true);
+    // A selection must survive the pointer resting on the pane. While the
+    // program tracks all motion (an agent TUI's hover), xterm reports every
+    // buttonless move to it as user input — and user input clears the
+    // selection, so a drag's highlight vanished as soon as the mouse moved on.
+    // Such moves are held back from xterm while text is selected; the program
+    // misses hover only until the selection is copied, typed over or clicked away.
+    const onMouseMoveCapture = (e: MouseEvent) => {
+      if (e.buttons === 0 && term.modes.mouseTrackingMode === "any" && (keySelect || term.hasSelection())) {
+        e.stopPropagation();
+      }
+    };
+    contextMenuTarget?.addEventListener("mousemove", onMouseMoveCapture, true);
 
+    contextMenuTarget?.addEventListener("mousedown", onMouseDownCapture, true);
     if (zoomable) {
       containerRef.current?.addEventListener("wheel", onWheel, { passive: false });
-      containerRef.current?.addEventListener("mousedown", onMouseDownCapture, true);
       window.addEventListener(AGENT_ZOOM_EVENT, onZoomEvent);
     }
     document.addEventListener("mouseup", onDocMouseUp);
+    window.addEventListener("blur", onDocMouseUp);
 
     return () => {
       cancelled = true;
@@ -1447,16 +1728,22 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       unregisterScheduled?.();
       if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
       if (silentStartTimer.current) clearTimeout(silentStartTimer.current);
-      if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
       oscHandler.dispose();
+      mouseModeGuard.dispose();
+      wrappedLinks.dispose();
+      cancelLinkOpen();
+      signInWatch.dispose();
+      if (signInScanTimer) clearTimeout(signInScanTimer);
       window.removeEventListener("resize", doFit);
-      contextMenuTarget?.removeEventListener("contextmenu", onContextMenu);
+      contextMenuTarget?.removeEventListener("contextmenu", onContextMenu, true);
+      contextMenuTarget?.removeEventListener("mousemove", onMouseMoveCapture, true);
+      contextMenuTarget?.removeEventListener("mousedown", onMouseDownCapture, true);
       if (zoomable) {
         containerRef.current?.removeEventListener("wheel", onWheel);
-        containerRef.current?.removeEventListener("mousedown", onMouseDownCapture, true);
         window.removeEventListener(AGENT_ZOOM_EVENT, onZoomEvent);
       }
       document.removeEventListener("mouseup", onDocMouseUp);
+      window.removeEventListener("blur", onDocMouseUp);
       ro.disconnect();
       doFitRef.current = null;
       applyRendererRef.current = null;
@@ -1520,7 +1807,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       fitRef.current = null;
       openedRef.current = false;
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, hostBoundUid, attachOnly, zoomable, persistOnUnmount, declaredKind, scheduleTargetId]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, hostBoundUid, hostSession, attachOnly, zoomable, persistOnUnmount, declaredKind, scheduleTargetId, relaunchSeq]);
 
   // Re-theme a LIVE, OPEN terminal. Both halves of that guard are load-bearing,
   // and `termRef.current` alone was neither: assigning `options.theme` makes
@@ -1580,7 +1867,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     if (focused && openedRef.current && termRef.current) termRef.current.focus();
   }, [focused]);
 
+  const dismissSignIn = (url: string) => {
+    dismissedSignIns.current.add(url);
+    setSignIn(null);
+  };
+
   return (
+    <>
     <div
       ref={containerRef}
       style={{
@@ -1603,5 +1896,49 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         background: terminalTheme(colorScheme).background,
       }}
     />
+    {signIn && containerRef.current && (
+      <TerminalSignInCard
+        key={signIn.url}
+        host={containerRef.current}
+        request={signIn}
+        onOpen={() => void invoke("open_external_url", { url: signIn.url }).catch(() => {})}
+        onCopy={() => {
+          invoke("copy_text_to_clipboard", { text: signIn.url })
+            .then(() => useProjectsStore.setState({ switchToast: signInCopiedRef.current }))
+            .catch(() => {});
+        }}
+        onSendCode={(code) => {
+          const term = termRef.current;
+          if (!term) return;
+          // Pasted, not typed: a bracketed paste reaches the prompt as one
+          // piece. Enter follows once the program has taken it, as with the
+          // initial input.
+          term.paste(code);
+          setTimeout(() => void writePtyInput(id, new Uint8Array([0x0d])).catch(console.error), 200);
+          dismissSignIn(signIn.url);
+          term.focus();
+        }}
+        onDismiss={() => dismissSignIn(signIn.url)}
+      />
+    )}
+    {undoClearOffered && !signIn && containerRef.current && (
+      <TerminalUndoClearCard host={containerRef.current} ptyId={id} />
+    )}
+    {keySelecting && containerRef.current && createPortal(
+      // The keyboard-steering legend's look, pinned inside the pane.
+      <div className="steering-legend terminal-key-select" role="status">
+        <span className="steering-legend-title">
+          {t("terminal.keySelect.title")}
+          <UntestedTag id="terminal.keySelect.title" />
+        </span>
+        <span className="steering-legend-item"><kbd>←↑↓→</kbd>{t("terminal.keySelect.move")}</span>
+        <span className="steering-legend-item"><kbd>Shift</kbd><kbd>v</kbd>{t("terminal.keySelect.select")}</span>
+        <span className="steering-legend-item"><kbd>V</kbd>{t("terminal.keySelect.lines")}</span>
+        <span className="steering-legend-item"><kbd>Enter</kbd>{t("terminal.keySelect.copy")}</span>
+        <span className="steering-legend-item"><kbd>Esc</kbd>{t("terminal.keySelect.leave")}</span>
+      </div>,
+      containerRef.current,
+    )}
+    </>
   );
 }

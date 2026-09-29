@@ -12,8 +12,7 @@ DeckInspector,DeckAnimate,DeckNotes,DeckTexPanel,DeckPresenter,DeckAudienceApp}.
 `src/components/embed/deck/deckAssets.ts`, `src/components/embed/pdf/PdfViewer.tsx`,
 `src/components/embed/fileAccess.ts`, `src/components/PresentationOverlay.tsx`,
 `src/hooks/useKeyboard.ts`, `src/styles/themes.css` (`.deck-*`),
-backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
-[`docs/deck_presenter_plan.md`](../docs/deck_presenter_plan.md).*
+backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. *
 
 > **Line references are as of this analysis** (2026-07-25, `develop` @ v0.1.40)
 > and will drift; treat them as pointers, not addresses.
@@ -451,7 +450,7 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      `.eldeck.json` to already exist — and the file tree's "New file" produces an
      *empty* file, which `parseDeck("")` rejects hard (`sidecar.ts:79-83`) with
      "This deck could not be read: not valid JSON". So the from-blank path the
-     plan promises (`docs/deck_presenter_plan.md:429-437`) is unreachable in
+     plan promised is unreachable in
      practice.
      *Fix:* treat empty/whitespace/`{}` input as a fresh `emptyDeck` in
      `parseDeck`, and add a "New presentation" entry to the project **+** menu

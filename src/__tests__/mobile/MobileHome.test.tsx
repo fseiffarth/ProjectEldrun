@@ -92,6 +92,19 @@ describe("Mobile home — project list states", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /Voice language/ }).textContent).toContain("Deutsch"));
   });
 
+  it("loads the list again on its own once the page is shown after a failed load", async () => {
+    fetchMock.mockImplementation(() => Promise.reject(new TypeError("Failed to fetch")));
+    render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);
+    await screen.findByText(/Can't reach your desktop/);
+    const failed = fetchMock.mock.calls.length;
+    // The host is back; the reader brings the app to the front.
+    answer([{ id: "p1", label: "Alpha", status: "active", live_sessions: 1 }]);
+    fireEvent(document, new Event("visibilitychange"));
+    expect(await screen.findByText("Alpha")).toBeTruthy();
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(failed);
+    expect(screen.queryByText(/Can't reach your desktop/)).toBeNull();
+  });
+
   it("keeps the last list, and no empty-state copy, when the host drops", async () => {
     answer([{ id: "p1", label: "Alpha", status: "active", live_sessions: 1 }]);
     render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);

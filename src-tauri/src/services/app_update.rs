@@ -1,13 +1,11 @@
 //! "Check for a new Eldrun" against the project's GitHub releases.
 //!
-//! Deliberately *not* the Tauri updater plugin: that wants a signed
-//! `latest.json` published next to the artifacts and a private signing key in
-//! CI, and Eldrun's releases are plain unsigned bundles built by
-//! `.github/workflows/ci-cd.yml`. This reads the same public releases page a
+//! Deliberately *not* the Tauri updater plugin: that wants a `latest.json`
+//! published next to the artifacts. This reads the same public releases page a
 //! user would open by hand, picks the artifact matching the running platform,
 //! and hands it to the platform's own installer.
 //!
-//! Two rules hold the trust boundary, because this ends with *running a
+//! Three rules hold the trust boundary, because this ends with *running a
 //! downloaded executable*:
 //!
 //! 1. Every asset URL is checked against [`DOWNLOAD_PREFIX`] before it is
@@ -18,6 +16,14 @@
 //! 2. The frontend never names a path. `stage_download` remembers what it wrote
 //!    in [`STAGED`], and `install` acts on *that*, so no renderer-supplied
 //!    string can select what gets executed.
+//! 3. Nothing is staged unless its SHA-256 matches the release's `SHA256SUMS`,
+//!    and that file's ECDSA P-256 signature verifies against the public key
+//!    compiled in ([`RELEASE_PUBLIC_KEY_PEM`]; CI signs with the private half,
+//!    #160). The asset name must carry the version being installed, so an old
+//!    signed build re-published under a newer tag is refused. An unsigned
+//!    release is not installable in-app — the user can still fetch it by hand.
+//!    The URL prefix alone trusted anyone who could publish to the repository;
+//!    the signature narrows that to whoever holds the key.
 //!
 //! `AppHandle`-free on purpose: everything here is unit-testable, and the
 //! command layer in `commands::app_update` owns the progress events.
@@ -49,6 +55,17 @@ const USER_AGENT: &str = concat!(
 
 const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// The checksum list CI publishes with every release, and its detached DER
+/// signature (`openssl dgst -sha256 -sign`).
+const SUMS_NAME: &str = "SHA256SUMS";
+const SUMS_SIG_NAME: &str = "SHA256SUMS.sig";
+
+/// The public half of the release signing key (`scripts/release-signing-keygen.sh`).
+const RELEASE_PUBLIC_KEY_PEM: &str = include_str!("../../release-signing.pub.pem");
+
+/// A checksum list or signature is a few hundred bytes.
+const MAX_SUMS_BYTES: u64 = 64 * 1024;
+
 /// Refuse absurd downloads. The largest Eldrun artifact is well under 200 MB;
 /// this only exists so a wrong or hostile `Content-Length` can't fill a disk.
 const MAX_ASSET_BYTES: u64 = 512 * 1024 * 1024;
@@ -75,6 +92,17 @@ pub struct UpdateAsset {
     pub name: String,
     pub url: String,
     pub size: u64,
+    /// Where the release's signed checksum list lives; `None` for a release
+    /// that published none, which [`stage_download`] then refuses.
+    #[serde(skip)]
+    pub signature: Option<ReleaseSignature>,
+}
+
+/// The URLs of a release's `SHA256SUMS` and its signature.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseSignature {
+    pub sums_url: String,
+    pub sig_url: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -107,6 +135,9 @@ pub struct Staged {
     pub name: String,
     pub version: String,
     pub kind: InstallKind,
+    /// The verified digest, re-checked by [`install`] so a file swapped in the
+    /// staging dir after the download is not what runs.
+    pub sha256: String,
 }
 
 /// The version this binary was built as.
@@ -243,9 +274,139 @@ pub fn pick_asset(assets: &[(String, String, u64)], kind: InstallKind) -> Option
             name: chosen.0.clone(),
             url: chosen.1.clone(),
             size: chosen.2,
+            signature: release_signature(assets),
         });
     }
     None
+}
+
+/// The release's checksum list and signature, when both are published from this
+/// repository.
+fn release_signature(assets: &[(String, String, u64)]) -> Option<ReleaseSignature> {
+    let url_of = |wanted: &str| {
+        assets
+            .iter()
+            .find(|(name, url, _)| name == wanted && is_repo_download_url(url))
+            .map(|(_, url, _)| url.clone())
+    };
+    Some(ReleaseSignature {
+        sums_url: url_of(SUMS_NAME)?,
+        sig_url: url_of(SUMS_SIG_NAME)?,
+    })
+}
+
+/// The compiled-in release verifying key.
+fn release_verifying_key() -> Result<p256::ecdsa::VerifyingKey, String> {
+    verifying_key_from_pem(RELEASE_PUBLIC_KEY_PEM)
+}
+
+fn verifying_key_from_pem(pem: &str) -> Result<p256::ecdsa::VerifyingKey, String> {
+    use base64ct::{Base64, Encoding};
+    use p256::pkcs8::DecodePublicKey;
+    let body: String = pem
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("-----"))
+        .collect();
+    let der = Base64::decode_vec(&body).map_err(|_| "release key: bad PEM")?;
+    let key = p256::PublicKey::from_public_key_der(&der).map_err(|_| "release key: not a P-256 key")?;
+    Ok(p256::ecdsa::VerifyingKey::from(key))
+}
+
+/// Check a checksum list's detached DER signature.
+fn verify_sums(
+    key: &p256::ecdsa::VerifyingKey,
+    sums: &[u8],
+    sig_der: &[u8],
+) -> Result<(), String> {
+    use p256::ecdsa::signature::Verifier;
+    let sig = p256::ecdsa::Signature::from_der(sig_der)
+        .map_err(|_| "the release signature is malformed; refusing the update")?;
+    key.verify(sums, &sig)
+        .map_err(|_| "the release signature does not verify; refusing the update".to_string())
+}
+
+/// The lowercase hex SHA-256 a verified checksum list gives `asset_name`.
+///
+/// `version` is the release being installed: the asset name must carry it
+/// (`Eldrun_<version>_amd64.AppImage`), so a signed list from an older release
+/// cannot vouch for a downgrade published under a newer tag.
+fn expected_digest(sums: &str, asset_name: &str, version: &str) -> Result<String, String> {
+    if version.is_empty() || !asset_name.contains(&format!("_{version}_")) {
+        return Err(format!(
+            "the release asset {asset_name} is not version {version}; refusing the update"
+        ));
+    }
+    let mut found = None;
+    for line in sums.lines() {
+        // `sha256sum` format: digest, two separators (space or ` *`), name.
+        let Some((digest, rest)) = line.split_once(' ') else {
+            continue;
+        };
+        let name = rest.strip_prefix(' ').or_else(|| rest.strip_prefix('*'));
+        if name != Some(asset_name) {
+            continue;
+        }
+        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("the release checksum list is malformed; refusing the update".to_string());
+        }
+        if found.is_some() {
+            return Err("the release checksum list names the asset twice; refusing the update".to_string());
+        }
+        found = Some(digest.to_ascii_lowercase());
+    }
+    found.ok_or_else(|| {
+        format!("the release checksum list has no entry for {asset_name}; refusing the update")
+    })
+}
+
+fn sha256_hex(digest: impl AsRef<[u8]>) -> String {
+    digest.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Fetch a small release file (the checksum list or its signature).
+async fn fetch_small(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    if !is_repo_download_url(url) {
+        return Err("refusing to fetch a file from outside the Eldrun releases".to_string());
+    }
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("release signature: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("release signature: HTTP {}", response.status()));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("release signature: {e}"))?
+    {
+        body.extend_from_slice(&chunk);
+        if body.len() as u64 > MAX_SUMS_BYTES {
+            return Err("release signature file is implausibly large; refusing".to_string());
+        }
+    }
+    Ok(body)
+}
+
+/// Download and verify the release's checksum list, and return the digest it
+/// gives `asset`.
+async fn verified_digest(
+    client: &reqwest::Client,
+    asset: &UpdateAsset,
+    version: &str,
+) -> Result<String, String> {
+    let signature = asset.signature.as_ref().ok_or(
+        "this release is not signed, so it can't be installed from here; download it from the releases page",
+    )?;
+    let sums = fetch_small(client, &signature.sums_url).await?;
+    let sig = fetch_small(client, &signature.sig_url).await?;
+    verify_sums(&release_verifying_key()?, &sums, &sig)?;
+    let sums = std::str::from_utf8(&sums)
+        .map_err(|_| "the release checksum list is not text; refusing the update")?;
+    expected_digest(sums, &asset.name, version)
 }
 
 /// Whether a URL is a release download from *this* repository.
@@ -401,7 +562,12 @@ pub async fn stage_download(
     let part_path = dir.join(format!("{name}.part"));
     let _ = std::fs::remove_file(&part_path);
 
-    let mut response = client()?
+    let client = client()?;
+    // Before the artifact: a release that can't vouch for it is refused without
+    // spending the download.
+    let expected = verified_digest(&client, asset, version).await?;
+
+    let mut response = client
         .get(&asset.url)
         // The download itself has no deadline: a 150 MB artifact on a slow link
         // legitimately outlives the 20 s check timeout.
@@ -417,10 +583,12 @@ pub async fn stage_download(
         return Err("release asset is implausibly large; refusing".to_string());
     }
 
-    {
+    let digest = {
+        use sha2::Digest;
         use std::io::Write;
         let mut file =
             std::fs::File::create(&part_path).map_err(|e| format!("update staging: {e}"))?;
+        let mut hasher = sha2::Sha256::new();
         let mut written: u64 = 0;
         on_progress(0, total);
         while let Some(chunk) = response
@@ -433,11 +601,17 @@ pub async fn stage_download(
                 let _ = std::fs::remove_file(&part_path);
                 return Err("release asset exceeded the size cap; aborted".to_string());
             }
+            hasher.update(&chunk);
             file.write_all(&chunk)
                 .map_err(|e| format!("update staging: {e}"))?;
             on_progress(written, total);
         }
         file.flush().map_err(|e| format!("update staging: {e}"))?;
+        sha256_hex(hasher.finalize())
+    };
+    if digest != expected {
+        let _ = std::fs::remove_file(&part_path);
+        return Err("the download does not match the signed release checksum; refusing".to_string());
     }
 
     std::fs::rename(&part_path, &final_path).map_err(|e| format!("update staging: {e}"))?;
@@ -448,6 +622,7 @@ pub async fn stage_download(
         name: asset.name.clone(),
         version: version.to_string(),
         kind,
+        sha256: digest,
     };
     *STAGED.lock().map_err(|_| "update state poisoned")? = Some(staged.clone());
     Ok(staged)
@@ -492,6 +667,9 @@ pub fn install() -> Result<InstallOutcome, String> {
     let staged = staged().ok_or("no update has been downloaded")?;
     if !staged.path.is_file() {
         return Err("the downloaded update is no longer on disk".to_string());
+    }
+    if file_sha256(&staged.path)? != staged.sha256 {
+        return Err("the downloaded update changed on disk since it was verified; download it again".to_string());
     }
     let path_str = staged.path.to_string_lossy().to_string();
     match staged.kind {
@@ -541,6 +719,14 @@ pub fn install() -> Result<InstallOutcome, String> {
             path: path_str,
         }),
     }
+}
+
+fn file_sha256(path: &Path) -> Result<String, String> {
+    use sha2::Digest;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("update staging: {e}"))?;
+    let mut hasher = sha2::Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|e| format!("update staging: {e}"))?;
+    Ok(sha256_hex(hasher.finalize()))
 }
 
 /// Put `new` in place of `target`, keeping a `.old` copy until the swap lands.
@@ -614,6 +800,121 @@ mod tests {
         assert!(!is_repo_download_url(
             "https://github.com/fseiffarth/ProjectEldrun/releases/download/"
         ));
+    }
+
+    // ── signed checksums (#160) ──────────────────────────────────────────
+    //
+    // Fixtures from a throwaway key (its private half was never kept), signed
+    // with `openssl dgst -sha256 -sign` exactly as the release job does. One
+    // signature has a high S value: openssl doesn't normalise S, so the
+    // verifier must not demand low-S.
+
+    const TEST_PUB: &str = "-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEHzQNAoxlQCSV/JjopXBNKQsj3VAN
+zWKrqHHacn3R/vU4reeTtE+MP1CZrcNAOYOmswDjH92r/YoK3ZxNK3NjBg==
+-----END PUBLIC KEY-----
+";
+    const TEST_SUMS: &str = "8b408ed68dfd56d503752ff2ee2ecb3c0ffa55a26f6fa107bd4444c3943ee6e1  Eldrun_0.2.0_amd64.AppImage
+9cfa1468c93fc18652e34a000f0c6614b0fa18f6f4887477ad9b0d36ca6a7eaa  Eldrun_0.2.0_amd64.deb
+";
+    const TEST_SIG_LOW_S: &str = "MEQCIDksJ5Qox68bOODi9plWkN+MSvMyyhyienbTI+SHfuY8AiA6gIwEB9xXCHx9ZaFu+abwEdntBgHFx59PMVZoY/83vw==";
+    const TEST_SIG_HIGH_S: &str = "MEUCIFvpBJKt154qAvElYHRkyWMqk+jSb5rsAoYH5fhELBVDAiEAy2tLXoINBN4hcIoGlq9/DYOT9Q3Ao7adg571gEh4tXM=";
+
+    fn der(b64: &str) -> Vec<u8> {
+        use base64ct::{Base64, Encoding};
+        Base64::decode_vec(b64).unwrap()
+    }
+
+    #[test]
+    fn the_compiled_in_release_key_parses() {
+        release_verifying_key().unwrap();
+    }
+
+    #[test]
+    fn an_openssl_signed_checksum_list_verifies() {
+        let key = verifying_key_from_pem(TEST_PUB).unwrap();
+        verify_sums(&key, TEST_SUMS.as_bytes(), &der(TEST_SIG_LOW_S)).unwrap();
+        verify_sums(&key, TEST_SUMS.as_bytes(), &der(TEST_SIG_HIGH_S)).unwrap();
+    }
+
+    #[test]
+    fn a_tampered_checksum_list_or_foreign_key_is_refused() {
+        let key = verifying_key_from_pem(TEST_PUB).unwrap();
+        let tampered = TEST_SUMS.replacen('8', "9", 1);
+        assert!(verify_sums(&key, tampered.as_bytes(), &der(TEST_SIG_LOW_S)).is_err());
+        assert!(verify_sums(&key, TEST_SUMS.as_bytes(), b"not a signature").is_err());
+        // The release key did not sign the test list.
+        let release = release_verifying_key().unwrap();
+        assert!(verify_sums(&release, TEST_SUMS.as_bytes(), &der(TEST_SIG_LOW_S)).is_err());
+    }
+
+    #[test]
+    fn the_digest_comes_from_the_exact_asset_line() {
+        assert_eq!(
+            expected_digest(TEST_SUMS, "Eldrun_0.2.0_amd64.deb", "0.2.0").unwrap(),
+            "9cfa1468c93fc18652e34a000f0c6614b0fa18f6f4887477ad9b0d36ca6a7eaa"
+        );
+        // Binary-mode marker, uppercase hex.
+        let star = "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789 *Eldrun_0.2.0_x64-setup.exe\n";
+        assert_eq!(
+            expected_digest(star, "Eldrun_0.2.0_x64-setup.exe", "0.2.0").unwrap(),
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        );
+        // A name that is only a suffix or prefix of a listed one is not listed.
+        assert!(expected_digest(TEST_SUMS, "Eldrun_0.2.0_amd64.App", "0.2.0").is_err());
+        assert!(expected_digest(TEST_SUMS, "x/Eldrun_0.2.0_amd64.deb", "0.2.0").is_err());
+    }
+
+    #[test]
+    fn an_old_signed_build_under_a_newer_tag_is_refused() {
+        // A signed 0.2.0 list re-published as the 0.3.0 release.
+        assert!(expected_digest(TEST_SUMS, "Eldrun_0.2.0_amd64.deb", "0.3.0").is_err());
+        assert!(expected_digest(TEST_SUMS, "Eldrun_0.2.0_amd64.deb", "").is_err());
+    }
+
+    #[test]
+    fn a_malformed_or_ambiguous_checksum_list_is_refused() {
+        let short = "abc  Eldrun_0.2.0_amd64.deb\n";
+        assert!(expected_digest(short, "Eldrun_0.2.0_amd64.deb", "0.2.0").is_err());
+        let twice = format!("{TEST_SUMS}{TEST_SUMS}");
+        assert!(expected_digest(&twice, "Eldrun_0.2.0_amd64.deb", "0.2.0").is_err());
+    }
+
+    #[test]
+    fn a_release_signature_needs_both_files_from_this_repository() {
+        let mut assets = vec![asset("Eldrun_0.1.53_amd64.AppImage")];
+        let picked = pick_asset(&assets, InstallKind::Appimage).unwrap();
+        assert_eq!(picked.signature, None);
+
+        assets.push(asset(SUMS_NAME));
+        assert_eq!(pick_asset(&assets, InstallKind::Appimage).unwrap().signature, None);
+
+        assets.push((
+            SUMS_SIG_NAME.to_string(),
+            "https://github.com/attacker/evil/releases/download/v1/SHA256SUMS.sig".to_string(),
+            10,
+        ));
+        assert_eq!(pick_asset(&assets, InstallKind::Appimage).unwrap().signature, None);
+
+        assets.push(asset(SUMS_SIG_NAME));
+        let signature = pick_asset(&assets, InstallKind::Appimage)
+            .unwrap()
+            .signature
+            .unwrap();
+        assert!(signature.sums_url.ends_with("/SHA256SUMS"));
+        assert!(signature.sig_url.ends_with("/SHA256SUMS.sig"));
+        assert!(is_repo_download_url(&signature.sig_url));
+    }
+
+    #[test]
+    fn a_staged_file_is_hashed_the_way_the_download_was() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("f");
+        std::fs::write(&path, "deb").unwrap();
+        assert_eq!(
+            file_sha256(&path).unwrap(),
+            "9cfa1468c93fc18652e34a000f0c6614b0fa18f6f4887477ad9b0d36ca6a7eaa"
+        );
     }
 
     fn asset(name: &str) -> (String, String, u64) {

@@ -5,6 +5,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { basename, fromFileUri } from "../../lib/paths";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * Importing OS files into a project by dropping them onto a file view — shared
@@ -319,9 +320,7 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
                 e.currentTarget.setSelectionRange(0, dot > 0 ? dot : conflictName.length);
               }}
             />
-            {conflictError && (
-              <div className="file-delete-path file-delete-error">{conflictError}</div>
-            )}
+            {conflictError && <ErrorNote className="file-delete-path file-delete-error" error={conflictError} />}
             {conflict.remaining > 0 && (
               <>
                 <label className="file-delete-check">

@@ -641,8 +641,10 @@
 
 /* Send-to-project dialog (file-tree right-click → copy into another project).
    Reuses the folder-picker chrome; these are the few bits it adds. */
+.send-to-project-dialog .settings-help {
+  margin: 0;
+}
 .send-to-project-source {
-  margin: 4px 0 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -650,6 +652,9 @@
 .send-to-project-item:disabled {
   opacity: 0.5;
   cursor: var(--cur-default, default);
+}
+.send-to-project-item:disabled:hover {
+  background: transparent;
 }
 .send-to-project-tag {
   flex-shrink: 0;
@@ -897,6 +902,9 @@
 .hidden-sw-icon.finished {
   color: var(--status-done);
 }
+.hidden-sw-icon.interrupted {
+  color: var(--status-interrupted);
+}
 .hidden-sw-status-dot {
   flex-shrink: 0;
   width: 6px;
@@ -917,6 +925,9 @@
 }
 .hidden-sw-status-dot.finished {
   background: var(--status-done);
+}
+.hidden-sw-status-dot.interrupted {
+  background: var(--status-interrupted);
 }
 .hidden-sw-chips {
   display: flex;
@@ -964,6 +975,10 @@
 .hidden-sw-chip.finished {
   border-color: var(--status-done);
   background: color-mix(in srgb, var(--status-done) 12%, var(--bg-main));
+}
+.hidden-sw-chip.interrupted {
+  border-color: var(--status-interrupted);
+  background: color-mix(in srgb, var(--status-interrupted) 12%, var(--bg-main));
 }
 .hidden-sw-chip:hover {
   border-color: var(--accent);
@@ -1031,14 +1046,14 @@
   background: var(--bg-hover);
 }
 
-/* Pinned is carried by OPACITY ALONE — the same mechanism the comment above
-   already established as this button's (chosen when the pin was a colour
-   emoji that ignored `color`; kept for the drawn pin). So there is no fill and no frame
-   to be theme-dependent, and nothing that can collide with a pure-black or
-   pure-white accent. `aria-pressed` on the button carries the state for anyone
-   the 0.55→1 step does not reach. */
+/* Pinned wakes the pin to full opacity AND paints it accent: the drawn pin is
+   currentColor line-art, so the colour alone says "pinned" at a glance where
+   the 0.55→1 step alone was too quiet next to the flip. Still no fill and no
+   frame, so nothing theme-dependent beyond the accent the hover already uses.
+   `aria-pressed` on the button carries the state for anyone colour misses. */
 .side-panel-pin.pinned {
   opacity: 1;
+  color: var(--accent);
 }
 
 /* The Files (Project) tab: the side panel's file view hosted in a pane. The
@@ -1152,6 +1167,7 @@
 .git-action-btn--push,
 .git-action--push { --git-btn-accent: #3fb950; }
 .git-action-btn--pull { --git-btn-accent: var(--info); }
+.git-action-btn--release { --git-btn-accent: var(--accent); }
 
 /* An action + its disclosure caret, joined into one pill so the two read as a
    single control. The action button loses its right rounding, the caret its
@@ -1241,13 +1257,15 @@
   max-width: min(480px, calc(100vw - 16px));
   width: max-content;
   z-index: 200;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
   max-height: 320px;
-  overflow-y: auto;
+  /* Shared popover surface (the `.context-menu` group); it never scrolls
+     itself — `.git-change-rows` is its `.menu-scroll-region` — so the accent
+     wash spans the whole frame. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--text-primary);
   font-size: var(--text-sm);
-  box-shadow: var(--shadow-2);
   padding: 4px 0;
 }
 
@@ -1601,6 +1619,19 @@
   padding: 0 6px 4px;
   font-size: var(--text-xs);
   line-height: 1.35;
+  color: var(--text-muted);
+}
+
+.git-commit-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+}
+
+.git-commit-search-status {
+  padding: 0 6px 4px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
 }
 

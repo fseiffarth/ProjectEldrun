@@ -13,12 +13,16 @@ const ENCODER = new TextEncoder();
 /**
  * Sanitize text before it becomes terminal input. Newlines are preserved, while
  * every other C0/DEL byte is removed so a stored message cannot smuggle a key
- * press or close its own bracketed-paste run.
+ * press or close its own bracketed-paste run. Blank lines before the first
+ * words go, like the trailing ones: typed, the first of them is a lone Ctrl-J
+ * into an empty composer, which an agent can read as a submit of nothing —
+ * the phone showed the prompt as sent while the agent never got it.
  */
 export function sanitizeAgentMessage(draft: string): string {
   const text = draft
     .replace(/\r\n?/g, "\n")
     .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, "")
+    .replace(/^\s*\n/, "")
     .replace(/\s+$/, "");
   if (!text.trim()) return "";
   return text;
@@ -59,7 +63,10 @@ export function bracketsAgentMessage(agent: string | undefined, paneBracketed: b
 export function agentInputWrites(draft: string, bracketedPaste = false): string[] {
   const text = sanitizeAgentMessage(draft);
   if (!text) return [];
-  if (bracketedPaste) return [AGENT_LINE_RESET, `${PASTE_START}${text}${PASTE_END}`, "\r"];
+  // A lone character is a key press, never a paste: a TUI screen that reads
+  // keys — Codex's pager ("q close"), an approval's "y" — ignores pasted text,
+  // and one character cannot form the burst the markers guard against.
+  if (bracketedPaste && Array.from(text).length > 1) return [AGENT_LINE_RESET, `${PASTE_START}${text}${PASTE_END}`, "\r"];
   const writes = [AGENT_LINE_RESET];
   text.split("\n").forEach((line, index) => {
     if (index) writes.push("\n");

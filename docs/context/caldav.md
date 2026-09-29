@@ -1,6 +1,6 @@
 # CalDAV accounts — what the feature actually protects
 
-Phases 0–3 of [`docs/caldav_plan.md`](../caldav_plan.md) are implemented:
+Phases 0–3 are implemented:
 protocol plumbing, accounts + discovery + subscribe, scheduled sync, and
 two-way push. The plan deferred Phase 3 on two open questions; how each was
 answered is the "Push" section below.

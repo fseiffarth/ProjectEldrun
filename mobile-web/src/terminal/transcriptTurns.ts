@@ -12,14 +12,29 @@ export interface TranscriptTurn {
    * so a position-based key re-keyed — and re-mounted — every bubble on every
    * new record, which is what made the chat jump while the agent worked. */
   key: string;
-  kind: "prompt" | "answer";
+  kind: "prompt" | "answer" | "agent";
   text: string;
   /** Some of the text was bounded by the desktop. */
   cut: boolean;
   /** The record's index in `entries`, which is where the files sent after it are placed. */
   index: number;
+  /** When it was said, for the bubble's time and the day chips
+   * (`chatTimes`): the record's own stamp, or — on a prompt still pending —
+   * when this phone sent it. Absent when neither is known. */
+  stamp?: string;
   /** A prompt that is a slash command, drawn as a divider (`slashCommand`). */
   command: SlashCommand | null;
+  /** On a subagent (`agent`): the handle that opens its conversation, absent
+   * until its CLI has recorded where that lives, and its kind. */
+  subagent?: string;
+  role?: string;
+  /** On an `answer`: the plan the agent put up for approval. */
+  plan?: boolean;
+  /** A prompt sent from this phone the session has not recorded yet, by its
+   * id; `failed` once the link lost it, `retrying` while a resend waits. */
+  pending?: number;
+  failed?: boolean;
+  retrying?: boolean;
 }
 
 /** A slash command split into its name and what follows it. */
@@ -60,7 +75,11 @@ export function transcriptTurns(entries: readonly TranscriptEntry[]): Transcript
       text: entry.text,
       cut: entry.cut === true,
       index,
+      ...((entry.pending !== undefined ? entry.sentAt : entry.at) ? { stamp: entry.pending !== undefined ? entry.sentAt : entry.at } : {}),
       command: entry.kind === "prompt" ? slashCommand(entry.text) : null,
+      ...(entry.kind === "agent" ? { subagent: entry.subagent, role: entry.role } : {}),
+      ...(entry.kind === "answer" && entry.plan === true ? { plan: true } : {}),
+      ...(entry.pending !== undefined ? { pending: entry.pending, failed: entry.failed === true, retrying: entry.retrying === true } : {}),
     };
   });
 }

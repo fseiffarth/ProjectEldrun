@@ -23,9 +23,9 @@ fn parse<T: serde::de::DeserializeOwned>(json: &str) -> T {
 // ── Settings ───────────────────────────────────────────────────────────────
 
 #[test]
-fn settings_default_color_scheme_is_fancy_dark() {
+fn settings_default_color_scheme_is_plain_dark() {
     let s = Settings::default();
-    assert_eq!(s.color_scheme(), "fancy_dark");
+    assert_eq!(s.color_scheme(), "dark");
 }
 
 #[test]
@@ -79,6 +79,18 @@ fn settings_keyboard_shortcuts_roundtrip() {
     assert_eq!(back_map["cycleTabs"].key, "Tab");
     assert!(back_map["cycleTabs"].shift);
     assert!(!back_map["cycleTabs"].ctrl);
+}
+
+#[test]
+fn settings_steering_keys_roundtrip() {
+    // Steering-mode rebinds: a replaced list and an unbound (empty) one both
+    // survive parse → serialize → parse; absent stays absent.
+    let none: Settings = parse(r#"{"color_scheme":"dark"}"#);
+    assert!(none.steering_keys.is_none());
+    let s: Settings = parse(r#"{"steering_keys":{"up":["i","ArrowUp"],"files":[]}}"#);
+    let back = roundtrip(&s).steering_keys.expect("map present after roundtrip");
+    assert_eq!(back["up"], vec!["i".to_string(), "ArrowUp".to_string()]);
+    assert!(back["files"].is_empty());
 }
 
 #[test]

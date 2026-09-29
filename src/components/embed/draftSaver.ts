@@ -49,6 +49,14 @@ export class DraftSaver {
     })().finally(() => { this.cancel(); this.running = undefined; });
     return this.running;
   }
+  /** The last draft seen differs from what was last known on disk. */
+  get dirty(): boolean {
+    return this.baseline !== null && this.draft !== this.baseline;
+  }
+  /** Save now only if autosave would save it anyway (the retire handshake). */
+  flushIfAutosave(): Promise<void> {
+    return this.enabled ? this.flush() : Promise.resolve();
+  }
   dispose() {
     this.cancel();
     if (this.enabled) void this.flush();

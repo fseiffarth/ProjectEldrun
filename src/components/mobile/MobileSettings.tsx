@@ -6,10 +6,10 @@ import { useBoxesStore } from "../../stores/boxes";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { SettingsCard, SettingsList, ToggleRow } from "../layout/settingsUi";
 import { UntestedTag } from "../common/UntestedTag";
-import { isTrashProject } from "../../lib/projects/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab } from "../../lib/installCommand";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** `translate` at the live language, for code that runs outside a render: the
  *  module-level parser below and the async callbacks, whose `useCallback`
@@ -260,7 +260,7 @@ export function MobileSettings() {
    * read by the desktop bridge alone — the sidecar never sees mail settings.
    * They ride on the stored host settings untouched otherwise, so flipping one
    * never re-verifies Serve or restarts the host. */
-  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply" | "root_access", on: boolean) => {
+  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply" | "root_access" | "project_files", on: boolean) => {
     setError(null);
     try {
       await updateSettings({
@@ -303,6 +303,7 @@ export function MobileSettings() {
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
           root_access: stored?.root_access,
+          project_files: stored?.project_files,
         },
       });
       await invoke("mobile_host_apply", { enabled });
@@ -381,6 +382,7 @@ export function MobileSettings() {
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
           root_access: stored?.root_access,
+          project_files: stored?.project_files,
         },
       });
     } catch (reason) {
@@ -429,6 +431,7 @@ export function MobileSettings() {
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
           root_access: stored?.root_access,
+          project_files: stored?.project_files,
         },
       });
       await invoke("mobile_host_apply", { enabled: false });
@@ -441,7 +444,7 @@ export function MobileSettings() {
     }
   };
 
-  const eligible = projects.filter((project) => !project.remote && (!project.sandbox?.enabled || isTrashProject(project)) && !project.vm?.enabled);
+  const eligible = projects.filter((project) => !project.remote && !project.sandbox?.enabled && !project.vm?.enabled);
   const normalizedProjectSearch = projectSearch.trim().toLocaleLowerCase();
   const matchingEligible = normalizedProjectSearch
     ? eligible.filter((project) => project.name.toLocaleLowerCase().includes(normalizedProjectSearch))
@@ -599,8 +602,8 @@ export function MobileSettings() {
         {serveVerification && !serveVerification.verified ? ` ${serveVerification.error}` : ""}
         {pairCode ? ` ${t("mobile.statusPairCode", { code: pairCode })}` : ""}
       </p>
-      {refreshError && <div className="project-dialog-error">{refreshError}</div>}
-      {error && <div className="project-dialog-error">{error}</div>}
+      {refreshError && <ErrorNote className="project-dialog-error" error={refreshError} />}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
 
       <div className="settings-subheader">{t("mobile.mailWrites")}</div>
       <ToggleRow
@@ -641,6 +644,13 @@ export function MobileSettings() {
       <p className="settings-help">
         {t("mobile.projectAccessHelp")}
       </p>
+      <ToggleRow
+        label={<>{t("mobile.projectFiles")} <UntestedTag id="mobile.projectFiles" /></>}
+        checked={stored?.project_files ?? false}
+        disabled={busy}
+        onChange={(event) => void setMailGate("project_files", event.target.checked)}
+      />
+      <p className="settings-help">{t("mobile.projectFilesHelp")}</p>
       {eligible.length > 0 && <input
         className="mobile-project-access-search"
         value={projectSearch}
@@ -654,7 +664,6 @@ export function MobileSettings() {
             key={project.id}
             label={project.name}
             checked={project.eldrun_mobile_access ?? false}
-            disabled={isTrashProject(project)}
             onChange={(event) => {
               setError(null);
               void setProjectMobileAccess(project.id, event.target.checked).catch((reason) => setError(String(reason)));

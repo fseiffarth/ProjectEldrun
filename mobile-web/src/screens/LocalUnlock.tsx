@@ -1,5 +1,33 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MIN_NEW_PIN, configureLocalUnlock, localUnlockBiometricEnabled, localUnlockPinLength, maybeEnrollBiometric, platformBiometricAvailable, unlockLocal, unlockLocalBiometric, validPin } from "../localLock";
+import { localFailureText } from "../connection";
+import { isUntested } from "../../../src/lib/untested";
+import { BrandHead } from "../components/BrandHead";
+import { BUNDLE_VERSION } from "../buildInfo";
+
+/** A ridge-arch fingerprint, drawn for this screen: open loops over a centre
+ * stem, with the broken ridges on the right that make it read as a print
+ * rather than a set of nested arches. Strokes take `currentColor`. */
+function FingerprintIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M4.2 8.4A8.6 8.6 0 0 1 17.9 5.6" />
+    <path d="M19.9 9.2A8.6 8.6 0 0 1 20.6 12.6V13.6" />
+    <path d="M3.4 12.6A8.6 8.6 0 0 1 3.5 11.8" />
+    <path d="M5.9 18.2V12.6A6.1 6.1 0 0 1 16.3 8.3" />
+    <path d="M18 11.4 18.1 12.6V15.4" />
+    <path d="M8.4 20.4V12.6A3.6 3.6 0 0 1 15.6 12.6V17.6" />
+    <path d="M12 12.4V21" />
+    <path d="M18.1 18.6V18.9" />
+  </svg>;
+}
+
+/** How long the unlock flourish plays before the app takes over: the mark
+ * flares and lifts away. None under reduced motion. */
+const UNLOCK_FLOURISH_MS = 520;
+
+function unlockFlourishMs(): number {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : UNLOCK_FLOURISH_MS;
+}
 
 export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked: () => void }) {
   const [pin, setPin] = useState("");
@@ -13,8 +41,13 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
   const [biometricEnrolled, setBiometricEnrolled] = useState<boolean | null>(setup ? false : null);
   const [biometricBusy, setBiometricBusy] = useState(false);
   const [pinLength, setPinLength] = useState<number | null>(null);
+  /** Set once an unlock succeeds: the screen plays its flourish, then hands over. */
+  const [unlocked, setUnlocked] = useState(false);
   const attempt = useRef(0);
   const autoPrompted = useRef(false);
+  /** The fingerprint request in flight, so "Use PIN instead" can withdraw it. */
+  const biometricRequest = useRef<AbortController | null>(null);
+  const pinInput = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     void platformBiometricAvailable().then(setBiometricAvailable).catch(() => setBiometricAvailable(false));
   }, []);
@@ -24,11 +57,28 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
   useEffect(() => {
     if (!setup) void localUnlockBiometricEnabled().then(setBiometricEnrolled).catch(() => setBiometricEnrolled(false));
   }, [setup]);
+  const finish = useCallback(() => {
+    setUnlocked(true);
+    window.setTimeout(onUnlocked, unlockFlourishMs());
+  }, [onUnlocked]);
   const unlockWithBiometric = () => {
     attempt.current += 1;
+    const request = new AbortController();
+    biometricRequest.current = request;
     setBiometricBusy(true);
     setError("");
-    void unlockLocalBiometric().then(onUnlocked).catch((reason) => setError(String(reason))).finally(() => setBiometricBusy(false));
+    void unlockLocalBiometric(request.signal).then(maybeEnrollBiometric).then(finish).catch((reason) => {
+      if (!request.signal.aborted) setError(localFailureText(reason));
+    }).finally(() => setBiometricBusy(false));
+  };
+  /** The way out of the fingerprint wait: a sheet that never came up, or a
+   * reader who would rather type, left the screen showing nothing but the
+   * mark — the PIN field steps aside while the wait runs. */
+  const usePinInstead = () => {
+    biometricRequest.current?.abort();
+    biometricRequest.current = null;
+    setBiometricBusy(false);
+    window.setTimeout(() => pinInput.current?.focus(), 0);
   };
   useEffect(() => {
     // Fingerprint is the default unlock: raise the OS sheet as the screen opens,
@@ -46,10 +96,12 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       // be in front of them, then ask.
       if (document.visibilityState !== "visible" || !document.hasFocus()) return;
       autoPrompted.current = true;
+      const request = new AbortController();
+      biometricRequest.current = request;
       setBiometricBusy(true);
       // A rejection is not retried: a cancelled sheet hands focus straight back,
       // and re-asking on that would trap the reader in a prompt they closed.
-      void unlockLocalBiometric().then(() => { if (!disposed) onUnlocked(); }).catch(() => {}).finally(() => { if (!disposed) setBiometricBusy(false); });
+      void unlockLocalBiometric(request.signal).then(maybeEnrollBiometric).then(() => { if (!disposed) finish(); }).catch(() => {}).finally(() => { if (!disposed) setBiometricBusy(false); });
     };
     promptWhenReady();
     document.addEventListener("visibilitychange", promptWhenReady);
@@ -59,7 +111,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       document.removeEventListener("visibilitychange", promptWhenReady);
       window.removeEventListener("focus", promptWhenReady);
     };
-  }, [biometricEnrolled, onUnlocked, setup]);
+  }, [biometricEnrolled, finish, setup]);
   const submit = () => {
     attempt.current += 1;
     setBusy(true);
@@ -69,7 +121,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
         ? Promise.reject(new Error("The PIN entries do not match."))
         : configureLocalUnlock(pin)
       : unlockLocal(pin).then(maybeEnrollBiometric);
-    void action.then(onUnlocked).catch((reason) => setError(String(reason))).finally(() => setBusy(false));
+    void action.then(finish).catch((reason) => setError(localFailureText(reason))).finally(() => setBusy(false));
   };
   useEffect(() => {
     const currentAttempt = ++attempt.current;
@@ -85,17 +137,30 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       setBusy(true);
       setError("");
       void unlockLocal(pin).then(maybeEnrollBiometric).then(() => {
-        if (currentAttempt === attempt.current) onUnlocked();
+        if (currentAttempt === attempt.current) finish();
       }).catch((reason) => {
-        if (currentAttempt === attempt.current) setError(String(reason));
+        if (currentAttempt === attempt.current) setError(localFailureText(reason));
       }).finally(() => {
         if (currentAttempt === attempt.current) setBusy(false);
       });
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [onUnlocked, pin, pinLength, setup]);
-  return <main className="pair screen local-unlock">
-    <div className="brand"><span className="spark">✦</span><h1>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}</h1></div>
+  }, [finish, pin, pinLength, setup]);
+  // Android's fingerprint sheet covers the lower part of the screen and no page
+  // can restyle it, so while it is up this screen becomes the branded half
+  // above it: the form steps aside, the mark lifts into view with its rings
+  // turning, and one line says what the sheet is waiting for.
+  const verifying = biometricBusy && !unlocked;
+  const phase = unlocked ? " unlocked" : verifying ? " verifying" : "";
+  const content = <>
+    <BrandHead>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}{!setup && isUntested("mobile.link.silentResume") && <small className="untested"> Untested</small>}{!setup && isUntested("mobile.lock.homeSheet") && <small className="untested"> Untested</small>}{!setup && isUntested("mobile.lock.reloadGrace") && <small className="untested"> Untested</small>}</BrandHead>
+    <p className="local-unlock-status" aria-live="polite">
+      {unlocked ? "Unlocked" : verifying ? "Touch the fingerprint sensor" : ""}
+      {verifying && isUntested("mobile.lock.brandedSheet") && <small className="untested"> Untested</small>}
+    </p>
+    {verifying && !setup && <button className="local-unlock-use-pin" onClick={usePinInstead}>
+      Use PIN instead{isUntested("mobile.lock.pinInstead") && <small className="untested"> Untested</small>}
+    </button>}
     {setup ? <>
       <p>{biometricAvailable === false
         ? "This browser offers no fingerprint or Face ID unlock — browsers built on the system WebView (DuckDuckGo among them) do not support it. The app PIN will be your only unlock here; keep the phone’s own screen lock enabled, or pair again in Chrome or Safari to use a fingerprint."
@@ -118,10 +183,11 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
         Chrome or Safari to unlock with a fingerprint; that means pairing the phone once more,
         since a pairing belongs to the browser it was made in.
       </p>}
-      {biometricEnrolled && <button className="primary" disabled={biometricBusy} onClick={unlockWithBiometric}>
-        {biometricBusy ? "Waiting for the device…" : "Unlock with fingerprint"}
+      {biometricEnrolled && <button className={`local-unlock-biometric${biometricBusy ? " waiting" : ""}`} disabled={biometricBusy} onClick={unlockWithBiometric}>
+        <span className="local-unlock-print"><FingerprintIcon /></span>
+        <span>{biometricBusy ? "Waiting for the device…" : "Unlock with fingerprint"}</span>
       </button>}
-      <label>PIN<input className="code" type="password" inputMode="numeric" autoComplete="current-password" autoFocus={!biometricEnrolled} maxLength={pinLength ?? 12} value={pin} onChange={(event) => {
+      <label>PIN<input ref={pinInput} className="code" type="password" inputMode="numeric" autoComplete="current-password" autoFocus={!biometricEnrolled} maxLength={pinLength ?? 12} value={pin} onChange={(event) => {
         const next = event.target.value.replace(/\D/g, "");
         setPin(pinLength === null ? next : next.slice(0, pinLength));
       }} /></label>
@@ -135,5 +201,18 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
           {busy ? "Checking…" : "Unlock"}
         </button>}
     <p className="local-unlock-note">This local lock protects against casual access to an unlocked phone. It does not replace the phone’s own device lock or Eldrun’s paired-device authentication.</p>
-  </main>;
+    <p className="splash-version">Eldrun Mobile {BUNDLE_VERSION}{isUntested("mobile.lock.version") && <small className="untested"> Untested</small>}</p>
+  </>;
+  // Setup runs once, right after pairing, with no project data to stand
+  // behind it yet — its own full screen. The lock met on every later cold
+  // open or idle timeout rises as a sheet over the Home screen's shell
+  // instead, so the reader lands somewhere that already looks like where they
+  // are going rather than a screen unto itself.
+  if (setup) return <main className={`pair screen brand-screen local-unlock${phase}`}>{content}</main>;
+  return <div className={`sheet-backdrop lock-sheet-backdrop${phase}`} role="presentation">
+    <section className={`option-sheet brand-screen local-unlock-sheet local-unlock${phase}`} role="dialog" aria-modal="true" aria-label="Eldrun Mobile locked">
+      <span className="sheet-grip" aria-hidden="true" />
+      {content}
+    </section>
+  </div>;
 }

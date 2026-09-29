@@ -32,6 +32,7 @@ import { DateTimeField } from "../common/DateTimeField";
 import { Dropdown } from "../common/Dropdown";
 import { TimeField } from "../common/TimeField";
 import { UntestedTag } from "../common/UntestedTag";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface Props {
   scope: string;
@@ -449,7 +450,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
               )}
               {oncePast && <div className="agent-schedule-warn">{t("agentSchedule.pastOnce")}</div>}
               {otherLive.length > 0 && <div className="agent-schedule-warn" data-testid="agent-schedule-occupied">{t("agentSchedule.tabOccupied")}</div>}
-              {error && <div className="project-dialog-error">{error}</div>}
+              {error && <ErrorNote className="project-dialog-error" error={error} />}
               <div className="agent-schedule-form-actions">
                 {editing && <button className="settings-btn" type="button" onClick={reset}>{t("common.cancel")}</button>}
                 <button className="settings-btn primary" type="button" disabled={saving} onClick={() => void save()}>{saving ? t("common.saving") : t("common.save")}</button>

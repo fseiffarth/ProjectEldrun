@@ -15,6 +15,7 @@ import { listen } from "@tauri-apps/api/event";
 import { PLATFORM } from "../../lib/window/dragPlatform";
 import { nextWindowState } from "../../lib/window/windowState";
 import { noteAgentTurn, notePtyOutput, useActivityStore } from "../../stores/activity";
+import { useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
 import type { AgentTurnState } from "../../stores/activity";
 import {
   usePowerStore,
@@ -25,7 +26,7 @@ import {
 import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
 import { useOllamaAutoloadOnLaunch } from "../../stores/agents/ollamaAutoload";
 import { useRendererWatchdog } from "../../lib/window/rendererWatchdog";
-import { livePanelToggleKey } from "../../lib/shortcuts/shortcuts";
+import { livePanelToggleLabel } from "../../lib/shortcuts/shortcutHint";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { SidePanel } from "./SidePanel";
@@ -39,6 +40,7 @@ import { ShortcutHelpOverlay } from "./ShortcutHelpOverlay";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { RemoteMachinesDialogHost } from "../projects/RemoteMachinesWindow";
 import { GlobalMachineMonitorDialogHost } from "../monitoring/GlobalMachineMonitorDialog";
+import { MachinesOverlayHost } from "../header/MachinesIndicator";
 import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
 import { BoxEditorHost } from "../projects/BoxEditorDialog";
@@ -46,11 +48,12 @@ import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { ExecTrustHost } from "../common/ExecTrustHost";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
+import { PrinterNetworkDefaultsHost } from "../printing/PrinterNetworkDefaultsHost";
 import { AgentContinueHost } from "./AgentContinueHost";
 import { AgentCronHost } from "./AgentCronHost";
 import { AgentScheduleHost } from "./AgentScheduleHost";
 import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
-import { SkillsOverlayHost } from "../skills/SkillsOverlay";
+import { ModelsOverlayHost } from "../models/ModelsOverlay";
 import { RootOverlayHost } from "./RootOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import {
@@ -63,6 +66,7 @@ import {
 } from "../common/EdgeRailIcons";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
+import { UnfencedPlatformDialog } from "../common/UnfencedPlatformDialog";
 import { StopProjectDialog } from "../common/StopProjectDialog";
 import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
 import { RemoteUsageWarningDialog } from "../common/RemoteUsageWarningDialog";
@@ -135,9 +139,13 @@ const TodoOverlayHost = lazy(() =>
   import("../todo/TodoOverlay").then((m) => ({ default: m.TodoOverlayHost })),
 );
 
+// Mail also stays mounted while a composer tab is open, window closed or not:
+// an unfinished mail's text lives in its mounted composer, and unmounting the
+// host here would throw it away behind the host's own keep-alive.
 function LazyMailOverlayHost() {
   const open = useMailStore((s) => s.overlayOpen);
-  if (!open) return null;
+  const composing = useMailStore((s) => s.mailTabs.some((tab) => tab.kind === "compose"));
+  if (!open && !composing) return null;
   return (
     <Suspense fallback={null}>
       <MailOverlayHost />
@@ -253,8 +261,9 @@ function StartupSplash({ ready }: { ready: boolean }) {
  */
 async function saveWindowGeometry(): Promise<void> {
   const win = getCurrentWindow();
-  // A fullscreen window's rect is just the monitor, not a restore geometry. macOS
-  // only — Linux/Windows never enter fullscreen (see the startup effect).
+  // A fullscreen window's rect is just the monitor, not a restore geometry —
+  // macOS's startup fullscreen, or the user's F11 / fullscreen-button mode
+  // (`lib/window/fullscreenMode`), whose own write this read reflects.
   if (await win.isFullscreen()) return;
   const [pos, size, maximized] = await Promise.all([
     win.outerPosition(),
@@ -884,10 +893,21 @@ export function AppShell() {
     let unlistenTurn: (() => void) | undefined;
     listen<{ id: string; state: AgentTurnState; job?: boolean }>("agent-turn", (ev) => {
       noteAgentTurn(ev.payload.id, ev.payload.state, !!ev.payload.job);
+      // A prompt went into the new conversation: the clear is no longer undone
+      // by resuming — that would leave the prompt behind.
+      if (ev.payload.state === "working") useAgentClearUndoStore.getState().dismiss(ev.payload.id);
     })
       .then((fn) => { unlistenTurn = fn; })
       .catch(() => {});
-    return () => { unlisten?.(); unlistenDigest?.(); unlistenTurn?.(); };
+    // How a tab's session just (re)started, off the same hook's source record:
+    // a `/clear` offers "Undo clear" on that terminal until the next prompt.
+    let unlistenRoll: (() => void) | undefined;
+    listen<{ id: string; source: string }>("agent-session-roll", (ev) => {
+      useAgentClearUndoStore.getState().noteRoll(ev.payload.id, ev.payload.source);
+    })
+      .then((fn) => { unlistenRoll = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); unlistenDigest?.(); unlistenTurn?.(); unlistenRoll?.(); };
   }, []);
 
   // Recompute the running-task indicators on a fixed cadence. Split from the
@@ -971,7 +991,7 @@ export function AppShell() {
   // Hiding the panels takes the reveal handle with them, so the key press that
   // did it is the only thing that could ever explain the empty edge — say so,
   // and name the key that brings them back (it is Super or F9 depending on the
-  // desktop, see `livePanelToggleKey`). Nothing is shown on the way back in.
+  // desktop unless rebound, see `livePanelToggleLabel`). Nothing is shown on the way back in.
   const [panelsHiddenToast, setPanelsHiddenToast] = useState<string | null>(null);
   useEffect(() => {
     if (panelsHiddenToast === null) return;
@@ -988,8 +1008,18 @@ export function AppShell() {
       const hidden = !panelsHiddenRef.current;
       setPanelsHidden(hidden);
       setPanelsHiddenToast(
-        hidden ? t("appShell.panelsHiddenToast", { key: livePanelToggleKey() }) : null,
+        hidden ? t("appShell.panelsHiddenToast", { key: livePanelToggleLabel() }) : null,
       );
+    },
+    // Steering's E: the panel on its remembered view, panels shown if they
+    // were hidden. Closing leaves a pinned panel where it is.
+    onSidePanel: (open) => {
+      if (open) {
+        setPanelsHidden(false);
+        openPanel();
+      } else if (!panelPinned) {
+        setPanelOpen(false);
+      }
     },
   });
 
@@ -1304,6 +1334,14 @@ export function AppShell() {
           backend reports OS-tool captures as an app-wide event with no component of
           its own to land in. */}
       <ScreenshotSaveOverlay />
+      {/* The Machines overlay — a click on the header's Machines button: the
+          global machines as a grid of tiles. Mounted here, BEFORE the host-key
+          prompt, the HPC guard, the connect dialogs and the machine monitor
+          below (all `.modal-backdrop` at one z-index, DOM order the tie-break),
+          because each of them is raised by a gesture made inside it and must
+          land on top — and the root console (a terminal sign-in) is later
+          still. */}
+      <MachinesOverlayHost />
       {/* "Is this the right machine?" — shown before a password is sent to a host
           whose SSH key has never been accepted here. At the shell because it can be
           raised by any connect surface (the Connect modal, a create/extend dialog,
@@ -1313,6 +1351,9 @@ export function AppShell() {
           here for the same reason the host-key prompt is: the caller is a lib
           function with no component of its own to render into. */}
       <HpcGuardDialog />
+      {/* Windows: the once-per-machine "agents run with your full rights"
+          acceptance a refused agent spawn asks for; same host rule as above. */}
+      <UnfencedPlatformDialog />
       <StopProjectDialog />
       {/* "This will overwrite that side" — the confirmation every byte-sync
           transfer asks for. Here for the same reason as the two above: a pull or
@@ -1365,6 +1406,10 @@ export function AppShell() {
           calendar pane, so refreshing only while that pane is open would leave
           the calendar stale exactly where it is looked at. */}
       <CalDavSyncHost />
+      {/* The per-network default printer, applied on arriving at a network —
+          at the shell because the Print Manager that saves it is closed by then.
+          Starts no timer until a default is saved. */}
+      <PrinterNetworkDefaultsHost />
       {/* The agent warm-up cron (Manage CLIs → Scheduled warm-up). Renders
           nothing and starts no timer until an agent is scheduled — at the shell
           for `CalDavSyncHost`'s reason turned around: the panel that configures
@@ -1386,11 +1431,14 @@ export function AppShell() {
           nothing makes them mutually exclusive, so DOM order is the tie-break
           and the surface opened most recently should be the one on top. */}
       <LazyTodoOverlayHost />
-      {/* The 🧠 menu's Skills Library — the machine-level door into the library
-          the project tab hosts. At the shell for the family's reason (it covers
-          the window and must survive a project switch), and after the three
-          above because it is opened from a header menu that sits over them. */}
-      <SkillsOverlayHost />
+      {/* The Models & agents overlay — a click on the header's processor-chip
+          button (its hover dropdown stays), and the home of the machine-level
+          Skills Library. At the shell for the family's reason (it covers the
+          window and must survive a project switch), after the three above
+          because it is opened from a header button that sits over them, and
+          before the root console so a one-click install started from one of
+          its tabs opens the console on top of it. */}
+      <ModelsOverlayHost />
       {/* The root console (Ctrl+Shift+R): the root scope as a floating subwindow
           instead of a scope to switch to, and the one overlay onto the root
           terminal — a one-click install (`runInstallInTab`) and a parked login

@@ -23,7 +23,7 @@ describe("header menu keyboard behavior", () => {
     await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Settings" }));
     await user.keyboard("{End}");
-    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Lessons" }));
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Check for updates" }));
     await user.keyboard("{Home}{ArrowDown}");
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Feature Guide" }));
     await user.keyboard("{Escape}");

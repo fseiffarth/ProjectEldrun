@@ -5,22 +5,22 @@ import { useHintsStore } from "./hints";
 import type { HintId } from "../lib/shortcuts/hints";
 import {
   TOUR_STEPS,
-  ADVANCED_TOUR_STEPS,
   COVERED_HINTS,
   nextEligibleIndex,
   prevEligibleIndex,
   type TourStep,
   type TourCtx,
 } from "../lib/tour";
+import { LESSONS, TOUR_LESSON_ID, type Lesson } from "../lib/lessons";
 
 /**
- * Live state for the guided overlay — both the high-level "Take a tour"
- * walkthrough (`TOUR_STEPS`) and the task "lessons" (each a step list from
- * `lib/lessons.ts`). The step catalogs and selection logic are pure
- * (`lib/tour.ts` / `lib/lessons.ts`); this store only holds which sequence is
- * running and where, plus the thin action that persists the terminal
- * `tour_completed` flag through `useSettingsStore` (the single writer of
- * `settings.json`). Session-only otherwise — the active step is never persisted.
+ * Live state for the guided overlay, which runs the lessons of
+ * `lib/lessons.ts` — the quick tour and the tour of other machines among them.
+ * The step catalogs and selection logic are pure (`lib/tour.ts` /
+ * `lib/lessons.ts`); this store only holds which sequence is running and
+ * where, plus the thin action that persists the terminal `tour_completed` flag
+ * through `useSettingsStore` (the single writer of `settings.json`) when the
+ * quick tour ends. Session-only otherwise — the active step is never persisted.
  *
  * Mounted only by `AppShell` (not the detached-window `DetachedApp` branch), so
  * the overlay never appears in popped-out subwindows. Mirrors `stores/hints.ts`.
@@ -30,17 +30,14 @@ interface TourStore {
   active: boolean;
   /** Index into `steps` of the step currently shown (valid while active). */
   index: number;
-  /** The sequence currently running (the main tour or a lesson). */
+  /** The sequence currently running (the running lesson's steps). */
   steps: TourStep[];
   /** Settings flag to set true on finish, or null for replayable lessons. */
   persistKey: "tour_completed" | null;
-  /** Begin the high-level "Take a tour" walkthrough. */
+  /** Begin the quick-tour lesson (`TOUR_LESSON_ID`). */
   start: () => void;
-  /** Begin the opt-in advanced walkthrough (remote machines and friends).
-   *  Replayable: nothing is persisted, so it never counts as onboarding done. */
-  startAdvanced: () => void;
-  /** Begin a task lesson (replayable; nothing persisted). */
-  startLesson: (steps: TourStep[]) => void;
+  /** Begin a lesson. Only one marked `completesOnboarding` persists anything. */
+  startLesson: (lesson: Pick<Lesson, "steps" | "completesOnboarding">) => void;
   /** Advance to the next eligible step, or finish past the end. */
   next: () => void;
   /** Step back to the previous eligible step (no-op at the first). */
@@ -57,8 +54,8 @@ function ctx(): TourCtx {
   return { projectCount: s.projects.length, activeId: s.activeId };
 }
 
-/** Mark `tour_completed` and stop the hints the main tour covered from
- *  re-firing the moment it closes. Lessons don't persist. */
+/** Mark `tour_completed` and stop the hints the quick tour covered from
+ *  re-firing the moment it closes. Other lessons don't persist. */
 function persistDone() {
   void useSettingsStore.getState().updateSettings({ tour_completed: true });
   const hints = useHintsStore.getState();
@@ -81,11 +78,12 @@ export const useTourStore = create<TourStore>((set, get) => {
     steps: TOUR_STEPS,
     persistKey: null,
 
-    start: () => begin(TOUR_STEPS, "tour_completed"),
+    start: () => {
+      const tour = LESSONS.find((l) => l.id === TOUR_LESSON_ID);
+      if (tour) get().startLesson(tour);
+    },
 
-    startAdvanced: () => begin(ADVANCED_TOUR_STEPS, null),
-
-    startLesson: (steps) => begin(steps, null),
+    startLesson: (lesson) => begin(lesson.steps, lesson.completesOnboarding ? "tour_completed" : null),
 
     next: () => {
       const { steps, index } = get();

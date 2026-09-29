@@ -112,7 +112,7 @@ describe("the subwindow + is outside the scrolling tab strip", () => {
   it("keeps the popout's own + outside its strip too", () => {
     // `DetachedCenterPanel` hand-rolls the same bar (separate React root,
     // separate store), so it has its own copy of the + and its own way to put it
-    // back inside the strip: passing it as a child of `<DetachedTabStrip>`,
+    // back inside the strip: passing it as a child of `<ScrollingTabStrip>`,
     // which is what wraps its children in `.tab-strip`. Rendering that panel
     // needs a whole popout's worth of state, so the drift is caught at the
     // source instead.
@@ -120,8 +120,8 @@ describe("the subwindow + is outside the scrolling tab strip", () => {
       "src/components/layout/DetachedCenterPanel.tsx",
       "utf8",
     );
-    const open = src.indexOf("<DetachedTabStrip");
-    const close = src.indexOf("</DetachedTabStrip>");
+    const open = src.indexOf("<ScrollingTabStrip");
+    const close = src.indexOf("</ScrollingTabStrip>");
     expect(open).toBeGreaterThan(-1);
     expect(close).toBeGreaterThan(open);
     expect(src.slice(open, close)).not.toContain("tab-new-wrap");
