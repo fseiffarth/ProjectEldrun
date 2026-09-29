@@ -50,6 +50,9 @@ const DEFINING_FILES: &[&str] = &[
     // The migration shim and the adopt path: the *only* code allowed to read the
     // project-tree copy at all, and both sanitize what they read.
     "services/terminal_service.rs",
+    // The shared tab set's owner (headless owner plan, H1): it reads and writes
+    // the state-dir session by project id and never a project tree.
+    "services/workspace.rs",
 ];
 
 /// Put this on (or directly above) a line that names an intent field for a reason

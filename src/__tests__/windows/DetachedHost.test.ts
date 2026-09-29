@@ -304,7 +304,7 @@ describe("detached host (#42)", () => {
     expect(useTabsStore.getState().hiddenGroupsByScope["p"]).toHaveLength(1);
     // …and the scope is persisted so disk agrees (saved as hidden).
     expect(invokeMock).toHaveBeenCalledWith(
-      "save_tab_layout",
+      "workspace_sync",
       expect.objectContaining({ localFile: "/p/project.json" }),
     );
   });
@@ -339,7 +339,7 @@ describe("detached host (#42)", () => {
     handlers.get(DETACHED_CLOSE)!({ payload: { scope: "p", groupId } });
 
     expect(invokeMock).toHaveBeenCalledWith(
-      "save_tab_layout",
+      "workspace_sync",
       expect.objectContaining({ localFile: "/p/project.json" }),
     );
   });
@@ -358,7 +358,7 @@ describe("detached host (#42)", () => {
     );
     expect(useTabsStore.getState().detachedGroupsByScope.p).toHaveLength(1);
     expect((useTabsStore.getState().layout as GroupNode).tabKeys).not.toContain(bKey);
-    expect(invokeMock).not.toHaveBeenCalledWith("save_tab_layout", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("workspace_sync", expect.anything());
   });
 
   it("keeps reopening a popout the display switch kills again and again, never docking it", async () => {
@@ -420,7 +420,7 @@ describe("detached host (#42)", () => {
 
     // The scope is persisted (so detached:true + bounds reach disk for restore).
     expect(invokeMock).toHaveBeenCalledWith(
-      "save_tab_layout",
+      "workspace_sync",
       expect.objectContaining({ localFile: "/p/project.json" }),
     );
     // The popout's OS window is destroyed (closed, not stranded on screen).
@@ -449,7 +449,7 @@ describe("detached host (#42)", () => {
     await shutdownDetachedWindows();
 
     expect(invokeMock).toHaveBeenCalledWith(
-      "save_tab_layout",
+      "workspace_sync",
       expect.objectContaining({ projectId: "p", localFile: "" }),
     );
     expect(destroyed).toContain(label);

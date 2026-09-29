@@ -1243,7 +1243,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // no longer reaches into the tabs store's internal maps / tree helpers
     // (Struct #3 decoupling; the walk also collapses per Eff #13).
     const prevScopeKey = previousId ?? ROOT_SCOPE;
-    const { tabs, tabGroups, activeTabIndex } =
+    const { tabs, tabGroups, activeTabIndex, workspaceVersion } =
       useTabsStore.getState().snapshotScopeForSwitch(prevScopeKey);
     // Leaving the ROOT scope saves its layout HERE, because the switch cannot.
     // `switch_project_runtime` writes the outgoing scope's layout from the
@@ -1329,6 +1329,9 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
         tabLayout: tabs.map(toSavedTabEntry),
         tabGroups,
         activeTabIndex,
+        // The version this window last saw for the outgoing scope: the switch
+        // save goes through the workspace service like the debounced one.
+        workspaceVersion,
         fileTabs: [],
         sidePanelFolder: previousId ? get().sidePanelFolderByProject[previousId] ?? null : null,
         activeLayoutMetadata: null,

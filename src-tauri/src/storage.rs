@@ -84,6 +84,10 @@ where
     let _guard = JSON_MUTATION_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // The process-wide lock serialises this process; the file lock serialises
+    // a second Eldrun process patching the same file (#171's lesson applied
+    // to every read-modify-write here).
+    let _file_lock = FileLock::exclusive(path).map_err(|e| format!("lock {}: {e}", path.display()))?;
     let mut value = if path.exists() {
         read_json(path).map_err(|e| e.to_string())?
     } else {
@@ -184,6 +188,49 @@ pub(crate) mod durability {
             .cloned()
             .collect()
     }
+}
+
+/// An advisory, cross-process lock on a sibling `<file>.lock` of a state
+/// file, held for the guard's lifetime.
+///
+/// `JSON_MUTATION_LOCK` serialises this process; a second Eldrun process (a
+/// second window, the Mobile sidecar) needs the file system to do it. The
+/// lock file is never removed: deleting one out from under a holder is how
+/// two processes end up both holding "the" lock. Best effort — a filesystem
+/// without advisory locks still gets the caller's revision check, which
+/// closes the window for every practical interleaving.
+pub struct FileLock {
+    file: fs::File,
+}
+
+impl FileLock {
+    /// Take the exclusive lock beside `path`, blocking until it is free.
+    pub fn exclusive(path: &Path) -> std::io::Result<Self> {
+        let lock_path = lock_path_for(path);
+        if let Some(parent) = lock_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)?;
+        let _ = file.lock();
+        Ok(Self { file })
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+/// `calendar.json` → `calendar.json.lock`.
+fn lock_path_for(path: &Path) -> std::path::PathBuf {
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".lock");
+    path.with_file_name(name)
 }
 
 /// Create the state dir if missing and make it owner-only (0700).

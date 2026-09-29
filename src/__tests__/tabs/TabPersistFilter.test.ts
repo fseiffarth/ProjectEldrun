@@ -225,7 +225,7 @@ describe("saveLayout — persists restorable tabs (incl. resumable agents)", () 
 
     await useTabsStore.getState().saveLayout("/p/project.json");
 
-    const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+    const call = invokeMock.mock.calls.find((c) => c[0] === "workspace_sync");
     expect(call).toBeTruthy();
     const arg = call![1] as {
       tabs: { kind: string; cmd: string; sessionId?: string }[];
@@ -246,7 +246,7 @@ describe("saveLayout — persists restorable tabs (incl. resumable agents)", () 
 
     await useTabsStore.getState().saveLayout("/p/project.json");
 
-    const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+    const call = invokeMock.mock.calls.find((c) => c[0] === "workspace_sync");
     const arg = call![1] as { tabs: { kind: string }[]; groups: SavedLayoutTree | null };
     expect(arg.tabs.map((t) => t.kind)).toEqual(["shell"]);
     expect(JSON.stringify(arg.groups)).not.toContain("agent");
@@ -271,7 +271,7 @@ describe("saveLayout — persists restorable tabs (incl. resumable agents)", () 
 
     await useTabsStore.getState().saveLayout("/p/project.json");
 
-    const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+    const call = invokeMock.mock.calls.find((c) => c[0] === "workspace_sync");
     const arg = call![1] as { tabs: { kind: string; url?: string }[] };
     const browser = arg.tabs.find((t) => t.kind === "browser");
     expect(browser?.url).toBe("https://example.com/docs");
@@ -291,7 +291,7 @@ describe("saveLayout — persists restorable tabs (incl. resumable agents)", () 
 
     await useTabsStore.getState().saveLayout("/p/project.json");
 
-    const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+    const call = invokeMock.mock.calls.find((c) => c[0] === "workspace_sync");
     const arg = call![1] as { tabs: { kind: string; cmd: string; sessionId?: string }[] };
     const codex = arg.tabs.find((t) => t.cmd === "codex");
     expect(codex?.sessionId).toBe("codex-key-1");
@@ -311,7 +311,7 @@ describe("saveLayout — persists restorable tabs (incl. resumable agents)", () 
 
     await useTabsStore.getState().saveLayout("/p/project.json");
 
-    const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+    const call = invokeMock.mock.calls.find((c) => c[0] === "workspace_sync");
     const arg = call![1] as {
       tabs: { kind: string; cmd: string; sessionId?: string }[];
     };
@@ -333,7 +333,7 @@ describe("saveLayout — persists restorable tabs (incl. resumable agents)", () 
 
     await useTabsStore.getState().saveLayout("/p/project.json");
 
-    const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+    const call = invokeMock.mock.calls.find((c) => c[0] === "workspace_sync");
     const arg = call![1] as { tabs: { kind: string }[]; groups: SavedLayoutTree | null };
     expect(arg.tabs.map((t) => t.kind)).toEqual(["shell"]);
     expect(JSON.stringify(arg.groups)).not.toContain("agent");

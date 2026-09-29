@@ -2536,6 +2536,58 @@ pub fn load_tab_session(project_id: String) -> crate::schema::session::TerminalS
     crate::services::terminal_service::load_terminal_session(&project_id)
 }
 
+/// The event every window receives when a scope's shared tab set moved:
+/// `{ scope, version, ops }` (headless owner plan, H1). A client whose known
+/// version skipped re-fetches the snapshot.
+pub const WORKSPACE_PATCH_EVENT: &str = "workspace:patch";
+
+/// A scope's tab set with its version — what a client hydrates from
+/// (`services::workspace::snapshot`). Replaces [`load_tab_session`] for
+/// clients that then write through [`workspace_sync`].
+#[tauri::command]
+pub fn workspace_snapshot(project_id: String) -> Result<crate::services::workspace::Snapshot, String> {
+    crate::services::workspace::snapshot(&project_id)
+}
+
+/// Apply a client's view of a scope onto the shared tab set: the difference
+/// between what it sends and what it knew at `base_version` is the change it
+/// meant, merged onto the current set (`services::workspace::sync`). Same
+/// payload as [`save_tab_layout`] plus the version, so the frontend's one
+/// persisted shape (`toSavedTabEntry`) stays the one shape. Answers the new
+/// version and the stored tabs with their ids, and tells every window what
+/// changed.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn workspace_sync(
+    app: tauri::AppHandle,
+    project_id: String,
+    local_file: String,
+    base_version: Option<u64>,
+    tabs: Vec<crate::schema::project::TabEntry>,
+    groups: Option<Value>,
+    sessions: Option<Value>,
+    active_tab_index: Option<usize>,
+    allow_clear: bool,
+) -> Result<crate::services::workspace::SyncOutcome, String> {
+    let client = crate::services::workspace::ClientSync {
+        base_version: base_version.unwrap_or(0),
+        tabs,
+        groups,
+        sessions,
+        active_tab_index,
+        allow_clear,
+    };
+    let outcome = crate::services::workspace::sync(&project_id, &local_file, client)?;
+    if !outcome.ops.is_empty() {
+        use tauri::Emitter;
+        let _ = app.emit(
+            WORKSPACE_PATCH_EVENT,
+            serde_json::json!({ "scope": project_id, "version": outcome.version, "ops": outcome.ops }),
+        );
+    }
+    Ok(outcome)
+}
+
 /// Adopt the layout saved in the project **folder** (`.eldrun/sessions/`) as this
 /// project's session state. Explicit user action only — see
 /// `terminal_service::adopt_project_tree_session`.
@@ -4554,27 +4606,21 @@ pub async fn detach_project_from_remote(
     let state_dir = remote_project_state_dir(&project_id);
     let state_dir_s = state_dir.to_string_lossy().to_string();
     let new_local_file = new_project_file.to_string_lossy().to_string();
-    let mut session = crate::services::terminal_service::load_terminal_session(&project_id);
-    // project-tree-read: ok — `session` is the state-dir `TerminalSession`, loaded
-    // by project id; the whole block below never touches the project tree.
-    if !session.tab_layout.is_empty() {
-        // project-tree-read: ok — same `TerminalSession`.
-        for tab in session.tab_layout.iter_mut() {
-            if tab.cwd == state_dir_s {
-                tab.cwd = mirror.clone();
-            } else if let Some(rest) = tab.cwd.strip_prefix(&format!("{state_dir_s}/")) {
-                tab.cwd = format!("{mirror}/{rest}");
+    // project-tree-read: ok — the state-dir `TerminalSession`, edited in place
+    // by project id through the workspace service (which moves the scope's
+    // version, so a client holding the old cwds re-syncs against these); the
+    // whole block never touches the project tree.
+    if !crate::services::terminal_service::load_terminal_session(&project_id).tab_layout.is_empty() {
+        let _ = crate::services::workspace::edit(&project_id, &new_local_file, |session| {
+            for tab in session.tab_layout.iter_mut() {
+                if tab.cwd == state_dir_s {
+                    tab.cwd = mirror.clone();
+                } else if let Some(rest) = tab.cwd.strip_prefix(&format!("{state_dir_s}/")) {
+                    tab.cwd = format!("{mirror}/{rest}");
+                }
             }
-        }
-        let _ = crate::services::terminal_service::save_tab_layout(
-            Some(&project_id),
-            &new_local_file,
-            // project-tree-read: ok — same `TerminalSession`, written straight back.
-            &session.tab_layout,
-            session.tab_groups.clone(),
-            None,
-            false,
-        );
+            Ok(())
+        });
     }
 
     // Drop everything that was bound to the host we are detaching from. Not merely

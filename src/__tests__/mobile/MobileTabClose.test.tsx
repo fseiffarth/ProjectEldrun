@@ -121,7 +121,7 @@ describe("Mobile bridge — closing a tab", () => {
       .toEqual({ status: "closed" });
     expect(useTabsStore.getState().tabsByScope[project.id]?.map((t) => t.key)).toEqual(["shell-1"]);
 
-    const saves = vi.mocked(invoke).mock.calls.filter(([command]) => command === "save_tab_layout");
+    const saves = vi.mocked(invoke).mock.calls.filter(([command]) => command === "workspace_sync");
     const saved = saves[saves.length - 1];
     expect(saved).toBeTruthy();
     const payload = saved![1] as { projectId: string; tabs: { label: string }[] };

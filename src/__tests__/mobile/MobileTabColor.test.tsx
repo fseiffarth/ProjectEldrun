@@ -112,7 +112,7 @@ describe("Mobile bridge — colouring a tab", () => {
       .toEqual({ status: "colored", color: "red" });
     expect(colorOf("shell-1")).toBe("red");
 
-    const saves = vi.mocked(invoke).mock.calls.filter(([command]) => command === "save_tab_layout");
+    const saves = vi.mocked(invoke).mock.calls.filter(([command]) => command === "workspace_sync");
     const payload = saves[saves.length - 1]![1] as { projectId: string; tabs: { label: string; color?: string }[] };
     expect(payload.projectId).toBe(project.id);
     // Persisted, or the catalog the phone re-reads (out of this same session

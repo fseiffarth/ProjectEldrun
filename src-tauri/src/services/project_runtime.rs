@@ -30,6 +30,11 @@ pub struct PreviousProjectSnapshot {
     /// Elapsed project seconds to flush atomically with the switch.
     #[serde(default)]
     pub flush_secs: f64,
+    /// The workspace version the frontend last saw for the outgoing scope
+    /// (headless owner plan, H1); absent from a client that never received
+    /// one, whose snapshot then reads as the whole set.
+    #[serde(default)]
+    pub workspace_version: Option<u64>,
 }
 
 /// Payload emitted as `project-runtime-switched` and returned to the caller.
@@ -73,6 +78,11 @@ pub fn switch(
     // 2. Save previous project's tab layout to <state_dir>/sessions/<id>/ (and
     //    its export copy in the project tree).
     if let Some(local_file) = previous_local_file {
+        // The switch snapshot is a picture of what was in memory; like the
+        // debounced save it never clears (an empty one far more often means
+        // "never loaded" than "closed everything") and it carries no session
+        // list. It goes through the workspace service like every other
+        // writer, so a tab another client opened meanwhile survives it.
         if let Err(e) = terminal_service::save_terminal_session(
             previous_project_id,
             local_file,
@@ -81,6 +91,7 @@ pub fn switch(
             &snapshot.tab_layout,
             snapshot.active_tab_index,
             snapshot.tab_groups.clone(),
+            snapshot.workspace_version,
         ) {
             eprintln!("ProjectRuntime: save tab layout: {e}");
         }
@@ -447,6 +458,7 @@ mod tests {
             side_panel_folder: Some("src".into()),
             active_layout_metadata: Some(serde_json::json!({"name":"wide"})),
             flush_secs: 0.0,
+            workspace_version: None,
         };
         save_previous_sessions(&local, Some("p-42"), &snapshot);
 

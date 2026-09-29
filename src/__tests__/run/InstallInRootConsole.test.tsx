@@ -76,7 +76,7 @@ describe("runInstallInTab", () => {
     useTabsStore.setState({ tabsByScope: {}, layoutByScope: {}, focusedGroupByScope: {} });
     vi.mocked(invoke).mockImplementation((cmd: string) =>
       Promise.resolve(
-        cmd === "load_tab_session"
+        cmd === "workspace_snapshot"
           ? { tabLayout: [{ label: "Saved shell", cmd: "", cwd: "/r", kind: "shell" }] }
           : "/r",
       ),

@@ -132,6 +132,10 @@ export type FilesPanelView =
   | "remarks";
 
 export interface Settings {
+  /** The file's revision (headless owner plan, H1): every write moves it, and
+   * the whole-document `save_settings` fallback is refused when the file moved
+   * on since this object was loaded. `patch_settings` never needs it. */
+  rev?: number;
   debug?: boolean;
   eldrun_mobile_host?: {
     enabled: boolean;
@@ -1363,6 +1367,9 @@ export interface ProjectBox {
   name: string;
   member_ids: string[];
   position: number;
+  /** The backend's revision of this box: carried back on `save_boxes`, which
+   * refuses a box that moved on since it was loaded (headless owner plan, H1). */
+  rev?: number;
   /** Absolute box-folder path; filled lazily on first open (#41 Phase 2). */
   folder?: string;
   /** Directed inter-project relations (#41 Phase 2 stored, Phase 4 surfaced). */

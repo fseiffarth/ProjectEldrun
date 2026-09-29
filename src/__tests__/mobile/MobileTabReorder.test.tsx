@@ -248,7 +248,7 @@ describe("Mobile bridge — moving a tab", () => {
     });
     // The route reads the new order back out of the session file, so the move
     // has to reach it before the answer does.
-    const saves = vi.mocked(invoke).mock.calls.filter(([command]) => command === "save_tab_layout");
+    const saves = vi.mocked(invoke).mock.calls.filter(([command]) => command === "workspace_sync");
     const payload = saves[saves.length - 1]![1] as { projectId: string; tabs: { label: string }[] };
     expect(payload.projectId).toBe(project.id);
     expect(payload.tabs.map((tab) => tab.label)).toEqual(["three", "one", "two"]);

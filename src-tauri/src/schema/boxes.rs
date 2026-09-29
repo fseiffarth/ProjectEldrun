@@ -55,8 +55,19 @@ pub struct ProjectBox {
     /// file directly, so the bit lives here and nowhere else.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub eldrun_mobile_access: bool,
+    /// Moved by every write that changed this box (headless owner plan, H1).
+    /// `save_boxes` — the whole-list save — is refused for a box whose
+    /// revision moved since the caller loaded it, so a second window or the
+    /// Mobile sidecar editing in between is never erased. `0` until a
+    /// revision-aware Eldrun first rewrites the box, and not serialized then.
+    #[serde(default, skip_serializing_if = "rev_is_zero")]
+    pub rev: u64,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+fn rev_is_zero(rev: &u64) -> bool {
+    *rev == 0
 }
 
 /// Full `boxes.json` — an unordered list of project boxes (ordering is by each

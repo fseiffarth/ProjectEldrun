@@ -129,7 +129,7 @@ describe("viewerState round-trips through save/load", () => {
 
     await useTabsStore.getState().saveLayout("/p/project.json");
 
-    const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+    const call = invokeMock.mock.calls.find((c) => c[0] === "workspace_sync");
     expect(call).toBeTruthy();
     const arg = call![1] as {
       tabs: { label: string; viewerState?: Record<string, number> }[];
@@ -187,7 +187,7 @@ describe("viewerState round-trips through save/load", () => {
     expect(useTabsStore.getState().tabs).toBe(before);
 
     await useTabsStore.getState().saveLayout("/p/project.json");
-    const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+    const call = invokeMock.mock.calls.find((c) => c[0] === "workspace_sync");
     const arg = call![1] as {
       tabs: { label: string; viewerState?: Record<string, unknown> }[];
     };

@@ -403,18 +403,35 @@ fn save_tab_layout_persists_open_session_uuids() {
 
     // A subsequent layout save with `None` (the project-switch path) must leave
     // the stored UUIDs untouched, while `Some([])` clears them.
-    terminal_service::save_terminal_session(Some(&id), &path_str, &[], 0, None).unwrap();
+    terminal_service::save_terminal_session(Some(&id), &path_str, &[], 0, None, None).unwrap();
     assert!(terminal_service::load_terminal_session(&id)
         .open_tab_sessions
         .is_some());
 
-    terminal_service::save_tab_layout(
+    // The switch save went through the workspace service, so the scope is
+    // versioned now and the whole-snapshot save is refused (headless owner
+    // plan, H1); a client clears the list through a sync.
+    let refused = terminal_service::save_tab_layout(
         Some(&id),
         &path_str,
         &[],
         None,
         Some(serde_json::json!([])),
         true,
+    );
+    assert_eq!(refused.unwrap_err(), eldrun_lib::services::workspace::OWNED_ERROR);
+    let version = eldrun_lib::services::workspace::snapshot(&id).unwrap().version;
+    eldrun_lib::services::workspace::sync(
+        &id,
+        &path_str,
+        eldrun_lib::services::workspace::ClientSync {
+            base_version: version,
+            tabs: vec![],
+            groups: None,
+            sessions: Some(serde_json::json!([])),
+            active_tab_index: None,
+            allow_clear: false,
+        },
     )
     .unwrap();
     assert_eq!(
@@ -510,7 +527,7 @@ fn save_writes_the_state_dir_copy_and_the_project_tree_export() {
         session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_terminal_session(Some(&id), &path_str, &tabs, 0, None).unwrap();
+    terminal_service::save_terminal_session(Some(&id), &path_str, &tabs, 0, None, None).unwrap();
 
     // The authoritative copy: state dir, keyed by project id.
     let session: eldrun_lib::schema::TerminalSession =
@@ -704,7 +721,7 @@ fn switch_saves_tab_layout_into_the_state_dir() {
         session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_terminal_session(Some("prev"), &path_str, &tabs, 0, None).unwrap();
+    terminal_service::save_terminal_session(Some("prev"), &path_str, &tabs, 0, None, None).unwrap();
 
     // The state-dir copy is the one the next activation reads back.
     let saved = terminal_service::load_terminal_session("prev").tab_layout;
@@ -893,7 +910,7 @@ fn switch_next_project_tab_layout_loaded_after_save() {
             extra: Default::default(),
         },
     ];
-    terminal_service::save_terminal_session(Some("next"), &path_str, &tabs, 1, None).unwrap();
+    terminal_service::save_terminal_session(Some("next"), &path_str, &tabs, 1, None, None).unwrap();
 
     let session = terminal_service::load_terminal_session("next");
     assert_eq!(session.tab_layout.len(), 2);

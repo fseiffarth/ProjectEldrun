@@ -67,7 +67,7 @@ function seedRoot(tabs: TabEntry[]) {
 
 /** The last save_tab_layout invoke's projectId + tabs + allowClear. */
 function lastSave() {
-  const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+  const call = invokeMock.mock.calls.find((c) => c[0] === "workspace_sync");
   if (!call) return null;
   const arg = call[1] as { projectId: unknown; tabs: unknown[]; allowClear: boolean };
   return { projectId: arg.projectId, tabs: arg.tabs, allowClear: arg.allowClear };

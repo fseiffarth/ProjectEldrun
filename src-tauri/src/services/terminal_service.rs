@@ -41,28 +41,34 @@ pub fn save_tab_layout(
     )
 }
 
-/// Save tab layout with the active tab index (the project-switch snapshot).
+/// The project-switch snapshot: a picture of what was in memory, through the
+/// workspace service like every other writer (headless owner plan, H1).
+/// `base_version` is the version the client last saw for the scope; `None`
+/// is a client that never received one, whose snapshot then reads as the
+/// whole set. It carries no session list (a `None` leaves the stored UUIDs
+/// untouched) and never clears: an empty snapshot far more often means "this
+/// scope was never loaded" than "the user closed everything" — the debounced
+/// save owns that intent.
 pub fn save_terminal_session(
     project_id: Option<&str>,
     local_file: &str,
     tabs: &[TabEntry],
     active_tab_index: usize,
     groups: Option<Value>,
+    base_version: Option<u64>,
 ) -> Result<(), String> {
-    // The project-switch snapshot carries no session list; leave the persisted
-    // UUIDs untouched (the active project's debounced save_tab_layout owns them).
-    // It also never clears: a snapshot is a picture of what was in memory, and an
-    // empty one is far more likely to mean "this scope was never loaded" than
-    // "the user closed everything" — the debounced save owns that intent.
-    write_terminal_session(
-        project_id,
-        local_file,
-        tabs,
-        active_tab_index,
+    let Some(project_id) = project_id else {
+        return Ok(());
+    };
+    let client = crate::services::workspace::ClientSync {
+        base_version: base_version.unwrap_or(0),
+        tabs: tabs.to_vec(),
         groups,
-        None,
-        false,
-    )
+        sessions: None,
+        active_tab_index: Some(active_tab_index),
+        allow_clear: false,
+    };
+    crate::services::workspace::sync(project_id, local_file, client).map(|_| ())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -107,6 +113,13 @@ fn write_terminal_session(
     // by any caller (it is legacy restore metadata), so it only survives by being
     // read back; the session UUIDs survive a `None` the same way.
     let prev = read_state_session(project_id).unwrap_or_default();
+    // Once the workspace service holds a scope's tab set (headless owner plan,
+    // H1), a whole-snapshot save would be exactly the last-writer-wins write it
+    // exists to replace: two clients saving the same scope erase each other's
+    // tabs. Every writer goes through `workspace::sync` from then on.
+    if crate::services::workspace::is_owned(&prev) {
+        return Err(crate::services::workspace::OWNED_ERROR.to_string());
+    }
     let session = TerminalSession {
         tab_layout: tabs.to_vec(),
         active_tab_index,
@@ -123,13 +136,33 @@ fn write_terminal_session(
         open_apps: prev.open_apps,
         extra: prev.extra,
     };
+    store_state_session(project_id, local_file, &session)
+}
 
+/// Write a project's session file as given — the one place the state-dir copy
+/// is written — then prune the host-bound markers it no longer names and
+/// refresh the project-tree export copy.
+pub(crate) fn store_state_session(
+    project_id: &str,
+    local_file: &str,
+    session: &TerminalSession,
+) -> Result<(), String> {
     let dir = storage::project_session_dir(project_id);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return Err(format!("create session dir: {e}"));
     }
-    storage::write_json_atomic(&dir.join(TERMINALS_FILE), &session).map_err(|e| e.to_string())?;
+    storage::write_json_atomic(&dir.join(TERMINALS_FILE), session).map_err(|e| e.to_string())?;
+    after_state_session_write(project_id, local_file);
+    Ok(())
+}
 
+/// What follows every write of the state-dir session file, whoever wrote it
+/// (this module or `services::workspace`): stale host-bound markers pruned
+/// and the project-tree export copy refreshed from what is now on disk.
+pub(crate) fn after_state_session_write(project_id: &str, local_file: &str) {
+    let Some(session) = read_state_session(project_id) else {
+        return;
+    };
     // Drop host-bound markers (#150) for tabs this project no longer has, so the
     // directory does not accumulate one file per local-model tab ever opened.
     // Driven off the layout that was just saved, which is the same file the spawn
@@ -143,7 +176,11 @@ fn write_terminal_session(
     crate::services::sandbox::prune_host_bound_markers(project_id, &live);
 
     write_export_copy(local_file, &session);
-    Ok(())
+}
+
+/// The state-dir session file's path — what the workspace service locks.
+pub(crate) fn state_session_path(project_id: &str) -> PathBuf {
+    storage::project_session_dir(project_id).join(TERMINALS_FILE)
 }
 
 /// Write the project-tree copy of the layout: `<project>/.eldrun/sessions/
@@ -172,6 +209,10 @@ fn write_export_copy(local_file: &str, session: &TerminalSession) {
     for tab in &mut exported.tab_layout {
         tab.extra.remove(SCHEDULE_TARGET_KEY);
     }
+    // The workspace service's bookkeeping names this installation's version
+    // history; a folder copy adopted elsewhere starts its own.
+    exported.extra.remove(crate::services::workspace::VERSION_KEY);
+    exported.extra.remove(crate::services::workspace::CLOSED_KEY);
     if let Err(e) = storage::write_json_atomic(&sessions_dir.join(TERMINALS_FILE), &exported) {
         eprintln!("terminal_service: write .eldrun export copy: {e}");
     }
@@ -208,16 +249,19 @@ pub fn rewrite_session_paths(project_id: &str, old: &str, new: &str) -> Result<b
     if !path.exists() {
         return Ok(false);
     }
+    let _lock = storage::FileLock::exclusive(&path).map_err(|e| e.to_string())?;
     let mut session: Value = storage::read_json(&path).map_err(|e| e.to_string())?;
     if !storage::rewrite_path_prefix(&mut session, old, new) {
         return Ok(false);
     }
+    // The tab set changed: move the scope's version so a client re-syncs.
+    crate::services::workspace::bump_raw_version(&mut session);
     storage::write_json_atomic(&path, &session).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
 /// Read the state-dir session file verbatim (no sanitizing, no fallback).
-fn read_state_session(project_id: &str) -> Option<TerminalSession> {
+pub(crate) fn read_state_session(project_id: &str) -> Option<TerminalSession> {
     let path = storage::project_session_dir(project_id).join(TERMINALS_FILE);
     if !path.exists() {
         return None;
@@ -553,10 +597,18 @@ pub fn adopt_untrusted_session(
     // launch is precisely what the move was about, and no legitimate workflow
     // needs one to travel. The tabs do.
     session.open_apps = None;
-    let dir = storage::project_session_dir(project_id);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create session dir: {e}"))?;
-    storage::write_json_atomic(&dir.join(TERMINALS_FILE), &session).map_err(|e| e.to_string())?;
-    Ok(session)
+    // A folder's bookkeeping names another installation's version history;
+    // the workspace service starts this scope's own when it stores the edit.
+    session.extra.remove(crate::services::workspace::VERSION_KEY);
+    session.extra.remove(crate::services::workspace::CLOSED_KEY);
+    for tab in session.tab_layout.iter_mut() {
+        tab.extra.remove(crate::services::workspace::TAB_ID_KEY);
+        tab.extra.remove(crate::services::workspace::TAB_CREATED_KEY);
+    }
+    crate::services::workspace::edit_in(&state_session_path(project_id), |stored| {
+        *stored = session;
+        Ok(())
+    })
 }
 
 /// One-shot adoption of every existing project's project-tree session state into

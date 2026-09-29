@@ -12,7 +12,30 @@ compare-and-swap on a file `rev` with per-record `rev`s (#171,
 `commands::calendar::transact`); the sidecar answers `Todo`, `Calendar`,
 `Schedules`, `Prompts` and `AgentTranscript` off the state dir when the
 window is closed (`services::mobile_control::headless`), flagged
-`desktop_available: false` and read-only. H1–H3 are still plan only.*
+`desktop_available: false` and read-only.*
+
+*Status: **H1 landed in part** (2026-09-29, never live-verified).
+`services::workspace` is the group-0 owner: the session file carries a
+version and every tab a stable `id`; the desktop syncs through
+`workspace_sync` with the version it last saw and the service merges only
+what that client changed (a tab another client opened survives, a close it
+never saw stands — the two-client test in `workspace.rs`); `save_tab_layout`
+is refused once a scope is versioned; settings and boxes are
+compare-and-swap on a `rev`. Chosen against the plan and why: (1) the owner
+is the versioned file plus its lock rather than the sidecar process — the
+sidecar only runs while Mobile is enabled, and both processes run the same
+`AppHandle`-free service, so no owner has to be alive; (2) ops are derived
+by the service from the client's snapshot against its base version instead
+of being sent one by one, so the tab store's internals stay and the wire
+shape is `toSavedTabEntry`'s; (3) tmux names are still minted client-side
+and the default tmux socket stays — `-L eldrun` would hide every live
+session from a window that had not restarted, and owner-side spawning needs
+a detached `tmux new-session` path `pty_spawn` does not have; (4) the
+per-client layout is split at the API (`groups`/`sessions`/`active_tab_index`
+are the client's fields the merge never reads), not into a second file;
+(5) default apps keep their whole-document save (a bare map with nowhere to
+hold a revision); (6) `Catalog`/`Activity`/`GitStates` are still the
+window's. H2 and H3 are still plan only.*
 
 The request behind it: **the phone, schedules and alarms keep working with
 the desktop window closed, and two clients never fight over the same state.**

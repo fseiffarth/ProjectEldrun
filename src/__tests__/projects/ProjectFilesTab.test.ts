@@ -89,7 +89,7 @@ describe("a projectfiles tab's browsed folder", () => {
 
   it("persists the folder, and restores the tab on it", async () => {
     await useTabsStore.getState().saveLayout("/p/p1/project.json");
-    const saved = invokeMock.mock.calls.find(([cmd]) => cmd === "save_tab_layout");
+    const saved = invokeMock.mock.calls.find(([cmd]) => cmd === "workspace_sync");
     expect(saved).toBeTruthy();
     const layout = (saved![1] as { tabs: Array<Record<string, unknown>> }).tabs;
     expect(layout).toHaveLength(1);

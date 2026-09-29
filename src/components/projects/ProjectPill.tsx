@@ -19,7 +19,7 @@ import { PillStatusBars } from "./PillStatusBars";
 import { PillTabMarks } from "./PillTabMarks";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
-import { cmdToKind, isResumableAgentTab, isRestorableTab, useTabsStore } from "../../stores/tabs";
+import { adoptSyncOutcome, cmdToKind, isResumableAgentTab, isRestorableTab, syncWorkspace, useTabsStore } from "../../stores/tabs";
 import { IS_LINUX, IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab, containerBuildShell, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
@@ -2572,9 +2572,10 @@ export function ProjectPill({
                 // project nothing else writes it, so persist explicitly.
                 tabsStore.closeAllTabs(project.id);
                 if (project.local_file) {
-                  void invoke("save_tab_layout", {
+                  void syncWorkspace({
                     projectId: project.id,
                     localFile: project.local_file,
+                    baseVersion: tabsStore.workspaceVersionByScope[project.id],
                     tabs: [],
                     groups: null,
                     sessions: [],
@@ -2583,6 +2584,8 @@ export function ProjectPill({
                     // is refused, because it far more often means "the caller had nothing
                     // loaded" than "erase four tabs and their agent conversations".
                     allowClear: true,
+                  }).then((outcome) => {
+                    if (outcome) adoptSyncOutcome(project.id, outcome);
                   }).catch(() => {});
                 }
               }}

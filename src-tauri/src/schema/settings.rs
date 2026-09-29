@@ -794,8 +794,20 @@ pub struct Settings {
     /// user's default. Unset/empty → nothing is ever switched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub printer_network_defaults: Option<HashMap<String, PrinterNetworkDefault>>,
+    /// The file's revision, moved by every write (headless owner plan, H1).
+    /// A whole-document save must carry the revision it loaded, and is
+    /// refused when the file moved on since — a second window or the Mobile
+    /// sidecar saving in between is never erased. `0` for a file no
+    /// revision-aware Eldrun has written yet; not serialized then, so an
+    /// untouched file keeps its bytes.
+    #[serde(default, skip_serializing_if = "rev_is_zero")]
+    pub rev: u64,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+fn rev_is_zero(rev: &u64) -> bool {
+    *rev == 0
 }
 
 /// Last-known geometry of the MAIN window, in PHYSICAL desktop pixels — the

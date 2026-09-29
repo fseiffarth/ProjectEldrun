@@ -193,24 +193,12 @@ fn on_disk_rev(path: &Path) -> u64 {
 /// check in between. The lock file is never removed: deleting one out from
 /// under a holder is how two processes end up holding "the" lock.
 pub(crate) fn write_data_cas(path: &Path, data: &CalendarData, expected_rev: u64) -> Result<Commit, String> {
-    let lock_path = path.with_extension("json.lock");
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|e| format!("open {}: {e}", lock_path.display()))?;
-    // Best effort: a filesystem without advisory locks still gets the
-    // revision check, which is what closes the window for every practical
-    // interleaving; the lock only removes the last microseconds of it.
-    let _ = lock.lock();
-    let outcome = if on_disk_rev(path) == expected_rev {
+    let _lock = storage::FileLock::exclusive(path).map_err(|e| format!("lock {}: {e}", path.display()))?;
+    if on_disk_rev(path) == expected_rev {
         write_data(path, data).map(|()| Commit::Committed)
     } else {
         Ok(Commit::Stale)
-    };
-    let _ = lock.unlock();
-    outcome
+    }
 }
 
 /// Apply an entire reviewed proposal under the same lock as user edits and

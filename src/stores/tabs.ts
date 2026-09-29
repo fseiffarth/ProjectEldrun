@@ -570,6 +570,11 @@ export const DEFAULT_MIN_SUBWINDOW_PX = 120;
 
 export interface TabEntry {
   key: string; // globally-unique within a scope; doubles as PTY id suffix
+  // The tab's identity in the scope's SHARED tab set (headless owner plan,
+  // H1): minted by the workspace service on the tab's first sync and stable
+  // across clients and restarts, unlike `key`, which every restore re-mints.
+  // Absent until the first sync answers.
+  id?: string;
   // The scope (project id or "root") that owns this tab. Set at addTab /
   // loadFromLayout time so the project→tab binding is EXPLICIT rather than
   // positional. writeScope drops any tab whose scope differs from the map key it
@@ -920,6 +925,9 @@ export interface LoadFromLayoutOptions {
 
 export interface SavedTabEntry {
   key: string;
+  /** The shared-set identity (see `TabEntry.id`); the one field a restore
+   * keeps verbatim while it re-mints `key`. */
+  id?: string;
   label: string;
   cmd: string;
   cwd: string;
@@ -998,6 +1006,7 @@ export interface SavedTabEntry {
 export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
   return {
     key: t.key,
+    id: t.id,
     label: t.label,
     cmd: t.cmd,
     cwd: t.cwd,
@@ -1081,6 +1090,9 @@ export interface ScopeSwitchSnapshot {
   tabs: TabEntry[];
   tabGroups: SavedLayoutTree | null;
   activeTabIndex: number;
+  /** The workspace version this window last saw for the scope (see
+   * `TabsStore.workspaceVersionByScope`); the switch save's base. */
+  workspaceVersion: number | undefined;
 }
 
 interface TabsStore {
@@ -1088,6 +1100,11 @@ interface TabsStore {
 
   // source of truth for tab payloads
   tabsByScope: Record<string, TabEntry[]>;
+  // The workspace version this window last received for a scope (a snapshot
+  // or a sync answer) — what its next sync names as its base, so the service
+  // can tell what this window changed from what it never saw. Absent for a
+  // scope hydrated through a backend that predates the service.
+  workspaceVersionByScope: Record<string, number>;
   // arrangement; root is always present once a scope has >=1 tab
   layoutByScope: Record<string, LayoutNode | null>;
   // which group is focused (its active tab is the "globally active" one)
@@ -2370,6 +2387,7 @@ function deserializeTree(
 export const useTabsStore = create<TabsStore>((set, get) => ({
   scope: "root",
   tabsByScope: {},
+  workspaceVersionByScope: {},
   layoutByScope: {},
   focusedGroupByScope: {},
   detachedGroupsByScope: {},
@@ -4720,7 +4738,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       hidden,
     );
     const tabGroups = pruneSavedTree(merged, keepKeys);
-    return { tabs, tabGroups, activeTabIndex };
+    return { tabs, tabGroups, activeTabIndex, workspaceVersion: s.workspaceVersionByScope[scope] };
   },
 
   closeTabsOfKinds: (kinds) => {
@@ -4881,6 +4899,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       }
       return {
         key: freshKey,
+        // The shared-set identity survives the re-mint: it is how the next
+        // sync tells this tab from a new one.
+        id: t.id,
         label: t.label,
         cmd: t.cmd,
         args,
@@ -5124,23 +5145,31 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const detached = get().detachedGroupsByScope[scope];
       const merged = withDetachedDocked(serializeTree(layout), detached);
       const groups = pruneSavedTree(merged, keep);
-      await invoke("save_tab_layout", {
-        // The layout is keyed by PROJECT ID now, not by the path to a
-        // project.json: it lives in the state dir, because the host reads it back
-        // as commands to run and its old home was inside the container's
-        // writable mount. `scope` IS the project id — or the literal `"root"`,
-        // which now persists too (under `<state_dir>/sessions/root/`), so the
-        // root scope's shells/files/viewers survive a relaunch like a project's.
-        // `project_key("root")` is `"root"`, and the root scope has no
-        // project.json, so `localFile` is empty and the backend simply skips the
-        // export copy for it.
+      // The layout is keyed by PROJECT ID now, not by the path to a
+      // project.json: it lives in the state dir, because the host reads it back
+      // as commands to run and its old home was inside the container's
+      // writable mount. `scope` IS the project id — or the literal `"root"`,
+      // which now persists too (under `<state_dir>/sessions/root/`), so the
+      // root scope's shells/files/viewers survive a relaunch like a project's.
+      // `project_key("root")` is `"root"`, and the root scope has no
+      // project.json, so `localFile` is empty and the backend simply skips the
+      // export copy for it.
+      //
+      // This is no longer a whole-snapshot save (headless owner plan, H1): the
+      // service merges what changed since `baseVersion` — the version this
+      // window last received — onto the shared set, so a tab another client
+      // opened meanwhile survives, and one it closed stays closed. The answer
+      // carries the ids of the tabs this window created.
+      const payload = {
         projectId: scope,
         localFile,
         tabs: tabLayout,
         groups,
         sessions,
         allowClear,
-      });
+      };
+      const outcome = await syncWorkspace({ ...payload, baseVersion: get().workspaceVersionByScope[scope] });
+      if (outcome) adoptSyncOutcome(scope, outcome);
     } catch (error) {
       if (options?.strict) throw error;
       // tab layout is non-critical
@@ -5244,12 +5273,16 @@ export async function hydrateScopeFromDisk(
   const hydrated = () =>
     Object.prototype.hasOwnProperty.call(useTabsStore.getState().tabsByScope, scope);
   if (hydrated()) return true;
-  const saved = await invoke<Record<string, unknown>>("load_tab_session", {
-    projectId: scope,
-  });
+  const saved = await loadWorkspaceSnapshot(scope);
   // The ordinary UI (or another request) may have hydrated the same scope while
   // the backend read was in flight. Never overwrite that newer live state.
   if (hydrated()) return true;
+  // What this window now knows the scope as; its first sync names it as base.
+  if (typeof saved.version === "number") {
+    useTabsStore.setState((state) => ({
+      workspaceVersionByScope: { ...state.workspaceVersionByScope, [scope]: saved.version as number },
+    }));
+  }
   const restorable = ((saved.tabLayout as SavedTabEntry[] | undefined) ?? []).filter((tab) =>
     isRestorableTab({
       kind: tab.kind ?? cmdToKind(tab.cmd || (tab.type === "files" ? FILES_TAB_CMD : "")),
@@ -5278,6 +5311,91 @@ export async function hydrateScopeFromDisk(
       agentRoots: opts.agentRoots,
     });
   return true;
+}
+
+// ── The workspace service (headless owner plan, H1) ─────────────────────────
+//
+// The scope's tab set is shared with every other client of this state dir
+// (a second window, the Mobile sidecar); the backend's `services::workspace`
+// merges per client rather than letting the last whole snapshot win. Both
+// calls fall back to the pre-service commands when the running backend
+// predates them (a dev window hot-reloading `src/` against an older binary),
+// so a stale backend costs the merge, never the persistence.
+
+/** What `workspace_sync` answers: the version now on disk and the stored tabs,
+ * each carrying its `id` under the `key` this window sent. */
+export interface WorkspaceSyncOutcome {
+  version: number;
+  tabs: SavedTabEntry[];
+  ops: { op: string; id?: string }[];
+  stale: boolean;
+}
+
+export interface WorkspaceSyncPayload {
+  projectId: string;
+  localFile: string;
+  baseVersion?: number;
+  tabs: SavedTabEntry[];
+  groups: SavedLayoutTree | null;
+  sessions: unknown;
+  allowClear: boolean;
+}
+
+function isUnknownCommand(error: unknown): boolean {
+  return /(?:command\b.*\bnot found|unknown command|not allowed)/i.test(String(error));
+}
+
+/** Sync a scope through the workspace service, or through the whole-snapshot
+ * save on a backend without it (which then answers nothing). */
+export async function syncWorkspace(payload: WorkspaceSyncPayload): Promise<WorkspaceSyncOutcome | undefined> {
+  try {
+    return (await invoke<WorkspaceSyncOutcome | undefined>("workspace_sync", { ...payload })) ?? undefined;
+  } catch (error) {
+    if (!isUnknownCommand(error)) throw error;
+    const { baseVersion: _base, ...legacy } = payload;
+    await invoke("save_tab_layout", { ...legacy });
+    return undefined;
+  }
+}
+
+/** A scope's saved session with its workspace version, or the plain session
+ * (no version) from a backend without the service. */
+async function loadWorkspaceSnapshot(scope: string): Promise<Record<string, unknown>> {
+  try {
+    return (await invoke<Record<string, unknown>>("workspace_snapshot", { projectId: scope })) ?? {};
+  } catch (error) {
+    if (!isUnknownCommand(error)) throw error;
+    return invoke<Record<string, unknown>>("load_tab_session", { projectId: scope });
+  }
+}
+
+/** Take a sync answer into the store: the scope's new version, and the ids
+ * the service minted for the tabs this window created (matched by the `key`
+ * it sent). Nothing else moves here — this window's optimistic state stands;
+ * a change from another client reaches it at its next hydrate. */
+export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome): void {
+  const idByKey = new Map<string, string>();
+  for (const tab of outcome.tabs ?? []) {
+    if (tab.id && tab.key) idByKey.set(tab.key, tab.id);
+  }
+  useTabsStore.setState((state) => {
+    const tabs = state.tabsByScope[scope];
+    const needsIds = tabs?.some((t) => !t.id && idByKey.has(t.key));
+    return {
+      workspaceVersionByScope: { ...state.workspaceVersionByScope, [scope]: outcome.version },
+      ...(tabs && needsIds
+        ? {
+            tabsByScope: {
+              ...state.tabsByScope,
+              [scope]: tabs.map((t) => (!t.id && idByKey.has(t.key) ? { ...t, id: idByKey.get(t.key) } : t)),
+            },
+            ...(state.scope === scope
+              ? { tabs: state.tabs.map((t) => (!t.id && idByKey.has(t.key) ? { ...t, id: idByKey.get(t.key) } : t)) }
+              : {}),
+          }
+        : {}),
+    };
+  });
 }
 
 /** Replace the group `groupId` via `fn`, returning a new tree (structural). */

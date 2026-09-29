@@ -1445,6 +1445,8 @@ pub fn run() {
             commands::projects::set_project_git_disabled,
             commands::projects::save_tab_layout,
             commands::projects::load_tab_session,
+            commands::projects::workspace_snapshot,
+            commands::projects::workspace_sync,
             commands::projects::adopt_folder_tab_layout,
             commands::projects::root_work_dir,
             commands::root_mcp::root_mcp_status,

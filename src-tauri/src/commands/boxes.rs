@@ -42,15 +42,69 @@ fn boxes_path() -> std::path::PathBuf {
 }
 
 fn read_boxes() -> Result<BoxesList, String> {
-    let path = boxes_path();
+    read_boxes_at(&boxes_path())
+}
+
+fn read_boxes_at(path: &Path) -> Result<BoxesList, String> {
     if !path.exists() {
         return Ok(vec![]);
     }
-    storage::read_json(&path).map_err(|e| e.to_string())
+    storage::read_json(path).map_err(|e| e.to_string())
 }
 
+/// Write the list, stamping each box's revision against what the file holds
+/// (headless owner plan, H1): a changed box gets the next revision, an
+/// unchanged one keeps its own, a new one starts at 1 — whatever number the
+/// caller's copy carried. Every writer in this module goes through here, so
+/// the revisions move consistently.
 fn write_boxes(boxes: &BoxesList) -> Result<(), String> {
-    storage::write_json(&boxes_path(), boxes).map_err(|e| e.to_string())
+    let path = boxes_path();
+    let _lock = storage::FileLock::exclusive(&path).map_err(|e| e.to_string())?;
+    let current = read_boxes_at(&path)?;
+    write_boxes_stamped(&path, &current, boxes)
+}
+
+fn write_boxes_stamped(path: &Path, current: &BoxesList, boxes: &BoxesList) -> Result<(), String> {
+    let stamped = stamp_box_revs(current, boxes);
+    storage::write_json_atomic(path, &stamped).map_err(|e| e.to_string())
+}
+
+fn stamp_box_revs(current: &BoxesList, next: &BoxesList) -> BoxesList {
+    next.iter()
+        .map(|incoming| {
+            let mut stamped = incoming.clone();
+            match current.iter().find(|held| held.id == incoming.id) {
+                None => stamped.rev = incoming.rev.saturating_add(1),
+                Some(held) => {
+                    let mut probe = incoming.clone();
+                    probe.rev = held.rev;
+                    stamped.rev = if probe == *held { held.rev } else { held.rev.saturating_add(1) };
+                }
+            }
+            stamped
+        })
+        .collect()
+}
+
+/// What a whole-list save is told when a box it carries moved on since the
+/// caller loaded it.
+pub const BOXES_STALE: &str = "boxes changed on disk since they were loaded; reload and apply the edit again";
+
+/// The whole-list save, compare-and-swap per box: refused outright when any
+/// box the caller carries has a revision other than the file's, so the edit
+/// it did not see is never written over. A box the file no longer holds is
+/// re-created; one the caller dropped is deleted.
+fn save_boxes_at(path: &Path, boxes: &BoxesList) -> Result<(), String> {
+    let _lock = storage::FileLock::exclusive(path).map_err(|e| e.to_string())?;
+    let current = read_boxes_at(path)?;
+    for incoming in boxes {
+        if let Some(held) = current.iter().find(|held| held.id == incoming.id) {
+            if held.rev != incoming.rev {
+                return Err(BOXES_STALE.to_string());
+            }
+        }
+    }
+    write_boxes_stamped(path, &current, boxes)
 }
 
 /// Gap-spaced next position among boxes (mirrors `projects::next_position`).
@@ -470,7 +524,7 @@ pub fn get_boxes() -> Result<BoxesList, String> {
 
 #[tauri::command]
 pub fn save_boxes(boxes: BoxesList) -> Result<(), String> {
-    write_boxes(&boxes)
+    save_boxes_at(&boxes_path(), &boxes)
 }
 
 #[tauri::command]
@@ -484,6 +538,7 @@ pub fn create_box(name: String) -> Result<ProjectBox, String> {
     }
     let position = next_box_position(&boxes);
     let new_box = ProjectBox {
+        rev: 0,
         id,
         name,
         member_ids: vec![],
@@ -755,6 +810,57 @@ mod tests {
 
     fn ids(values: &[&str]) -> HashSet<String> {
         values.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Headless owner plan, H1: the whole-list save is compare-and-swap per
+    /// box — a stale copy is refused, and revisions move only for the boxes
+    /// that changed.
+    #[test]
+    fn save_boxes_is_refused_for_a_box_that_moved_on_and_stamps_what_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("boxes.json");
+        save_boxes_at(&path, &vec![mk_box("a", &["p"]), mk_box("b", &[])]).unwrap();
+        let loaded = read_boxes_at(&path).unwrap();
+        assert_eq!(loaded.iter().map(|b| b.rev).collect::<Vec<_>>(), [1, 1]);
+
+        // Window 1 renames A and saves.
+        let mut one = loaded.clone();
+        one[0].name = "A1".into();
+        save_boxes_at(&path, &one).unwrap();
+        let after_one = read_boxes_at(&path).unwrap();
+        assert_eq!((after_one[0].rev, after_one[1].rev), (2, 1), "only A moved");
+
+        // Window 2, still holding the first load, adds P to B: refused, and
+        // A1 survives.
+        let mut two = loaded.clone();
+        two[1].member_ids.push("p".into());
+        assert_eq!(save_boxes_at(&path, &two).unwrap_err(), BOXES_STALE);
+        let untouched = read_boxes_at(&path).unwrap();
+        assert_eq!(untouched[0].name, "A1");
+        assert!(untouched[1].member_ids.is_empty());
+
+        // Reloaded and re-applied, it lands; the caller's own numbers are
+        // never trusted over the file's.
+        let mut fresh = read_boxes_at(&path).unwrap();
+        fresh[1].member_ids.push("p".into());
+        fresh[1].rev = 99;
+        assert_eq!(save_boxes_at(&path, &fresh).unwrap_err(), BOXES_STALE, "a made-up revision is stale");
+        fresh[1].rev = 1;
+        save_boxes_at(&path, &fresh).unwrap();
+        let done = read_boxes_at(&path).unwrap();
+        assert_eq!((done[0].rev, done[1].rev), (2, 2));
+
+        // A file written before revisions loads at 0 and takes the first
+        // stamped write like any other.
+        std::fs::write(&path, r#"[{"id":"z","name":"Z","member_ids":[],"position":10}]"#).unwrap();
+        let legacy = read_boxes_at(&path).unwrap();
+        assert_eq!(legacy[0].rev, 0);
+        save_boxes_at(&path, &legacy).unwrap();
+        assert_eq!(read_boxes_at(&path).unwrap()[0].rev, 0, "an unchanged legacy box stays unversioned");
+        let mut renamed = legacy.clone();
+        renamed[0].name = "Z2".into();
+        save_boxes_at(&path, &renamed).unwrap();
+        assert_eq!(read_boxes_at(&path).unwrap()[0].rev, 1);
     }
 
     #[test]

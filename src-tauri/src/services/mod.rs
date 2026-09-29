@@ -145,6 +145,9 @@ pub mod state_gc;
 pub mod sync_auto;
 pub mod terminal_service;
 pub mod tmux_local;
+// The shared tab set with a version and per-operation merge (headless owner
+// plan, H1): what `save_tab_layout`'s whole-snapshot write became.
+pub mod workspace;
 pub mod usage_stats;
 // Project VMs (`docs/vm_projects_plan.md`): the third trust tier — the whole
 // project inside a hardware-accelerated QEMU guest (KVM on Linux, HVF on
