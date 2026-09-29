@@ -38,6 +38,7 @@ import { keySelectHighlight, keySelectRange, keySelectStep, scrollToShow, startK
 import { findSignInRequest, findWrappedUrls, type SignInRequest } from "../../lib/terminal/terminalUrls";
 import { SIGN_IN_CARD_CLASS, TerminalSignInCard } from "./TerminalSignInCard";
 import { TerminalUndoClearCard } from "./TerminalUndoClearCard";
+import { TerminalVersionCard } from "./TerminalVersionCard";
 import { UntestedTag } from "../common/UntestedTag";
 import { noteTypedClear, useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
 import { noteTypedLine } from "../../lib/agents/typedClear";
@@ -1923,6 +1924,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     )}
     {undoClearOffered && !signIn && containerRef.current && (
       <TerminalUndoClearCard host={containerRef.current} ptyId={id} />
+    )}
+    {/* The host's CLI only: a remote or container tab runs another install. */}
+    {zoomable && !remoteHostId && !sandbox && !undoClearOffered && !signIn && containerRef.current && (
+      <TerminalVersionCard host={containerRef.current} cmd={cmd} />
     )}
     {keySelecting && containerRef.current && createPortal(
       // The keyboard-steering legend's look, pinned inside the pane.
