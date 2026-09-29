@@ -75,6 +75,35 @@ describe("copying a hard-wrapped URL", () => {
     expect(text).toBe(AGY_URL);
   });
 
+  it("rejoins a URL folded inside a box narrower than the pane", () => {
+    // Mistral Vibe's revealed sign-in link: a 68-column text box centred in
+    // the pane; Rich puts the URL on rows of its own, the box's width each,
+    // and goes on with the sentence after the last piece.
+    const url =
+      "https://console.mistral.ai/cli-auth?process=6f1c2a9e-8d34-4b7a-9e21-3c5d7f0b1a42&code_challenge=" +
+      "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefghi&redirect=1";
+    const pad = " ".repeat(16);
+    const pieces = url.match(/.{1,68}/gu)!;
+    const last = pieces.pop()!;
+    const rows = [
+      pad + "If copying to the clipboard was not successful, copy the following",
+      pad + "URL:",
+      ...pieces.map((piece) => pad + piece),
+      pad + last + ". If paste fails, hold Shift (Option",
+      pad + "in iTerm2, Fn in Terminal.app) while selecting for native copy.",
+    ].map((text) => row(text));
+    const first = 2;
+    const end = first + pieces.length;
+    expect(joinedSelectionText(at(rows), COLS, { start: { x: 16, y: first }, end: { x: 16 + last.length, y: end } })).toBe(url);
+    expect(findWrappedUrls(at(rows), COLS, 0, rows.length - 1).map((found) => found.url)).toEqual([url]);
+  });
+
+  it("keeps a path under a listed link apart from it", () => {
+    const rows = [row("  https://github.com/example/project/blob/main/src/lib/a.ts"), row("  src/lib/b.ts")];
+    expect(rowJoin(rows[0], rows[1], COLS)).toBeNull();
+    expect(findWrappedUrls(at(rows), COLS, 0, 1)).toEqual([]);
+  });
+
   it("keeps prose that ends in a path apart from the next row", () => {
     const prev = "  I changed " + "x".repeat(COLS - 30) + " src/lib/a.ts";
     expect(rowJoin(row(prev.padEnd(COLS - 1, " ").slice(0, COLS - 1)), row("  for details"), COLS)).not.toBe("url");

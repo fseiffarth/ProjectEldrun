@@ -37,6 +37,8 @@ const URL_BODY = /^[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/u;
 // A token that reads as part of a URL rather than a long word: it holds the
 // scheme, or the query/path punctuation a word never carries.
 const URL_SIGNAL = /:\/\/|[/?=&%]/u;
+// A piece of a URL's query string, which a path or a word never looks like.
+const QUERY_SIGNAL = /[?=&%]/u;
 
 /** Cells the row actually uses: one past its last non-blank cell (wide glyphs
  *  count both halves). Zero for a blank row. */
@@ -73,10 +75,39 @@ export function urlContinuation(prev: LineLike, next: LineLike, cols: number): s
   // be the URL alone or hold its scheme, and the row below nothing but the
   // rest of it.
   if (prevText.trimStart() !== tail && !tail.includes("://")) return null;
-  if (usedCells(prev, cols) < cols - WRAP_SLACK) return null;
+  const prevEnd = usedCells(prev, cols);
+  if (prevEnd < cols - WRAP_SLACK) return boxedUrlContinuation(prevText, tail, prevEnd, next, cols);
   const lead = nextText.trim();
   if (!lead || /\s/u.test(lead) || NEW_ITEM.test(lead)) return null;
   return URL_BODY.test(lead) ? lead : null;
+}
+
+/** The shortest URL row read as folded at a box's edge: a box narrower than
+ *  this is no place a TUI lays a URL out. */
+const MIN_BOX_FOLD = 32;
+
+/**
+ * {@link urlContinuation} for a URL folded inside a box narrower than the
+ * pane — Mistral Vibe's sign-in panel is 70 columns wide and centred, so no
+ * row of its link comes near the pane's edge. Textual/Rich put a word too long
+ * for the box on rows of its own, each exactly the box's width, and go on with
+ * the sentence after the last piece. So: the row above is the URL alone; the
+ * next row starts at the same indent, is no wider, and begins with a piece
+ * that reads as URL — the whole row as wide as the one above, or a run that
+ * holds query punctuation — and not with a URL of its own. A `/` alone is not
+ * enough there: a path on the row under a listed link is a new line.
+ */
+function boxedUrlContinuation(prevText: string, tail: string, prevEnd: number, next: LineLike, cols: number): string | null {
+  if (prevText.trimStart() !== tail || tail.length < MIN_BOX_FOLD) return null;
+  const nextText = next.translateToString(true);
+  const lead = nextText.trimStart();
+  if (nextText.length - lead.length !== prevText.length - tail.length) return null;
+  const nextEnd = usedCells(next, cols);
+  if (nextEnd > prevEnd || NEW_ITEM.test(lead)) return null;
+  const piece = /^\S+/u.exec(lead)?.[0] ?? "";
+  if (!URL_BODY.test(piece) || piece.includes("://")) return null;
+  const wholeRow = piece === lead && nextEnd === prevEnd;
+  return wholeRow || QUERY_SIGNAL.test(piece) ? piece : null;
 }
 
 /**

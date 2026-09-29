@@ -497,6 +497,21 @@ fn local_tmux_args_for(
         session,
         "window-size",
         "largest",
+        // A CLI that sees `$TMUX` wraps its OSC 52 copy in tmux's passthrough
+        // (`ESC P tmux; …`), which tmux drops unless this is on — Mistral
+        // Vibe's "copy this URL (press c)" then copied nothing. Passthrough
+        // hands the pane's sequence to the pane's own xterm, where OSC 52 is
+        // still focus-gated and sanitized (`decodeOsc52Clipboard`). A window
+        // option on this session only: the tmux server is the user's own.
+        // `-q`: a tmux older than 3.3 has no such option, and an error here
+        // must not cut the chain short.
+        ";",
+        "set-window-option",
+        "-q",
+        "-t",
+        session,
+        "allow-passthrough",
+        "on",
         // No prefix key on an Eldrun session: nothing of Eldrun's binds it,
         // and without one a phone's raw keystrokes reach the pane only, never
         // tmux's own command line (`docs/context/root_console.md`).
@@ -682,6 +697,13 @@ mod tests {
                 "eldrun-abc",
                 "window-size",
                 "largest",
+                ";",
+                "set-window-option",
+                "-q",
+                "-t",
+                "eldrun-abc",
+                "allow-passthrough",
+                "on",
                 ";",
                 "set-option",
                 "-t",
