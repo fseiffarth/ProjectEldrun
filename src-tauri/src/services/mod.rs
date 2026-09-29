@@ -71,6 +71,8 @@ pub mod desktop_images;
 // doing, read from that script's own state files for the header's dev-build
 // chip. Compiled to "no chip" unless the binary was built from a checkout.
 pub mod dev_build;
+// The checkout's `todo/*.md` groups for the dev build's side-panel Todo view.
+pub mod dev_todo;
 pub mod codex_bind;
 // Codex's own SQLite thread store (`~/.codex/state_<n>.sqlite`), read
 // read-only for the model a Codex tab is running now that its releases

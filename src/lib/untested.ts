@@ -149,6 +149,7 @@ export const UNTESTED = {
   "projectFilesView.5": { area: "files", what: "ProjectFilesView · {s.name}" },
   "projectFilesView.6": { area: "files", what: "ProjectFilesView · Side panel, Jobs view" },
   "projectFilesView.7": { area: "files", what: "ProjectFilesView · Side panel, Windows view" },
+  "devTodo.title": { area: "files", what: "ProjectFilesView · Todo view (dev build): todo/*.md groups, task boxes write back to the file" },
   "projectRemarks.addMenu": { area: "files", what: "FileTree · Add file remark…" },
   "projectRemarks.addTitle": { area: "files", what: "AddRemarkDialog · Add file remark" },
   "projectSettings.migration": { area: "files", what: "ProjectFilesSettings · Migration" },

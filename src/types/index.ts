@@ -129,7 +129,8 @@ export type FilesPanelView =
   | "orange"
   | "sessions"
   | "jobs"
-  | "remarks";
+  | "remarks"
+  | "todo";
 
 export interface Settings {
   debug?: boolean;

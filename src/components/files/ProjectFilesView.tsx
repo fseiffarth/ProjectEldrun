@@ -79,6 +79,7 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { RemarksPane } from "./RemarksPane";
+import { DevTodoView, useDevTodoAvailable } from "./DevTodoView";
 import { ArrowDownIcon, ArrowUpIcon, CheckIcon, CommentIcon, GearIcon, HexagonIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
 import { ErrorNote } from "../common/ErrorNote";
 
@@ -364,6 +365,8 @@ export function ProjectFilesView({
     [windows, projectId],
   );
   const remarksEnabled = useExperimental("project_remarks");
+  // The checkout's todo groups; only a dev build has a checkout to read.
+  const devTodo = useDevTodoAvailable();
   // A box scope shows a multi-root file view (the box folder + every member
   // project's root) instead of one project tree; the pane renders it. Read here
   // rather than beside the tree because the view switcher below gates half its
@@ -407,6 +410,8 @@ export function ProjectFilesView({
         return !activeBox && slurmSupported && !!projectId;
       case "remarks":
         return !activeBox && remarksEnabled && !!projectId;
+      case "todo":
+        return !activeBox && devTodo;
       default:
         return true;
     }
@@ -1685,6 +1690,18 @@ export function ProjectFilesView({
             <CommentIcon />
           </button>
         )}
+        {!activeBox && devTodo && (
+          <button
+            className={`toolbar-btn toolbar-btn--sm side-panel-orange-btn${view === "todo" ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
+            aria-pressed={view === "todo"}
+            onClick={() => setView(view === "todo" ? "files" : "todo")}
+            title={t("devTodo.viewTitle")}
+            aria-label={t("devTodo.viewTitle")}
+          >
+            <CheckIcon />
+          </button>
+        )}
         {/* The tree's search + refresh, hoisted out of the tree itself. Files
             view only: both act on the tree, and the tree is only mounted there
             (a ↻ in the Git view would bump a counter nothing is listening to).
@@ -2628,6 +2645,8 @@ export function ProjectFilesView({
       {view === "remarks" && projectId && (
         <RemarksPane projectId={projectId} projectDir={projectDir} visible={active} />
       )}
+
+      {view === "todo" && <DevTodoView active={active} />}
 
       {view === "agents" && <AgentSchedulesView scope={scope} active={active} />}
 
