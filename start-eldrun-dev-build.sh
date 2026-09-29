@@ -93,7 +93,12 @@ if [ -f "$BUILT" ] && [ "$BUILT" -nt "$BINARY" ]; then
     printf 'not adopting it: no build-time record and it does not carry the current dist/ frontend\n'
     notify-send -u normal -a Eldrun 'Eldrun (dev) is running an older snapshot' \
       "target/release/eldrun is newer but unverified; run npm run package:dev and relaunch." 2>/dev/null || true
-  elif install -Dm755 "$BUILT" "$BINARY"; then
+  # `-p` keeps the build's mtime, and apport needs it: this shell exec()s the
+  # binary under its own pid, whose /proc/<pid>/cmdline the pgrep above has
+  # already stamped with the launch time. A binary installed after that stamp
+  # reads to apport as "executable was modified after program start", and the
+  # core is thrown away — 2026-09-29's heap-corruption crash left none that way.
+  elif install -p -Dm755 "$BUILT" "$BINARY"; then
     printf 'adopted it as %s (%s; %s)\n' "$BINARY" "$label" "$verdict"
     # Keep the build-time record beside what was installed, so the next launch
     # can say which commit it is opening without hashing anything.
