@@ -451,7 +451,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {/* The desktop pill's git dot, in words: what is left to add, commit or
         push. Nothing while clean or while the desktop is away. */}
     {detail?.project.git && <p className="project-git"><GitMark state={detail.project.git} long /></p>}
-    {detail && !detail.desktop_available && <p className="notice">{t("mobile.project.desktopUnavailable")}</p>}
+    {detail && !detail.desktop_available && <p className="notice">{t("mobile.project.desktopUnavailable")} {isUntested("mobile.headless.tabs") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
     {error && <p className="error">{error}</p>}
     {projectInbox.view}
     {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the Eldrun window follows. {isUntested("mobile.project.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
@@ -530,13 +530,13 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       <small className="reopen-closed-label">{t("mobile.project.recentlyClosed")}{isUntested("mobile.project.reopenClosed") && <span className="untested">{t("mobile.newTab.untested")}</span>}</small>
       {detail.closed.slice(0, 3).map((row) => <button
         key={row.id}
-        disabled={reopeningId !== null || !detail.desktop_available}
+        disabled={reopeningId !== null}
         onClick={() => void reopen(row)}
         aria-label={t("mobile.project.reopenHint", { label: row.label })}
         title={t("mobile.project.reopenHint", { label: row.label })}
       ><span aria-hidden="true">↺</span> {row.label}</button>)}
     </section>}
-    {detail?.project.status === "inactive" && <section className="create"><button className="primary" disabled={activating || !detail.desktop_available} onClick={() => void activate()}>Activate project</button></section>}
+    {detail?.project.status === "inactive" && <section className="create"><button className="primary" disabled={activating} onClick={() => void activate()}>Activate project</button></section>}
     <section className="create"><button disabled={!detail} onClick={() => setPromptsOpen(true)} aria-haspopup="dialog" aria-expanded={promptsOpen}>◷ Collected prompts</button></section>
     {/* The shell and agent buttons that stood here are the header's ＋ now: a
         project with a screenful of tabs put them past the end of the scroll. */}

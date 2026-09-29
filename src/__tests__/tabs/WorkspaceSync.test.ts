@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { adoptSyncOutcome, applyWorkspacePatch, useTabsStore, type TabEntry } from "../../stores/tabs";
+import { adoptSyncOutcome, applyWorkspacePatch, refreshWorkspaceScope, useTabsStore, type TabEntry } from "../../stores/tabs";
 
 function tab(key: string, label: string, id?: string): TabEntry {
   return { key, id, label, cmd: "", cwd: "/tmp", kind: "shell", scope: "p" };
@@ -56,6 +56,43 @@ describe("adoptSyncOutcome", () => {
     expect(layout && layout.type === "group" ? layout.tabKeys : []).toEqual(["k1", "k3"]);
   });
 
+  it("adds a tab another client created after this window's base, without stealing the active tab (H3)", () => {
+    adoptSyncOutcome(
+      "p",
+      {
+        version: 9,
+        stale: true,
+        ops: [{ op: "created", id: "id-new" }],
+        tabs: [
+          { key: "k1", id: "id-a", label: "A", cmd: "", cwd: "/tmp", kind: "shell" },
+          { key: "k2", id: "id-b", label: "B", cmd: "", cwd: "/tmp", kind: "shell" },
+          { key: "k3", id: "id-c", label: "C", cmd: "", cwd: "/tmp", kind: "shell" },
+          // Created at version 5, after this window's base of 3: a phone's ＋
+          // through the owner. It keeps the owner's tmux name and session id.
+          { key: "headless-1", id: "id-new", label: "Claude", cmd: "claude", cwd: "/work", kind: "agent", sessionId: "uid-1", tmuxSession: "eldrun-p--agent-x", createdVersion: 5 },
+          // Created at version 2, before the base: something this window
+          // closed and has not persisted yet — never resurrected.
+          { key: "old", id: "id-old", label: "Old", cmd: "", cwd: "/tmp", kind: "shell", createdVersion: 2 },
+        ],
+      },
+      new Set(["k1", "k2", "k3"]),
+    );
+    const state = useTabsStore.getState();
+    expect(state.tabsByScope.p.map((t) => t.label)).toEqual(["A", "B", "C", "Claude"]);
+    const added = state.tabsByScope.p[3];
+    expect(added.id).toBe("id-new");
+    expect(added.key).not.toBe("headless-1");
+    expect(added.tmuxSession).toBe("eldrun-p--agent-x");
+    expect(added.sessionId).toBe("uid-1");
+    expect(added.args).toEqual(["--resume", "uid-1"]);
+    expect(added.scope).toBe("p");
+    const layout = state.layoutByScope.p;
+    expect(layout && layout.type === "group" ? layout.tabKeys : []).toEqual(["k1", "k2", "k3", added.key]);
+    expect(layout && layout.type === "group" ? layout.activeKey : null).toBe("k1");
+    expect(state.tabs.map((t) => t.key)).toContain(added.key);
+    expect(state.workspaceVersionByScope.p).toBe(9);
+  });
+
   it("never closes a tab this window did not send, and ignores a colour outside the palette", () => {
     adoptSyncOutcome(
       "p",
@@ -97,6 +134,23 @@ describe("applyWorkspacePatch", () => {
     const state = useTabsStore.getState();
     expect(state.workspaceVersionByScope.p).toBe(5);
     expect(state.tabsByScope.p.map((t) => [t.key, t.label])).toEqual([["k1", "Renamed elsewhere"]]);
+  });
+
+  it("refreshWorkspaceScope re-reads a loaded scope when the file moved on (the sidecar's poke)", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      version: 6,
+      tabLayout: [
+        { key: "x", id: "id-a", label: "A", cmd: "", cwd: "/tmp", kind: "shell" },
+        { key: "y", id: "id-b", label: "B", cmd: "", cwd: "/tmp", kind: "shell" },
+        { key: "z", id: "id-new", label: "Shell", cmd: "", cwd: "/tmp", kind: "shell", tmuxSession: "eldrun-p--shell-1", createdVersion: 6 },
+      ],
+    });
+    await refreshWorkspaceScope("p");
+    expect(invoke).toHaveBeenCalledWith("workspace_snapshot", { projectId: "p" });
+    expect(useTabsStore.getState().tabsByScope.p.map((t) => t.label)).toEqual(["A", "B", "Shell"]);
+    expect(useTabsStore.getState().workspaceVersionByScope.p).toBe(6);
+    await refreshWorkspaceScope("other");
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
 
   it("ignores a patch this window already knows, or for a scope it has not loaded", async () => {

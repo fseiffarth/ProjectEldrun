@@ -6,6 +6,7 @@ import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes"
 import {
   RESUMABLE_AGENTS,
   ROOT_SCOPE,
+  refreshWorkspaceScope,
   useTabsStore,
   type TabEntry,
 } from "../../stores/tabs";
@@ -15,7 +16,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
 import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
 import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
-import { persistScopeLayout } from "../../stores/agents/agentSchedules";
+import { persistScopeLayout, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
 import { undoAgentClear } from "../../stores/agents/agentClearUndo";
@@ -263,7 +264,8 @@ type DesktopRequest =
   | { type: "tab_prompt"; request_id: string; project_id: string; tmux_session: string; message: string }
   | { type: "undo_clear"; request_id: string; project_id: string; tmux_session: string }
   | { type: "desktop_images"; request_id: string; project_id: string }
-  | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string };
+  | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string }
+  | { type: "refresh"; request_id: string; project_id?: string | null; slices: string[] };
 type DesktopResponse =
 | { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[]; prompts: AgentTabPrompts[]; timings: AgentTabTiming[]; closed: ClosedAgentTabRow[]; git?: MobileGitDot }
   | { status: "activity"; statuses: AgentTabStatus[]; prompts: AgentTabPrompts[] }
@@ -2092,6 +2094,27 @@ async function attachDesktopImage(projectId: string, imageId: string): Promise<D
   }
 }
 
+/** The Mobile host wrote a slice with no window answering and found this
+ * window open after all (headless owner plan, H3: a window wedged past the
+ * sidecar's deadline and back): re-read what moved so the stores follow the
+ * file. `workspace` re-fetches the scope's shared tab set (`refreshWorkspaceScope`,
+ * which also adds a tab created elsewhere); `projects` the registry;
+ * `calendar` the board and month; `schedules` and `prompts` every loaded
+ * project's rows. Best-effort — a slice that fails to load is the next
+ * poll's problem. */
+async function refreshSlices(projectId: string | null | undefined, slices: string[]): Promise<DesktopResponse> {
+  const jobs: Promise<unknown>[] = [];
+  for (const slice of new Set(slices)) {
+    if (slice === "workspace" && projectId) jobs.push(refreshWorkspaceScope(projectId));
+    else if (slice === "projects") jobs.push(useProjectsStore.getState().load());
+    else if (slice === "calendar") jobs.push(useCalendarStore.getState().loaded ? useCalendarStore.getState().reload() : Promise.resolve());
+    else if (slice === "schedules") jobs.push(useAgentSchedulesStore.getState().refreshLoaded());
+    else if (slice === "prompts") jobs.push(useAgentPromptsStore.getState().refreshLoaded());
+  }
+  await Promise.all(jobs.map((job) => job.catch(() => undefined)));
+  return { status: "seen" };
+}
+
 /** The agents whose transcript `services::agent_transcript` reads; any other
  * family answers `unsupported` there, and so does the short-circuit below. */
 const TRANSCRIPT_AGENTS = new Set(["claude", "codex", "opencode"]);
@@ -2200,6 +2223,7 @@ async function handleRequest(
     case "undo_clear": return undoTabClear(request.project_id, request.tmux_session);
     case "desktop_images": return desktopImagesFor(request.project_id);
     case "attach_desktop_image": return attachDesktopImage(request.project_id, request.image_id);
+    case "refresh": return refreshSlices(request.project_id, request.slices);
   }
 }
 

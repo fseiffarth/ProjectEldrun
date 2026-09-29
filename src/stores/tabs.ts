@@ -928,6 +928,10 @@ export interface SavedTabEntry {
   /** The shared-set identity (see `TabEntry.id`); the one field a restore
    * keeps verbatim while it re-mints `key`. */
   id?: string;
+  /** The workspace version the tab was created at, as the service stamps it
+   * (`createdVersion`). Read only: `adoptSyncOutcome` adds a tab another
+   * client created after the version this window knew. Never written here. */
+  createdVersion?: number;
   label: string;
   cmd: string;
   cwd: string;
@@ -4826,153 +4830,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // session that wrote them — two projects can persist the same key. Keys
     // double as PTY ids, so always mint a fresh one on restore.
     const keyMap = new Map<string, string>();
+    const scope = targetScope ?? get().scope;
     const tabs: TabEntry[] = layout.map((t) => {
-      const kind =
-        t.kind ??
-        cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : ""));
-      // Agent tabs start in the current project dir so stale saved cwds don't
-      // put the agent in the wrong directory after a project move/rename — with
-      // two exceptions, both places the scope *derives* rather than remembers: a
-      // cwd under THIS root's `.eldrun/worktrees/` is a linked worktree the agent
-      // was deliberately started in, and a box scope's member root (or a
-      // worktree under one) is where its per-member Claude tab was started.
-      // Resetting those put the agent in the wrong directory and, on the CLI of
-      // the day, made `--resume` come back as a fresh conversation
-      // (`restoredAgentCwd`).
-      const isAgent = kind === "agent" || kind === "local_agent";
-      const freshKey = nextKey(kind);
-      keyMap.set(t.key, freshKey);
-      // Resumable agent tabs (Claude with a sessionId) respawn with their
-      // resume flag so the prior conversation comes back; everyone else starts
-      // fresh with no args.
-      const tabShape = {
-        kind,
-        cmd: t.cmd,
-        sessionId: t.sessionId,
-        scheduleTargetId: isAgent ? (t.scheduleTargetId ?? crypto.randomUUID()) : undefined,
-        resumeArgs: t.resumeArgs,
-      };
-      // A built-in looks its cmd up in the static table; only a custom agent
-      // falls back to the resume flag carried on the tab.
-      //
-      // The table is preferred **whenever it has an entry**, rather than letting a
-      // persisted `resumeArgs` win: the layout this is read from lives inside the
-      // project tree, i.e. inside a container's writable mount and inside any
-      // cloned repo, so a persisted arg vector is attacker-controlled. It used to
-      // be handed to `pty_spawn` verbatim, which turned "write a file in my
-      // project" into "choose the argv of a host-bound agent CLI". For a built-in
-      // the table produces the same args anyway, so preferring it costs nothing.
-      // A custom agent's flag is re-derived from `settings.json` by the backend
-      // sanitizer (`terminal_service::sanitize_tab_layout`) before it reaches here.
-      // A relaunchable local-model tab runs its launch line again: the backend
-      // re-validated it against the driver table on load (`localLaunch`).
-      const localLaunch =
-        kind === "local_agent" && isRelaunchableLocalTab({ kind, localLaunch: t.localLaunch })
-          ? t.localLaunch
-          : undefined;
-      const base =
-        isResumableAgentTab(tabShape) && t.sessionId
-          ? t.cmd in RESUMABLE_AGENTS
-            ? RESUMABLE_AGENTS[t.cmd](t.sessionId)
-            : (t.resumeArgs ?? [])
-          : localLaunch
-            ? [...localLaunch.args]
-            : [];
-      // No permission-mode flag is folded in here, and a layout written before
-      // that toggle was removed carries an `agentMode` this ignores. An agent
-      // restores on the plain resume command and picks its mode up where it
-      // keeps it: Claude's own hook record, re-applied by the backend's
-      // `--resume` rewrite (`services::agent_session`), and for every other
-      // agent whatever its CLI does on resume.
-      const args = base;
-      // Codex mints its conversation id itself, so `sessionId` is Eldrun's
-      // stable *binding* key rather than a CLI argument. The backend resolves
-      // that key from ELDRUN_TAB_UID before it spawns the restored tab. Layouts
-      // written before the key was persisted in `env` (and a stale layout whose
-      // env disagrees with its sessionId) would otherwise restore a visible
-      // Codex tab but launch a fresh conversation. Rebuild this identity field
-      // from the durable sessionId, just as `buildStaticTabSpec` does for a new
-      // tab; it is not a user-configurable environment override.
-      const env = { ...(t.env ?? {}) };
-      if ((t.cmd === "codex" || t.cmd === "vibe") && t.sessionId) {
-        env.ELDRUN_TAB_UID = t.sessionId;
-      }
-      return {
-        key: freshKey,
-        // The shared-set identity survives the re-mint: it is how the next
-        // sync tells this tab from a new one.
-        id: t.id,
-        label: t.label,
-        cmd: t.cmd,
-        args,
-        env,
-        cwd: isAgent && defaultCwd ? restoredAgentCwd(t.cwd, defaultCwd, agentRoots) : t.cwd || defaultCwd,
-        kind,
-        sessionId: t.sessionId,
-        // The binding into agent_tasks.json. Kept from the layout when it has one,
-        // minted here otherwise (a layout written before schedules existed) — it
-        // used to be computed on `tabShape` only and never reach the entry, so a
-        // restored agent tab had no target: no ◷ on the desktop, `tab_not_found`
-        // on the phone, and the startup orphan sweep deleting every schedule.
-        scheduleTargetId: tabShape.scheduleTargetId,
-        // A restart-resumable custom agent keeps its resume flag (already folded
-        // into `base`/`args` above) so a *second* restart resumes it again.
-        resumeArgs: t.resumeArgs,
-        // Restored file embed tabs (kind === "embed") carry their durable path
-        // and how to open it so the pane rebuilds exactly.
-        embedPath: t.embedPath,
-        embedExec: t.embedExec,
-        viewer: t.viewer,
-        viewerState: t.viewerState,
-        // SSH-sync Phase 0: restore the persisted per-tab locality.
-        location: t.location,
-        // A "projectfiles" tab reopens on the folder it was browsed into.
-        folder: t.folder,
-        // A "browser" tab reopens holding the address it was last on — on its
-        // resume card, NOT navigated (see BROWSER_TAB_CMD / isRestorableKind).
-        url: t.url,
-        // Persistent sessions (TODO #85): keep the stable session name so the
-        // reattach targets the SAME host session after a relaunch. Mint one for a
-        // shell tab — or a resumable agent tab (only restorable tabs reach here) —
-        // persisted before this feature existed (it then reattaches on every
-        // subsequent restart).
-        tmuxSession:
-          t.tmuxSession ??
-          ((kind === "shell" || kind === "agent" || kind === "local_agent") && !t.tmuxAttach
-            ? newTmuxSessionName(targetScope ?? get().scope, kind === "shell" ? "shell" : "agent")
-            : undefined),
-        // A Sessions-view attach tab reattaches to its tmux session on restart.
-        tmuxAttach: t.tmuxAttach,
-        // Carry the host-bound marker id so a restored local-model tab keeps its
-        // exemption. Never minted here: a uid without a registered marker file
-        // grants nothing, and minting one on restore would be inventing an
-        // authority the user never asked for.
-        hostBoundUid: t.hostBoundUid,
-        mobileRequestHash: t.mobileRequestHash,
-        localLaunch,
-        // A Host session never auto-resumes after a restart: it comes back
-        // paused and waits for an explicit Resume (only in the root scope,
-        // the one place the marker means anything).
-        ...(t.hostSession && (targetScope ?? get().scope) === ROOT_SCOPE
-          ? { hostSession: true, hostSessionPaused: true }
-          : {}),
-        // Restore the no-tmux marker BEFORE anything reads it: the minted name
-        // above is harmless on such a tab precisely because `shouldPersistTab`
-        // refuses to use it.
-        ephemeral: t.ephemeral,
-        // A tab that was continuing itself across rate-limit windows keeps doing
-        // so after a relaunch. Only the switch comes back: `AgentContinueHost`
-        // re-reads the CLI's usage panel and arms a fresh window.
-        autoContinue: t.autoContinue,
-        // The user's tab colour. Validated against the palette on the way in
-        // rather than trusted: this layout is a file on disk, and an id that is
-        // not in `TAB_COLORS` would reach `--tab-accent` as raw CSS.
-        color: isTabColor(t.color) ? t.color : undefined,
-        // Its tab group, likewise from the file: plain text, capped.
-        stack: normalizeStackName(t.stack),
-        mark: isTabMark(t.mark) ? t.mark : undefined,
-        todoId: normalizeTodoId(t.todoId),
-      };
+      const entry = restoreSavedTab(t, { defaultCwd, scope, agentRoots });
+      keyMap.set(t.key, entry.key);
+      return entry;
     });
 
     // Build the layout tree. With `groups` provided, rebuild from the saved
@@ -5378,12 +5240,214 @@ async function loadWorkspaceSnapshot(scope: string): Promise<Record<string, unkn
  * close from the phone always meant). Order is not reconciled: this window's
  * pane tree is its own. A tab created elsewhere is not added here — it
  * reaches this window at its next hydrate (H3 grows this). */
+
+/** The live entry a saved tab restores as — THE one place a `SavedTabEntry`
+ * becomes a `TabEntry`: `loadFromLayout` maps every saved tab through it,
+ * and `adoptSyncOutcome` a tab another client of this backend created
+ * (headless owner plan, H3). Mints a fresh key (keys double as PTY ids and
+ * are only unique within the session that wrote them) and keeps the shared
+ * `id`; a resumable agent gets its resume args from the static table, never
+ * from the file. */
+function restoreSavedTab(
+  t: SavedTabEntry,
+  ctx: { defaultCwd: string; scope: string; agentRoots: readonly string[] },
+): TabEntry {
+  const kind =
+    t.kind ??
+    cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : ""));
+  // Agent tabs start in the current project dir so stale saved cwds don't
+  // put the agent in the wrong directory after a project move/rename — with
+  // two exceptions, both places the scope *derives* rather than remembers: a
+  // cwd under THIS root's `.eldrun/worktrees/` is a linked worktree the agent
+  // was deliberately started in, and a box scope's member root (or a
+  // worktree under one) is where its per-member Claude tab was started.
+  // Resetting those put the agent in the wrong directory and, on the CLI of
+  // the day, made `--resume` come back as a fresh conversation
+  // (`restoredAgentCwd`).
+  const isAgent = kind === "agent" || kind === "local_agent";
+  const freshKey = nextKey(kind);
+  // Resumable agent tabs (Claude with a sessionId) respawn with their
+  // resume flag so the prior conversation comes back; everyone else starts
+  // fresh with no args.
+  const tabShape = {
+    kind,
+    cmd: t.cmd,
+    sessionId: t.sessionId,
+    scheduleTargetId: isAgent ? (t.scheduleTargetId ?? crypto.randomUUID()) : undefined,
+    resumeArgs: t.resumeArgs,
+  };
+  // A built-in looks its cmd up in the static table; only a custom agent
+  // falls back to the resume flag carried on the tab.
+  //
+  // The table is preferred **whenever it has an entry**, rather than letting a
+  // persisted `resumeArgs` win: the layout this is read from lives inside the
+  // project tree, i.e. inside a container's writable mount and inside any
+  // cloned repo, so a persisted arg vector is attacker-controlled. It used to
+  // be handed to `pty_spawn` verbatim, which turned "write a file in my
+  // project" into "choose the argv of a host-bound agent CLI". For a built-in
+  // the table produces the same args anyway, so preferring it costs nothing.
+  // A custom agent's flag is re-derived from `settings.json` by the backend
+  // sanitizer (`terminal_service::sanitize_tab_layout`) before it reaches here.
+  // A relaunchable local-model tab runs its launch line again: the backend
+  // re-validated it against the driver table on load (`localLaunch`).
+  const localLaunch =
+    kind === "local_agent" && isRelaunchableLocalTab({ kind, localLaunch: t.localLaunch })
+      ? t.localLaunch
+      : undefined;
+  const base =
+    isResumableAgentTab(tabShape) && t.sessionId
+      ? t.cmd in RESUMABLE_AGENTS
+        ? RESUMABLE_AGENTS[t.cmd](t.sessionId)
+        : (t.resumeArgs ?? [])
+      : localLaunch
+        ? [...localLaunch.args]
+        : [];
+  // No permission-mode flag is folded in here, and a layout written before
+  // that toggle was removed carries an `agentMode` this ignores. An agent
+  // restores on the plain resume command and picks its mode up where it
+  // keeps it: Claude's own hook record, re-applied by the backend's
+  // `--resume` rewrite (`services::agent_session`), and for every other
+  // agent whatever its CLI does on resume.
+  const args = base;
+  // Codex mints its conversation id itself, so `sessionId` is Eldrun's
+  // stable *binding* key rather than a CLI argument. The backend resolves
+  // that key from ELDRUN_TAB_UID before it spawns the restored tab. Layouts
+  // written before the key was persisted in `env` (and a stale layout whose
+  // env disagrees with its sessionId) would otherwise restore a visible
+  // Codex tab but launch a fresh conversation. Rebuild this identity field
+  // from the durable sessionId, just as `buildStaticTabSpec` does for a new
+  // tab; it is not a user-configurable environment override.
+  const env = { ...(t.env ?? {}) };
+  if ((t.cmd === "codex" || t.cmd === "vibe") && t.sessionId) {
+    env.ELDRUN_TAB_UID = t.sessionId;
+  }
+  return {
+    key: freshKey,
+    // The shared-set identity survives the re-mint: it is how the next
+    // sync tells this tab from a new one.
+    id: t.id,
+    label: t.label,
+    cmd: t.cmd,
+    args,
+    env,
+    cwd: isAgent && ctx.defaultCwd ? restoredAgentCwd(t.cwd, ctx.defaultCwd, ctx.agentRoots) : t.cwd || ctx.defaultCwd,
+    kind,
+    sessionId: t.sessionId,
+    // The binding into agent_tasks.json. Kept from the layout when it has one,
+    // minted here otherwise (a layout written before schedules existed) — it
+    // used to be computed on `tabShape` only and never reach the entry, so a
+    // restored agent tab had no target: no ◷ on the desktop, `tab_not_found`
+    // on the phone, and the startup orphan sweep deleting every schedule.
+    scheduleTargetId: tabShape.scheduleTargetId,
+    // A restart-resumable custom agent keeps its resume flag (already folded
+    // into `base`/`args` above) so a *second* restart resumes it again.
+    resumeArgs: t.resumeArgs,
+    // Restored file embed tabs (kind === "embed") carry their durable path
+    // and how to open it so the pane rebuilds exactly.
+    embedPath: t.embedPath,
+    embedExec: t.embedExec,
+    viewer: t.viewer,
+    viewerState: t.viewerState,
+    // SSH-sync Phase 0: restore the persisted per-tab locality.
+    location: t.location,
+    // A "projectfiles" tab reopens on the folder it was browsed into.
+    folder: t.folder,
+    // A "browser" tab reopens holding the address it was last on — on its
+    // resume card, NOT navigated (see BROWSER_TAB_CMD / isRestorableKind).
+    url: t.url,
+    // Persistent sessions (TODO #85): keep the stable session name so the
+    // reattach targets the SAME host session after a relaunch. Mint one for a
+    // shell tab — or a resumable agent tab (only restorable tabs reach here) —
+    // persisted before this feature existed (it then reattaches on every
+    // subsequent restart).
+    tmuxSession:
+      t.tmuxSession ??
+      ((kind === "shell" || kind === "agent" || kind === "local_agent") && !t.tmuxAttach
+        ? newTmuxSessionName(ctx.scope, kind === "shell" ? "shell" : "agent")
+        : undefined),
+    // A Sessions-view attach tab reattaches to its tmux session on restart.
+    tmuxAttach: t.tmuxAttach,
+    // Carry the host-bound marker id so a restored local-model tab keeps its
+    // exemption. Never minted here: a uid without a registered marker file
+    // grants nothing, and minting one on restore would be inventing an
+    // authority the user never asked for.
+    hostBoundUid: t.hostBoundUid,
+    mobileRequestHash: t.mobileRequestHash,
+    localLaunch,
+    // A Host session never auto-resumes after a restart: it comes back
+    // paused and waits for an explicit Resume (only in the root scope,
+    // the one place the marker means anything).
+    ...(t.hostSession && (ctx.scope) === ROOT_SCOPE
+      ? { hostSession: true, hostSessionPaused: true }
+      : {}),
+    // Restore the no-tmux marker BEFORE anything reads it: the minted name
+    // above is harmless on such a tab precisely because `shouldPersistTab`
+    // refuses to use it.
+    ephemeral: t.ephemeral,
+    // A tab that was continuing itself across rate-limit windows keeps doing
+    // so after a relaunch. Only the switch comes back: `AgentContinueHost`
+    // re-reads the CLI's usage panel and arms a fresh window.
+    autoContinue: t.autoContinue,
+    // The user's tab colour. Validated against the palette on the way in
+    // rather than trusted: this layout is a file on disk, and an id that is
+    // not in `TAB_COLORS` would reach `--tab-accent` as raw CSS.
+    color: isTabColor(t.color) ? t.color : undefined,
+    // Its tab group, likewise from the file: plain text, capped.
+    stack: normalizeStackName(t.stack),
+    mark: isTabMark(t.mark) ? t.mark : undefined,
+      todoId: normalizeTodoId(t.todoId),
+    };
+}
+
 export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, sentKeys?: Set<string>): void {
   const idByKey = new Map<string, string>();
   const byId = new Map<string, SavedTabEntry>();
   for (const tab of outcome.tabs ?? []) {
     if (tab.id && tab.key) idByKey.set(tab.key, tab.id);
     if (tab.id) byId.set(tab.id, tab);
+  }
+  // A tab another client created after the version this window knew (a
+  // phone's ＋ or reopen through the owner, headless owner plan H3) joins the
+  // scope's focused group, restored exactly as a hydrate restores it and
+  // without stealing the active tab. Bounded by `createdVersion`: a tab this
+  // window closed but has not persisted yet is older than its base, so a
+  // fetched snapshot cannot bring it back. Only a loaded scope; a scope this
+  // window has not hydrated takes the whole snapshot at its hydrate.
+  const before = useTabsStore.getState();
+  const known = before.workspaceVersionByScope[scope] ?? 0;
+  const heldIds = new Set((before.tabsByScope[scope] ?? []).map((t) => t.id).filter((id): id is string => !!id));
+  const arrived = Object.prototype.hasOwnProperty.call(before.tabsByScope, scope)
+    ? (outcome.tabs ?? []).filter(
+        (t) =>
+          !!t.id &&
+          !heldIds.has(t.id) &&
+          (t.createdVersion ?? 0) > known &&
+          !RETIRED_TAB_CMDS.has(t.cmd || "") &&
+          isRestorableTab({
+            kind: t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : "")),
+            cmd: t.cmd,
+            sessionId: t.sessionId,
+            resumeArgs: t.resumeArgs,
+            viewer: t.viewer,
+            localLaunch: t.localLaunch,
+          }),
+      )
+    : [];
+  if (arrived.length > 0) {
+    const entries = arrived.map((t) => restoreSavedTab(t, { defaultCwd: t.cwd, scope, agentRoots: [] }));
+    useTabsStore.setState((s) => {
+      const tabs = [...(s.tabsByScope[scope] ?? []), ...entries];
+      const keys = entries.map((e) => e.key);
+      const layout = s.layoutByScope[scope] ?? null;
+      const focusedGroupId = s.focusedGroupByScope[scope] ?? null;
+      if (!layout) {
+        const root: GroupNode = { type: "group", id: nextGroupId(), tabKeys: keys, activeKey: keys[0] };
+        return writeScope(s, scope, tabs, root, root.id);
+      }
+      const target = (focusedGroupId && findGroup(layout, focusedGroupId)) || allGroups(layout)[0];
+      const next = mapGroup(layout, target.id, (g) => ({ ...g, tabKeys: [...g.tabKeys, ...keys], activeKey: g.activeKey ?? keys[0] }));
+      return writeScope(s, scope, tabs, next, target.id);
+    });
   }
   const reconcile = (t: TabEntry): TabEntry => {
     const id = t.id ?? idByKey.get(t.key);
@@ -5438,6 +5502,25 @@ export async function applyWorkspacePatch(patch: WorkspacePatch): Promise<void> 
   adoptSyncOutcome(
     patch.scope,
     { version: saved.version, tabs: (saved.tabLayout as SavedTabEntry[] | undefined) ?? [], ops: patch.ops, stale: true },
+    sent,
+  );
+}
+
+/** Re-read a scope's shared tab set because the owner wrote it with no
+ * window answering (a `refresh` poke from the Mobile sidecar, headless owner
+ * plan H3): when the scope is loaded here and the stored version is newer
+ * than this window knows, reconcile through `adoptSyncOutcome` with every
+ * held tab counting as sent. */
+export async function refreshWorkspaceScope(scope: string): Promise<void> {
+  const loaded = () => Object.prototype.hasOwnProperty.call(useTabsStore.getState().tabsByScope, scope);
+  if (!loaded()) return;
+  const saved = await loadWorkspaceSnapshot(scope);
+  const known = useTabsStore.getState().workspaceVersionByScope[scope] ?? 0;
+  if (typeof saved.version !== "number" || !loaded() || saved.version <= known) return;
+  const sent = new Set((useTabsStore.getState().tabsByScope[scope] ?? []).map((t) => t.key));
+  adoptSyncOutcome(
+    scope,
+    { version: saved.version, tabs: (saved.tabLayout as SavedTabEntry[] | undefined) ?? [], ops: [], stale: true },
     sent,
   );
 }

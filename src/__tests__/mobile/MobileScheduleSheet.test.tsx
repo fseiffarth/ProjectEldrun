@@ -150,6 +150,15 @@ describe("Mobile schedule sheet", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("keeps the form live when the host answered off its files with no window (H3), and says so", async () => {
+    fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({ schedules: [], time_zone: "Europe/Berlin", next_runs: {}, desktop_available: false }), { status: 200 }));
+    render(<ScheduleSheet tabId={TAB} onClose={() => {}} />);
+    expect((await screen.findByRole("status")).textContent).toContain("The Eldrun window is closed");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect((screen.getByLabelText("Prompt") as HTMLTextAreaElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("closes from ✕ and the backdrop, not from a tap inside the sheet", async () => {
     const onClose = vi.fn();
     render(<ScheduleSheet tabId={TAB} onClose={onClose} />);

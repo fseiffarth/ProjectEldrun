@@ -162,7 +162,7 @@ export function Todo({ card }: { card?: string }) {
   return <main className="screen todo-screen">
     <header><h1>To-do board</h1><button onClick={load} disabled={busy}>↻</button></header>
     {error && <p className="error">{error}</p>}
-    {board?.desktop_available === false && <p className="notice">{t("mobile.headless.readOnly")} {isUntested("mobile.headless.todo") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
+    {board?.desktop_available === false && <p className="notice">{t("mobile.headless.owner")} {isUntested("mobile.headless.todo") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
     {/* The search is the first thing under the header: it is what a board of
         forty cards is opened with, and it used to sit below a standing notice
         that says the same sentence every visit. That notice is now the last

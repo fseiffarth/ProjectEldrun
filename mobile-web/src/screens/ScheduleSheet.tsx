@@ -51,7 +51,8 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
     setSchedules(value.schedules);
     setTimeZone(value.time_zone);
     setNextRuns(value.next_runs);
-    // Listed off the host's files with no window open: shown, but read-only.
+    // Listed off the host's files with no window open: the Mobile host
+    // writes them itself (headless owner plan, H3); the note says so.
     setOffline(value.desktop_available === false);
     setError("");
   }, []);
@@ -60,6 +61,9 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
     setOffline(unavailable);
     setError(unavailable ? "Open desktop Eldrun to manage scheduled prompts." : "Schedules could not be loaded.");
   }, []);
+  // Held only when the host itself could not answer (a 503): with the window
+  // closed the host writes the rules itself (headless owner plan, H3).
+  const held = offline && !!error;
   const refresh = useCallback(
     () => getSchedules(tabId).then(apply, fail).finally(() => setLoading(false)),
     [apply, fail, tabId],
@@ -131,23 +135,23 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
       {timeZone && <p className="sheet-note">Desktop time zone: {timeZone}</p>}
       <p className="sheet-note">Due prompts wait up to one hour for an idle point. They replace any unsent composer draft, even when the tab is focused, and run only while desktop Eldrun is open.</p>
       {error && <p className="sheet-note error" role="alert">{error}</p>}
-      {offline && !error && <p className="sheet-note" role="status">{t("mobile.headless.readOnly")} {isUntested("mobile.headless.schedules") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
+      {offline && !error && <p className="sheet-note" role="status">{t("mobile.headless.owner")} {isUntested("mobile.headless.schedules") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
       {loading ? <p className="sheet-note">Loading schedules…</p> : schedules.length === 0 ? <p className="sheet-note">No prompts are scheduled for this tab.</p> : <div className="mobile-schedule-list">{schedules.map((schedule) => <article key={schedule.id}>
         <strong>{scheduleRuleLabel(schedule.rule)}</strong><p>{schedule.message}</p>
         {nextRuns[schedule.id] && <small>Next: {nextRuns[schedule.id].replace("T", " ")} ({timeZone})</small>}
         {schedule.last && <small>Last: {schedule.last.result} · {new Date(schedule.last.at).toLocaleString()}</small>}
-        <div><label><input type="checkbox" checked={schedule.enabled} disabled={busy || offline} onChange={() => {
+        <div><label><input type="checkbox" checked={schedule.enabled} disabled={busy || held} onChange={() => {
           setBusy(true);
           void updateSchedule(tabId, schedule.id, { enabled: !schedule.enabled, message: schedule.message, rule: schedule.rule }).then(apply, fail).finally(() => setBusy(false));
-        }} /> Enabled</label><button disabled={busy || offline} onClick={() => edit(schedule)}>Edit</button><button className="danger" disabled={busy || offline} onClick={() => { setBusy(true); void deleteSchedule(tabId, schedule.id).then(apply, fail).finally(() => setBusy(false)); }}>Delete</button></div>
+        }} /> Enabled</label><button disabled={busy || held} onClick={() => edit(schedule)}>Edit</button><button className="danger" disabled={busy || held} onClick={() => { setBusy(true); void deleteSchedule(tabId, schedule.id).then(apply, fail).finally(() => setBusy(false)); }}>Delete</button></div>
       </article>)}</div>}
-      <div className="mobile-schedule-form" aria-disabled={offline}>
+      <div className="mobile-schedule-form" aria-disabled={held}>
         <h3>{editing ? "Edit schedule" : "Add schedule"}</h3>
-        <label>Prompt<textarea rows={4} value={message} disabled={offline} onChange={(event) => setMessage(event.target.value)} /></label>
-        <label>Recurrence<select value={kind} disabled={offline} onChange={(event) => setKind(event.target.value as ScheduleRule["type"])}><option value="once">One time</option><option value="daily">Daily</option><option value="weekdays">Selected weekdays</option></select></label>
-        {kind === "once" ? <label>Desktop-local date and time<input type="datetime-local" value={once} disabled={offline} onChange={(event) => setOnce(event.target.value)} /></label> : <label>Desktop-local time<input type="time" value={time} disabled={offline} onChange={(event) => setTime(event.target.value)} /></label>}
-        {kind === "weekdays" && <div className="mobile-schedule-weekdays">{MOBILE_WEEKDAYS.map((name, index) => <label key={name}><input type="checkbox" disabled={offline} checked={weekdays.includes(index + 1)} onChange={() => setWeekdays((current) => current.includes(index + 1) ? current.filter((day) => day !== index + 1) : [...current, index + 1])} />{name}</label>)}</div>}
-        <div className="mobile-schedule-actions">{editing && <button disabled={busy} onClick={reset}>Cancel</button>}<button className="primary" disabled={busy || offline} onClick={() => void save()}>{busy ? "Saving…" : "Save"}</button></div>
+        <label>Prompt<textarea rows={4} value={message} disabled={held} onChange={(event) => setMessage(event.target.value)} /></label>
+        <label>Recurrence<select value={kind} disabled={held} onChange={(event) => setKind(event.target.value as ScheduleRule["type"])}><option value="once">One time</option><option value="daily">Daily</option><option value="weekdays">Selected weekdays</option></select></label>
+        {kind === "once" ? <label>Desktop-local date and time<input type="datetime-local" value={once} disabled={held} onChange={(event) => setOnce(event.target.value)} /></label> : <label>Desktop-local time<input type="time" value={time} disabled={held} onChange={(event) => setTime(event.target.value)} /></label>}
+        {kind === "weekdays" && <div className="mobile-schedule-weekdays">{MOBILE_WEEKDAYS.map((name, index) => <label key={name}><input type="checkbox" disabled={held} checked={weekdays.includes(index + 1)} onChange={() => setWeekdays((current) => current.includes(index + 1) ? current.filter((day) => day !== index + 1) : [...current, index + 1])} />{name}</label>)}</div>}
+        <div className="mobile-schedule-actions">{editing && <button disabled={busy} onClick={reset}>Cancel</button>}<button className="primary" disabled={busy || held} onClick={() => void save()}>{busy ? "Saving…" : "Save"}</button></div>
       </div>
     </section>
   </div>;
