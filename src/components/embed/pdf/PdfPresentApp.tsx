@@ -23,6 +23,7 @@ import { loadPdf } from "../../../lib/viewers/pdfLoad";
 import { readFileBytes } from "../fileAccess";
 import { applyTheme, THEME_CHANGED_EVENT, useSettingsStore } from "../../../stores/settings";
 import { useT } from "../../../lib/i18n";
+import { osFullscreenChord } from "../../../lib/shortcuts/shortcutHint";
 import {
   type PdfPresentSeed,
   PDF_PRESENT_READY,
@@ -323,20 +324,23 @@ export function PdfPresentApp({ label }: PdfPresentAppProps) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The app's fullscreen chord (F11 unless rebound), before the modifier
+      // guard below so a rebind to a chord still reaches it.
+      if (osFullscreenChord(e)) {
+        e.preventDefault();
+        void (async () => {
+          const win = getCurrentWindow();
+          const fs = await win.isFullscreen().catch(() => false);
+          await win.setFullscreen(!fs).catch(() => {});
+          setFullscreen(!fs);
+        })();
+        return;
+      }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       switch (e.key) {
         case "Escape":
           e.preventDefault();
           closeSelf();
-          return;
-        case "F11":
-          e.preventDefault();
-          void (async () => {
-            const win = getCurrentWindow();
-            const fs = await win.isFullscreen().catch(() => false);
-            await win.setFullscreen(!fs).catch(() => {});
-            setFullscreen(!fs);
-          })();
           return;
         case "Enter":
           e.preventDefault();

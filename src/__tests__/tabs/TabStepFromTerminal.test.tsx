@@ -10,7 +10,7 @@
  * console's terminals keep it too.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, cleanup, act } from "@testing-library/react";
+import { render, cleanup, act, waitFor } from "@testing-library/react";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@tauri-apps/api/window", () => ({
@@ -24,6 +24,7 @@ import { useKeyboard } from "../../hooks/useKeyboard";
 import { terminalYieldsChord } from "../../lib/shortcuts/terminalTabChord";
 import { allGroups, useTabsStore } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { useFullscreenMode } from "../../lib/window/fullscreenMode";
 
 function Harness() {
   useKeyboard({ onTogglePanels: () => {} });
@@ -143,5 +144,21 @@ describe("tab steps from a focused terminal", () => {
     const rebound = { prevTab: { key: "ArrowLeft", alt: true } };
     expect(terminalYieldsChord(key({ key: "ArrowLeft", altKey: true }), rebound)).toBe(true);
     expect(terminalYieldsChord(key({ key: "ArrowLeft", ctrlKey: true, shiftKey: true }), rebound)).toBe(false);
+  });
+
+  it("F11 is handed to the window from any terminal and toggles fullscreen", async () => {
+    useFullscreenMode.setState({ on: false });
+    render(<Harness />);
+    const overlay = document.createElement("div");
+    overlay.className = "root-overlay";
+    document.body.appendChild(overlay);
+    for (const ta of [terminalTextarea(), terminalTextarea(overlay)]) {
+      const ev = new KeyboardEvent("keydown", { key: "F11" });
+      Object.defineProperty(ev, "target", { value: ta });
+      expect(terminalYieldsChord(ev, null)).toBe(true);
+    }
+    const ev = press(terminalTextarea(), { key: "F11" });
+    expect(ev.defaultPrevented).toBe(true);
+    await waitFor(() => expect(useFullscreenMode.getState().on).toBe(true));
   });
 });

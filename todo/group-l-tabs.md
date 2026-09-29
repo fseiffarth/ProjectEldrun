@@ -301,6 +301,35 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
 
+213c. **Live-QA: every key rebindable, steering keys included.** ✅ Implemented
+    · 🧪 Awaiting live QA (2026-09-29). Settings → Keyboard Shortcuts now lists
+    every key: the former fixed ones (F11, the panel toggle, Esc out of pane
+    fullscreen, Ctrl +/−/0 zoom) in *Window & view*, the terminal's
+    Ctrl+Shift+C/V/X, the editor's Ctrl+F/R/Space/Z/Y/S and Ctrl+Shift+C, and
+    the steering-mode keys per level (two keys per action, `settings.steering_keys`).
+    × turns a chord off or drops a steering key; the panel toggle captures a
+    lone Super tap on Linux (press + release). F9 still toggles the panels
+    while the toggle is at its Super default; redo still takes Ctrl+Shift+Z at
+    its default. Verify: rebind steering's "Right" to L — the legend shows it,
+    F no longer steps, L does; unbind Space and leave with Enter; rebind F11 to
+    F10 in the main window, a popout and a presenter, from a focused terminal
+    too; rebind zoom in and check window / agent font / editor text; rebind
+    the panel toggle to a lone Super on GNOME and to F10 on Cinnamon.
+    *Files: `src/lib/shortcuts/shortcuts.ts` / `steeringBindings.ts`,
+    `src/hooks/useKeyboard.ts`, `src/components/layout/SettingsPanel.tsx`.*
+    - [x] 🤖 Automated test — `SteeringBindings`, `SteeringLevels` (rebound
+      keys act), `Shortcuts` (zoom/unbound/lone Super), `SuperKeyOwnership`
+      (panel-toggle rebind), `schema_edge_cases` (steering_keys round-trip).
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
 215. **Live-QA one-click installs in the root console.** ✅ Implemented · 🧪
     Awaiting live QA. Every one-click install (`runInstallInTab`: Ollama/agent
     CLI installs, the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login,

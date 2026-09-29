@@ -82,6 +82,18 @@ fn settings_keyboard_shortcuts_roundtrip() {
 }
 
 #[test]
+fn settings_steering_keys_roundtrip() {
+    // Steering-mode rebinds: a replaced list and an unbound (empty) one both
+    // survive parse → serialize → parse; absent stays absent.
+    let none: Settings = parse(r#"{"color_scheme":"dark"}"#);
+    assert!(none.steering_keys.is_none());
+    let s: Settings = parse(r#"{"steering_keys":{"up":["i","ArrowUp"],"files":[]}}"#);
+    let back = roundtrip(&s).steering_keys.expect("map present after roundtrip");
+    assert_eq!(back["up"], vec!["i".to_string(), "ArrowUp".to_string()]);
+    assert!(back["files"].is_empty());
+}
+
+#[test]
 fn settings_unknown_fields_preserved_in_extra() {
     let s: Settings = parse(r#"{"color_scheme":"dark","future_field":42}"#);
     assert!(

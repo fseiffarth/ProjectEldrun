@@ -756,6 +756,13 @@ pub struct Settings {
     /// fall back to the built-in defaults in the frontend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyboard_shortcuts: Option<HashMap<String, ChordDescriptor>>,
+    /// User overrides for the keys INSIDE keyboard steering mode, keyed by
+    /// steering action id (e.g. "up", "newShell"): the action's whole key list
+    /// (`KeyboardEvent.key` values, at most two), replacing its defaults; an
+    /// empty list unbinds it. Unset actions keep the frontend's defaults
+    /// (`src/lib/shortcuts/steeringBindings.ts`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steering_keys: Option<HashMap<String, Vec<String>>>,
     /// Download *source* folders scanned by the side-panel Downloads section
     /// (fast-copy of freshly downloaded files into a project). A machine-wide
     /// list, read-only — Eldrun never changes any browser's download path.

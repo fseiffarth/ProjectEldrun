@@ -939,15 +939,18 @@ export const en = {
   "settings.dailyRecapHelp": "A summary of the day just finished: which agents you used and how much you asked them, files created/modified/deleted, commits, and time per project. Turning this off stops the popup, not the counting — everything stays local.",
 
   // Settings — keyboard shortcuts panel.
-  "shortcuts.help":
-    "Click a shortcut, then press the new key combination. F11 (OS fullscreen) and Escape (exit fullscreen) are fixed and cannot be rebound.",
   "shortcuts.captureTitle": "Click, then press a key combination",
   "shortcuts.pressKeys": "Press keys…",
   "shortcuts.resetTitle": "Reset to default",
   "shortcuts.resetAll": "Reset all to defaults",
   "shortcuts.resetAllTitle": "Clear every custom shortcut",
   "shortcuts.conflict": "Also bound to: {actions}",
-  "shortcuts.fixedConflict": "{chord} is reserved by a fixed key and will not fire",
+  "shortcuts.help": "Click a shortcut, then press the new key combination; × turns it off. On Linux the panel toggle also takes a lone tap of Super.",
+  "shortcuts.unbind": "Turn off",
+  "shortcuts.addKey": "Add a second key",
+  "shortcuts.pressKey": "Press a key…",
+  "shortcuts.steeringTitle": "Inside steering mode",
+  "shortcuts.steeringHelp": "The keys steering mode answers to once {chord} has turned it on. Each action takes up to two keys, pressed without modifiers; a letter can mean one thing on the projects level and another inside a pane.",
 
   // Keyboard steering mode — the fixed in-mode keys (lib/shortcuts/shortcuts
   // STEERING_KEYS) rendered by the legend overlay, cheat sheet and lessons.
@@ -1019,6 +1022,21 @@ export const en = {
   "steering.search.desc": "Type into the surface's search field (the + menu's filter, the mail search, …). Leaves steering mode.",
   "steering.exit.label": "Exit",
   "steering.exit.desc": "Leave steering mode.",
+  "steeringKeys.section.mode": "Every level",
+  "steeringKeys.section.panes": "Subwindows & tabs",
+  "steeringKeys.up": "Up / out a level",
+  "steeringKeys.down": "Down / into a level",
+  "steeringKeys.left": "Left / previous",
+  "steeringKeys.right": "Right / next",
+  "steeringKeys.slot1": "Number 1 (project / agent 1)",
+  "steeringKeys.slot2": "Number 2 (project / agent 2)",
+  "steeringKeys.slot3": "Number 3 (project / agent 3)",
+  "steeringKeys.slot4": "Number 4 (project / agent 4)",
+  "steeringKeys.slot5": "Number 5 (project / agent 5)",
+  "steeringKeys.slot6": "Number 6 (project / agent 6)",
+  "steeringKeys.slot7": "Number 7 (project / agent 7)",
+  "steeringKeys.slot8": "Number 8 (project / agent 8)",
+  "steeringKeys.slot9": "Number 9 (project / agent 9)",
 
   // Shortcut cheat sheet (ShortcutHelpOverlay) — section titles come from
   // lib/shortcuts/shortcuts SHORTCUT_GROUPS, fixed-key rows from FIXED_KEYS.
@@ -1029,19 +1047,15 @@ export const en = {
   "shortcutHelp.group.newTab": "New tab",
   "shortcutHelp.group.steering": "Steering & help",
   "shortcutHelp.group.tex": "TeX workspace",
+  "shortcutHelp.group.view": "Window & view",
+  "shortcutHelp.group.terminal": "Terminal",
+  "shortcutHelp.group.editor": "Editor",
   "shortcutHelp.steeringTitle": "Steering mode keys",
   "shortcutHelp.steeringIntro": "Press {chord} to enter steering mode, then:",
-  "shortcutHelp.fixedTitle": "Fixed keys",
   "shortcutHelp.footer": "Rebind the chords in Settings → {panel}.",
   "fixedKeys.osFullscreen.label": "App window fullscreen",
-  "fixedKeys.osFullscreen.desc":
-    "Toggle the window's fullscreen mode — the main window or the popout it is pressed in.",
   "fixedKeys.panels.label": "Toggle panels",
-  "fixedKeys.panels.desc": "Show or hide the side panels while Eldrun is focused.",
   "fixedKeys.exitFullscreen.label": "Exit subwindow fullscreen",
-  "fixedKeys.exitFullscreen.desc": "Leave the app-internal subwindow fullscreen.",
-  "fixedKeys.zoom.label": "UI zoom",
-  "fixedKeys.zoom.desc": "Zoom the interface in / out / back to 100%.",
 
   // Settings — Git hosting panel.
   "git.help":
@@ -7846,6 +7860,19 @@ export const en = {
   "shortcut.texUp": "TeX workspace: up to the parent document",
   "shortcut.texBack": "TeX workspace: back to the previous file",
   "shortcut.texCompile": "TeX workspace: save and compile the document",
+  "shortcut.zoomIn": "Zoom in",
+  "shortcut.zoomOut": "Zoom out",
+  "shortcut.zoomReset": "Zoom back to 100%",
+  "shortcut.terminalCopy": "Terminal: copy the selection",
+  "shortcut.terminalPaste": "Terminal: paste",
+  "shortcut.terminalKeySelect": "Terminal: keyboard select",
+  "shortcut.editorFind": "Editor: find",
+  "shortcut.editorReplace": "Editor: find and replace",
+  "shortcut.editorAutocomplete": "Editor: ask for an autocomplete suggestion",
+  "shortcut.editorUndo": "Editor: undo",
+  "shortcut.editorRedo": "Editor: redo",
+  "shortcut.editorSave": "Editor: save",
+  "shortcut.editorComment": "Editor: comment / uncomment the lines",
   "shortcut.hint": "{label} ({chord})",
   "viewerType.text": "Text / code",
   "viewerType.tex": "LaTeX",

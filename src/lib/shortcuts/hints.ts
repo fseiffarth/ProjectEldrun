@@ -1,10 +1,10 @@
 import { IS_MAC } from "../platform";
-import { livePanelToggleKey } from "./shortcuts";
+import { livePanelToggleLabel } from "./shortcutHint";
 import type { TranslationKey } from "../i18n";
 
 /** How to enter "focus mode" (panels hidden), translated. The key named is the
- *  one that works on THIS desktop, read live from `livePanelToggleKey` — the
- *  same answer the key handler and the shortcut sheet use: a lone Super on a
+ *  one the user has, read live from `livePanelToggleLabel` — the same answer
+ *  the key handler and the shortcut sheet use. Its default: a lone Super on a
  *  Linux desktop that leaves that key to the focused window (Cinnamon, XFCE),
  *  F9 where the shell claims it (GNOME, KDE) and on Windows (the Win key is
  *  OS-reserved). There used to be a constant here saying "Super" for every
@@ -16,7 +16,7 @@ import type { TranslationKey } from "../i18n";
 export function focusModeTip(t: (key: TranslationKey, params?: Record<string, string | number>) => string): string {
   return IS_MAC
     ? t("onboarding.focusModeTipMac")
-    : t("onboarding.focusModeTipOther", { key: livePanelToggleKey() });
+    : t("onboarding.focusModeTipOther", { key: livePanelToggleLabel() });
 }
 
 /** One numbered step in the first-run "How to start" instruction. The same copy

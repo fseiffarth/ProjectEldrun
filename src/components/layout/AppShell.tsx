@@ -26,7 +26,7 @@ import {
 import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
 import { useOllamaAutoloadOnLaunch } from "../../stores/agents/ollamaAutoload";
 import { useRendererWatchdog } from "../../lib/window/rendererWatchdog";
-import { livePanelToggleKey } from "../../lib/shortcuts/shortcuts";
+import { livePanelToggleLabel } from "../../lib/shortcuts/shortcutHint";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { SidePanel } from "./SidePanel";
@@ -991,7 +991,7 @@ export function AppShell() {
   // Hiding the panels takes the reveal handle with them, so the key press that
   // did it is the only thing that could ever explain the empty edge — say so,
   // and name the key that brings them back (it is Super or F9 depending on the
-  // desktop, see `livePanelToggleKey`). Nothing is shown on the way back in.
+  // desktop unless rebound, see `livePanelToggleLabel`). Nothing is shown on the way back in.
   const [panelsHiddenToast, setPanelsHiddenToast] = useState<string | null>(null);
   useEffect(() => {
     if (panelsHiddenToast === null) return;
@@ -1008,7 +1008,7 @@ export function AppShell() {
       const hidden = !panelsHiddenRef.current;
       setPanelsHidden(hidden);
       setPanelsHiddenToast(
-        hidden ? t("appShell.panelsHiddenToast", { key: livePanelToggleKey() }) : null,
+        hidden ? t("appShell.panelsHiddenToast", { key: livePanelToggleLabel() }) : null,
       );
     },
     // Steering's E: the panel on its remembered view, panels shown if they

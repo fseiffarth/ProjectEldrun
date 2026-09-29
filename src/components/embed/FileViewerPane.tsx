@@ -243,7 +243,14 @@ import {
   type TexSnippetRange,
   compileWasNoop,
 } from "../../lib/viewers/tex/tex";
-import { chordLabel, chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts/shortcuts";
+import {
+  actionMatches,
+  chordLabel,
+  chordMatches,
+  resolveChord,
+  zoomFor,
+  type ShortcutMap,
+} from "../../lib/shortcuts/shortcuts";
 import { useChordHint, useShortcutOverrides } from "../../lib/shortcuts/shortcutHint";
 import {
   renderTexPreview,
@@ -274,7 +281,6 @@ import {
   type CatalogDictionary,
   type InstalledDictionary,
 } from "../../lib/spellDictionaries";
-import { zoomChord } from "../../lib/shortcuts/zoomChord";
 import { ArrowUpRightIcon, BoltIcon, BugIcon, CommentIcon, GearIcon, LinkIcon, PlayIcon, UploadIcon, WarningIcon } from "../common/icons/Icon";
 import { ErrorNote } from "../common/ErrorNote";
 
@@ -3615,6 +3621,8 @@ function CodeEditor({
   // fades away after typing stops. The whole feature is gated on the (default-ON)
   // `change_tint` setting.
   const changeTint = useSettingsStore((s) => s.settings?.change_tint !== false);
+  // The editor's own chords (`editor*`, zoom), rebindable in Keyboard Shortcuts.
+  const shortcutOverrides = useSettingsStore((s) => s.settings?.keyboard_shortcuts) as ShortcutMap | undefined;
   const changeTintRef = useRef(changeTint);
   changeTintRef.current = changeTint;
   const [changes, setChanges] = useState<ChangeRange[]>([]);
@@ -4130,19 +4138,25 @@ function CodeEditor({
     }
   };
 
-  // Ctrl/Cmd+F opens the find bar; Ctrl/Cmd+R opens it with the replace row. Bound
-  // on the container so it fires whenever focus is anywhere in the editor pane
-  // (the cursor is in the tab), not only when the textarea holds focus — it
-  // catches the key as it bubbles up. Ctrl/Cmd+R is also always intercepted so it
-  // never falls through to the webview's page reload, which would tear down the app.
+  // Ctrl/Cmd+F opens the find bar; Ctrl/Cmd+R opens it with the replace row
+  // (both as bound: `editorFind` / `editorReplace`). Bound on the container so
+  // it fires whenever focus is anywhere in the editor pane (the cursor is in
+  // the tab), not only when the textarea holds focus — it catches the key as
+  // it bubbles up. Ctrl/Cmd+R is also always intercepted so it never falls
+  // through to the webview's page reload, which would tear down the app.
   const onContainerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+    const overrides = shortcutOverrides;
+    const reload = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r";
+    if (actionMatches("editorFind", overrides, e)) {
       e.preventDefault();
       openFind();
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r") {
+    } else if (actionMatches("editorReplace", overrides, e)) {
       e.preventDefault();
       if (replaceOpen) replaceInputRef.current?.focus();
       else openFind(true);
+    } else if (reload) {
+      // The webview's reload, still kept off Ctrl+R when replace moved away.
+      e.preventDefault();
     }
   };
 
@@ -4743,7 +4757,8 @@ function CodeEditor({
     //    and re-requests in it,
     //  - → (Right) accepts only the next word (repeat to walk word-by-word),
     //  - Esc dismisses.
-    if ((e.ctrlKey || e.metaKey) && e.key === " ") {
+    const overrides = shortcutOverrides;
+    if (actionMatches("editorAutocomplete", overrides, e)) {
       e.preventDefault();
       void requestCompletion();
       return;
@@ -4805,20 +4820,19 @@ function CodeEditor({
     if (!MODIFIER_KEYS.has(e.key) && (e.key.startsWith("Arrow") ||
         ["Home", "End", "PageUp", "PageDown", "Escape"].includes(e.key))) dismissSuggestion();
 
-    // #46 undo/redo.
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-      e.preventDefault();
-      if (e.shiftKey) redo?.();
-      else undo?.();
-      return;
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+    // #46 undo/redo (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z unless rebound).
+    if (actionMatches("editorRedo", overrides, e)) {
       e.preventDefault();
       redo?.();
       return;
     }
+    if (actionMatches("editorUndo", overrides, e)) {
+      e.preventDefault();
+      undo?.();
+      return;
+    }
 
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+    if (actionMatches("editorSave", overrides, e)) {
       e.preventDefault();
       save();
       return;
@@ -4826,17 +4840,18 @@ function CodeEditor({
     // Text-size: Ctrl/Cmd +/-/0 on any layout. stopPropagation keeps the
     // window-level UI zoom (useKeyboard / DetachedApp) from also zooming the
     // whole window — the editor zooms its text, as an agent pane zooms its font.
-    const zoom = zoomChord(e);
+    const zoom = zoomFor(e, overrides);
     if (zoom) {
       e.preventDefault();
       e.stopPropagation();
       (zoom === "in" ? incFont : zoom === "out" ? decFont : resetFont)?.();
       return;
     }
-    // Ctrl/Cmd+Shift+C — comment out the touched lines, or uncomment them when
-    // they already are. `%` in TeX, the language's own marker elsewhere; falls
-    // through untouched in a language with no line comment.
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "c") {
+    // Ctrl/Cmd+Shift+C (as bound) — comment out the touched lines, or
+    // uncomment them when they already are. `%` in TeX, the language's own
+    // marker elsewhere; falls through untouched in a language with no line
+    // comment.
+    if (actionMatches("editorComment", overrides, e)) {
       const marker = lineCommentMarker(lang);
       if (!marker) return;
       const toggled = applyLineComment(e.currentTarget, marker);

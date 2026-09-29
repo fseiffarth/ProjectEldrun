@@ -36,18 +36,32 @@ import { providerName } from "../projects/projectTypeTags";
 import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { OPEN_STATS_EVENT } from "../stats/StatsRecapHost";
 import {
+  LONE_SUPER,
   SHORTCUT_DEFS,
   SHORTCUT_GROUPS,
+  UNBOUND,
   chordFromEvent,
   chordLabel,
   findConflicts,
-  isFixedChord,
-  livePanelToggleKey,
+  isUnbound,
   resolveChord,
   type ShortcutAction,
   type ShortcutDef,
   type ShortcutMap,
 } from "../../lib/shortcuts/shortcuts";
+import {
+  STEERING_BINDINGS,
+  STEERING_BINDING_SECTIONS,
+  STEERING_KEYS_PER_ACTION,
+  findSteeringConflicts,
+  steeringKeyFromEvent,
+  steeringKeyLabel,
+  steeringKeys,
+  type SteeringAction,
+  type SteeringBindingDef,
+  type SteeringKeyMap,
+} from "../../lib/shortcuts/steeringBindings";
+import { livePanelToggleLabel } from "../../lib/shortcuts/shortcutHint";
 import {
   AgentsPanel,
   FileTypeSettings,
@@ -83,7 +97,7 @@ import {
 import { ErrorNote } from "../common/ErrorNote";
 
 // The workspace-layout help text. The key is the one that works here, from
-// `livePanelToggleKey`: a lone Super on a Linux desktop that leaves it to the
+// `livePanelToggleLabel` (unless rebound): a lone Super on a Linux desktop that leaves it to the
 // window, F9 where the shell claims Super (GNOME, KDE) and on Windows (the lone
 // Win key is OS-reserved — Start opens on release, see useKeyboard). On macOS
 // the Meta key is reserved for Cmd shortcuts, so the lone-key toggle is
@@ -91,7 +105,7 @@ import { ErrorNote } from "../common/ErrorNote";
 function workspaceLayoutIntro(t: ReturnType<typeof useT>): string {
   return IS_MAC
     ? t("help.workspaceLayout.introMac")
-    : t("help.workspaceLayout.introOther", { key: livePanelToggleKey() });
+    : t("help.workspaceLayout.introOther", { key: livePanelToggleLabel() });
 }
 
 /** What `workspace_capabilities` answers (backend `commands::workspace`). */
@@ -285,24 +299,36 @@ const HELP_SECTIONS: HelpSection[] = [
   },
 ];
 
+/** What the shortcuts panel is capturing: a chord, or one of a steering
+ *  action's key slots. */
+type ShortcutCapture =
+  | { kind: "chord"; action: ShortcutAction }
+  | { kind: "steer"; action: SteeringAction; slot: number };
+
 /**
- * Group L / #62 — let the user rebind the navigation chords, one boxed list
- * per `SHORTCUT_GROUPS` section (the cheat sheet's grouping, driven entirely
- * by each def's `group`). Click a row's chord button to enter capture mode;
- * the next non-modifier keydown is stored as the override (persisted to
- * `settings.keyboard_shortcuts`). "Reset" clears an override back to its
- * built-in default; "Reset all" clears the whole map. A colliding capture is
- * still stored — the user may mean to fix the other action next — and both
- * rows wear the warning until one moves (`findConflicts`).
+ * Group L / #62 — let the user rebind every key: the app's chords, one boxed
+ * list per `SHORTCUT_GROUPS` section (the cheat sheet's grouping, driven
+ * entirely by each def's `group`), then the keys inside steering mode, one
+ * list per level (`STEERING_BINDING_SECTIONS`). Click a key button to enter
+ * capture mode; the next non-modifier keydown is stored as the override
+ * (`settings.keyboard_shortcuts` / `settings.steering_keys`). × turns a chord
+ * off or drops one steering key; "Reset" brings a row's defaults back; "Reset
+ * all" clears both maps. A colliding capture is still stored — the user may
+ * mean to fix the other action next — and both rows wear the warning until one
+ * moves (`findConflicts` / `findSteeringConflicts`).
  */
 function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const overrides = (settings?.keyboard_shortcuts ?? {}) as ShortcutMap;
-  const [capturing, setCapturing] = useState<ShortcutAction | null>(null);
+  const steerOverrides = (settings?.steering_keys ?? {}) as SteeringKeyMap;
+  const [capturing, setCapturing] = useState<ShortcutCapture | null>(null);
 
   const saveMap = (next: ShortcutMap) => {
     void updateSettings({ keyboard_shortcuts: next as Record<string, KeyboardChord> });
+  };
+  const saveSteerMap = (next: SteeringKeyMap) => {
+    void updateSettings({ steering_keys: next as Record<string, string[]> });
   };
 
   const rebind = (action: ShortcutAction, chord: KeyboardChord) => {
@@ -315,44 +341,100 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
     saveMap(next);
   };
 
-  const hasOverrides = Object.keys(overrides).length > 0;
+  /** Put `key` in slot `slot` of the action's list (null drops the slot). */
+  const setSteerKey = (action: SteeringAction, slot: number, key: string | null) => {
+    const keys = [...steeringKeys(action, steerOverrides)];
+    if (key === null) keys.splice(slot, 1);
+    else keys[Math.min(slot, keys.length)] = key;
+    saveSteerMap({ ...steerOverrides, [action]: keys.filter((k, i) => keys.indexOf(k) === i) });
+  };
+
+  const resetSteer = (action: SteeringAction) => {
+    const next = { ...steerOverrides };
+    delete next[action];
+    saveSteerMap(next);
+  };
+
+  const hasOverrides = Object.keys(overrides).length > 0 || Object.keys(steerOverrides).length > 0;
   const conflicts = findConflicts(overrides);
+  const steerConflicts = findSteeringConflicts(steerOverrides);
   const labelOf = (action: ShortcutAction) => {
     const def = SHORTCUT_DEFS.find((d) => d.action === action);
     return def ? t(def.labelKey) : action;
   };
+  const steerLabelOf = (action: SteeringAction) => {
+    const def = STEERING_BINDINGS.find((d) => d.action === action);
+    return def ? t(def.labelKey) : action;
+  };
 
-  // While capturing, the next real key sets the chord. Capture at the window
-  // level so the keystroke is grabbed even though our hidden field, not a
-  // terminal, has focus; ignore lone modifiers so the user can hold them.
+  // While capturing, the next real key sets the binding. Capture at the window
+  // level (capture phase, ahead of steering's document listener) so the
+  // keystroke is grabbed even though our button, not a terminal, has focus;
+  // ignore lone modifiers so the user can hold them. Escape cancels a chord
+  // capture but is stored as a steering key — it is one of the mode's own. A
+  // lone Super tap (press and release, nothing between) is a chord of its own
+  // for the actions that allow it (`loneSuper`), on Linux only.
   useEffect(() => {
     if (!capturing) return;
+    const loneSuperOk =
+      PLATFORM === "linux" &&
+      capturing.kind === "chord" &&
+      !!SHORTCUT_DEFS.find((d) => d.action === capturing.action)?.loneSuper;
+    let superAlone = false;
+    const isSuper = (k: string) => k === "Meta" || k === "Super" || k === "OS";
     const onKey = (e: KeyboardEvent) => {
+      if (capturing.kind === "steer") {
+        const key = steeringKeyFromEvent(e);
+        if (!key) return; // lone modifier — keep waiting
+        e.preventDefault();
+        e.stopPropagation();
+        setSteerKey(capturing.action, capturing.slot, key);
+        setCapturing(null);
+        return;
+      }
       if (e.key === "Escape") {
         e.preventDefault();
         setCapturing(null);
         return;
       }
+      superAlone = isSuper(e.key) && !e.repeat ? true : isSuper(e.key) && superAlone;
       const chord = chordFromEvent(e);
       if (!chord) return; // lone modifier — keep waiting
       e.preventDefault();
       e.stopPropagation();
-      rebind(capturing, chord);
+      rebind(capturing.action, chord);
+      setCapturing(null);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (!loneSuperOk || capturing.kind !== "chord" || !isSuper(e.key) || !superAlone) return;
+      e.preventDefault();
+      e.stopPropagation();
+      rebind(capturing.action, LONE_SUPER);
       setCapturing(null);
     };
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [capturing, overrides]);
+  }, [capturing, overrides, steerOverrides]);
 
-  // One boxed-list entry: the capture/reset row, plus the conflict/fixed-key
-  // warning line when its effective chord cannot work as bound.
+  const isCapturing = (c: ShortcutCapture) =>
+    !!capturing &&
+    capturing.kind === c.kind &&
+    capturing.action === c.action &&
+    (c.kind === "chord" || (capturing.kind === "steer" && capturing.slot === c.slot));
+  const toggleCapture = (c: ShortcutCapture) => setCapturing(isCapturing(c) ? null : c);
+
+  // One boxed-list entry: the capture/off/reset row, plus the conflict
+  // warning line when its effective chord collides with another.
   const renderRow = (def: ShortcutDef) => {
-    const active = capturing === def.action;
+    const active = isCapturing({ kind: "chord", action: def.action });
     const effective = resolveChord(def.action, overrides);
     const isCustom = !!overrides[def.action];
     const clash = conflicts.get(def.action);
-    const fixed = isFixedChord(effective);
     return (
       <div className="shortcut-entry" key={def.action}>
         <div className="settings-row shortcut-row">
@@ -363,10 +445,20 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
           <button
             type="button"
             className={`shortcut-capture-btn${active ? " capturing" : ""}`}
-            onClick={() => setCapturing(active ? null : def.action)}
+            onClick={() => toggleCapture({ kind: "chord", action: def.action })}
             title={t("shortcuts.captureTitle")}
           >
             {active ? t("shortcuts.pressKeys") : chordLabel(effective)}
+          </button>
+          <button
+            type="button"
+            className="settings-btn sm icon"
+            disabled={isUnbound(effective)}
+            onClick={() => rebind(def.action, UNBOUND)}
+            title={t("shortcuts.unbind")}
+            aria-label={t("shortcuts.unbind")}
+          >
+            ×
           </button>
           <button
             type="button"
@@ -378,14 +470,67 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
             {t("common.reset")}
           </button>
         </div>
-        {fixed && (
-          <div className="shortcut-conflict">
-            <WarningIcon /> {t("shortcuts.fixedConflict", { chord: chordLabel(effective) })}
-          </div>
-        )}
         {clash && (
           <div className="shortcut-conflict">
             <WarningIcon /> {t("shortcuts.conflict", { actions: clash.map(labelOf).join(", ") })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // A steering action: one capture button per key slot (an empty slot adds a
+  // key), × on each bound key, Reset back to the defaults.
+  const renderSteerRow = (def: SteeringBindingDef) => {
+    const keys = steeringKeys(def.action, steerOverrides);
+    const isCustom = !!steerOverrides[def.action];
+    const clash = steerConflicts.get(def.action);
+    const slots = Array.from({ length: Math.min(keys.length + 1, STEERING_KEYS_PER_ACTION) }, (_, i) => i);
+    return (
+      <div className="shortcut-entry" key={def.action}>
+        <div className="settings-row shortcut-row">
+          <span className="settings-role-label">{t(def.labelKey)}</span>
+          {slots.map((slot) => {
+            const c: ShortcutCapture = { kind: "steer", action: def.action, slot };
+            const active = isCapturing(c);
+            const key = keys[slot];
+            return (
+              <span className="shortcut-steer-key" key={slot}>
+                <button
+                  type="button"
+                  className={`shortcut-capture-btn narrow${active ? " capturing" : ""}`}
+                  onClick={() => toggleCapture(c)}
+                  title={key ? t("shortcuts.captureTitle") : t("shortcuts.addKey")}
+                >
+                  {active ? t("shortcuts.pressKey") : key ? steeringKeyLabel(key) : "+"}
+                </button>
+                {key && (
+                  <button
+                    type="button"
+                    className="settings-btn sm icon"
+                    onClick={() => setSteerKey(def.action, slot, null)}
+                    title={t("shortcuts.unbind")}
+                    aria-label={t("shortcuts.unbind")}
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            );
+          })}
+          <button
+            type="button"
+            className="settings-btn sm"
+            disabled={!isCustom}
+            onClick={() => resetSteer(def.action)}
+            title={t("shortcuts.resetTitle")}
+          >
+            {t("common.reset")}
+          </button>
+        </div>
+        {clash && (
+          <div className="shortcut-conflict">
+            <WarningIcon /> {t("shortcuts.conflict", { actions: clash.map(steerLabelOf).join(", ") })}
           </div>
         )}
       </div>
@@ -396,13 +541,15 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
     <>
       <SettingsHeader title={t("nav.shortcuts.title")} onBack={onBack} onClose={onClose} />
       <div className="dialog-scroll">
-      <p className="settings-help">{t("shortcuts.help")}</p>
+      <p className="settings-help">
+        {t("shortcuts.help")} <UntestedTag id="shortcuts.rebindAll" />
+      </p>
       <div className="settings-link-row">
         <button
           type="button"
           className="settings-btn sm"
           disabled={!hasOverrides}
-          onClick={() => saveMap({})}
+          onClick={() => void updateSettings({ keyboard_shortcuts: {}, steering_keys: {} })}
           title={t("shortcuts.resetAllTitle")}
         >
           {t("shortcuts.resetAll")}
@@ -412,6 +559,23 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
         <SettingsSection title={t(g.labelKey)} key={g.id}>
           <SettingsList boxed>
             {SHORTCUT_DEFS.filter((d) => d.group === g.id).map(renderRow)}
+          </SettingsList>
+        </SettingsSection>
+      ))}
+      {/* The steering keys, one list per level; the first carries the
+          explanation (the sections' own heading/help pair, no extra chrome). */}
+      {STEERING_BINDING_SECTIONS.map((sec, i) => (
+        <SettingsSection
+          title={`${t("shortcuts.steeringTitle")} · ${t(sec.labelKey)}`}
+          help={
+            i === 0
+              ? t("shortcuts.steeringHelp", { chord: chordLabel(resolveChord("steeringMode", overrides)) })
+              : undefined
+          }
+          key={sec.scope}
+        >
+          <SettingsList boxed>
+            {STEERING_BINDINGS.filter((d) => d.scopes[0] === sec.scope).map(renderSteerRow)}
           </SettingsList>
         </SettingsSection>
       ))}
@@ -1004,7 +1168,7 @@ export function SettingsDialog({
   const modalRef = useModalFocus(onClose, !showCustomizer);
   const t = useT();
 
-  const currentTheme = (settings?.color_scheme ?? "fancy_dark") as Theme;
+  const currentTheme = (settings?.color_scheme ?? "dark") as Theme;
   const currentLang = (settings?.language ?? "en") as Language;
   // Through the hook, never off `settings`: unset means "not chosen", and only
   // `resolveUse24h` knows that it then follows the OS. Reading the raw key with a

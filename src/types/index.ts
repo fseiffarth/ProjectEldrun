@@ -715,6 +715,12 @@ export interface Settings {
    * original hard-coded behaviour.
    */
   keyboard_shortcuts?: Record<string, KeyboardChord>;
+  /**
+   * User overrides for the keys inside keyboard steering mode, keyed by
+   * `SteeringAction` id (see `src/lib/shortcuts/steeringBindings.ts`): the
+   * action's whole key list, replacing its defaults; `[]` unbinds it.
+   */
+  steering_keys?: Record<string, string[]>;
   /** Download *source* folders scanned by the side-panel Downloads section
    *  (fast-copy of freshly downloaded files into a project). Machine-wide,
    *  read-only. Unset/empty → the frontend falls back to the OS Downloads dir. */

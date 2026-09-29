@@ -30,8 +30,13 @@ export function terminalMayTakeChord(action: ShortcutAction, e: KeyboardEvent): 
   return TERMINAL_TAB_ACTIONS.includes(action) && isPaneTerminalTarget(e.target);
 }
 
-/** Whether a pane terminal hands this keydown to the window instead of the PTY. */
+/** Whether a pane terminal hands this keydown to the window instead of the PTY.
+ *  The window's fullscreen chord (F11, as bound) is handed over by every
+ *  terminal, the root console's too: xterm would otherwise send it to the PTY
+ *  and cancel the event, so the window's handler never saw it. (The panel
+ *  toggle's F9 is not: htop and mc answer F9 themselves.) */
 export function terminalYieldsChord(e: KeyboardEvent, overrides: ShortcutMap | undefined | null): boolean {
+  if (chordMatches(resolveChord("osFullscreen", overrides), e)) return true;
   return (
     isPaneTerminalTarget(e.target) &&
     TERMINAL_TAB_ACTIONS.some((action) => chordMatches(resolveChord(action, overrides), e))

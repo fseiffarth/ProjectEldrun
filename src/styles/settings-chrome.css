@@ -854,6 +854,18 @@ label.settings-toggle-card-row {
   color: var(--accent);
 }
 
+/* A steering-mode key: one bare key, so the button needs a fraction of a
+   chord's width; two sit side by side, each with its own ×. */
+.shortcut-capture-btn.narrow {
+  min-width: 64px;
+}
+
+.shortcut-steer-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 /* A shortcut row plus its (optional) warning line as one boxed-list entry —
    the wrapper takes the list's padding/separator, the flex row inside has
    none of its own. */
@@ -863,7 +875,7 @@ label.settings-toggle-card-row {
   gap: 3px;
 }
 
-/* Two actions resolving to one chord, or a chord a fixed key swallows first.
+/* Two actions resolving to one chord (or one steering key on one level).
    Toned as a warning, not an error (the file-viewer banner's rule): nothing is
    broken — one of the two bindings simply never fires. */
 .shortcut-conflict {

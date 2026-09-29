@@ -1,26 +1,31 @@
 /**
  * #62 / Group L — shared keyboard-shortcut model.
  *
- * One source of truth for the rebindable navigation chords. Both
- * `useKeyboard.ts` (which acts on them) and the settings panel (which lets the
- * user customise them) import from here, so the default table and the matching
- * logic never drift.
+ * One source of truth for the app's chords, every one of them rebindable.
+ * Both `useKeyboard.ts` (which acts on them) and the settings panel (which lets
+ * the user customise them) import from here, so the default table and the
+ * matching logic never drift.
  *
  * A chord is a plain, serializable descriptor (`ChordDescriptor`) stored in
- * `settings.keyboard_shortcuts` keyed by action id. F11 (OS fullscreen) and
- * Escape (exit fullscreen) are deliberately *not* rebindable — they stay fixed
- * in `useKeyboard` — so only the rebindable actions live here (`FIXED_KEYS`
- * below is their display-only description table).
+ * `settings.keyboard_shortcuts` keyed by action id; `{ key: "" }` is a chord
+ * the user switched off (`UNBOUND`), and `{ key: "Super" }` a lone tap of the
+ * Super key (`LONE_SUPER`, the panel toggle's Linux default).
  *
- * `STEERING_KEYS` (bottom) is the sibling table for the FIXED keys inside
- * keyboard steering mode: those aren't chords and aren't rebindable, but every
- * surface that explains them (legend overlay, help, lessons) renders from it.
+ * `STEERING_KEYS` (bottom) lists the rows the steering legend, cheat sheet and
+ * lessons explain; the keys behind them are the rebindable steering bindings
+ * in `steeringBindings.ts`.
  */
 import { IS_MAC, PLATFORM } from "../platform";
 import type { UntestedId } from "../untested";
 import { desktopOwnsSuperKey } from "./superKey";
-import { zoomChord } from "./zoomChord";
+import { zoomChord, type ZoomChord } from "./zoomChord";
 import type { TranslationKey } from "../i18n";
+import {
+  steeringRowKeys,
+  steeringSlotKeys,
+  type SteeringAction,
+  type SteeringKeyMap,
+} from "./steeringBindings";
 
 /** A serializable key chord. `key` is a `KeyboardEvent.key` value, normalized:
  *  single letters are lower-cased, named keys ("Tab", "Enter", "ArrowLeft")
@@ -60,7 +65,23 @@ export type ShortcutAction =
   | AgentTabAction
   | "texUp"
   | "texBack"
-  | "texCompile";
+  | "texCompile"
+  | "osFullscreen"
+  | "togglePanels"
+  | "exitFullscreen"
+  | "zoomIn"
+  | "zoomOut"
+  | "zoomReset"
+  | "terminalCopy"
+  | "terminalPaste"
+  | "terminalKeySelect"
+  | "editorFind"
+  | "editorReplace"
+  | "editorAutocomplete"
+  | "editorUndo"
+  | "editorRedo"
+  | "editorSave"
+  | "editorComment";
 
 /** The agent-tab chords, one per slot of the + menu's numbered agents
  *  (`agentShortcutSlots`): slot 1 is the default agent, 2–9 the others. */
@@ -78,7 +99,7 @@ export const AGENT_TAB_ACTIONS = [
 export type AgentTabAction = (typeof AGENT_TAB_ACTIONS)[number];
 
 /** Section ids for the cheat-sheet/settings grouping (`SHORTCUT_GROUPS`). */
-export type ShortcutGroup = "navigation" | "tabs" | "newTab" | "steering" | "tex";
+export type ShortcutGroup = "navigation" | "tabs" | "newTab" | "view" | "terminal" | "editor" | "steering" | "tex";
 
 export interface ShortcutDef {
   action: ShortcutAction;
@@ -94,6 +115,13 @@ export interface ShortcutDef {
    *  the shared `UntestedTag` beside the row in the settings panel; stamping
    *  that row `tested` retires the pill. */
   untested?: UntestedId;
+  /** Where the action is listened for when that is narrower than the whole
+   *  window: a focused terminal, or the text editor (the TeX workspace wraps
+   *  one). Two actions of different contexts may share a chord. */
+  context?: "terminal" | "editor";
+  /** The action may be bound to a lone Super tap (`LONE_SUPER`) — captured
+   *  on Linux only, where the key can be the focused window's at all. */
+  loneSuper?: true;
 }
 
 /** The cheat sheet's section order + i18n titles — kept here beside the defs
@@ -102,6 +130,9 @@ export const SHORTCUT_GROUPS: { id: ShortcutGroup; labelKey: TranslationKey }[] 
   { id: "navigation", labelKey: "shortcutHelp.group.navigation" },
   { id: "tabs", labelKey: "shortcutHelp.group.tabs" },
   { id: "newTab", labelKey: "shortcutHelp.group.newTab" },
+  { id: "view", labelKey: "shortcutHelp.group.view" },
+  { id: "terminal", labelKey: "shortcutHelp.group.terminal" },
+  { id: "editor", labelKey: "shortcutHelp.group.editor" },
   { id: "steering", labelKey: "shortcutHelp.group.steering" },
   { id: "tex", labelKey: "shortcutHelp.group.tex" },
 ];
@@ -200,7 +231,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     untested: "shortcut.reopenClosedTab",
   },
   // Keyboard steering mode (part 1 of the keyboard-only steering system). The
-  // chord toggles the mode; the keys INSIDE it are fixed (see STEERING_KEYS).
+  // chord toggles the mode; the keys INSIDE it are the steering bindings (`steeringBindings.ts`).
   // Shift+Space: one hand, collides with no default above, and terminals send
   // it as a plain space anyway. It types text, so `useKeyboard` ignores it in
   // the middle of a typing burst (a Shift still held from a capital).
@@ -297,6 +328,99 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     default: { key: String(i + 1), ctrl: true },
     untested: "shortcut.newTabChords",
   })),
+  // The window and view keys. These used to be fixed; they are matched before
+  // `useKeyboard`'s editable-target guard, so they work from a focused
+  // terminal too. The panel toggle's default depends on the desktop (a getter:
+  // the desktop is a backend answer that arrives after module load, see
+  // `livePanelToggleKey`). The zoom defaults match layout-tolerantly
+  // (`zoomFor`) until the user rebinds them.
+  {
+    action: "osFullscreen",
+    labelKey: "fixedKeys.osFullscreen.label",
+    group: "view",
+    default: { key: "F11" },
+    untested: "fixedKeys.osFullscreen.label",
+  },
+  {
+    action: "togglePanels",
+    labelKey: "fixedKeys.panels.label",
+    group: "view",
+    get default(): ChordDescriptor {
+      return { key: livePanelToggleKey() };
+    },
+    loneSuper: true,
+  },
+  {
+    action: "exitFullscreen",
+    labelKey: "fixedKeys.exitFullscreen.label",
+    group: "view",
+    default: { key: "Escape" },
+  },
+  {
+    action: "zoomIn",
+    labelKey: "shortcut.zoomIn",
+    group: "view",
+    default: { key: "+", ctrl: true },
+  },
+  {
+    action: "zoomOut",
+    labelKey: "shortcut.zoomOut",
+    group: "view",
+    default: { key: "-", ctrl: true },
+  },
+  {
+    action: "zoomReset",
+    labelKey: "shortcut.zoomReset",
+    group: "view",
+    default: { key: "0", ctrl: true },
+  },
+  // A terminal's own keys (`TerminalView`): copy the selection, paste, and
+  // keyboard select. Not `useKeyboard`'s — only a focused terminal answers
+  // them. At their defaults they match by physical key (`terminalChordFor`),
+  // as they always did, so a non-Latin layout still reaches them.
+  {
+    action: "terminalCopy",
+    labelKey: "shortcut.terminalCopy",
+    group: "terminal",
+    context: "terminal",
+    default: { key: "c", ctrl: true, shift: true },
+  },
+  {
+    action: "terminalPaste",
+    labelKey: "shortcut.terminalPaste",
+    group: "terminal",
+    context: "terminal",
+    default: { key: "v", ctrl: true, shift: true },
+  },
+  {
+    action: "terminalKeySelect",
+    labelKey: "shortcut.terminalKeySelect",
+    group: "terminal",
+    context: "terminal",
+    default: { key: "x", ctrl: true, shift: true },
+  },
+  // The text editor's own keys (`FileViewerPane`), answered only while it has
+  // focus. Redo also answers Ctrl+Shift+Z while at its default
+  // (`actionChords`).
+  ...(
+    [
+      ["editorFind", { key: "f", ctrl: true }],
+      ["editorReplace", { key: "r", ctrl: true }],
+      ["editorAutocomplete", { key: " ", ctrl: true }],
+      ["editorUndo", { key: "z", ctrl: true }],
+      ["editorRedo", { key: "y", ctrl: true }],
+      ["editorSave", { key: "s", ctrl: true }],
+      ["editorComment", { key: "c", ctrl: true, shift: true }],
+    ] as const
+  ).map(
+    ([action, chord]): ShortcutDef => ({
+      action,
+      labelKey: `shortcut.${action}`,
+      group: "editor",
+      context: "editor",
+      default: chord,
+    }),
+  ),
   // The TeX workspace's two navigation steps (#tex-structure-up). Unlike every
   // chord above these are NOT handled by `useKeyboard`: they only mean anything
   // inside a workspace tab, so the workspace itself listens — on its own root
@@ -310,6 +434,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     action: "texUp",
     labelKey: "shortcut.texUp",
     group: "tex",
+    context: "editor",
     default: { key: "ArrowUp", alt: true, shift: true },
     untested: "shortcut.texUp",
   },
@@ -317,6 +442,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     action: "texBack",
     labelKey: "shortcut.texBack",
     group: "tex",
+    context: "editor",
     default: { key: "ArrowDown", alt: true, shift: true },
     untested: "shortcut.texBack",
   },
@@ -329,6 +455,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     action: "texCompile",
     labelKey: "shortcut.texCompile",
     group: "tex",
+    context: "editor",
     default: { key: "b", ctrl: true, shift: true },
     untested: "shortcut.texCompile",
   },
@@ -387,7 +514,8 @@ export function chordFromEvent(e: KeyboardEvent): ChordDescriptor | null {
  * Control-vs-Command distinction) — the deliberate, low-risk trade-off the task
  * calls for. Off macOS, modifiers are matched exactly as before.
  */
-export function chordMatches(chord: ChordDescriptor, e: KeyboardEvent): boolean {
+export function chordMatches(chord: ChordDescriptor, e: ChordKeyEvent): boolean {
+  if (!chord.key || chord.key === LONE_SUPER.key) return false;
   if (normalizeKey(e.key) !== normalizeKey(chord.key) && !isDigitKeyOf(chord.key, e)) return false;
   if (e.shiftKey !== !!chord.shift) return false;
   if (e.altKey !== !!chord.alt) return false;
@@ -402,8 +530,27 @@ export function chordMatches(chord: ChordDescriptor, e: KeyboardEvent): boolean 
 /** A digit chord also matches by physical key: AZERTY types `&` on the key
  *  US calls `1`, and Shift turns every digit into a symbol, so `e.key` alone
  *  would make Ctrl+1 unreachable there. */
-function isDigitKeyOf(key: string, e: KeyboardEvent): boolean {
+function isDigitKeyOf(key: string, e: ChordKeyEvent): boolean {
   return /^[0-9]$/.test(key) && (e.code === `Digit${key}` || e.code === `Numpad${key}`);
+}
+
+/** The fields a chord match reads — a DOM event or a React one both fit. */
+export type ChordKeyEvent = Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">;
+
+/** A chord the user switched off: its empty key matches nothing. Stored as a
+ *  chord (not `null`) so the backend's typed map still reads it. */
+export const UNBOUND: ChordDescriptor = { key: "" };
+
+/** A lone tap of the Super key — no keydown ever matches it; `useKeyboard`
+ *  fires it on the key's release when no other key joined the press. */
+export const LONE_SUPER: ChordDescriptor = { key: "Super" };
+
+export function isUnbound(chord: ChordDescriptor): boolean {
+  return !chord.key;
+}
+
+export function isLoneSuper(chord: ChordDescriptor): boolean {
+  return chord.key === LONE_SUPER.key && !chord.ctrl && !chord.shift && !chord.alt && !chord.meta;
 }
 
 /** Human-readable label for a chord, e.g. "Shift+Ctrl+Tab" — or native mac
@@ -411,6 +558,7 @@ function isDigitKeyOf(key: string, e: KeyboardEvent): boolean {
  *  and `meta`/Super both render as ⌘ (deduped), matching what a mac user
  *  actually presses; off macOS the textual labels are unchanged. */
 export function chordLabel(chord: ChordDescriptor): string {
+  if (isUnbound(chord)) return "—";
   if (IS_MAC) {
     const parts: string[] = [];
     if (chord.alt) parts.push("⌥"); // Option
@@ -457,6 +605,32 @@ export function resolveChord(
   return SHORTCUT_DEFS.find((d) => d.action === action)!.default;
 }
 
+/**
+ * Every chord an action answers to: its resolved chord, plus the aliases a
+ * default has always carried — F9 beside the panel toggle's lone-Super default
+ * (F9 works on every desktop, the lone Super only on some), Ctrl+Shift+Z
+ * beside redo's Ctrl+Y. A rebind replaces the lot.
+ */
+export function actionChords(
+  action: ShortcutAction,
+  overrides: ShortcutMap | undefined | null,
+): ChordDescriptor[] {
+  const chord = resolveChord(action, overrides);
+  if (overrides?.[action]) return [chord];
+  if (action === "togglePanels" && isLoneSuper(chord)) return [chord, { key: "F9" }];
+  if (action === "editorRedo") return [chord, { key: "z", ctrl: true, shift: true }];
+  return [chord];
+}
+
+/** Whether a keydown triggers `action` — `chordMatches` over `actionChords`. */
+export function actionMatches(
+  action: ShortcutAction,
+  overrides: ShortcutMap | undefined | null,
+  e: ChordKeyEvent,
+): boolean {
+  return actionChords(action, overrides).some((c) => chordMatches(c, e));
+}
+
 /** True when two chords are the same effective keystroke: key normalized via
  *  `normalizeKey`, modifier booleans coerced with `!!` so an absent flag
  *  equals an explicit `false`. */
@@ -486,7 +660,15 @@ export function findConflicts(
     for (let j = i + 1; j < SHORTCUT_DEFS.length; j++) {
       const a = SHORTCUT_DEFS[i].action;
       const b = SHORTCUT_DEFS[j].action;
-      if (!chordsEqual(resolveChord(a, overrides), resolveChord(b, overrides))) continue;
+      // A terminal key and an editor key never meet: one focus or the other.
+      const ca = SHORTCUT_DEFS[i].context;
+      const cb = SHORTCUT_DEFS[j].context;
+      if (ca && cb && ca !== cb) continue;
+      const bChords = actionChords(b, overrides);
+      const clash = actionChords(a, overrides).some(
+        (c) => !isUnbound(c) && bChords.some((d) => chordsEqual(c, d)),
+      );
+      if (!clash) continue;
       out.set(a, [...(out.get(a) ?? []), b]);
       out.set(b, [...(out.get(b) ?? []), a]);
     }
@@ -494,26 +676,44 @@ export function findConflicts(
   return out;
 }
 
+const TERMINAL_ACTIONS: [ShortcutAction, string][] = [
+  ["terminalCopy", "KeyC"],
+  ["terminalPaste", "KeyV"],
+  ["terminalKeySelect", "KeyX"],
+];
+
+/** Which terminal key a keydown is, if any (see the `terminal` group). A
+ *  default matches Ctrl+Shift on the physical key; a rebind as any chord. */
+export function terminalChordFor(
+  e: ChordKeyEvent,
+  overrides: ShortcutMap | undefined | null,
+): "terminalCopy" | "terminalPaste" | "terminalKeySelect" | null {
+  for (const [action, code] of TERMINAL_ACTIONS) {
+    const custom = overrides?.[action];
+    const hit = custom ? chordMatches(custom, e) : e.ctrlKey && e.shiftKey && e.code === code;
+    if (hit) return action as "terminalCopy" | "terminalPaste" | "terminalKeySelect";
+  }
+  return null;
+}
+
+const ZOOM_ACTIONS: [ShortcutAction, ZoomChord][] = [
+  ["zoomIn", "in"],
+  ["zoomOut", "out"],
+  ["zoomReset", "reset"],
+];
+
 /**
- * True when a chord can never fire because `useKeyboard` consumes its key
- * before the rebindable table is consulted: F11 (OS fullscreen), F9 (panel
- * toggle) and Escape (exit fullscreen / dismiss) are all matched there on
- * `e.key` alone, so no modifier rescues such a chord; the Ctrl +/-/0 zoom
- * chords (`zoomChord`) are taken first too. Deliberately independent of
- * `FIXED_KEYS`, which stores display strings. Not covered on purpose: a lone
- * Super/Meta never reaches capture (`chordFromEvent` returns null).
+ * Which zoom step a keydown asks for, if any — the window zoom, an agent
+ * pane's font and the editor's text size all read it. A default zoom chord
+ * matches the way it always did (`zoomChord`: typed key first, US position as
+ * fallback, so German `+`/`-` work); a rebound one matches as any chord does.
  */
-export function isFixedChord(chord: ChordDescriptor): boolean {
-  const key = normalizeKey(chord.key);
-  if (key === "F11" || key === "F9" || key === "Escape") return true;
-  return zoomChord({
-    key,
-    code: "",
-    ctrlKey: !!chord.ctrl,
-    metaKey: !!chord.meta,
-    altKey: !!chord.alt,
-    shiftKey: !!chord.shift,
-  }) !== null;
+export function zoomFor(e: ChordKeyEvent, overrides: ShortcutMap | undefined | null): ZoomChord | null {
+  for (const [action, kind] of ZOOM_ACTIONS) {
+    const custom = overrides?.[action];
+    if (custom ? chordMatches(custom, e) : zoomChord(e) === kind) return kind;
+  }
+  return null;
 }
 
 /** The levels of steering mode (`stores/keyboardSteering`'s `SteeringLevel`,
@@ -537,11 +737,16 @@ export const STEERING_CONTEXTS: { id: SteeringContext; labelKey: TranslationKey 
  */
 export type SteeringCondition = "stepsPanes" | "stepsTabs" | "sideRegion" | "mail" | "calendar" | "todo";
 
-/** One fixed key (or key family) inside steering mode. `keys` is display text
- *  (already glyphs, never translated); the two i18n keys carry the short
- *  legend label and the longer help/lesson description. */
+/** One row of the steering legend / cheat sheet: the steering actions it
+ *  explains (their keys render through `steeringRowLabel`, so a rebind shows
+ *  everywhere), plus the short legend label and the longer description. */
 export interface SteeringKeyDef {
-  keys: string;
+  /** The actions whose keys the row shows. */
+  actions: readonly SteeringAction[];
+  /** A direction pair (←/→, ↑/↓): shown column-wise, "S F / ← →". */
+  pair?: true;
+  /** The row is the nine number slots (`steeringSlotKeys`, "1–9"). */
+  slots?: true;
   labelKey: TranslationKey;
   descKey: TranslationKey;
   /** The levels whose legend lists the key. */
@@ -588,114 +793,75 @@ export function steeringKeysFor(s: SteeringLegendState): SteeringKeyDef[] {
   );
 }
 
-/** One fixed, non-rebindable key handled directly in `useKeyboard`. Same shape
- *  as `SteeringKeyDef`: display keys plus i18n label/description keys. */
-export interface FixedKeyDef {
-  keys: string;
-  labelKey: TranslationKey;
-  descKey: TranslationKey;
-  /** The pill's id in the untested register, as on `ShortcutDef`. */
-  untested?: UntestedId;
+/** The key text of a steering row, from the user's steering bindings. */
+export function steeringRowLabel(row: SteeringKeyDef, overrides: SteeringKeyMap | null | undefined): string {
+  return row.slots
+    ? steeringSlotKeys(overrides)
+    : steeringRowKeys(row.actions, overrides, !!row.pair);
 }
 
 /**
- * The fixed (non-rebindable) keys `useKeyboard` handles outside the chord
- * table, in display order — rendered by the cheat sheet and reusable by the
- * settings panel and lessons. Platform-resolved at module load, except the
- * panel toggle: it is the lone Super key only where that key is free — a
- * Linux desktop that does not answer it itself (macOS uses Cmd as the chord
+ * The panel toggle's default key on THIS desktop right now: the bare Super key
+ * where the desktop leaves it to the focused window (a Linux desktop that does
+ * not answer it itself), F9 everywhere else — macOS uses Cmd as the chord
  * modifier, Windows gives the Win key to the OS, GNOME and KDE take it for
- * their overview/launcher) — and F9 everywhere else. That one is a getter
- * because the desktop is a backend answer; see lib/shortcuts/superKey.ts. The zoom
- * chords ride the primary modifier (⌘ on macOS).
+ * their overview/launcher. Read live because the desktop is a backend answer
+ * (see lib/shortcuts/superKey.ts); the key the user actually has, override
+ * included, is `livePanelToggleLabel` in `shortcutHint.ts`.
  */
-/** The key that toggles the panels on THIS desktop right now: the bare Super
- *  key where the desktop leaves it to the focused window, F9 everywhere else
- *  (see `useKeyboard`). Shared by the shortcut sheet and the "panels hidden"
- *  toast so the two never name different keys. */
 export function livePanelToggleKey(): string {
-  return PLATFORM === "linux" && !desktopOwnsSuperKey() ? "Super" : "F9";
+  return PLATFORM === "linux" && !desktopOwnsSuperKey() ? LONE_SUPER.key : "F9";
 }
-
-export const FIXED_KEYS: FixedKeyDef[] = [
-  {
-    keys: "F11",
-    labelKey: "fixedKeys.osFullscreen.label",
-    descKey: "fixedKeys.osFullscreen.desc",
-    untested: "fixedKeys.osFullscreen.label",
-  },
-  {
-    // A getter, not a value: unlike the OS, the desktop is a backend answer
-    // that arrives just after module load (see lib/shortcuts/superKey.ts), and the sheet
-    // must not advertise a Super key the shell has already taken. Reading it
-    // here keeps every consumer of FIXED_KEYS unchanged.
-    get keys(): string {
-      return livePanelToggleKey();
-    },
-    labelKey: "fixedKeys.panels.label",
-    descKey: "fixedKeys.panels.desc",
-  },
-  {
-    keys: "Esc",
-    labelKey: "fixedKeys.exitFullscreen.label",
-    descKey: "fixedKeys.exitFullscreen.desc",
-  },
-  {
-    keys: IS_MAC ? "⌘ + / − / 0" : "Ctrl + / − / 0",
-    labelKey: "fixedKeys.zoom.label",
-    descKey: "fixedKeys.zoom.desc",
-  },
-];
 
 const PANE_LEVELS: readonly SteeringContext[] = ["panes", "tabs"];
 const BASE_LEVELS: readonly SteeringContext[] = ["projects", "panes", "tabs"];
 const ALL_LEVELS: readonly SteeringContext[] = ["projects", "panes", "tabs", "region"];
 
 /**
- * The FIXED in-steering-mode keys, grouped by the level they act on, in display
+ * The in-steering-mode rows, grouped by the level they act on, in display
  * order — the one source of truth for the legend overlay (which shows the
  * current level's, `steeringKeysFor`), the shortcut cheat sheet, and any lesson
- * surface. `useKeyboard`'s steering handler is the acting counterpart; the two
- * must stay in step. Digit mapping on the project level: 1 = root scope, 2 =
+ * surface. The keys themselves are the user's steering bindings
+ * (`steeringBindings.ts`), which `useKeyboard`'s steering handler resolves too. Digit mapping on the project level: 1 = root scope, 2 =
  * the first project pill (display order) — the same ring `cycleProject` walks.
  * Letters mean one thing per level, so N is a new project up top and a new
  * shell inside a pane.
  */
 export const STEERING_KEYS: SteeringKeyDef[] = [
   // Projects.
-  { keys: "S F / ← →", labelKey: "steering.project.label", descKey: "steering.project.desc", levels: ["projects"] },
-  { keys: "1–9", labelKey: "steering.jump.label", descKey: "steering.jump.desc", levels: ["projects"] },
-  { keys: "D / ↓", labelKey: "steering.into.label", descKey: "steering.into.desc", levels: ["projects"] },
-  { keys: "N", labelKey: "steering.newProject.label", descKey: "steering.newProject.desc", levels: ["projects"] },
-  { keys: "M", labelKey: "steering.mail.label", descKey: "steering.mail.desc", levels: ["projects"], when: "mail" },
-  { keys: "C", labelKey: "steering.calendar.label", descKey: "steering.calendar.desc", levels: ["projects"], when: "calendar" },
-  { keys: "T", labelKey: "steering.todo.label", descKey: "steering.todo.desc", levels: ["projects"], when: "todo" },
+  { actions: ["left", "right"], pair: true, labelKey: "steering.project.label", descKey: "steering.project.desc", levels: ["projects"] },
+  { actions: [], slots: true, labelKey: "steering.jump.label", descKey: "steering.jump.desc", levels: ["projects"] },
+  { actions: ["down"], labelKey: "steering.into.label", descKey: "steering.into.desc", levels: ["projects"] },
+  { actions: ["newProject"], labelKey: "steering.newProject.label", descKey: "steering.newProject.desc", levels: ["projects"] },
+  { actions: ["mail"], labelKey: "steering.mail.label", descKey: "steering.mail.desc", levels: ["projects"], when: "mail" },
+  { actions: ["calendar"], labelKey: "steering.calendar.label", descKey: "steering.calendar.desc", levels: ["projects"], when: "calendar" },
+  { actions: ["todo"], labelKey: "steering.todo.label", descKey: "steering.todo.desc", levels: ["projects"], when: "todo" },
   // Subwindows and their tabs.
-  { keys: "S F / ← →", labelKey: "steering.focus.label", descKey: "steering.focus.desc", levels: ["panes"], when: "stepsPanes" },
-  { keys: "S F / ← →", labelKey: "steering.tabs.label", descKey: "steering.tabs.desc", levels: PANE_LEVELS, when: "stepsTabs" },
-  { keys: "D / ↓", labelKey: "steering.intoTabs.label", descKey: "steering.intoTabs.desc", levels: ["panes"], when: "stepsPanes" },
-  { keys: "E / ↑", labelKey: "steering.up.label", descKey: "steering.up.desc", levels: PANE_LEVELS },
-  { keys: "N", labelKey: "steering.newShell.label", descKey: "steering.newShell.desc", levels: PANE_LEVELS },
-  { keys: "M", labelKey: "steering.newMonitor.label", descKey: "steering.newMonitor.desc", levels: PANE_LEVELS },
-  { keys: "1–9", labelKey: "steering.newAgent.label", descKey: "steering.newAgent.desc", levels: PANE_LEVELS, agentSlots: true },
-  { keys: "+", labelKey: "steering.newTabMenu.label", descKey: "steering.newTabMenu.desc", levels: PANE_LEVELS },
-  { keys: "V", labelKey: "steering.files.label", descKey: "steering.files.desc", levels: PANE_LEVELS },
-  { keys: "W", labelKey: "steering.closeTab.label", descKey: "steering.closeTab.desc", levels: PANE_LEVELS },
-  { keys: "Space / Enter / Esc", labelKey: "steering.work.label", descKey: "steering.work.desc", levels: PANE_LEVELS },
+  { actions: ["left", "right"], pair: true, labelKey: "steering.focus.label", descKey: "steering.focus.desc", levels: ["panes"], when: "stepsPanes" },
+  { actions: ["left", "right"], pair: true, labelKey: "steering.tabs.label", descKey: "steering.tabs.desc", levels: PANE_LEVELS, when: "stepsTabs" },
+  { actions: ["down"], labelKey: "steering.intoTabs.label", descKey: "steering.intoTabs.desc", levels: ["panes"], when: "stepsPanes" },
+  { actions: ["up"], labelKey: "steering.up.label", descKey: "steering.up.desc", levels: PANE_LEVELS },
+  { actions: ["newShell"], labelKey: "steering.newShell.label", descKey: "steering.newShell.desc", levels: PANE_LEVELS },
+  { actions: ["newMonitor"], labelKey: "steering.newMonitor.label", descKey: "steering.newMonitor.desc", levels: PANE_LEVELS },
+  { actions: [], slots: true, labelKey: "steering.newAgent.label", descKey: "steering.newAgent.desc", levels: PANE_LEVELS, agentSlots: true },
+  { actions: ["newTabMenu"], labelKey: "steering.newTabMenu.label", descKey: "steering.newTabMenu.desc", levels: PANE_LEVELS },
+  { actions: ["files"], labelKey: "steering.files.label", descKey: "steering.files.desc", levels: PANE_LEVELS },
+  { actions: ["closeTab"], labelKey: "steering.closeTab.label", descKey: "steering.closeTab.desc", levels: PANE_LEVELS },
+  { actions: ["exit", "work"], labelKey: "steering.work.label", descKey: "steering.work.desc", levels: PANE_LEVELS },
   // The region cursor (side panel, header apps, + menu).
-  { keys: "E D / ↑ ↓", labelKey: "steering.move.label", descKey: "steering.move.desc", levels: ["region"] },
-  { keys: "S F / ← →", labelKey: "steering.sideView.label", descKey: "steering.sideView.desc", levels: ["region"], when: "sideRegion" },
-  { keys: "Enter", labelKey: "steering.press.label", descKey: "steering.press.desc", levels: ["region"] },
-  { keys: "/", labelKey: "steering.search.label", descKey: "steering.search.desc", levels: ["region"] },
+  { actions: ["up", "down"], pair: true, labelKey: "steering.move.label", descKey: "steering.move.desc", levels: ["region"] },
+  { actions: ["left", "right"], pair: true, labelKey: "steering.sideView.label", descKey: "steering.sideView.desc", levels: ["region"], when: "sideRegion" },
+  { actions: ["press"], labelKey: "steering.press.label", descKey: "steering.press.desc", levels: ["region"] },
+  { actions: ["search"], labelKey: "steering.search.label", descKey: "steering.search.desc", levels: ["region"] },
   // Wherever the tab bars are. Shift walks the status jumps backwards.
-  { keys: "Q", labelKey: "steering.nextDecision.label", descKey: "steering.nextDecision.desc", levels: BASE_LEVELS, status: "decision" },
-  { keys: "R", labelKey: "steering.nextWorking.label", descKey: "steering.nextWorking.desc", levels: BASE_LEVELS, status: "working" },
-  { keys: "X", labelKey: "steering.nextDone.label", descKey: "steering.nextDone.desc", levels: BASE_LEVELS, status: "done" },
-  { keys: "B", labelKey: "steering.sidePanel.label", descKey: "steering.sidePanel.desc", levels: BASE_LEVELS },
-  { keys: "P", labelKey: "steering.panels.label", descKey: "steering.panels.desc", levels: BASE_LEVELS },
-  { keys: ",", labelKey: "steering.settings.label", descKey: "steering.settings.desc", levels: BASE_LEVELS },
-  { keys: "?", labelKey: "steering.help.label", descKey: "steering.help.desc", levels: ALL_LEVELS },
-  { keys: "Esc", labelKey: "steering.back.label", descKey: "steering.back.desc", levels: ["region"] },
-  { keys: "Space", labelKey: "steering.exit.label", descKey: "steering.exit.desc", levels: ["region"] },
-  { keys: "Space / Esc / Enter", labelKey: "steering.exit.label", descKey: "steering.exit.desc", levels: ["projects"] },
+  { actions: ["nextDecision"], labelKey: "steering.nextDecision.label", descKey: "steering.nextDecision.desc", levels: BASE_LEVELS, status: "decision" },
+  { actions: ["nextWorking"], labelKey: "steering.nextWorking.label", descKey: "steering.nextWorking.desc", levels: BASE_LEVELS, status: "working" },
+  { actions: ["nextDone"], labelKey: "steering.nextDone.label", descKey: "steering.nextDone.desc", levels: BASE_LEVELS, status: "done" },
+  { actions: ["sidePanel"], labelKey: "steering.sidePanel.label", descKey: "steering.sidePanel.desc", levels: BASE_LEVELS },
+  { actions: ["panels"], labelKey: "steering.panels.label", descKey: "steering.panels.desc", levels: BASE_LEVELS },
+  { actions: ["settings"], labelKey: "steering.settings.label", descKey: "steering.settings.desc", levels: BASE_LEVELS },
+  { actions: ["help"], labelKey: "steering.help.label", descKey: "steering.help.desc", levels: ALL_LEVELS },
+  { actions: ["back"], labelKey: "steering.back.label", descKey: "steering.back.desc", levels: ["region"] },
+  { actions: ["exit"], labelKey: "steering.exit.label", descKey: "steering.exit.desc", levels: ["region"] },
+  { actions: ["exit", "work"], labelKey: "steering.exit.label", descKey: "steering.exit.desc", levels: ["projects"] },
 ];

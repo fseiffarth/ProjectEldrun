@@ -27,7 +27,12 @@ import { allGroups, useTabsStore, type TabEntry } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { useActivityStore } from "../../stores/activity";
-import { STEERING_KEYS, steeringKeysFor, type SteeringLegendState } from "../../lib/shortcuts/shortcuts";
+import {
+  STEERING_KEYS,
+  steeringKeysFor,
+  steeringRowLabel,
+  type SteeringLegendState,
+} from "../../lib/shortcuts/shortcuts";
 import { NEW_TAB_SHORTCUT_EVENT, type NewTabShortcutDetail } from "../../lib/shortcuts/newTabChord";
 import { nextStatusTab, statusTabs } from "../../lib/shortcuts/statusJump";
 import {
@@ -202,6 +207,54 @@ describe("steering levels", () => {
     }
   });
 
+  it("acts on the user's steering keys, not the defaults they replaced", () => {
+    const { a } = twoPanes();
+    useSettingsStore.setState({
+      settings: {
+        steering_keys: { newShell: ["y"], right: ["l"], exit: ["Enter"], work: [] },
+        keyboard_shortcuts: { steeringMode: { key: "k", ctrl: true } },
+      },
+    } as never);
+    render(<Harness />);
+    const requests: NewTabShortcutDetail[] = [];
+    const onRequest = (e: Event) => {
+      requests.push((e as CustomEvent<NewTabShortcutDetail>).detail);
+      e.preventDefault();
+    };
+    window.addEventListener(NEW_TAB_SHORTCUT_EVENT, onRequest);
+    try {
+      // The rebound chord enters; the old Shift+Space no longer does.
+      press({ key: " ", shiftKey: true });
+      expect(steering().active).toBe(false);
+      press({ key: "k", ctrlKey: true });
+      expect(steering().active).toBe(true);
+
+      // F lost its "right"; L has it. N does nothing any more, Y opens a shell.
+      const group = allGroups(useTabsStore.getState().layout).find((g) => g.id === a)!;
+      const before = group.activeKey;
+      press({ key: "f" });
+      expect(useTabsStore.getState().activeKey).toBe(before);
+      press({ key: "l" });
+      expect(useTabsStore.getState().activeKey).not.toBe(before);
+      press({ key: "n" });
+      expect(requests).toHaveLength(0);
+      expect(steering().active).toBe(true);
+
+      // Space and Escape are unbound now; Enter leaves.
+      press({ key: " " });
+      press({ key: "Escape" });
+      expect(steering().active).toBe(true);
+      press({ key: "Enter" });
+      expect(steering().active).toBe(false);
+
+      press({ key: "k", ctrlKey: true });
+      press({ key: "y" });
+      expect(requests[requests.length - 1]?.request).toEqual({ kind: "shell" });
+    } finally {
+      window.removeEventListener(NEW_TAB_SHORTCUT_EVENT, onRequest);
+    }
+  });
+
   it("digits on the project level jump stations and stay in the mode", () => {
     render(<Harness />);
     const setActive = vi.fn().mockResolvedValue(undefined);
@@ -319,7 +372,7 @@ describe("legend table", () => {
     ];
     for (const s of states) {
       const keys = steeringKeysFor({ ...base, ...s, statusCounts: { decision: 1, working: 1, done: 1 } }).map(
-        (k) => k.keys,
+        (k) => steeringRowLabel(k, null),
       );
       expect(new Set(keys).size, JSON.stringify(s)).toBe(keys.length);
     }

@@ -24,6 +24,7 @@ import {
   applyTheme,
   THEME_CHANGED_EVENT,
 } from "../../../stores/settings";
+import { osFullscreenChord } from "../../../lib/shortcuts/shortcutHint";
 import {
   type NavAction,
   type PresentSeed,
@@ -301,10 +302,11 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
         send({ kind: "close" });
         return;
       }
-      // F11 toggles this window's own fullscreen — the escape hatch for a
-      // display that was unplugged, or one the WM put fullscreen on the wrong
-      // screen. The window capability is already granted.
-      if (e.key === "F11") {
+      // F11 (the app's fullscreen chord, as bound) toggles this window's own
+      // fullscreen — the escape hatch for a display that was unplugged, or one
+      // the WM put fullscreen on the wrong screen. The window capability is
+      // already granted.
+      if (osFullscreenChord(e)) {
         e.preventDefault();
         void (async () => {
           const win = getCurrentWindow();

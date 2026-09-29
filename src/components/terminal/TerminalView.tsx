@@ -31,9 +31,8 @@ import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseD
 import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminal/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/agents/scheduledAgentInput";
-import { zoomChord } from "../../lib/shortcuts/zoomChord";
 import { terminalYieldsChord } from "../../lib/shortcuts/terminalTabChord";
-import type { ShortcutMap } from "../../lib/shortcuts/shortcuts";
+import { terminalChordFor, zoomFor, type ShortcutMap } from "../../lib/shortcuts/shortcuts";
 import { copyableSelection, installMouseModeGuard, joinedSelectionText } from "../../lib/terminal/terminalSelection";
 import { keySelectHighlight, keySelectRange, keySelectStep, scrollToShow, startKeySelect, type KeySelectState } from "../../lib/terminal/keyboardSelect";
 import { findSignInRequest, findWrappedUrls, type SignInRequest } from "../../lib/terminal/terminalUrls";
@@ -1151,7 +1150,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // stopPropagation stops the WINDOW-level per-window zoom handler (useKeyboard
       // / DetachedApp) from ALSO webview-zooming — an agent pane zooms its FONT, not
       // the whole window.
-      const zoom = zoomable ? zoomChord(e) : null;
+      const overrides = useSettingsStore.getState().settings?.keyboard_shortcuts as ShortcutMap | undefined;
+      const zoom = zoomable ? zoomFor(e, overrides) : null;
       if (zoom) {
         const cur = term.options.fontSize ?? DEFAULT_FONT_SIZE;
         e.preventDefault();
@@ -1163,7 +1163,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // so xterm neither sends it to the PTY nor cancels it, and the window's
       // keyboard handler steps the tab (lib/shortcuts/terminalTabChord). Plain
       // Shift+←/→ is deliberately left alone — an agent CLI (Codex) uses it.
-      const overrides = useSettingsStore.getState().settings?.keyboard_shortcuts as ShortcutMap | undefined;
+      // F11 (the window's fullscreen toggle, as bound) is handed over the same way.
       if (terminalYieldsChord(e, overrides)) return false;
       // Shift+Tab in a Codex pane. xterm.js would send the legacy backtab, which
       // Codex's permission-mode cycle does not recognize — send the CSI-u form of
@@ -1175,25 +1175,23 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         writePtyInput(id, PTY_ENCODER.encode(CSI_U_SHIFT_TAB)).catch(console.error);
         return false;
       }
-      if (!e.ctrlKey || !e.shiftKey) return true;
-      // preventDefault on both chords: returning false only stops xterm, not the
-      // webview. WebKitGTK binds Ctrl+Shift+V to its own paste command, whose
-      // native `paste` event lands on xterm's textarea and pastes a second copy
-      // next to pasteClipboard's (the "pastes twice" report).
-      if (e.code === "KeyC") {
+      // Copy / paste / keyboard select — Ctrl+Shift+C / V / X unless rebound
+      // (`terminalChordFor`). preventDefault on each: returning false only
+      // stops xterm, not the webview. WebKitGTK binds Ctrl+Shift+V to its own
+      // paste command, whose native `paste` event lands on xterm's textarea
+      // and pastes a second copy next to pasteClipboard's (the "pastes twice"
+      // report).
+      const termChord = terminalChordFor(e, overrides);
+      if (termChord) {
         e.preventDefault();
-        const sel = copyableSelection(term, columnSelect);
-        if (sel) copyToClipboard(sel);
-        return false;
-      }
-      if (e.code === "KeyV") {
-        e.preventDefault();
-        pasteClipboard();
-        return false;
-      }
-      if (e.code === "KeyX") {
-        e.preventDefault();
-        enterKeySelect();
+        if (termChord === "terminalCopy") {
+          const sel = copyableSelection(term, columnSelect);
+          if (sel) copyToClipboard(sel);
+        } else if (termChord === "terminalPaste") {
+          pasteClipboard();
+        } else {
+          enterKeySelect();
+        }
         return false;
       }
       return true;

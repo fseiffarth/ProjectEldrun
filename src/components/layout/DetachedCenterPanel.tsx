@@ -381,12 +381,15 @@ export function DetachedCenterPanel({
   kbRef.current = { tree, focusedGroupId, onActivate, onClose, onFiles };
   useEffect(() => {
     const onKeyDown = async (e: KeyboardEvent) => {
-      // F11 — this popout's fullscreen mode, the same toggle as the button in
-      // its `WindowControls`. Handled before the editable-target guard so it
-      // works from a terminal too. A fullscreen popout cannot be dragged (the WM
-      // takes MOVE off it); `lib/window/fullscreenMode` records that the user
-      // asked for it, so `DetachedApp`'s stray-fullscreen guard lets it stand.
-      if (e.key === "F11") {
+      const overrides = useSettingsStore.getState().settings
+        ?.keyboard_shortcuts as ShortcutMap | undefined;
+      // F11 (as bound) — this popout's fullscreen mode, the same toggle as the
+      // button in its `WindowControls`. Handled before the editable-target
+      // guard so it works from a terminal too. A fullscreen popout cannot be
+      // dragged (the WM takes MOVE off it); `lib/window/fullscreenMode` records
+      // that the user asked for it, so `DetachedApp`'s stray-fullscreen guard
+      // lets it stand.
+      if (chordMatches(resolveChord("osFullscreen", overrides), e)) {
         e.preventDefault();
         void toggleWindowFullscreen();
         return;
@@ -399,8 +402,6 @@ export function DetachedCenterPanel({
       // terminal hands over (`terminalMayTakeChord`).
       const editable = isEditableTarget(e.target);
       if (editable && !isMacCommandChord(e) && !isPaneTerminalTarget(e.target)) return;
-      const overrides = useSettingsStore.getState().settings
-        ?.keyboard_shortcuts as ShortcutMap | undefined;
       const is = (action: ShortcutAction) =>
         (!editable || editorMayTakeChord(action, e) || terminalMayTakeChord(action, e)) &&
         chordMatches(resolveChord(action, overrides), e);

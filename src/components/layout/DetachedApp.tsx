@@ -76,8 +76,7 @@ import { installWindowsEvents } from "../../stores/windows";
 import { listenPdfReveal } from "../../stores/viewers/pdfSync";
 import { listenEditorJump } from "../../stores/viewers/editorJump";
 import { listenTexCenter } from "../../stores/viewers/texCenter";
-import { zoomChord } from "../../lib/shortcuts/zoomChord";
-import { chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts/shortcuts";
+import { chordMatches, resolveChord, zoomFor, type ShortcutMap } from "../../lib/shortcuts/shortcuts";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { ExecTrustHost } from "../common/ExecTrustHost";
@@ -285,7 +284,10 @@ export function DetachedApp({ param }: Props) {
     const onKeyDown = (e: KeyboardEvent) => {
       // Agent panes consume Ctrl +/- for their own font zoom and stopPropagation,
       // so those never reach here — this only fires for the rest of the window.
-      const zoom = zoomChord(e);
+      const zoom = zoomFor(
+        e,
+        useSettingsStore.getState().settings?.keyboard_shortcuts as ShortcutMap | undefined,
+      );
       if (!zoom) return;
       e.preventDefault();
       applyAndPersist(zoom === "reset" ? 1 : stepZoom(zoomRef.current, zoom === "in" ? 1 : -1));

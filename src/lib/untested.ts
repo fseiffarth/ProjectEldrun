@@ -277,6 +277,7 @@ export const UNTESTED = {
   "shortcut.texBack": { area: "lib", what: "shortcuts · TeX workspace: back to the previous file" },
   "shortcut.texCompile": { area: "lib", what: "shortcuts · TeX workspace: save and compile the document" },
   "shortcut.texUp": { area: "lib", what: "shortcuts · TeX workspace: up to the parent document" },
+  "shortcuts.rebindAll": { area: "lib", what: "shortcuts · Every key rebindable: F11, the panel toggle (lone Super tap capturable on Linux), Esc, Ctrl +/-/0 zoom (window, agent font, editor text; popouts and presenters follow F11), × turns a chord off; steering-mode keys two per action, per level, legend and cheat sheet show the bound keys" },
   "shortcut.menuHints": { area: "lib", what: "shortcuts · Menu rows show their chord (root console, shortcuts, tab close / close all, file Delete)" },
 
   // --- mail — The mail client ---------------------------------------
