@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#
+# A merge that records its own commit skips pre-commit; scan it the same way
+# (git's own sample hook does exactly this).
+set -uo pipefail
+exec "$(dirname "${BASH_SOURCE[0]}")/pre-commit"

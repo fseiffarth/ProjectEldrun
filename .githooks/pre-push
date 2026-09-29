@@ -67,43 +67,78 @@ if [ -z "${ELDRUN_BUMPING:-}" ] && [ -z "${ELDRUN_PUSH_PREFLIGHT:-}" ] && signin
   echo "          Step by step: docs/context/release_signing.md" >&2
 fi
 
+# A hit here is still only local: nothing has left the machine. Say how to get
+# it out of history before the retry.
+privacy_fail() {
+  local onto="$1"
+  [ "$onto" = "$EMPTY_TREE" ] && onto="--root"
+  echo "pre-push: privacy check failed for ${remote_ref} — push aborted." >&2
+  echo "          Review each match above; this repo is public. Nothing was sent:" >&2
+  echo "          fix the last commit with 'git commit --amend', an older one with" >&2
+  echo "          'git rebase -i $onto' (edit/drop), then push again." >&2
+  echo "          A real credential that sat in a commit is safest rotated." >&2
+  echo "          To override once: ELDRUN_SKIP_PRIVACY_CHECK=1 git push …" >&2
+  exit 1
+}
+
 bump=0
-while read -r local_ref local_sha _remote_ref remote_sha; do
-  case "$local_ref" in
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # A deletion publishes nothing.
+  [[ "$local_sha" =~ ^0+$ ]] && continue
+
+  # What gets scanned is decided by what is PUBLISHED, never by the local ref's
+  # name: `git push origin HEAD:develop` and a detached HEAD arrive with the
+  # local ref `HEAD`, and a filter on that name once let them through unscanned.
+  # Tags publish their commits too. Only a branch push is version-bumped, as
+  # before (the bump re-pushes HEAD, which only makes sense from a branch).
+  bumpable=0
+  case "$remote_ref" in
     refs/tags/v*)
       if [ "$signing_missing" -eq 1 ] && [ -z "${ELDRUN_SKIP_SIGNING_CHECK:-}" ]; then
-        echo "pre-push: not pushing ${local_ref#refs/tags/}: its release would fail unsigned." >&2
+        echo "pre-push: not pushing ${remote_ref#refs/tags/}: its release would fail unsigned." >&2
         echo "          Set the secret first, or override once: ELDRUN_SKIP_SIGNING_CHECK=1 git push …" >&2
         exit 1
-      fi
-      continue ;;
-    refs/tags/*|"") continue ;;   # tag or deletion — leave version alone
-    refs/*) : ;;
-    *) continue ;;
+      fi ;;
+    refs/tags/*) : ;;
+    *) [[ "$local_ref" == refs/* && "$local_ref" != refs/tags/* ]] && bumpable=1 ;;
   esac
 
   # Scan exactly what this ref is about to publish. The remote tip is the base
-  # when the branch already exists there; for a brand-new remote branch, walk
-  # back to the parent of the oldest commit no remote branch has yet, so the
-  # scan covers the new commits and not the whole history.
-  if [[ "$remote_sha" =~ ^0+$ ]]; then
-    oldest_new="$(git -C "$repo_root" rev-list "$local_sha" --not --remotes="$remote" | tail -1)"
-    base="$(git -C "$repo_root" rev-parse -q --verify "${oldest_new:-$local_sha}^" 2>/dev/null || true)"
-    [ -n "$base" ] || base="$EMPTY_TREE"   # the branch reaches a root commit
+  # when the ref already exists there; for a brand-new remote ref, walk back to
+  # the parent of the oldest commit no remote ref has yet, so the scan covers
+  # the new commits and not the whole history — and nothing, when every commit
+  # is already there. A tag is scanned as the commit it points at.
+  head_commit="$(git -C "$repo_root" rev-parse -q --verify "$local_sha^{commit}" 2>/dev/null || true)"
+  scan=1
+  if [ -z "$head_commit" ]; then
+    scan=0                        # a tag of a tree or blob: no commits to publish
+  elif [[ "$remote_sha" =~ ^0+$ ]]; then
+    oldest_new="$(git -C "$repo_root" rev-list "$head_commit" --not --remotes="$remote" | tail -1)"
+    if [ -z "$oldest_new" ]; then
+      scan=0
+    else
+      base="$(git -C "$repo_root" rev-parse -q --verify "$oldest_new^" 2>/dev/null || true)"
+      [ -n "$base" ] || base="$EMPTY_TREE"   # the ref reaches a root commit
+    fi
   else
     base="$remote_sha"
   fi
 
   # </dev/null: this loop owns stdin (git's ref list) — a child must not eat it.
-  if [ -z "${ELDRUN_SKIP_PRIVACY_CHECK:-}" ]; then
-    if ! (cd "$repo_root" && scripts/privacy-check.sh "$base" "$local_sha") </dev/null; then
-      echo "pre-push: privacy check failed for ${local_ref} — push aborted." >&2
-      echo "          Review each match above; this repo is public." >&2
-      echo "          To override once: ELDRUN_SKIP_PRIVACY_CHECK=1 git push …" >&2
-      exit 1
+  if [ "$scan" -eq 1 ] && [ -z "${ELDRUN_SKIP_PRIVACY_CHECK:-}" ]; then
+    if ! (cd "$repo_root" && scripts/privacy-check.sh "$base" "$head_commit") </dev/null; then
+      privacy_fail "$base"
+    fi
+    # Same optional gitleaks pass as pre-commit, over the commits being pushed.
+    if command -v gitleaks >/dev/null 2>&1; then
+      range="$head_commit"
+      [ "$base" = "$EMPTY_TREE" ] || range="$base..$head_commit"
+      (cd "$repo_root" && gitleaks git --log-opts="$range" --redact --no-banner --verbose --log-level=warn) </dev/null \
+        || privacy_fail "$base"
     fi
   fi
 
+  [ "$bumpable" -eq 1 ] || continue
   if [[ "$remote_sha" =~ ^0+$ ]]; then
     bump=1                        # new branch on the remote — give it a fresh version
   elif [ "$(pkg_version "$local_sha")" = "$(pkg_version "$remote_sha")" ]; then

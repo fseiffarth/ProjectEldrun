@@ -42,8 +42,10 @@ tool is unavailable, say so — never skip silently.
 ## Git & privacy (public repo)
 
 - Work on `develop`; `main` is reached by PR.
-- Before any push: `scripts/privacy-check.sh` must pass (the pre-push hook and
-  CI run it; hooks need `git config core.hooksPath .githooks` once per clone).
+- Before any push: `scripts/privacy-check.sh` must pass (the pre-commit and
+  pre-push hooks and CI run it; hooks need `git config core.hooksPath
+  .githooks` once per clone). A plumbing commit (private index + `update-ref`)
+  skips pre-commit: run `GIT_INDEX_FILE=<yours> git hook run pre-commit` first.
   Never hardcode institution/lab hostnames. Author email must be the GitHub
   `noreply` one. New/changed binaries need their blob id in
   `scripts/privacy-reviewed-binaries.txt`. Private literals that must never

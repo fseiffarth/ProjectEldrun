@@ -1268,10 +1268,15 @@ pass:
 git add -A && scripts/privacy-check.sh          # or: scripts/privacy-check.sh <base> <head>
 ```
 
-`.githooks/pre-push` runs it over the outgoing commits and a `privacy` CI job
-repeats it. Enable the hooks once per clone with
-`git config core.hooksPath .githooks`; that arms both the privacy scan and the
-automatic patch-version bump. Never hardcode institution or lab hostnames, and
+`.githooks/pre-commit` (and `pre-merge-commit`) runs it over what each commit
+records, so a leak never enters history; `.githooks/pre-push` runs it over the
+outgoing commits — the authoritative gate, since rebases, cherry-picks,
+plumbing commits and `--no-verify` skip pre-commit — and a `privacy` CI job
+repeats it. With [gitleaks](https://github.com/gitleaks/gitleaks) on `PATH`
+both hooks also run it (it knows far more token formats; CI runs it over the
+whole history either way, but only after the push is public). Enable the hooks
+once per clone with `git config core.hooksPath .githooks`; that arms the
+privacy scans and the automatic patch-version bump. Never hardcode institution or lab hostnames, and
 commits must use the GitHub `noreply` author email.
 
 Notable suites beyond schema round-trips: hostile-input fixtures for mail
