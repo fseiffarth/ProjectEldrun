@@ -87,6 +87,9 @@ pub struct Entry {
     pub size: u64,
     /// Unix seconds of the mtime.
     pub modified: u64,
+    /// Unix seconds of the birth time; left out where the filesystem keeps none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -225,18 +228,20 @@ pub fn list(root: &Path, rel: &str, host_key: &[u8], raw_id: &str) -> Result<Lis
     let mut entries = Vec::with_capacity(found.len());
     for (is_dir, name) in found {
         let path = dir.join(&name);
-        let (kind, size, modified) = if is_dir {
+        let (kind, size, meta) = if is_dir {
             let Ok(meta) = fs::symlink_metadata(&path) else { continue };
             if !meta.is_dir() {
                 continue;
             }
-            ("dir", 0, meta.modified().map(outbox::unix_secs).unwrap_or(0))
+            ("dir", 0, meta)
         } else {
             // Swapped for a link or removed since `read_dir`: not listed.
             let Some((_file, meta, kind)) = outbox::open_sniffed(&path) else { continue };
-            (kind, meta.len(), meta.modified().map(outbox::unix_secs).unwrap_or(0))
+            (kind, meta.len(), meta)
         };
-        entries.push(Entry { token: seal(host_key, raw_id, &child(rel, &name)), name, kind, size, modified });
+        let modified = meta.modified().map(outbox::unix_secs).unwrap_or(0);
+        let created = meta.created().ok().map(outbox::unix_secs).filter(|&secs| secs > 0);
+        entries.push(Entry { token: seal(host_key, raw_id, &child(rel, &name)), name, kind, size, modified, created });
     }
     Ok(Listing { entries, truncated })
 }

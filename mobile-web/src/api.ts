@@ -1,3 +1,5 @@
+import { translate, useI18nStore } from "../../src/lib/i18n";
+
 /** One row of the phone's list. `kind` says whether it is a project or a box
  * (#31aa) — a box is a scope of its own on the desktop, always "active" here,
  * and a host older than the field sends none, which reads as a project. */
@@ -752,14 +754,23 @@ export async function openOutside(url: string): Promise<void> {
   try {
     const minted = await api<{ url?: unknown }>("/api/v1/open-ticket", { method: "POST", body: JSON.stringify({ url }) });
     if (typeof minted.url === "string") target = minted.url;
-  } catch { /* the plain URL below */ }
+  } catch (error) {
+    // A mobile host older than the ticket route knows the path only as a
+    // static GET: a bodiless 405 (or 404). The plain URL would only show the
+    // browser `authentication_required` there, so say why instead.
+    if (error instanceof ApiError && error.code === "request_failed" && (error.status === 404 || error.status === 405)) {
+      window.alert(translate(useI18nStore.getState().lang, "mobile.open.hostOutdated"));
+      return;
+    }
+  }
   window.open(target, "_blank", "noopener");
 }
 
 /** One row of a project folder (`files.rs`): `token` is a sealed path the
  * phone can only hand back, `kind` is `"dir"` or the media type the file's
- * first bytes announce, `modified` is unix seconds. */
-export interface ProjectFileEntry { token: string; name: string; kind: string; size: number; modified: number }
+ * first bytes announce, `modified` and `created` are unix seconds — `created`
+ * missing where the desktop's filesystem keeps no birth time. */
+export interface ProjectFileEntry { token: string; name: string; kind: string; size: number; modified: number; created?: number }
 export interface ProjectFileListing { entries: ProjectFileEntry[]; truncated: boolean }
 
 /** `GET /api/v1/projects/{id}/files[?dir=<token>]` — one folder of the

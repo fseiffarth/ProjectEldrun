@@ -12,7 +12,7 @@ import { Project } from "../../../mobile-web/src/screens/Project";
 const ROOT = {
   entries: [
     { token: "tok-src", name: "src", kind: "dir", size: 0, modified: 1_770_000_000 },
-    { token: "tok-readme", name: "README.md", kind: "text/plain; charset=utf-8", size: 8, modified: 1_770_000_000 },
+    { token: "tok-readme", name: "README.md", kind: "text/plain; charset=utf-8", size: 8, modified: 1_770_000_000, created: 1_760_000_000 },
     { token: "tok-plot", name: "plot.png", kind: "image/png", size: 48_000, modified: 1_770_000_000 },
     { token: "tok-paper", name: "paper.pdf", kind: "application/pdf", size: 90_000, modified: 1_770_000_000 },
   ],
@@ -23,9 +23,12 @@ const SRC = {
   truncated: false,
 };
 
-function hostWith(files: boolean) {
+function hostWith(files: boolean, tickets = true) {
   return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    // A mobile host from before the ticket route: the router knows the path
+    // only as a static GET, so the POST is 405 with no body.
+    if (url === "/api/v1/open-ticket" && !tickets) return new Response(null, { status: 405 });
     if (url === "/api/v1/open-ticket") {
       const { url: target } = JSON.parse(String(init?.body)) as { url: string };
       return new Response(JSON.stringify({ url: `${target}&ticket=t1` }), { status: 200 });
@@ -106,6 +109,12 @@ describe("Mobile project — read-only file browser", () => {
     await within(sheet).findByRole("button", { name: "Open the folder src" });
     expect(Array.from(sheet.querySelectorAll(".option-list strong")).map((row) => row.textContent))
       .toEqual(["📁 src", "📄 README.md", "🖼 plot.png", "📄 paper.pdf"]);
+    // Each row says when it was last edited, and created where the desktop's
+    // filesystem keeps a birth time (README here, not the folder).
+    const meta = Array.from(sheet.querySelectorAll(".option-list small")).map((row) => row.textContent ?? "");
+    expect(meta[0]).toContain("Edited ");
+    expect(meta[0]).not.toContain("Created");
+    expect(meta[1]).toMatch(/^8 B · Created .+ · Edited .+$/);
 
     // Into a folder, and back by the trail's first crumb (the project's name).
     fireEvent.click(within(sheet).getByRole("button", { name: "Open the folder src" }));
@@ -132,6 +141,22 @@ describe("Mobile project — read-only file browser", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open README.md" }));
     const text = screen.getByRole("dialog", { name: "README.md" });
     await waitFor(() => expect(text.querySelector("pre")?.textContent).toBe("# Hello\n"));
+  });
+
+  it("says the mobile host is outdated instead of opening a PDF it cannot ticket", async () => {
+    vi.stubGlobal("fetch", hostWith(true, false));
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+    render(<Project id="p1" back={() => {}} terminal={() => {}} />);
+    const heading = await screen.findByRole("heading", { name: "Alpha" });
+    await waitFor(() => {
+      swipe(heading, 100, 300);
+      expect(screen.getByRole("dialog", { name: "Files" })).toBeTruthy();
+    });
+    const sheet = screen.getByRole("dialog", { name: "Files" });
+    fireEvent.click(await within(sheet).findByRole("button", { name: "Open paper.pdf" }));
+    await waitFor(() => expect(alert).toHaveBeenCalledWith(expect.stringContaining("Reconnect")));
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("opens from the screen's left edge, where a drawer is pulled from", async () => {

@@ -15,6 +15,21 @@ function asViewerFile(entry: ProjectFileEntry): OutboxFile {
   return { name: entry.name, kind: entry.kind, size: entry.size, modified: entry.modified, ref: entry.token };
 }
 
+/** A listed time as the row prints it: the phone's own date and clock. */
+function stampLabel(seconds: number): string {
+  return new Date(seconds * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+/** The line under a row's name: a file's size, then when it was created (where
+ * the desktop's filesystem says) and last edited. */
+function rowMeta(entry: ProjectFileEntry, t: ReturnType<typeof useT>): string {
+  return [
+    entry.kind !== "dir" ? sizeLabel(entry.size) : null,
+    entry.created ? t("mobile.files.created", { when: stampLabel(entry.created) }) : null,
+    entry.modified > 0 ? t("mobile.files.edited", { when: stampLabel(entry.modified) }) : null,
+  ].filter(Boolean).join(" · ");
+}
+
 /** The message for a listing the sidecar refused. */
 function failureKey(reason: unknown): TranslationKey {
   if (reason instanceof ApiError) {
@@ -125,7 +140,7 @@ export function ProjectFiles({ projectId, label, onClose }: {
               <button onClick={() => open(entry)} aria-label={entry.kind === "dir" ? t("mobile.files.openFolder", { name: entry.name }) : t("mobile.files.openFile", { name: entry.name })}>
                 <span>
                   <strong><span aria-hidden="true">{entry.kind === "dir" ? "📁 " : entry.kind.startsWith("image/") ? "🖼 " : "📄 "}</span>{entry.name}</strong>
-                  {entry.kind !== "dir" && <small>{sizeLabel(entry.size)}</small>}
+                  <small>{rowMeta(entry, t)}</small>
                 </span>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
               </button>
