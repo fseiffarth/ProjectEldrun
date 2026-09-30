@@ -1514,13 +1514,10 @@ pub enum CodexHookState {
 pub fn codex_hook_state() -> CodexHookState {
     let mut worst: Option<CodexHookState> = None;
     for home in crate::services::agent_home::existing_homes_in(&storage::state_dir()) {
-        let codex_dir = home.join(".codex");
-        if !codex_dir.join("sessions").is_dir() {
+        if !home.join(".codex").join("sessions").is_dir() {
             continue;
         }
-        let config = codex_dir.join("config.toml");
-        let src = std::fs::read_to_string(&config).unwrap_or_default();
-        let state = codex_hook_state_in(&src, &config.to_string_lossy(), &hook_command());
+        let state = codex_hook_state_of_home(&home);
         let rank = |s: CodexHookState| match s {
             CodexHookState::Enabled => 0,
             CodexHookState::NoCodex => 1,
@@ -1533,6 +1530,13 @@ pub fn codex_hook_state() -> CodexHookState {
         }
     }
     worst.unwrap_or(CodexHookState::NoCodex)
+}
+
+/// Eldrun's hook as the Codex of one agent home sees it.
+fn codex_hook_state_of_home(home: &std::path::Path) -> CodexHookState {
+    let config = home.join(".codex").join("config.toml");
+    let src = std::fs::read_to_string(&config).unwrap_or_default();
+    codex_hook_state_in(&src, &config.to_string_lossy(), &hook_command())
 }
 
 /// Testable core of [`codex_hook_state`].
@@ -1579,6 +1583,10 @@ pub fn codex_hook_state_in(src: &str, config_path: &str, cmd: &str) -> CodexHook
         } else if let Some(key) = state_key.as_ref() {
             if let Some(v) = toml_value(line, "enabled") {
                 verdicts.insert(key.clone(), v == "true");
+            } else if toml_value(line, "trusted_hash").is_some() {
+                // Codex (0.15x) records a trusted, enabled hook as its hash
+                // alone — `enabled` is written only to switch it off.
+                verdicts.entry(key.clone()).or_insert(true);
             }
         }
     }
@@ -1636,9 +1644,12 @@ fn toml_value(line: &str, key: &str) -> Option<String> {
 /// Whether the hook-free rollout binder ([`crate::services::codex_bind`]) should
 /// run for a Codex tab. It is the *fallback*: when the hook is trusted it is
 /// strictly more precise (it fires on `/clear` immediately and can't confuse two
-/// tabs sharing a cwd), so we stay out of its way.
-pub fn codex_binder_enabled() -> bool {
-    !matches!(codex_hook_state(), CodexHookState::Enabled)
+/// tabs sharing a cwd), so we stay out of its way. Decided by the tab's own
+/// scope home, where Codex keeps the trust verdict: a guessing binder beside a
+/// live hook hands one tab's fresh `/clear` rollout to a sibling in the same
+/// folder, since the hook records it only at the first prompt after the clear.
+pub fn codex_binder_enabled(scope_id: Option<&str>) -> bool {
+    codex_hook_state_of_home(&crate::services::agent_home::scope_home(scope_id)) != CodexHookState::Enabled
 }
 
 /// Install (idempotently) the session hooks and their script for every agent
@@ -3319,6 +3330,24 @@ mod tests {
             our_hook()
         );
         assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Enabled);
+    }
+
+    #[test]
+    fn codex_hook_state_reads_a_bare_trusted_hash_as_enabled() {
+        // Codex 0.159 writes a trusted hook as its hash alone. Read as
+        // untrusted, the cwd binder kept guessing beside the live hook and gave
+        // one tab's fresh `/clear` rollout to its sibling: two phone tabs, one
+        // conversation.
+        let src = format!(
+            "{}\n[hooks.state]\n\n[hooks.state.\"{CFG}:post_tool_use:0:0\"]\ntrusted_hash = \"sha256:c6bc\"\n\n\
+             [hooks.state.\"{CFG}:session_start:0:0\"]\ntrusted_hash = \"sha256:93f0\"\n\n\
+             [projects.\"/home/x\"]\ntrust_level = \"trusted\"\n",
+            our_hook()
+        );
+        assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Enabled);
+        // `enabled = false` after the hash still switches it off.
+        let off = src.replace("sha256:93f0\"\n", "sha256:93f0\"\nenabled = false\n");
+        assert_eq!(codex_hook_state_in(&off, CFG, CMD), CodexHookState::Disabled);
     }
 
     #[test]
