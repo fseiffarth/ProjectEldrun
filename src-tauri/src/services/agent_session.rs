@@ -710,10 +710,11 @@ fn timed_prompt_in_record(line: &str, kind: TranscriptKind) -> Option<Transcript
 /// Whether a transcript line can hold a prompt at all, checked before it is
 /// parsed: every prompt record names the user as a JSON value — Claude's
 /// `"type":"user"`, Codex's `"role":"user"` and `"user_message"` — or is
-/// Claude's `queued_command`. Most of a busy transcript is tool output, and
-/// the prompt reads now reach back through megabytes of it.
+/// Claude's `queued_command` or Codex's `thread_goal_updated`. Most of a busy
+/// transcript is tool output, and the prompt reads now reach back through
+/// megabytes of it.
 fn may_be_prompt(line: &str) -> bool {
-    line.contains("\"user") || line.contains("queued_command")
+    line.contains("\"user") || line.contains("queued_command") || line.contains("thread_goal_updated")
 }
 
 /// A message the user sent while Claude was working: a `queued_command`
@@ -1090,6 +1091,7 @@ fn collapse_pasted_blocks(text: &str) -> String {
 /// which is also where Codex injects `<environment_context>`, `<user_instructions>`
 /// and the `AGENTS.md` text — those open with a tag or a heading, and are
 /// skipped. Both shapes are read, so either dialect of rollout answers.
+/// A `/goal` is neither: see [`codex_goal_prompt`].
 pub(crate) fn codex_prompt_in_record(value: &serde_json::Value) -> Option<String> {
     let payload = value.get("payload")?;
     let payload_type = payload.get("type").and_then(|t| t.as_str());
@@ -1097,6 +1099,7 @@ pub(crate) fn codex_prompt_in_record(value: &serde_json::Value) -> Option<String
         "event_msg" if payload_type == Some("user_message") => {
             payload.get("message")?.as_str().map(str::to_string)
         }
+        "event_msg" if payload_type == Some("thread_goal_updated") => codex_goal_prompt(payload),
         "response_item"
             if payload_type == Some("message")
                 && payload.get("role").and_then(|r| r.as_str()) == Some("user") =>
@@ -1121,6 +1124,27 @@ pub(crate) fn codex_prompt_in_record(value: &serde_json::Value) -> Option<String
         }
         _ => None,
     }
+}
+
+/// A `/goal` the user set, as they typed it. Codex (0.153+) records no user
+/// message for it: the objective rides only on a `thread_goal_updated` event,
+/// and every turn the goal drives — its first included — opens with a
+/// `<codex_internal_context source="goal">` user message, which is Codex's
+/// own and skipped. The event is also written when a goal resumes, paused or
+/// across a relaunch, with the time and tokens it has used; only a goal
+/// updated at the second it was created is a new one, so a resumed goal
+/// does not read as the prompt again.
+fn codex_goal_prompt(payload: &serde_json::Value) -> Option<String> {
+    let goal = payload.get("goal")?;
+    if goal.get("status").and_then(|s| s.as_str()) != Some("active") {
+        return None;
+    }
+    let created = goal.get("createdAt").and_then(|t| t.as_i64())?;
+    if goal.get("updatedAt").and_then(|t| t.as_i64()) != Some(created) {
+        return None;
+    }
+    let objective = goal.get("objective")?.as_str()?.trim();
+    (!objective.is_empty()).then(|| format!("/goal {objective}"))
 }
 
 /// The text between the first `open` and the `close` after it, if both exist.
