@@ -18,6 +18,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `paths.rs` | Canonical Eldrun directory paths. |
 | `sysstat.rs` | Per-process CPU via `/proc` (`descendant_pids`), whole-system `SystemSnapshot`, and `machine_load()` — aggregate-only, no process table (cheap enough to poll). Unsupported target answers `supported: false`, never zeros. |
 | `gpustat.rs` | Whole-device GPU memory as two pools (dedicated VRAM + shared/GTT; callers sum) plus sensors, from DRM sysfs or `nvidia-smi`; ~1 s cache. Missing readings are `None`, never 0. Per-process GPU is separate (monitor only). Remote hosts parsed by the same parsers. |
+| `../patches/tauri-runtime-wry/` | Vendored tauri-runtime-wry 2.11.3 via root `[patch.crates-io]`; one `ELDRUN PATCH` (`Context.main_thread` behind an `Arc`) stops off-thread `AppHandle` clones racing tao's Linux `Rc` — re-apply on every tauri bump. |
 
 **Commands (`commands/`)** — Tauri command handlers exposed to the frontend.
 

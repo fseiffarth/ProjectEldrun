@@ -72,5 +72,22 @@ but backend-owned.*
         launch adopts), so the next crash's core lands in
         `/var/lib/apport/coredump/` — inspect the corrupted chunk with gdb
         against `dev-builds/eldrun-<commit>`.
+      - **Diagnosed from the first core (2026-09-30 04:20, idle window):**
+        the freed 0x50 chunk was an `Rc<RefCell<HashSet<WindowId>>>` — tao's
+        Linux `EventLoopWindowTarget.windows` (borrow flag 0, 4 buckets of
+        `u32`, 2 items), its strong count bumped +4 after the free, next to
+        the `gdk::Display`/`GtkApplication` GObjects and Arcs of a
+        tauri-runtime-wry `Context` (~490 copies on the heap).
+        `Context: Clone` clones that target on every thread that clones an
+        `AppHandle`/`Window` (`DispatcherMainThreadContext` is `unsafe impl
+        Send + Sync`), so non-atomic `Rc` counts raced to 0. Fixed by a
+        vendored tauri-runtime-wry 2.11.3 (`src-tauri/patches/`, root
+        `[patch.crates-io]`) holding it behind an `Arc`; upstream `dev` still
+        has it. 🖐️ Run the patched build for a few days of normal use; close
+        this bullet if no heap abort recurs.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
 
 ---
