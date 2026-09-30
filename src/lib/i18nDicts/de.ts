@@ -7,6 +7,23 @@
 import type { Dict } from "../i18n";
 
 export const dict: Dict = {
+  "mobile.pair.title": "Dieses Handy verbinden",
+  "mobile.pair.intro": "Gib den einmaligen Code aus den Eldrun-Einstellungen ein. Dieses Handy kann Terminals in freigegebenen Projekten steuern.",
+  "mobile.pair.finishHint": "Das Handy ist verbunden. Schließe die Einrichtung der Sperre ab.",
+  "mobile.pair.deviceName": "Gerätename",
+  "mobile.pair.defaultName": "Mobilgerät",
+  "mobile.pair.code": "Kopplungscode",
+  "mobile.pair.invalidCode": "Der Code ist falsch oder abgelaufen. In den Eldrun-Einstellungen steht ein neuer Code.",
+  "mobile.pair.tooManyAttempts": "Zu viele Kopplungsversuche. Warte eine Minute und versuche es dann mit dem Code aus den Eldrun-Einstellungen erneut.",
+  "mobile.pair.pin": "App-PIN (6–12 Ziffern)",
+  "mobile.pair.confirmPin": "App-PIN bestätigen",
+  "mobile.pair.pinHint": "Lege eine Ersatz-PIN fest. Dein Handy fragt möglicherweise auch nach Fingerabdruck oder Bildschirmsperre.",
+  "mobile.pair.pinOnlyHint": "Lege eine App-PIN fest. Dieser Browser bietet keine Entsperrung per Fingerabdruck oder Face ID.",
+  "mobile.pair.pairing": "Verbinden…",
+  "mobile.pair.securing": "Sichern…",
+  "mobile.pair.connect": "Handy verbinden",
+  "mobile.pair.connectSecure": "Verbinden und sichern",
+  "mobile.pair.finish": "Einrichtung abschließen",
   "scheduleMcp.title": "Projekt-Agenten dürfen Prompts vorschlagen und planen (MCP)",
   "scheduleMcp.help": "Standardmäßig aus. Neue lokale Claude-, Codex- und MCP-fähige Vibe-Tabs können Prompts für sich selbst planen. Vorschläge brauchen eine Freigabe, wiederkehrende Prompts immer. Erfordert das aktualisierte Backend. Remote-, VM- und Container-Tabs werden nicht unterstützt.",
   "scheduleMcp.level": "Zeitplanung durch Agenten",

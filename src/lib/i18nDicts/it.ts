@@ -7,6 +7,23 @@
 import type { Dict } from "../i18n";
 
 export const dict: Dict = {
+  "mobile.pair.title": "Collega questo telefono",
+  "mobile.pair.intro": "Inserisci il codice monouso dalle impostazioni di Eldrun. Questo telefono potrà controllare i terminali dei progetti che autorizzi.",
+  "mobile.pair.finishHint": "Telefono collegato. Completa la configurazione del blocco.",
+  "mobile.pair.deviceName": "Nome del dispositivo",
+  "mobile.pair.defaultName": "Dispositivo mobile",
+  "mobile.pair.code": "Codice di abbinamento",
+  "mobile.pair.invalidCode": "Il codice è errato o scaduto. Nelle impostazioni di Eldrun ne trovi uno nuovo.",
+  "mobile.pair.tooManyAttempts": "Troppi tentativi di abbinamento. Attendi un minuto, poi riprova con il codice delle impostazioni di Eldrun.",
+  "mobile.pair.pin": "PIN dell’app (6–12 cifre)",
+  "mobile.pair.confirmPin": "Conferma il PIN dell’app",
+  "mobile.pair.pinHint": "Crea un PIN di riserva. Il telefono potrebbe anche chiederti di attivare l’impronta o il blocco schermo.",
+  "mobile.pair.pinOnlyHint": "Crea un PIN per l’app. Questo browser non offre lo sblocco con impronta o Face ID.",
+  "mobile.pair.pairing": "Connessione…",
+  "mobile.pair.securing": "Protezione…",
+  "mobile.pair.connect": "Collega il telefono",
+  "mobile.pair.connectSecure": "Collega e proteggi",
+  "mobile.pair.finish": "Completa la configurazione",
   "scheduleMcp.title": "Consenti agli agenti del progetto di proporre istruzioni programmate (MCP)",
   "scheduleMcp.help": "Disattivato per impostazione predefinita. Le nuove schede locali di Claude, Codex e Vibe con MCP possono programmare istruzioni per sé. Le proposte richiedono approvazione; quelle ricorrenti sempre. Richiede il backend aggiornato. Le schede remote, VM e container non sono supportate.",
   "scheduleMcp.level": "Programmazione degli agenti",

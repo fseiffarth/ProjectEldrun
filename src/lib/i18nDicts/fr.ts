@@ -7,6 +7,23 @@
 import type { Dict } from "../i18n";
 
 export const dict: Dict = {
+  "mobile.pair.title": "Connecter ce téléphone",
+  "mobile.pair.intro": "Saisissez le code à usage unique affiché dans les réglages d’Eldrun. Ce téléphone pourra contrôler les terminaux des projets que vous autorisez.",
+  "mobile.pair.finishHint": "Téléphone connecté. Terminez la configuration de son verrouillage.",
+  "mobile.pair.deviceName": "Nom de l’appareil",
+  "mobile.pair.defaultName": "Appareil mobile",
+  "mobile.pair.code": "Code d’appairage",
+  "mobile.pair.invalidCode": "Ce code est incorrect ou a expiré. Un nouveau code apparaît dans les réglages d’Eldrun.",
+  "mobile.pair.tooManyAttempts": "Trop de tentatives d’appairage. Attendez une minute, puis réessayez avec le code des réglages d’Eldrun.",
+  "mobile.pair.pin": "Code PIN de l’application (6 à 12 chiffres)",
+  "mobile.pair.confirmPin": "Confirmer le code PIN",
+  "mobile.pair.pinHint": "Créez un code PIN de secours. Votre téléphone peut aussi vous demander d’activer l’empreinte ou le verrouillage de l’écran.",
+  "mobile.pair.pinOnlyHint": "Créez un code PIN. Ce navigateur ne permet pas le déverrouillage par empreinte ou Face ID.",
+  "mobile.pair.pairing": "Connexion…",
+  "mobile.pair.securing": "Sécurisation…",
+  "mobile.pair.connect": "Connecter le téléphone",
+  "mobile.pair.connectSecure": "Connecter et sécuriser",
+  "mobile.pair.finish": "Terminer la configuration",
   "scheduleMcp.title": "Autoriser les agents du projet à proposer des instructions planifiées (MCP)",
   "scheduleMcp.help": "Désactivé par défaut. Les nouveaux onglets locaux Claude, Codex et Vibe avec MCP peuvent planifier leurs propres instructions. Les propositions doivent être approuvées, les récurrentes toujours. Nécessite le backend mis à jour. Les onglets distants, VM et conteneurs ne sont pas pris en charge.",
   "scheduleMcp.level": "Planification par les agents",

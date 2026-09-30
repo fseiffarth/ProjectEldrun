@@ -10,7 +10,8 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resumeAuth, type ResumeResult } from "../../../mobile-web/src/auth";
+import { hasPairedDevice, resumeAuth, type ResumeResult } from "../../../mobile-web/src/auth";
+import { hasLocalUnlock } from "../../../mobile-web/src/localLock";
 
 vi.mock("../../../mobile-web/src/auth", () => ({
   hasPairedDevice: vi.fn(async () => true),
@@ -24,7 +25,7 @@ vi.mock("../../../mobile-web/src/screens/LocalUnlock", () => ({
     <button onClick={onUnlocked}>{setup ? "Set up the lock" : "Unlock now"}</button>,
 }));
 vi.mock("../../../mobile-web/src/screens/Terminal", () => ({ Terminal: () => <div>terminal</div> }));
-vi.mock("../../../mobile-web/src/screens/Pair", () => ({ Pair: () => <div>Pair this phone</div> }));
+vi.mock("../../../mobile-web/src/screens/Pair", () => ({ Pair: ({ setupLock, onDone }: { setupLock: boolean; onDone: () => void }) => <button onClick={onDone}>{setupLock ? "Connect and secure" : "Pair this phone"}</button> }));
 
 import { App } from "../../../mobile-web/src/App";
 
@@ -49,6 +50,8 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
   vi.mocked(resumeAuth).mockReset();
   vi.mocked(resumeAuth).mockResolvedValue(paired);
+  vi.mocked(hasPairedDevice).mockResolvedValue(true);
+  vi.mocked(hasLocalUnlock).mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -59,6 +62,17 @@ afterEach(() => {
 });
 
 describe("Eldrun Mobile session lifecycle", () => {
+  it("opens the workspace after the combined first connection without another PIN screen", async () => {
+    vi.mocked(hasPairedDevice).mockResolvedValue(false);
+    vi.mocked(hasLocalUnlock).mockResolvedValue(false);
+    answers(ok);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect and secure" }));
+    expect(await screen.findByText("Alpha")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Unlock now" })).toBeNull();
+    expect(resumeAuth).toHaveBeenCalledOnce();
+  });
+
   it("asks for the lock on every cold open, whatever a restored page remembers", async () => {
     // The flag the old shortcut read. It must mean nothing now.
     sessionStorage.setItem("eldrun-mobile-local-unlocked", "1");

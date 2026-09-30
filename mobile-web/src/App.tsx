@@ -206,6 +206,7 @@ function TabBar({ active, open }: { active: Tab; open: (tab: Tab) => void }) {
 
 export function App() {
   const [auth, setAuth] = useState<"loading" | "paired" | "unpaired" | "setup" | "locked" | "unavailable">("loading");
+  const [pairNeedsLock, setPairNeedsLock] = useState(false);
   const [, refreshTags] = useState(0);
   const [tab, setTab] = useState<Tab>("projects");
   const [projectView, setProjectView] = useState<ProjectView>({ kind: "home" });
@@ -287,6 +288,7 @@ export function App() {
     void Promise.all([hasPairedDevice(), hasLocalUnlock()]).then(([paired, locked]) => {
       if (!paired) {
         forgetLastPlace();
+        setPairNeedsLock(!locked);
         setAuth("unpaired");
       } else if (locked && takeReloadGrace()) {
         // Pull-to-refresh on a page that was unlocked and in use seconds ago:
@@ -503,7 +505,7 @@ export function App() {
       </Splash>
     );
   }
-  if (auth === "unpaired") return <Pair onDone={begin} />;
+  if (auth === "unpaired") return <Pair setupLock={pairNeedsLock} onDone={pairNeedsLock ? resume : begin} />;
   if (auth === "setup") return <LocalUnlock setup onUnlocked={() => setAuth("locked")} />;
   if (auth === "locked") return <>
     <LockedHomeShell />

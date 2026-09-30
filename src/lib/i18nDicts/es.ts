@@ -7,6 +7,23 @@
 import type { Dict } from "../i18n";
 
 export const dict: Dict = {
+  "mobile.pair.title": "Conectar este teléfono",
+  "mobile.pair.intro": "Introduce el código de un solo uso de los ajustes de Eldrun. Este teléfono podrá controlar las terminales de los proyectos que autorices.",
+  "mobile.pair.finishHint": "Teléfono conectado. Termina de configurar su bloqueo.",
+  "mobile.pair.deviceName": "Nombre del dispositivo",
+  "mobile.pair.defaultName": "Dispositivo móvil",
+  "mobile.pair.code": "Código de vinculación",
+  "mobile.pair.invalidCode": "Ese código es incorrecto o ha caducado. En los ajustes de Eldrun encontrarás uno nuevo.",
+  "mobile.pair.tooManyAttempts": "Demasiados intentos de vinculación. Espera un minuto y vuelve a probar con el código de los ajustes de Eldrun.",
+  "mobile.pair.pin": "PIN de la aplicación (6–12 dígitos)",
+  "mobile.pair.confirmPin": "Confirmar PIN de la aplicación",
+  "mobile.pair.pinHint": "Crea un PIN de respaldo. Es posible que el teléfono también te pida activar la huella o el bloqueo de pantalla.",
+  "mobile.pair.pinOnlyHint": "Crea un PIN para la aplicación. Este navegador no permite desbloquear con huella ni Face ID.",
+  "mobile.pair.pairing": "Conectando…",
+  "mobile.pair.securing": "Protegiendo…",
+  "mobile.pair.connect": "Conectar teléfono",
+  "mobile.pair.connectSecure": "Conectar y proteger",
+  "mobile.pair.finish": "Terminar configuración",
   "scheduleMcp.title": "Permitir que los agentes del proyecto propongan instrucciones programadas (MCP)",
   "scheduleMcp.help": "Desactivado por defecto. Las nuevas pestañas locales de Claude, Codex y Vibe con MCP pueden programar instrucciones para sí mismas. Las propuestas requieren aprobación; las recurrentes siempre. Requiere el backend actualizado. No admite pestañas remotas, de máquinas virtuales ni de contenedores.",
   "scheduleMcp.level": "Programación por agentes",

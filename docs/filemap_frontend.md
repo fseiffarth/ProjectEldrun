@@ -1,4 +1,4 @@
-# ProjectEldrun — Frontend File Map (`src/`)
+# ProjectEldrun — Frontend File Map (`src/`, `mobile-web/`)
 
 Only the load-bearing files are listed; the tree is the source of truth. See
 the root `AGENTS.md` for project rules; `docs/filemap_backend.md` is the
@@ -19,6 +19,7 @@ stores stay at the top. No `index.ts` barrels.
 | File | Purpose |
 |------|---------|
 | `src/App.tsx` | Root component, theme injection, global key handlers. |
+| `mobile-web/src/App.tsx` + `screens/Pair.tsx` | Phone entry: first-time pairing code and local PIN share one form and one submit; after success `App` signs in directly, while later opens use the existing local unlock. A lock-setup retry never resends the consumed pairing code. |
 | `src/main.tsx` | React entry point. |
 | `src/crashReporter.ts` | Captures/forwards WebKitGTK renderer crashes to the backend. |
 | `src/lib/window/rendererWatchdog.ts` | Renderer memory watchdog: reloads a window whose webview renderer passes 4 GB. Per window (AppShell + DetachedApp); own renderer pid is probed, not asked; 10-min reload cooldown. Tests: `RendererWatchdog.test.ts`. |

@@ -54,6 +54,23 @@ export function normalizeLang(value: string | null | undefined): Language {
 // solely for the test aggregator (`i18nDicts/all.ts`) — components go through
 // `useT()`/`translate`, never this object.
 export const en = {
+  "mobile.pair.title": "Connect this phone",
+  "mobile.pair.intro": "Enter the one-time code from Eldrun Settings. This phone can control terminals in projects you enable.",
+  "mobile.pair.finishHint": "Phone connected. Finish setting up its lock.",
+  "mobile.pair.deviceName": "Device name",
+  "mobile.pair.defaultName": "Mobile device",
+  "mobile.pair.code": "Pairing code",
+  "mobile.pair.invalidCode": "That code is wrong or has expired. Eldrun Settings shows a fresh one.",
+  "mobile.pair.tooManyAttempts": "Too many pairing attempts. Wait a minute, then try again with the code from Eldrun Settings.",
+  "mobile.pair.pin": "App PIN (6–12 digits)",
+  "mobile.pair.confirmPin": "Confirm app PIN",
+  "mobile.pair.pinHint": "Create a fallback PIN. Your phone may also ask you to enable fingerprint or screen-lock unlock.",
+  "mobile.pair.pinOnlyHint": "Create an app PIN. This browser does not offer fingerprint or Face ID unlock.",
+  "mobile.pair.pairing": "Connecting…",
+  "mobile.pair.securing": "Securing…",
+  "mobile.pair.connect": "Connect phone",
+  "mobile.pair.connectSecure": "Connect and secure",
+  "mobile.pair.finish": "Finish setup",
   "mobile.newTab.title": "New tab",
   "mobile.newTab.close": "Close",
   "mobile.newTab.untested": "Untested",

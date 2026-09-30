@@ -1018,6 +1018,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .brand-screen input:not(.code) { text-align:center; }
 .brand-screen .error { text-align:left; }
 .brand-screen > .primary { min-height:48px; }
+.pair .pair-lock-hint { margin-top:2px; font-size:.88rem; }
 /* The lock's fingerprint is a round target rather than a full-width bar; its
    only motion is the waiting pulse, which animates transform/opacity on a
    pseudo-element, never a blur. */
