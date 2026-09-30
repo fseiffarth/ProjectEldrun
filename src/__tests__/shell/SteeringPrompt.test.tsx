@@ -120,6 +120,58 @@ describe("steering prompt box", () => {
     expect(steering().active).toBe(false);
   });
 
+  it("sends while the agent works, as a prompt typed then would", async () => {
+    activeTab({ kind: "agent", scheduleTargetId: "target" });
+    registerScheduledAgentInput("target", {
+      ptyId: "p:t1",
+      ready: () => false,
+      started: () => true,
+      bracketedPaste: () => false,
+      recordAuthorizedInput: vi.fn(),
+    });
+    render(
+      <>
+        <Harness />
+        <SteeringPromptOverlay />
+      </>,
+    );
+    act(() => steering().enter());
+    press("i");
+    fireEvent.change(box()!, { target: { value: "and then this" } });
+    fireEvent.keyDown(box()!, { key: "Enter" });
+    await vi.waitFor(() => expect(box()).toBeNull());
+    expect(writeMock.mock.calls.map(([, bytes]) => decode(bytes))).toContain("and then this");
+  });
+
+  it("keeps an unsent prompt for that tab's next open, and not after a send", async () => {
+    activeTab({ kind: "agent", scheduleTargetId: "keep" });
+    registerScheduledAgentInput("keep", {
+      ptyId: "p:t1",
+      ready: () => true,
+      bracketedPaste: () => false,
+      recordAuthorizedInput: vi.fn(),
+    });
+    render(
+      <>
+        <Harness />
+        <SteeringPromptOverlay />
+      </>,
+    );
+    act(() => steering().enter());
+    press("i");
+    fireEvent.change(box()!, { target: { value: "half a thought" } });
+    act(() => {
+      box()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(box()).toBeNull();
+    press("i");
+    expect(box()?.value).toBe("half a thought");
+    fireEvent.keyDown(box()!, { key: "Enter" });
+    await vi.waitFor(() => expect(box()).toBeNull());
+    press("i");
+    expect(box()?.value).toBe("");
+  });
+
   it("Escape returns to steering without sending", () => {
     activeTab({ kind: "agent", scheduleTargetId: "target" });
     render(

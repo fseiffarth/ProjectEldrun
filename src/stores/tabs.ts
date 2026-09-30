@@ -8,6 +8,7 @@ import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
 import { forgetPty } from "../lib/agents/promptCount";
+import { forgetPromptTrail } from "./agents/promptTrail";
 import { BOX_SCOPE_PREFIX, splitPtyId } from "../lib/terminal/ptyId";
 import { METRIC, agentMetricLeaf, sub } from "../lib/usageMetrics";
 import { useLinkRoutingStore } from "./linkRouting";
@@ -2929,6 +2930,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // The PTY is gone; drop its half-typed-prompt state so a recycled id can
     // never inherit it.
     forgetPty(`${get().scope}:${key}`);
+    forgetPromptTrail(`${get().scope}:${key}`);
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const nextTabs = tabs.filter((t) => t.key !== key);
@@ -2974,6 +2976,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     useLinkRoutingStore.getState().purgeForTab(key);
     bumpUsage(scope, METRIC.TAB_CLOSED);
     forgetPty(`${scope}:${key}`);
+    forgetPromptTrail(`${scope}:${key}`);
     const emptiesPopout =
       !!detached && orderedTabKeys(detached.subtree).length === 1;
     set((s) => {
@@ -3064,6 +3067,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     for (const t of tabs) {
       purge(t.key);
       forgetPty(`${target}:${t.key}`);
+      forgetPromptTrail(`${target}:${t.key}`);
     }
     set((s) => {
       // Empty the scope entirely: no tabs, no layout, no detached/hidden records
@@ -3096,6 +3100,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     for (const tab of tabs) {
       purge(tab.key);
       forgetPty(`${scope}:${tab.key}`);
+      forgetPromptTrail(`${scope}:${tab.key}`);
     }
 
     set((s) => {
@@ -4754,6 +4759,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       for (const key of keys) {
         useLinkRoutingStore.getState().purgeForTab(key);
         forgetPty(`${scope}:${key}`);
+        forgetPromptTrail(`${scope}:${key}`);
       }
     }
     set((s) => {

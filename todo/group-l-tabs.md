@@ -353,6 +353,39 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
 
+213e. **Live-QA steering through every dialog and menu.** ✅ Implemented ·
+    🧪 Awaiting live QA (2026-09-30). Dialogs and menus no longer end
+    steering: whatever is on top — any `.modal-backdrop` dialog, the root
+    console, a right-click menu, a top-bar menu — is walked as the "Dialog or
+    menu" region (↑/↓ row to row, ←/→ along a row, Enter presses, a text field
+    takes the caret; Esc sends the dialog its own Escape, else presses its ×),
+    and steering returns to the surface it was opened from with the cursor
+    where it was (settings under a sub-dialog, the top bar under its menu).
+    It follows dialogs the app raises by itself as they mount. ↑ on the
+    projects level walks the top bar (←/→, ↓ drops a button's hover menu,
+    Enter presses — mail/calendar/to-do/settings open on their own regions and
+    Esc comes back to the bar). `.` (or the Menu key) opens the right-click
+    menu of the current project / active tab / highlighted row. A walks the
+    card over the active agent tab (Undo clear after K, sign-in link, update
+    notice). N (New project) and ? (cheat sheet, ↑/↓ scroll) stay in steering.
+    Verify: W on a tab needing confirmation → the confirm is walked, Esc
+    cancels; `,` → Appearance → a button raising the theme customizer → Esc
+    back on that button; E E from the tabs → top bar → D on mail's button →
+    its menu → Esc; `.` on a tab; K then A → Undo clear; B → a file row → `.`
+    → its menu; Shift+Space over a dialog opened by mouse.
+    *Files: `src/hooks/useKeyboard.ts`, `src/lib/shortcuts/steeringRegion.ts`,
+    `src/stores/keyboardSteering.ts`.*
+    - [x] 🤖 Automated test — `SteeringOverlays`, `SteeringSettings`.
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
 215. **Live-QA one-click installs in the root console.** ✅ Implemented · 🧪
     Awaiting live QA. Every one-click install (`runInstallInTab`: Ollama/agent
     CLI installs, the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login,

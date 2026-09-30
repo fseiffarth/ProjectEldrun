@@ -15,7 +15,7 @@ Just ask in an agent tab, in plain words:
 - "How do I install a local model in Eldrun?"
 - "Using the eldrun-help tools: how do I sync a remote project?"
 - "Why doesn't Gemini show up in my + menu?"
-- "What does steering mode do?"
+- "What does Eldrun navigation do?"
 - "How do I run a project inside a Docker container?"
 
 Naming "eldrun-help" or "Eldrun's help" in the question makes it more likely

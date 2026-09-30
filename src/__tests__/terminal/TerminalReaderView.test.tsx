@@ -1,0 +1,241 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+const invoke = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})), emit: vi.fn(() => Promise.resolve()) }));
+const sendSteeringPrompt = vi.fn();
+vi.mock("../../lib/shortcuts/steeringAgent", () => ({ sendSteeringPrompt: (...args: unknown[]) => sendSteeringPrompt(...args) }));
+const written: string[] = [];
+vi.mock("../../lib/terminal/terminalInput", () => ({
+  writePtyInput: (_id: string, bytes: Uint8Array) => { written.push(new TextDecoder().decode(bytes)); return Promise.resolve(); },
+}));
+
+import { TerminalReaderView } from "../../components/terminal/TerminalReaderView";
+import { TerminalPromptStrip } from "../../components/terminal/TerminalPromptStrip";
+import { mergeTranscript, readerOffered, readerRequest, rememberReader, rememberedReader } from "../../lib/agents/agentReader";
+import { useAgentReaderStore } from "../../stores/agents/agentReader";
+import { useTabsStore, type TabEntry } from "../../stores/tabs";
+import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
+import type { Terminal } from "@xterm/xterm";
+
+/** A pane's xterm as far as the Reader reads it: its active buffer. */
+function fakeTerminal(rows: string[]): Terminal {
+  return {
+    buffer: { active: { length: rows.length, getLine: (row: number) => (rows[row] === undefined ? undefined : { translateToString: () => rows[row] }) } },
+    onWriteParsed: () => ({ dispose() {} }),
+  } as unknown as Terminal;
+}
+
+const tab: TabEntry = { key: "agent-1", label: "Claude", cmd: "claude", cwd: "/p", kind: "agent", sessionId: "launch-1", launchedAt: 1000 };
+const transcript = {
+  available: true,
+  version: "v1",
+  truncated: true,
+  entries: [
+    { kind: "prompt", text: "fix the parser", at: "2026-09-30T08:00:00Z" },
+    { kind: "answer", text: "Done — **two** changes.", at: "2026-09-30T08:01:00Z" },
+    { kind: "prompt", text: "/model opus", at: "2026-09-30T08:02:00Z" },
+  ],
+};
+
+function reader(host: HTMLElement, onShowTerminal = () => {}) {
+  return render(
+    <TerminalReaderView host={host} ptyId="p:agent-1" scope="p" tabKey="agent-1" cwd="/p" visible focused onShowTerminal={onShowTerminal} />,
+  );
+}
+
+describe("the agent pane's Reader", () => {
+  let host: HTMLElement;
+  beforeEach(() => {
+    localStorage.clear();
+    invoke.mockReset();
+    sendSteeringPrompt.mockReset();
+    invoke.mockImplementation((command: string) =>
+      Promise.resolve(command === "agent_tab_transcript" ? transcript : []));
+    useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [tab] } }));
+    useAgentReaderStore.setState({ byPty: {} });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+  });
+  afterEach(() => host.remove());
+
+  it("draws the stored conversation: prompts, formatted answers, commands as rules", async () => {
+    reader(host);
+    await screen.findByText("fix the parser");
+    expect(host.querySelector(".terminal-reader-turn.user")?.textContent).toContain("fix the parser");
+    expect(host.querySelector(".terminal-reader-turn.agent strong")?.textContent).toBe("two");
+    expect(host.querySelector(".terminal-reader-command")?.textContent).toBe("/model opus");
+    expect(screen.getByRole("button", { name: "Show earlier turns" })).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith("agent_tab_transcript", expect.objectContaining({
+      agent: "claude", projectId: "p", sessionId: "launch-1", tabDir: "/p", since: 1000, version: null,
+    }));
+  });
+
+  it("sends a prompt through the prompt box's path and shows it as sending", async () => {
+    sendSteeringPrompt.mockResolvedValue(undefined);
+    reader(host);
+    await screen.findByText("fix the parser");
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "and add a test" } });
+    await act(async () => { fireEvent.keyDown(box, { key: "Enter" }); });
+    expect(sendSteeringPrompt).toHaveBeenCalledWith(expect.objectContaining({ key: "agent-1" }), "and add a test");
+    expect(host.querySelector(".terminal-reader-turn.pending")?.textContent).toContain("and add a test");
+    expect((box as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("keeps the text and says why when the prompt did not go in", async () => {
+    sendSteeringPrompt.mockRejectedValue(new Error("agent terminal is not ready"));
+    reader(host);
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "hello" } });
+    await act(async () => { fireEvent.keyDown(box, { key: "Enter" }); });
+    expect(screen.getByRole("alert").textContent).toMatch(/Not sent/);
+    expect((box as HTMLTextAreaElement).value).toBe("hello");
+  });
+
+  it("goes back to the terminal on Esc", async () => {
+    const back = vi.fn();
+    reader(host, back);
+    await screen.findByText("fix the parser");
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
+    expect(back).toHaveBeenCalled();
+  });
+
+  it("says why when there is no session to read", async () => {
+    useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [{ ...tab, sessionId: undefined }] } }));
+    reader(host);
+    await waitFor(() => expect(host.textContent).toMatch(/no session id yet/));
+    expect(invoke).not.toHaveBeenCalledWith("agent_tab_transcript", expect.anything());
+  });
+});
+
+describe("the Reader's live rows", () => {
+  let host: HTMLElement;
+  let term: Terminal | undefined;
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    written.length = 0;
+    invoke.mockReset();
+    invoke.mockImplementation((command: string) =>
+      Promise.resolve(command === "agent_tab_transcript" ? { ...transcript, truncated: false } : []));
+    useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [tab] } }));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+  });
+  afterEach(() => {
+    if (term) unregisterTerminal("p:agent-1", term);
+    host.remove();
+    vi.useRealTimers();
+  });
+
+  it("answers the question on screen with a click: arrows from the highlight, then Enter", async () => {
+    term = fakeTerminal([
+      "> fix the strings", "", "Edit file", "  src/lib/i18n.ts", "",
+      "Do you want to make this edit to i18n.ts?",
+      "❯ 1. Yes", "  2. Yes, allow all edits during this session", "  3. No, and tell Claude what to do differently",
+      "", "  esc to cancel",
+    ]);
+    registerTerminal("p:agent-1", term);
+    reader(host);
+    const group = await screen.findByRole("group", { name: "Waiting for your answer" });
+    expect(group.textContent).toMatch(/Do you want to make this edit/);
+    fireEvent.click(screen.getByRole("button", { name: /Yes, allow all edits/ }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(written).toEqual(["\u001b[B", "\r"]);
+    // Nothing can be clicked twice while the session redraws.
+    expect((screen.getByRole("button", { name: /No, and tell Claude/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows an agent's own question as its header, its question and tagged rows — not the screen", async () => {
+    term = fakeTerminal([
+      "> push it", "",
+      "● My fix is ready, but pushing develop now would also push four",
+      "  other commits.", "",
+      "☐ Push scope", "",
+      "Four other-session commits sit unpushed on develop. How should I land my",
+      "Windows/CodeQL fix?", "",
+      "❯ 1. Fix only (Recommended)", "     Put my fix directly on the pushed main.",
+      "  2. Push everything", "     Push develop with all four commits.",
+      "", "Enter to select · ↑/↓ to navigate · Esc to cancel",
+    ]);
+    registerTerminal("p:agent-1", term);
+    reader(host);
+    const group = await screen.findByRole("group", { name: "Waiting for your answer" });
+    expect(group.querySelector(".terminal-reader-question-tabs")?.textContent).toBe("Push scope");
+    expect(group.querySelector(".terminal-reader-question-ask")?.textContent)
+      .toBe("Four other-session commits sit unpushed on develop. How should I land my Windows/CodeQL fix?");
+    expect(group.querySelector(".terminal-reader-question-context")).toBeNull();
+    expect(group.textContent).not.toMatch(/☐|My fix is ready|\(Recommended\)/);
+    expect(group.querySelector(".terminal-reader-recommended")?.textContent).toBe("Recommended");
+  });
+
+  it("shows the agent at work and stops it with Esc", async () => {
+    term = fakeTerminal(["> fix it", "", "✻ Thinking… (9s · ↓ 1.2k tokens · esc to interrupt)", "> ", "  ? for shortcuts"]);
+    registerTerminal("p:agent-1", term);
+    reader(host);
+    const status = await screen.findByText("Agent is working…");
+    expect(status.parentElement?.textContent).toMatch(/9s · 1.2k tokens/);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Stop" })); });
+    expect(written).toEqual(["\u001b"]);
+  });
+});
+
+describe("the Chat switch on the prompt strip", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockImplementation(() => Promise.resolve([]));
+    useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [tab] } }));
+  });
+
+  it("shows only when offered and flips between Reader and Terminal", async () => {
+    const toggle = vi.fn();
+    const { rerender } = render(
+      <TerminalPromptStrip ptyId="p:agent-1" scope="p" tabKey="agent-1" background="#000" foreground="#fff" onReturnFocus={() => {}} />,
+    );
+    await act(async () => {});
+    expect(screen.queryByRole("button", { pressed: false, name: /Chat/ })).toBeNull();
+    rerender(
+      <TerminalPromptStrip ptyId="p:agent-1" scope="p" tabKey="agent-1" background="#000" foreground="#fff" onReturnFocus={() => {}} reader={{ open: false, onToggle: toggle }} />,
+    );
+    fireEvent.click(screen.getByRole("button", { pressed: false, name: /Chat/ }));
+    expect(toggle).toHaveBeenCalled();
+    rerender(
+      <TerminalPromptStrip ptyId="p:agent-1" scope="p" tabKey="agent-1" background="#000" foreground="#fff" onReturnFocus={() => {}} reader={{ open: true, onToggle: toggle }} />,
+    );
+    expect(screen.getByRole("button", { pressed: true, name: /Terminal/ })).toBeTruthy();
+  });
+});
+
+describe("agentReader helpers", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("offers the Reader only for agents whose transcript is read", () => {
+    expect(readerOffered(tab)).toBe(true);
+    expect(readerOffered({ kind: "agent", cmd: "codex" })).toBe(true);
+    expect(readerOffered({ kind: "agent", cmd: "gemini" })).toBe(false);
+    expect(readerOffered({ kind: "local_agent", cmd: "ollama" })).toBe(false);
+    expect(readerOffered({ kind: "shell", cmd: "bash" })).toBe(false);
+    expect(readerOffered(undefined)).toBe(false);
+  });
+
+  it("builds the read like the phone bridge: root has no project, --continue has no launch floor", () => {
+    expect(readerRequest("p", { ...tab, sessionId: undefined }, "/p", undefined, 60)).toBeNull();
+    expect(readerRequest("root", tab, "/r", "v9", 60)).toMatchObject({ projectId: null, version: "v9", limit: 60 });
+    expect(readerRequest("p", { ...tab, args: ["--continue"] }, "/p", undefined, 60)).toMatchObject({ since: null });
+  });
+
+  it("keeps what is shown when the read answers unchanged", () => {
+    const shown = { available: true, entries: [], truncated: false, version: "v1" };
+    expect(mergeTranscript(shown, { available: true, unchanged: true, entries: [], truncated: false })).toBe(shown);
+  });
+
+  it("remembers the choice per agent CLI; the terminal is the default", () => {
+    expect(rememberedReader("claude")).toBe(false);
+    rememberReader("claude", true);
+    expect(rememberedReader("claude")).toBe(true);
+    expect(rememberedReader("codex")).toBe(false);
+    rememberReader("claude", false);
+    expect(rememberedReader("claude")).toBe(false);
+  });
+});

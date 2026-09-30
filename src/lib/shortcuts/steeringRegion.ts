@@ -17,6 +17,7 @@
  * so a surface needs no steering code of its own to be walkable.
  */
 import { experimentalEnabled } from "../experimental";
+import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import type { FilesPanelView, Settings } from "../../types";
 import type { SteeringRegion } from "../../stores/keyboardSteering";
 
@@ -62,6 +63,12 @@ export function regionRoot(region: SteeringRegion): HTMLElement | null {
       return document.querySelector<HTMLElement>(".side-panel.open");
     case "addTab":
       return lastMatch(".tab-add-menu");
+    case "header":
+      return document.querySelector<HTMLElement>(".app-header");
+    case "card":
+      return activeTabCard();
+    case "overlay":
+      return topLayer();
     case "settings":
       // The page, not the whole dialog: ←/→ step the left-hand list
       // (`stepSettingsPage`), so ↑/↓ need not wade through it.
@@ -76,9 +83,191 @@ export function regionRoot(region: SteeringRegion): HTMLElement | null {
   }
 }
 
-/** The settings dialog, while it is open. */
+/** The settings dialog, while it is open — the one with the page list, not
+ *  the other dialogs that borrow its frame (the theme customizer, How to
+ *  start, a project's file settings). */
 export function settingsDialog(): HTMLElement | null {
-  return lastMatch(".settings-dialog");
+  const all = Array.from(document.querySelectorAll<HTMLElement>(".settings-dialog:not(.how-to-start-dialog)"));
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (all[i].querySelector(".settings-navigation-links")) return all[i];
+  }
+  return null;
+}
+
+// ── Layers: whatever floats over the window ──────────────────────────────
+// Dialogs, the header apps and the root console (all `.modal-backdrop`, most
+// with an `aria-modal` frame), right-click menus (`.context-menu`, the shared
+// `ContextMenuPortal`), and the top bar's drop-down menus. Steering walks the
+// one on top (the "overlay" region) instead of acting behind it.
+
+/** Floating surfaces that sit over the whole window. */
+const LAYER =
+  ".modal-backdrop, [aria-modal='true'], .context-menu-portal, .context-menu:not(.dropdown-menu)";
+/** The top bar's drop-down menus: in the header's own tree, so they come first
+ *  in the document — any window-wide layer is above them. */
+const HEADER_POPUP =
+  ".app-header [role='menu'], .app-header .tab-new-menu, .app-header .project-switcher-add-menu";
+
+function lastShown(selector: string): HTMLElement | null {
+  const all = document.querySelectorAll<HTMLElement>(selector);
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (shown(all[i]) && !all[i].closest(".steering-legend")) return all[i];
+  }
+  return null;
+}
+
+/** The floating surface on top, or null when the window is bare. Last in the
+ *  document wins: a portal opens at the end of <body>, a dialog raised from
+ *  inside another sits inside it, and among equal z-indexes the later one
+ *  paints on top. */
+export function topLayer(): HTMLElement | null {
+  return lastShown(LAYER) ?? lastShown(HEADER_POPUP);
+}
+
+/** The region that walks `layer`: the surfaces with a region of their own
+ *  keep it (settings pages, a header app, the + menu), anything else is the
+ *  generic overlay. */
+export function regionForLayer(layer: HTMLElement): SteeringRegion {
+  const holds = (sel: string) => layer.matches(sel) || !!layer.querySelector(sel);
+  const settings = settingsDialog();
+  if (settings && layer.contains(settings)) return "settings";
+  for (const app of ["mail", "calendar", "todo"] as const) {
+    if (holds(`.root-overlay.${app}-overlay`)) return app;
+  }
+  if (holds(".tab-add-menu")) return "addTab";
+  return "overlay";
+}
+
+/** Keys steering sends on the user's behalf (Escape to a dialog, ↓ to a menu
+ *  button). Its own listeners let them through. */
+const synthetic = new WeakSet<Event>();
+
+export function isSteeringSynthetic(e: Event): boolean {
+  return synthetic.has(e);
+}
+
+function sendKey(target: HTMLElement, key: string): boolean {
+  const e = new KeyboardEvent("keydown", { key, code: key, bubbles: true, cancelable: true });
+  synthetic.add(e);
+  return target.dispatchEvent(e);
+}
+
+/**
+ * Close `layer` the way its own Escape does — the dialog decides (a dirty form
+ * may ask first). The key goes to what has focus inside it, else to the layer
+ * itself; never to a terminal or text field in it, where Escape is the
+ * program's. A layer that ignores Escape and is still up a moment later gets
+ * its × pressed, or — a menu — a click beside it; a dialog with neither is
+ * left for its Cancel button. `after` runs once that fallback had its turn.
+ */
+export function dismissLayer(layer: HTMLElement, after?: () => void): void {
+  const focused = document.activeElement;
+  const target =
+    focused instanceof HTMLElement && layer.contains(focused) && !isTextEntry(focused) && !focused.closest(".xterm")
+      ? focused
+      : layer;
+  sendKey(target, "Escape");
+  window.setTimeout(() => {
+    fallBack();
+    if (after) window.setTimeout(after, 0);
+  }, 0);
+  function fallBack() {
+    if (!layer.isConnected || !shown(layer)) return;
+    const close = Array.from(layer.querySelectorAll<HTMLElement>(".dialog-close-btn")).find(shown);
+    if (close) {
+      close.click();
+      return;
+    }
+    if (layer.matches(HEADER_POPUP)) {
+      // A top-bar menu steering hovered open has no mouse-leave coming.
+      useHeaderHoverMenuStore.setState({ openId: null });
+    }
+    if (layer.matches(".context-menu, .context-menu-portal, [role='menu'], .tab-new-menu, .project-switcher-add-menu")) {
+      const away = document.querySelector<HTMLElement>(".context-menu-catcher") ?? document.body;
+      away.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    }
+  }
+}
+
+/** Drop the menu of the control under the cursor as the pointer would — the
+ *  top bar's buttons open theirs on hover (a mouse-over from outside the
+ *  window, so the button's wrapper sees it entered), which moves no focus.
+ *  False when it has no menu. */
+export function openCursorPopup(): boolean {
+  const el = regionCursor();
+  if (!el?.hasAttribute("aria-haspopup")) return false;
+  if (el.getAttribute("aria-expanded") !== "true") {
+    el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null }));
+  }
+  return true;
+}
+
+/** Right-click `el`: its context menu opens under it, as the pointer would
+ *  open it. */
+export function openContextMenu(el: HTMLElement): void {
+  const r = el.getBoundingClientRect();
+  el.dispatchEvent(
+    new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: r.left + Math.min(12, r.width / 2),
+      clientY: r.bottom,
+    }),
+  );
+}
+
+/** The workspace's active tab, as its tab bar draws it — not a header app's
+ *  or the root console's (they share the subwindow frame). */
+export function activeTabElement(): HTMLElement | null {
+  const all = Array.from(document.querySelectorAll<HTMLElement>(".subwindow.focused .tab.active"));
+  return all.find((el) => shown(el) && !el.closest(".root-overlay")) ?? null;
+}
+
+/** The card floating over the active tab's terminal — Undo clear, a sign-in
+ *  link, a CLI update notice (`TerminalSignInCard` and its siblings, all in
+ *  its frame); only the active tab's pane is on screen. */
+export function activeTabCard(): HTMLElement | null {
+  const all = Array.from(document.querySelectorAll<HTMLElement>(".subwindow.focused .terminal-sign-in"));
+  return all.find((el) => shown(el) && !el.closest(".root-overlay")) ?? null;
+}
+
+/** The current project's pill (or box chip) in the header. */
+export function activeProjectElement(): HTMLElement | null {
+  return Array.from(document.querySelectorAll<HTMLElement>(".project-pill.active, .box-chip.active")).find(shown) ?? null;
+}
+
+/** Scroll `root`'s first scrolling box by part of its height — for a surface
+ *  with nothing to press but text to read (the shortcut cheat sheet). False
+ *  when nothing in it scrolls. */
+export function scrollRegion(root: HTMLElement, delta: 1 | -1): boolean {
+  const boxes = [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))];
+  const box = boxes.find(
+    (el) => el.scrollHeight > el.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(el).overflowY),
+  );
+  if (!box) return false;
+  box.scrollTop += delta * Math.max(40, Math.round(box.clientHeight * 0.4));
+  return true;
+}
+
+/** Whether `root` has anything to press besides its ×. */
+export function regionHasControls(root: HTMLElement): boolean {
+  return regionTargets(root).some((el) => !el.matches(".dialog-close-btn"));
+}
+
+const LAYER_CLASS = "steer-layer";
+let markedLayer: HTMLElement | null = null;
+
+/** Frame the surface the overlay region walks (the dialog inside a backdrop,
+ *  else the layer itself); null clears it. */
+export function markLayer(layer: HTMLElement | null) {
+  const frame =
+    layer?.matches(".modal-backdrop") && layer.firstElementChild instanceof HTMLElement
+      ? layer.firstElementChild
+      : layer;
+  if (frame === markedLayer) return;
+  markedLayer?.classList.remove(LAYER_CLASS);
+  markedLayer = frame;
+  frame?.classList.add(LAYER_CLASS);
 }
 
 /** Open the previous / next page of the settings dialog's left-hand list
@@ -106,6 +295,11 @@ function pointerish(el: Element): boolean {
   return getComputedStyle(el).cursor === "pointer";
 }
 
+/** Never under the cursor: the project pills (the projects level walks them —
+ *  the top bar's walk would wade through every one) and the window's own
+ *  minimize / maximize / close buttons. */
+const NOT_A_TARGET = ".app-header .project-pill, .wm-controls";
+
 /** Everything in `root` the cursor can land on, in document order. A clickable
  *  row counts once — its label spans inherit `cursor: pointer` but are not
  *  targets of their own — while a real control nested in it (a row's × button)
@@ -113,6 +307,7 @@ function pointerish(el: Element): boolean {
 export function regionTargets(root: HTMLElement): HTMLElement[] {
   const out: HTMLElement[] = [];
   for (const el of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
+    if (el.closest(NOT_A_TARGET)) continue;
     const pressable = el.matches(PRESSABLE);
     if (!pressable) {
       if (!pointerish(el)) continue;
@@ -124,7 +319,12 @@ export function regionTargets(root: HTMLElement): HTMLElement[] {
   return out;
 }
 
-function setCursor(el: HTMLElement | null) {
+/** Where the cursor last was on each surface, so coming back to one (a dialog
+ *  opened from it closed, a menu picked) lands where it left. */
+let lastCursorIn = new WeakMap<HTMLElement, HTMLElement>();
+
+function setCursor(el: HTMLElement | null, root?: HTMLElement) {
+  if (el && root) lastCursorIn.set(root, el);
   if (cursor === el) return;
   cursor?.classList.remove(CURSOR_CLASS);
   cursor = el;
@@ -135,6 +335,22 @@ function setCursor(el: HTMLElement | null) {
 
 export function clearRegionCursor() {
   setCursor(null);
+}
+
+/** Forget every surface's last cursor (tests). */
+export function forgetRegionCursors() {
+  lastCursorIn = new WeakMap();
+}
+
+/** Put the cursor back where it last was on `root`, if that control is still
+ *  there; else as `placeRegionCursor` does. */
+export function resumeRegionCursor(root: HTMLElement): boolean {
+  const back = lastCursorIn.get(root);
+  if (back?.isConnected && root.contains(back) && regionTargets(root).includes(back)) {
+    setCursor(back, root);
+    return true;
+  }
+  return placeRegionCursor(root);
 }
 
 /** The element under the cursor, if it is still on screen. */
@@ -153,7 +369,7 @@ export function placeRegionCursor(root: HTMLElement): boolean {
   );
   // Never land on a dialog's × first: Enter there would close what was just
   // opened.
-  setCursor(selected ?? targets.find((el) => !el.matches(".dialog-close-btn")) ?? targets[0]);
+  setCursor(selected ?? targets.find((el) => !el.matches(".dialog-close-btn")) ?? targets[0], root);
   return true;
 }
 
@@ -172,7 +388,44 @@ export function moveRegionCursor(root: HTMLElement, delta: 1 | -1): void {
         ? 0
         : targets.length - 1
       : (at + delta + targets.length) % targets.length;
-  setCursor(targets[next]);
+  setCursor(targets[next], root);
+}
+
+/** Whether `b` sits on `a`'s line: nested in it (a row's own buttons), or
+ *  overlapping it vertically (a toolbar's). */
+function sameLine(a: HTMLElement, b: HTMLElement): boolean {
+  if (a.contains(b) || b.contains(a)) return true;
+  const ra = a.getBoundingClientRect();
+  const rb = b.getBoundingClientRect();
+  return Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top) > 1;
+}
+
+/** `targets` cut into lines: runs, in document order, that share their first
+ *  target's line. */
+function regionLines(targets: HTMLElement[]): HTMLElement[][] {
+  const lines: HTMLElement[][] = [];
+  for (const el of targets) {
+    const line = lines[lines.length - 1];
+    if (line && sameLine(line[0], el)) line.push(el);
+    else lines.push([el]);
+  }
+  return lines;
+}
+
+/** Step the cursor a whole line, wrapping — onto the next row, not through
+ *  the buttons beside it or inside it (←/→ still walk those). The cursor lands
+ *  on the line's first target: the row itself, a toolbar's first button. */
+export function moveRegionCursorByLine(root: HTMLElement, delta: 1 | -1): void {
+  const lines = regionLines(regionTargets(root));
+  if (lines.length === 0) {
+    setCursor(null);
+    return;
+  }
+  const current = cursor;
+  const at = current ? lines.findIndex((line) => line.includes(current)) : -1;
+  const next =
+    at < 0 ? (delta > 0 ? 0 : lines.length - 1) : (at + delta + lines.length) % lines.length;
+  setCursor(lines[next][0], root);
 }
 
 function isTextEntry(el: HTMLElement): boolean {

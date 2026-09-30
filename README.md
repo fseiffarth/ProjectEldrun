@@ -676,7 +676,7 @@ restarting Eldrun) restores your position instead of jumping to the top.
   pointer hover and disappears when the pointer leaves, keeping the center
   terminal unobstructed; the side panel can also be pinned permanently open.
 - **Appearance and responsiveness**: a Theme Customizer with saved presets,
-  keyboard steering and shortcut help, Fast mode, and Energy Saver. Hidden
+  Eldrun navigation and shortcut help, Fast mode, and Energy Saver. Hidden
   viewers suspend background work and hidden terminals buffer output until
   shown. Settings groups less frequently changed controls under Advanced
   options.

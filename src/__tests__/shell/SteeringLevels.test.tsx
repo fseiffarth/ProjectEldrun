@@ -45,6 +45,7 @@ import {
   clearRegionCursor,
   focusRegionSearch,
   moveRegionCursor,
+  moveRegionCursorByLine,
   placeRegionCursor,
   regionCursor,
   regionTargets,
@@ -183,7 +184,7 @@ describe("steering levels", () => {
     expect(steering().level).toBe("projects");
   });
 
-  it("opens new tabs in the focused pane by type, then steps aside", () => {
+  it("opens new tabs in the focused pane by type and stays in steering", () => {
     twoPanes();
     render(<Harness />);
     const requests: NewTabShortcutDetail[] = [];
@@ -196,13 +197,15 @@ describe("steering levels", () => {
       press({ key: " ", shiftKey: true });
       press({ key: "n" });
       expect(requests[requests.length - 1]?.request).toEqual({ kind: "shell" });
-      expect(steering().active).toBe(false);
+      expect(steering().active).toBe(true);
+      press({ key: "o" });
+      expect(requests[requests.length - 1]?.request).toEqual({ kind: "monitor" });
+      expect(steering().active).toBe(true);
 
-      press({ key: " ", shiftKey: true });
       press({ key: "2" });
       expect(requests[requests.length - 1]?.request).toEqual({ kind: "agent", slot: 1 });
+      expect(steering().active).toBe(true);
 
-      press({ key: " ", shiftKey: true });
       press({ key: "+" });
       expect(requests[requests.length - 1]?.request).toEqual({ kind: "menu" });
       expect(steering()).toMatchObject({ active: true, level: "region", region: "addTab" });
@@ -501,5 +504,36 @@ describe("region cursor", () => {
     expect(activateRegionCursor()).toBe("type");
     expect(document.activeElement?.id).toBe("field");
     expect(document.querySelector(".steer-cursor")).toBeNull();
+  });
+
+  it("steps whole lines: a toolbar, then row by row past each row's own buttons", () => {
+    document.body.innerHTML = `
+      <div id="root">
+        <button id="t1" data-top="0">reply</button>
+        <button id="t2" data-top="0">delete</button>
+        <div id="r1" role="button" data-top="20" data-height="30"><button id="r1b" data-top="22">☐</button></div>
+        <div id="r2" role="button" data-top="50" data-height="30"><button id="r2b" data-top="52">☐</button></div>
+      </div>`;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const top = Number(this.dataset.top ?? 0);
+      const height = Number(this.dataset.height ?? 10);
+      return { top, bottom: top + height, width: 10, height } as DOMRect;
+    });
+    const root = document.getElementById("root")!;
+    const at = () => regionCursor()?.id;
+    moveRegionCursorByLine(root, 1);
+    expect(at()).toBe("t1");
+    moveRegionCursorByLine(root, 1);
+    expect(at()).toBe("r1");
+    moveRegionCursorByLine(root, 1);
+    expect(at()).toBe("r2");
+    // From a row's own button, ↑ goes to the row above, not back onto its row.
+    moveRegionCursor(root, 1);
+    expect(at()).toBe("r2b");
+    moveRegionCursorByLine(root, -1);
+    expect(at()).toBe("r1");
+    moveRegionCursorByLine(root, -1);
+    moveRegionCursorByLine(root, -1);
+    expect(at()).toBe("r2");
   });
 });

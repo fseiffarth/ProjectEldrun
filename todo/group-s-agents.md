@@ -2395,3 +2395,41 @@ unchanged; the new agents are additive.
       - [ ] ❌ Doesn't work on Windows
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
+
+- [~] **Agent conversation as a chat on the desktop** (2026-09-30; ✅ code-complete, ❌ never
+  live-verified — `UntestedTag` id `terminal.reader`): the phone's Focus chat
+  (its Reader) as an optional view of a desktop Claude / Codex / OpenCode tab — the prompt
+  strip's **Chat** switch covers the terminal (still running underneath)
+  with the stored conversation (`agent_tab_transcript`, polled while shown)
+  and a composer that sends like the prompt box. Files:
+  `components/terminal/TerminalReaderView.tsx`, `lib/agents/agentReader.ts`,
+  `stores/agents/agentReader.ts`, `lib/agents/readerLive.ts` (live
+  question buttons + working row / Stop), a lesson step in
+  `lib/lessons.ts` (install-agent), `TerminalPromptStrip.tsx`,
+  `TerminalView.tsx`, `subwindows.css`. Not done: opening a subagent's
+  conversation, the phone's read-aloud, held prompts.
+  - [x] 🤖 Automated test — `TerminalReaderView.test.tsx`
+  - [ ] 🖐️ Manual test — (1) In a Claude tab with a few turns, click
+    **Chat** on the prompt row → the chat shows prompts right, formatted
+    answers left, `/model …` as a rule, day chip and times. (2) Type a prompt,
+    Enter → it shows as Sending…, the agent answers, both appear as bubbles
+    without the list jumping. (3) Send again while the agent works → queued
+    by the CLI, recorded once it takes it. (4) Esc in the box → terminal back
+    with keyboard focus; **Chat** again → chat back. (5) Open a new Claude
+    tab → it opens as a chat; a Codex tab still opens on its terminal.
+    (6) Show earlier turns on a long session keeps the view in place.
+    (7) A Gemini tab shows no Chat switch. (7a) Ask Claude for a file
+    edit without auto-accept → the permission prompt shows under the chat
+    with the file and Yes / Yes-allow-all / No buttons; clicking one answers
+    it and the buttons go. (7b) While it works → the working row with its
+    timer; Stop interrupts the turn. (7c) Same with Codex's approval prompt. (8) `/clear` in the terminal →
+    the Undo-clear card shows over the chat, and the chat follows the
+    new conversation.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS

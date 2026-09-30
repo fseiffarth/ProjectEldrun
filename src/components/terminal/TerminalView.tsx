@@ -37,11 +37,19 @@ import { copyableSelection, installMouseModeGuard, joinedSelectionText } from ".
 import { keySelectHighlight, keySelectRange, keySelectStep, scrollToShow, startKeySelect, type KeySelectState } from "../../lib/terminal/keyboardSelect";
 import { findSignInRequest, findWrappedUrls, type SignInRequest } from "../../lib/terminal/terminalUrls";
 import { SIGN_IN_CARD_CLASS, TerminalSignInCard } from "./TerminalSignInCard";
+import { TerminalPromptStrip } from "./TerminalPromptStrip";
+import { TerminalReaderView } from "./TerminalReaderView";
+import { readerOffered } from "../../lib/agents/agentReader";
+import { useAgentReaderStore, useReaderOpen } from "../../stores/agents/agentReader";
+import { useTabsStore } from "../../stores/tabs";
 import { TerminalUndoClearCard } from "./TerminalUndoClearCard";
 import { TerminalVersionCard } from "./TerminalVersionCard";
 import { UntestedTag } from "../common/UntestedTag";
+import { type ConfirmSpec, useDialogs } from "../common/PromptDialogs";
 import { noteTypedClear, useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
 import { noteTypedLine } from "../../lib/agents/typedClear";
+import { isSessionCommand } from "../../lib/agents/prompt/chart";
+import { notePromptTrailInput } from "../../stores/agents/promptTrail";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -458,6 +466,29 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   // What the pane says when the Windows "full rights" acceptance was declined.
   const unfencedDeclinedTextRef = useRef<() => string>(() => "");
   unfencedDeclinedTextRef.current = () => t("unfencedPlatform.declined");
+  // A clicked link never opens straight away: the user confirms the exact URL
+  // first, since anything a program prints can be a link. Refs, because the
+  // spawn effect below outlives renders.
+  const { dialogs, confirmAction } = useDialogs();
+  const confirmLinkRef = useRef<(url: string) => Promise<boolean>>(() => Promise.resolve(false));
+  confirmLinkRef.current = (url) => {
+    const spec: ConfirmSpec = {
+      title: (
+        <>
+          {t("terminal.openLink.title")}
+          <UntestedTag id="terminal.openLink.title" />
+        </>
+      ),
+      body: (
+        <>
+          {t("terminal.openLink.body")}
+          <code className="file-delete-path" style={{ display: "block", marginTop: 8 }}>{url}</code>
+        </>
+      ),
+      confirmLabel: t("terminal.openLink.confirm"),
+    };
+    return confirmAction(spec);
+  };
 
   // The sign-in link the program on screen is waiting on (see
   // `TerminalSignInCard`), and the links the user already closed the card for.
@@ -531,7 +562,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // second press away from xterm and from the agent pane's paste). xterm
     // activates a link on each release, so the double-click's second release
     // (`detail` 2) is ignored here. The hovered link is tracked because the
-    // second press has to know it is on one before xterm sees it.
+    // second press has to know it is on one before xterm sees it. Opening
+    // always asks first (`confirmLinkRef`).
     let hoveredLink: string | null = null;
     let linkOpenTimer: ReturnType<typeof setTimeout> | null = null;
     const cancelLinkOpen = () => {
@@ -543,7 +575,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       cancelLinkOpen();
       linkOpenTimer = setTimeout(() => {
         linkOpenTimer = null;
-        void invoke("open_external_url", { url }).catch(() => {});
+        void confirmLinkRef.current(url).then((ok) => {
+          if (ok) return invoke("open_external_url", { url });
+        }).catch(() => {});
       }, LINK_OPEN_DELAY_MS);
     };
     const linkHover = {
@@ -578,6 +612,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         );
       },
     });
+    // OSC 8 hyperlinks (a link whose text is not its URL) take the same path;
+    // xterm's own handler would ask with a native box and `window.open` it.
+    term.options.linkHandler = { activate: activateLink, hover: linkHover.hover, leave: linkHover.leave };
     term.loadAddon(fit);
     term.loadAddon(links);
 
@@ -866,6 +903,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       ? registerScheduledAgentInput(scheduleTargetId, {
           ptyId: id,
           ready: scheduledInputReady,
+          started: () => scheduledReady.current || terminalReadySeen.current,
           bracketedPaste: () => term.modes.bracketedPasteMode === true,
           // The family decides whether the markers are used at all: a prompt
           // pasted into Claude Code arrives as `<pasted_content>` rather than
@@ -895,11 +933,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // a scheduled prompt aimed at a tab that was merely clicked into then
       // waited for a Stop that no submission was going to bring.
       if (!isTerminalAutoReply(data)) {
+        // Read before the keystroke retires the agent's decision verdict.
+        const deciding = useActivityStore.getState().attentionByTab[id] === "decision";
         noteUserInput(id, isInterruptInput(data));
         if (noteInput(id, data) > 0) countSubmit();
         // A typed `/clear` (or `/new`) offers "Undo clear" — the one way the
         // window learns of it from an agent whose hooks say nothing.
         if ((kind === "agent" || kind === "local_agent") && noteTypedLine(id, data)) noteTypedClear(id);
+        // The prompt strip's own reading of what was asked, CLI-blind: a
+        // one-key answer or a session command is not a prompt.
+        if (kind === "agent" || kind === "local_agent") {
+          notePromptTrailInput(id, data, deciding, (text) => text.length > 1 && !isSessionCommand(text));
+        }
       }
       writePtyInput(id, PTY_ENCODER.encode(data)).catch(console.error);
     };
@@ -1876,16 +1921,33 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     };
   }, [id, viewerId]);
 
-  // Take keyboard focus only when this pane is the focused one (and opened).
+  // The Reader over an agent pane (`TerminalReaderView`): offered only for a
+  // CLI whose transcript Eldrun reads, and only in the tab's own pane.
+  const readerIds = splitPtyId(id);
+  const readerTab = useTabsStore((state) => readerIds
+    ? state.tabsByScope[readerIds.scope]?.find((entry) => entry.key === readerIds.key)
+    : undefined);
+  const readerAvailable = readerOffered(readerTab) && !attachOnly;
+  const readerOn = useReaderOpen(id, cmd, readerAvailable);
+  const setReader = (on: boolean) => {
+    useAgentReaderStore.getState().set(id, cmd, on);
+    if (!on) setTimeout(() => termRef.current?.focus(), 0);
+  };
+
+  // Take keyboard focus only when this pane is the focused one (and opened);
+  // over a shown Reader, its composer takes it.
   useEffect(() => {
-    if (focused && openedRef.current && termRef.current) termRef.current.focus();
-  }, [focused]);
+    if (focused && !readerOn && openedRef.current && termRef.current) termRef.current.focus();
+  }, [focused, readerOn]);
 
   const dismissSignIn = (url: string) => {
     dismissedSignIns.current.add(url);
     setSignIn(null);
   };
 
+  // The spawn effect's own reading of the tab kind (see there).
+  const paneKind: TabKind = declaredKind ?? (env.ELDRUN_LOCAL_MODEL || env.VIBE_ACTIVE_MODEL ? "local_agent" : cmdToKind(cmd));
+  const splitId = splitPtyId(id);
   return (
     <>
     <div
@@ -1910,6 +1972,31 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         background: terminalTheme(colorScheme).background,
       }}
     />
+    {/* After the terminal in the DOM (the pane's first child is its xterm
+        host everywhere else), drawn above it by `order` in the stylesheet. */}
+    {(paneKind === "agent" || paneKind === "local_agent") && splitId && (
+      <TerminalPromptStrip
+        ptyId={id}
+        scope={splitId.scope}
+        tabKey={splitId.key}
+        background={terminalTheme(colorScheme).background}
+        foreground={terminalTheme(colorScheme).foreground ?? "inherit"}
+        onReturnFocus={() => termRef.current?.focus()}
+        reader={readerAvailable ? { open: readerOn, onToggle: () => setReader(!readerOn) } : undefined}
+      />
+    )}
+    {readerOn && splitId && containerRef.current && (
+      <TerminalReaderView
+        host={containerRef.current}
+        ptyId={id}
+        scope={splitId.scope}
+        tabKey={splitId.key}
+        cwd={cwd}
+        visible={visible}
+        focused={focused}
+        onShowTerminal={() => setReader(false)}
+      />
+    )}
     {signIn && containerRef.current && (
       <TerminalSignInCard
         key={signIn.url}
@@ -1957,6 +2044,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       </div>,
       containerRef.current,
     )}
+    {dialogs}
     </>
   );
 }

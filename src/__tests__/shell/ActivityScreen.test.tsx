@@ -180,6 +180,29 @@ describe("Mobile activity list — rows", () => {
   });
 });
 
+describe("Mobile activity list — plan and goal", () => {
+  it("wears the desktop's PLAN / GOAL pills and a tinted edge while the session is in either", async () => {
+    answer([
+      tab("Planner", "working", { agent_plan: true }),
+      tab("Chaser", "working", { agent_goal: true }),
+      tab("Both", "done", { agent_plan: true, agent_goal: true }),
+      tab("Plain", "done"),
+    ]);
+    render(<Activity open={() => {}} onConnection={() => {}} />);
+    await screen.findByText("Planner");
+    const marks = (label: string) => [...screen.getByText(label).closest("button")!.querySelectorAll(".agent-mode-mark")].map((n) => n.textContent);
+    const card = (label: string) => screen.getByText(label).closest("button")!;
+    expect(marks("Planner")).toEqual(["PLAN"]);
+    expect(card("Planner").classList.contains("in-plan")).toBe(true);
+    expect(marks("Chaser")).toEqual(["GOAL"]);
+    expect(card("Chaser").classList.contains("in-goal")).toBe(true);
+    expect(marks("Both")).toEqual(["PLAN", "GOAL"]);
+    expect(card("Both").classList.contains("in-plan")).toBe(true);
+    expect(marks("Plain")).toEqual([]);
+    expect(card("Plain").className).not.toMatch(/in-(plan|goal)/);
+  });
+});
+
 describe("Mobile activity list — polling discipline", () => {
   it("does not ask while the page is hidden, and catches up when it is shown", async () => {
     visibility = "hidden";

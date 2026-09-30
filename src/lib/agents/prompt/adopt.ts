@@ -29,7 +29,7 @@ export function foldPrompt(text: string): string {
 /** Whether a history row went to `tab`: by tab id (the launch id, the same
  * across `/clear`), by session id for a row written before the tab id was
  * recorded, or by label for a tab that had no session id at all. */
-function rowOfTab(row: SentAgentPrompt, tab: TabEntry): boolean {
+export function rowOfTab(row: SentAgentPrompt, tab: TabEntry): boolean {
   return (!!tab.sessionId && (row.tab_id === tab.sessionId || row.session_id === tab.sessionId))
     || row.tab_label === tab.label;
 }
@@ -72,7 +72,7 @@ export const SAME_PROMPT_MS = 65 * 60_000;
 
 /** Whether a transcript's (folded, possibly cut) line reads as a recorded
  * message: the same words, or the opening of them when the line was cut. */
-function sameWords(recorded: string, seen: string): boolean {
+export function sameWords(recorded: string, seen: string): boolean {
   const a = foldPrompt(recorded);
   const b = foldPrompt(seen);
   return b.endsWith("…") ? a.startsWith(b.slice(0, -1)) : a === b;
