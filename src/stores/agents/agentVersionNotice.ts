@@ -11,10 +11,9 @@ import { create } from "zustand";
  * line or an approval-row parser, and a tab that misreads its agent should say
  * why before the user goes looking.
  *
- * One read per window, shared by every pane: `agent_versions` answers from its
- * day-long cache and probes only what is stale, so a relaunch restoring ten
- * agent tabs costs at most one probe per installed CLI, not ten. Informational
- * only — nothing is blocked.
+ * Reads from panes share an in-flight request. The backend reuses a probe while
+ * the executable is unchanged, so a new tab or window focus can pick up a CLI
+ * update without launching a probe for every pane. Informational only.
  */
 
 /** Backend `services::agent_versions::StaleNote`. */
@@ -49,8 +48,8 @@ interface AgentVersionNoticeStore {
   /** Registry ids closed with × this window: gone from every tab until the
    *  next start, without claiming the release was looked at. */
   hidden: Record<string, true>;
-  loaded: boolean;
   load: () => Promise<void>;
+  update: (rows: VersionReport[]) => void;
   /** × on a card. */
   hide: (agent: string) => void;
   /** "Don't remind me for this version" — persisted per version, so the next
@@ -79,26 +78,24 @@ let inflight: Promise<void> | null = null;
 export const useAgentVersionNoticeStore = create<AgentVersionNoticeStore>((set, get) => ({
   newer: {},
   hidden: {},
-  loaded: false,
   load: () => {
-    if (get().loaded) return Promise.resolve();
     inflight ??= invoke<VersionReport[]>("agent_versions", { refresh: false })
-      .then((rows) => {
-        const newer: Record<string, NewerAgentVersion> = {};
-        for (const row of rows) {
-          const notice = newerNotice(row);
-          if (notice) newer[notice.agent] = notice;
-        }
-        set({ newer, loaded: true });
-      })
+      .then((rows) => get().update(rows))
       .catch(() => {
         // No version answer is no notice; the settings row still shows why.
-        set({ loaded: true });
       })
       .finally(() => {
         inflight = null;
       });
     return inflight;
+  },
+  update: (rows) => {
+    const newer: Record<string, NewerAgentVersion> = {};
+    for (const row of rows) {
+      const notice = newerNotice(row);
+      if (notice) newer[notice.agent] = notice;
+    }
+    set({ newer });
   },
   hide: (agent) => set((state) => ({ hidden: { ...state.hidden, [agent]: true } })),
   dismiss: async (agent) => {
@@ -122,5 +119,5 @@ export const useAgentVersionNoticeStore = create<AgentVersionNoticeStore>((set, 
 /** Test hook: forget the window's read. */
 export function resetAgentVersionNotice() {
   inflight = null;
-  useAgentVersionNoticeStore.setState({ newer: {}, hidden: {}, loaded: false });
+  useAgentVersionNoticeStore.setState({ newer: {}, hidden: {} });
 }

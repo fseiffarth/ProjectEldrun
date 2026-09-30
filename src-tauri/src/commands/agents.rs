@@ -1597,16 +1597,17 @@ pub async fn agent_usage(agent: String, refresh: Option<bool>) -> AgentUsageRepo
 /// the timeout actually reaps, and the state dir as cwd so no project folder's
 /// first-run trust prompt gets in the way of a question that has nothing to do
 /// with that folder.
-async fn probe_agent_version(spec: &'static AgentSpec) -> Result<String, String> {
+async fn probe_agent_version(
+    spec: &'static AgentSpec,
+    path: &std::path::Path,
+) -> Result<String, String> {
     use crate::services::agent_versions as versions;
 
     let argv = versions::version_argv(spec.id)
         .ok_or_else(|| format!("{} has no known version flag", spec.label))?;
-    let path =
-        resolve_spec_path(spec).ok_or_else(|| format!("{} is not installed", spec.label))?;
     let cwd = warmup_dir()?;
 
-    let mut cmd = tokio::process::Command::from(crate::paths::command_no_window(&path));
+    let mut cmd = tokio::process::Command::from(crate::paths::command_no_window(path));
     cmd.args(&argv)
         .envs(versions::version_env(spec.id).iter().copied())
         .current_dir(&cwd)
@@ -1652,11 +1653,9 @@ async fn probe_agent_version(spec: &'static AgentSpec) -> Result<String, String>
 /// Agents (and in `cargo run --example agent_versions`) instead of a mystery
 /// the next time a TUI parses wrong.
 ///
-/// Only installed agents are probed, at most once a day per agent
-/// (`PROBE_TTL`), all of them concurrently — an agent CLI's version changes
-/// when a person runs an installer, so opening the panel again the same
-/// afternoon spawns nothing. `refresh` skips the cache; that is what the
-/// panel's own re-check means.
+/// Only installed agents are probed, at most once a day per unchanged
+/// executable (`PROBE_TTL`), all of them concurrently. `refresh` skips the
+/// cache; that is what the panel's own re-check means.
 #[tauri::command]
 pub async fn agent_versions(
     refresh: Option<bool>,
@@ -1670,9 +1669,9 @@ pub async fn agent_versions(
     let mut probes = Vec::new();
 
     for spec in AGENTS {
-        if !spec_is_installed(spec) {
+        let Some(path) = resolve_spec_path(spec) else {
             continue;
-        }
+        };
         // Installed, but nobody has checked what it answers: say so rather than
         // guessing a flag at a binary that may open a TUI instead.
         if !versions::is_supported(spec.id) {
@@ -1685,7 +1684,7 @@ pub async fn agent_versions(
         if !refresh {
             if let Some(seen) = store
                 .get(spec.id)
-                .filter(|seen| versions::fresh(seen, versions::PROBE_TTL))
+                .filter(|seen| versions::fresh_for_path(seen, versions::PROBE_TTL, &path))
             {
                 ready.insert(
                     spec.id,
@@ -1699,15 +1698,16 @@ pub async fn agent_versions(
         // spawnable rather than a lifetime that happens to work.
         let spec: &'static AgentSpec = spec;
         probes.push(tokio::spawn(async move {
-            (spec, probe_agent_version(spec).await)
+            let result = probe_agent_version(spec, &path).await;
+            (spec, path, result)
         }));
     }
 
     for probe in probes {
-        let Ok((spec, result)) = probe.await else {
+        let Ok((spec, path, result)) = probe.await else {
             continue;
         };
-        let seen = versions::remember(spec.id, result);
+        let seen = versions::remember(spec.id, result, &path);
         ready.insert(
             spec.id,
             versions::VersionReport::from_seen(spec.id, spec.label, &seen, false),
@@ -1752,12 +1752,17 @@ fn host_agent_version_says(
 
     let store = versions::load();
     let seen = store.get(agent);
-    let stale = !seen.is_some_and(|seen| versions::fresh(seen, versions::PROBE_TTL));
+    let path = find_spec(agent).and_then(resolve_spec_path);
+    let stale = !seen.is_some_and(|seen| {
+        path.as_deref()
+            .is_some_and(|path| versions::fresh_for_path(seen, versions::PROBE_TTL, path))
+    });
     if stale && !probing.swap(true, Ordering::SeqCst) {
-        if let Some(spec) = find_spec(agent).filter(|spec| spec_is_installed(spec)) {
+        if let Some(spec) = find_spec(agent).filter(|_| path.is_some()) {
+            let path = path.expect("checked above");
             tauri::async_runtime::spawn(async move {
-                let result = probe_agent_version(spec).await;
-                versions::remember(spec.id, result);
+                let result = probe_agent_version(spec, &path).await;
+                versions::remember(spec.id, result, &path);
                 probing.store(false, Ordering::SeqCst);
             });
         } else {

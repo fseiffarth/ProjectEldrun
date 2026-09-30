@@ -4,7 +4,7 @@
  *
  *  1. Only *newer* drift speaks; older drift, a match, and an already-dismissed
  *     release stay quiet on the tab (Manage Agents still lists them).
- *  2. Every pane shares one `agent_versions` read, never a forced probe.
+ *  2. Concurrent panes share one read; a later focus reads the cache again.
  *  3. × hides for this window; the button persists the dismissal by version.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -92,6 +92,19 @@ describe("agent tab version card", () => {
     const reads = invokeMock.mock.calls.filter(([cmd]) => cmd === "agent_versions");
     expect(reads).toEqual([["agent_versions", { refresh: false }]]);
     expect(screen.getAllByRole("status")).toHaveLength(2);
+  });
+
+  it("replaces a stale installed version when the window regains focus", async () => {
+    mockVersions([report({ version: "2.1.290" })]);
+    const a = host();
+    render(<TerminalVersionCard host={a} cmd="claude" />);
+    await waitFor(() => expect(a.textContent).toContain("2.1.290"));
+
+    mockVersions([report({ version: "2.1.291" })]);
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(a.textContent).toContain("2.1.291"));
+    expect(a.textContent).not.toContain("2.1.290");
+    expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "agent_versions")).toHaveLength(2);
   });
 
   it("× hides it for the window without persisting anything", async () => {

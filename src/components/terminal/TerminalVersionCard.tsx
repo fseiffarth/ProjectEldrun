@@ -21,6 +21,9 @@ export function TerminalVersionCard({ host, cmd }: { host: HTMLElement; cmd: str
   const load = useAgentVersionNoticeStore((state) => state.load);
   useEffect(() => {
     void load();
+    const refresh = () => void load();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
   }, [load]);
   if (!notice) return null;
   const { hide, dismiss } = useAgentVersionNoticeStore.getState();

@@ -1611,14 +1611,15 @@ export function AgentsPanel({
   useEffect(refresh, []);
   // Version drift is read separately from the agent list on purpose: listing
   // agents is a PATH lookup, this spawns every installed CLI once. The backend
-  // caches for a day, so opening the panel again this afternoon costs nothing;
-  // `true` means "ask them again now".
+  // caches for a day while executables are unchanged; `true` means "ask them
+  // again now".
   const loadVersions = (recheck: boolean) => {
     setCheckingVersions(true);
     invoke<AgentVersionReport[]>("agent_versions", { refresh: recheck })
-      .then((rows) =>
-        setVersions(Object.fromEntries(rows.map((row) => [row.agent, row]))),
-      )
+      .then((rows) => {
+        setVersions(Object.fromEntries(rows.map((row) => [row.agent, row])));
+        useAgentVersionNoticeStore.getState().update(rows);
+      })
       .catch(() => {})
       .finally(() => setCheckingVersions(false));
   };
@@ -1652,6 +1653,7 @@ export function AgentsPanel({
       await invoke<string>("install_agent", { id });
       refresh();
       notifyAgentRegistryChanged();
+      loadVersions(true);
     } catch (err) {
       setErrors((e) => ({ ...e, [id]: String(err) }));
     } finally {
@@ -1670,6 +1672,7 @@ export function AgentsPanel({
       await invoke<string>("uninstall_agent", { id });
       refresh();
       notifyAgentRegistryChanged();
+      loadVersions(true);
       return true;
     } catch (err) {
       setErrors((e) => ({ ...e, [id]: String(err) }));
@@ -1693,6 +1696,7 @@ export function AgentsPanel({
           prev?.map((a) => (a.id === id ? { ...a, installed: ok } : a)) ?? prev,
         );
         notifyAgentRegistryChanged();
+        loadVersions(true);
         if (!ok) {
           setErrors((e) => ({
             ...e,
