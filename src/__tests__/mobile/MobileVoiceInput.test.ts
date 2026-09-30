@@ -11,6 +11,7 @@ import {
   dictationPreview,
   readDictation,
   settleDictation,
+  spokenSend,
   type MobileSpeechRecognition,
   type MobileSpeechRecognitionConstructor,
   type MobileSpeechRecognitionResultEvent,
@@ -183,5 +184,23 @@ describe("Eldrun Mobile voice input", () => {
       const key = speechRecognitionError(error);
       expect(key && en[key]).toBeTruthy();
     }
+  });
+
+  it("sends on a spoken \"go on\" or \"los\" said last, without those words", () => {
+    expect(spokenSend("fix the login go on")).toBe("fix the login");
+    expect(spokenSend("Fix the login. Go on.")).toBe("Fix the login.");
+    expect(spokenSend("fix the login, go on")).toBe("fix the login");
+    expect(spokenSend("Behebe den Fehler los")).toBe("Behebe den Fehler");
+    expect(spokenSend("Behebe den Fehler. Los!")).toBe("Behebe den Fehler.");
+    expect(spokenSend("go on")).toBe("");
+  });
+
+  it("leaves a \"go on\" or \"los\" that is not a send in the draft", () => {
+    expect(spokenSend("fix the login")).toBeNull();
+    expect(spokenSend("go on and fix the login")).toBeNull();
+    expect(spokenSend("what is going on")).toBeNull();
+    expect(spokenSend("das ist ziellos")).toBeNull();
+    expect(spokenSend("Was ist los?")).toBeNull();
+    expect(spokenSend("fly to Los Angeles")).toBeNull();
   });
 });

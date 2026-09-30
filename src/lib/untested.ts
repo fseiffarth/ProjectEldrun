@@ -432,6 +432,7 @@ export const UNTESTED = {
   "mobile.setupTitle": { area: "mobile", what: "MobileSetupGuide · Set up Eldrun Mobile" },
   "mobile.speech.language": { area: "mobile", what: "Terminal · Reader voice-language picker", tested: "2026-09-23" },
   "mobile.voice.keepListening": { area: "mobile", what: "Terminal · Dictation keeps listening through pauses, holds the screen awake, shows the mic level", tested: "2026-09-23" },
+  "mobile.voice.spokenSend": { area: "mobile", what: "Terminal · Dictating \"go on\" (German \"los\") last sends the draft without those words; \"was ist los\" stays text" },
   "mobile.voice.remote": { area: "mobile", what: "Terminal · Reader toggle: dictate with the phone's speech service instead of on-device", tested: "2026-09-23" },
   "mobile.windowsTerminalsNote": { area: "mobile", what: "MobileSettings · On Windows the phone cannot open this computer's terminals or agent tabs: they attach thr…" },
 

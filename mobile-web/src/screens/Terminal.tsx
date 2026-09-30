@@ -114,6 +114,7 @@ import {
   DICTATION_START,
   dictationPreview,
   readDictation,
+  spokenSend,
   settleDictation,
   type DictationProgress,
 } from "../voiceInput";
@@ -2173,50 +2174,54 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     setVoicePreview("");
     setVoiceStatus(null);
   };
-  const submitDraft = () => {
+  const submitDraft = (text = draft) => {
     if (editing) {
-      submitEdit(editing);
+      submitEdit(editing, text);
       return;
     }
-    if (!connected || !draft.trim()) return;
+    if (!connected || !text.trim()) return;
     // Only confirm what actually left the device. `readyState === OPEN` on a
     // half-open cellular link silently buffers, and "Sent" was shown regardless.
     if (tab.kind !== "agent") {
       // A shell has no soft newline: each line is its own command line.
-      if (!type(`${draft.replace(/\r?\n/g, "\r")}\r`)) return;
-      setLastSent(draft);
+      if (!type(`${text.replace(/\r?\n/g, "\r")}\r`)) return;
+      setLastSent(text);
       setDraft("");
       return;
     }
     // A slash command is the CLI's, not a turn: the session never records it,
     // so a bubble for it would wait forever. `/clear` also ends the chat the
     // earlier bubbles were waiting in.
-    const id = /^\s*\//u.test(draft) ? undefined : ++pendingId.current;
+    const id = /^\s*\//u.test(text) ? undefined : ++pendingId.current;
     if (id !== undefined && agentAtWork) {
-      holdDraft(id);
+      holdDraft(id, text);
       return;
     }
-    if (!sendAgentText(draft, id)) return;
-    setLastSent(draft);
+    if (!sendAgentText(text, id)) return;
+    setLastSent(text);
     setEditNote("");
     if (id === undefined) {
-      if (CLEAR_COMMAND.test(draft)) startedOver();
-      rememberSlashCommand(slashCliKey, draft);
+      if (CLEAR_COMMAND.test(text)) startedOver();
+      rememberSlashCommand(slashCliKey, text);
       setUsedSlash(readSlashCommands(slashCliKey));
     } else {
       // The new chat has a prompt now: resuming the old one would leave it.
       setUndoable(false);
       setUndoNote("");
-      const sent = pendingPrompt(id, draft, storedEntries);
+      const sent = pendingPrompt(id, text, storedEntries);
       setPending((current) => [...current, sent].slice(-MAX_PENDING));
       // The phone knows the words before they leave; the desktop records them
       // as this tab's prompt — the only record of it for an agent whose
       // transcript is not read (OpenCode's cards list these).
-      void reportSentPrompt(tab.id, draft).catch(() => {});
+      void reportSentPrompt(tab.id, text).catch(() => {});
     }
     setDraft("");
     endDictation();
   };
+  /** For dictation's spoken send: the session's handlers outlive the render
+   * that started them. */
+  const submitDraftRef = useRef(submitDraft);
+  submitDraftRef.current = submitDraft;
   /** Send while the agent works: the desktop holds the prompt for the tab's
    * next idle point (`holdPrompt`) instead of it going into the CLI's own
    * queue, where nothing can reach it again — so until the agent takes it in,
@@ -2224,8 +2229,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * prompt's does. A desktop that cannot hold it (no window, an older build)
    * costs nothing: the words are typed as they always were. The delivery
    * records the prompt in the desktop's history, so it is not reported here. */
-  const holdDraft = (id: number) => {
-    const text = draft;
+  const holdDraft = (id: number, text: string) => {
     setLastSent(text);
     setUndoable(false);
     setUndoNote("");
@@ -2272,9 +2276,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * it says so does the bubble take the new words — it keeps its place. An
    * agent that took the prompt first keeps the old words: the new ones stay
    * in the composer, now an ordinary draft, to be sent or dropped. */
-  const submitEdit = (target: { id: number; before: string }) => {
+  const submitEdit = (target: { id: number; before: string }, words = draft) => {
     const prompt = pending.find((entry) => entry.id === target.id);
-    const text = draft.trim();
+    const text = words.trim();
     if (!connected || !text || editSending || !prompt?.held) return;
     if (text === prompt.text) {
       cancelEdit();
@@ -3156,9 +3160,22 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
         const reading = readDictation(event);
         const step = advanceDictation(voiceProgress.current, reading.heard);
         voiceProgress.current = step.progress;
-        // Speech is inserted into the current prompt but deliberately not
-        // submitted. The user can review/edit it before pressing Enter.
-        if (step.insert) setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${step.insert}`);
+        // Speech is inserted into the current prompt, not submitted: the user
+        // reviews it and presses Send — or says "go on" / "los" last, which
+        // leaves the draft and sends the rest (`spokenSend`). The ref, not
+        // the state, is read and moved: two results can land in one render.
+        if (step.insert) {
+          const current = draftRef.current;
+          const next = `${current}${current && !current.endsWith(" ") ? " " : ""}${step.insert}`;
+          const spoken = spokenSend(next);
+          draftRef.current = spoken ?? next;
+          setDraft(spoken ?? next);
+          if (spoken !== null) {
+            forgetDictation();
+            submitDraftRef.current(spoken);
+            return;
+          }
+        }
         setVoicePreview(dictationPreview(step.progress, reading.interim));
       },
       // A new recognizer's result list starts empty: everything the last one
@@ -3440,7 +3457,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       </>}
     </div>
     <div className="terminal-controls">
-      {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}{listening && !voiceProblem && !voicePreview && isUntested("mobile.voice.keepListening") && <em>{t("mobile.focus.untested")}</em>}</div>}
+      {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}{listening && !voiceProblem && !voicePreview && (isUntested("mobile.voice.keepListening") || isUntested("mobile.voice.spokenSend")) && <em>{t("mobile.focus.untested")}</em>}</div>}
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}{isUntested("mobile.link.failureText") && <em> · {t("mobile.focus.untested")}</em>}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. Send it again once it is back.</div>}
       {undoNote && <div className="voice-feedback" role="status">{t(undoNote)}</div>}
@@ -3543,7 +3560,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
             <button className={`composer-keys${keysShown ? " open" : ""}`} onPointerDown={(event) => event.preventDefault()} onClick={toggleKeys} aria-label={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")} aria-expanded={keysShown} aria-controls="terminal-keys" title={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8" /></svg></button>
             <span className="composer-spacer" />
           </>}
-          <button className="send-icon" disabled={!connected || !draft.trim() || editSending} onClick={submitDraft} aria-label={editing ? t("mobile.composer.editSave") : "Send"} title={editing ? t("mobile.composer.editSave") : "Send"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
+          <button className="send-icon" disabled={!connected || !draft.trim() || editSending} onClick={() => submitDraft()} aria-label={editing ? t("mobile.composer.editSave") : "Send"} title={editing ? t("mobile.composer.editSave") : "Send"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
         </div>
       </div>
       {keysShown && <div className="keys" id="terminal-keys">

@@ -145,6 +145,36 @@ describe("Eldrun Mobile terminal dictation", () => {
     expect((screen.getByRole("textbox", { name: "Message agent" }) as HTMLTextAreaElement).value).toBe("");
   });
 
+  it("sends the dictated words when \"go on\" or \"los\" is said last", async () => {
+    render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await act(async () => {});
+    const speech = FakeRecognition.instances[0];
+    const abort = vi.spyOn(speech, "abort");
+    act(() => speech.onresult?.(finalResult("fix the login")));
+    expect(FakeWebSocket.instances[0].sent.filter((value) => ArrayBuffer.isView(value))).toHaveLength(0);
+    act(() => speech.onresult?.({
+      resultIndex: 1,
+      results: {
+        0: { 0: { transcript: "fix the login" }, isFinal: true, length: 1 },
+        1: { 0: { transcript: "los" }, isFinal: true, length: 1 },
+        length: 2,
+      },
+    } as unknown as MobileSpeechRecognitionResultEvent));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+
+    const sent = FakeWebSocket.instances[0].sent
+      .filter((value): value is ArrayBufferView => ArrayBuffer.isView(value))
+      .map((value) => new TextDecoder().decode(value as Uint8Array));
+    expect(sent.join("")).toContain("fix the login");
+    expect(sent.join("")).not.toContain("los");
+    expect(sent[sent.length - 1]).toBe("\r");
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect((screen.getByRole("textbox", { name: "Message agent" }) as HTMLTextAreaElement).value).toBe("");
+  });
+
   it("forgets the dictated words once they are cleared, while it keeps listening", async () => {
     render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});
