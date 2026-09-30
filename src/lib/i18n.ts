@@ -93,7 +93,7 @@ export const en = {
   "mobile.composer.undoGone": "Nothing to undo: the conversation has moved on since the clear.",
   "mobile.composer.undoFailed": "The clear could not be undone. Is desktop Eldrun open with this tab?",
   "mobile.composer.undoRemote": "This tab runs on a remote host, where the clear cannot be undone from here.",
-  "mobile.composer.heldNote": "The agent is working: your prompt waits on the desktop until it is free. Hold its bubble to edit it until then.",
+  "mobile.composer.heldNote": "The agent is working: your prompt joins its queue in about a minute. Until then, hold its bubble to edit it.",
   "mobile.composer.heldEdited": "Prompt changed — the agent gets the new words.",
   "mobile.composer.heldGone": "The agent already took this prompt, so it can no longer change. Your words stay in the composer.",
   "mobile.composer.heldEditFailed": "The edit did not reach the desktop. Try again, or cancel.",

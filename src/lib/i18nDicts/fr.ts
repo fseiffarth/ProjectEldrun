@@ -90,7 +90,7 @@ export const dict: Dict = {
   "mobile.composer.undoGone": "Rien à annuler : la conversation a continué depuis l’effacement.",
   "mobile.composer.undoFailed": "Impossible d’annuler l’effacement. Eldrun est-il ouvert sur l’ordinateur avec cet onglet ?",
   "mobile.composer.undoRemote": "Cet onglet tourne sur un hôte distant ; l’effacement ne peut pas y être annulé d’ici.",
-  "mobile.composer.heldNote": "L’agent travaille : votre prompt attend sur le bureau qu’il soit libre. Maintenez sa bulle pour le modifier d’ici là.",
+  "mobile.composer.heldNote": "L’agent travaille : votre prompt rejoint sa file d’attente dans une minute environ. D’ici là, maintenez sa bulle pour le modifier.",
   "mobile.composer.heldEdited": "Prompt modifié — l’agent reçoit le nouveau texte.",
   "mobile.composer.heldGone": "L’agent a déjà pris ce prompt, il ne peut plus changer. Votre texte reste dans le champ de saisie.",
   "mobile.composer.heldEditFailed": "La modification n’a pas atteint le bureau. Réessayez ou annulez.",

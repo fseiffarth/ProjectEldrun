@@ -90,7 +90,7 @@ export const dict: Dict = {
   "mobile.composer.undoGone": "Niente da annullare: la conversazione è andata avanti dopo la cancellazione.",
   "mobile.composer.undoFailed": "Impossibile annullare la cancellazione. Eldrun è aperto sul desktop con questa scheda?",
   "mobile.composer.undoRemote": "Questa scheda gira su un host remoto; da qui la cancellazione non si può annullare.",
-  "mobile.composer.heldNote": "L’agente sta lavorando: il tuo prompt aspetta sul desktop finché non è libero. Tieni premuta la sua bolla per modificarlo fino ad allora.",
+  "mobile.composer.heldNote": "L’agente sta lavorando: il tuo prompt entra nella sua coda tra circa un minuto. Fino ad allora, tieni premuta la sua bolla per modificarlo.",
   "mobile.composer.heldEdited": "Prompt modificato — l’agente riceve il nuovo testo.",
   "mobile.composer.heldGone": "L’agente ha già preso questo prompt, quindi non si può più cambiare. Il tuo testo resta nel campo di scrittura.",
   "mobile.composer.heldEditFailed": "La modifica non ha raggiunto il desktop. Riprova o annulla.",

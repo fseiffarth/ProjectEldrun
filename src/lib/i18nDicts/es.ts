@@ -90,7 +90,7 @@ export const dict: Dict = {
   "mobile.composer.undoGone": "Nada que deshacer: la conversación ha seguido desde que se borró.",
   "mobile.composer.undoFailed": "No se pudo deshacer el borrado. ¿Está Eldrun abierto en el escritorio con esta pestaña?",
   "mobile.composer.undoRemote": "Esta pestaña se ejecuta en un host remoto; desde aquí no se puede deshacer el borrado.",
-  "mobile.composer.heldNote": "El agente está trabajando: tu prompt espera en el escritorio hasta que quede libre. Mantén pulsada su burbuja para editarlo hasta entonces.",
+  "mobile.composer.heldNote": "El agente está trabajando: tu prompt entra en su cola en un minuto aproximadamente. Hasta entonces, mantén pulsada su burbuja para editarlo.",
   "mobile.composer.heldEdited": "Prompt cambiado: el agente recibe el texto nuevo.",
   "mobile.composer.heldGone": "El agente ya tomó este prompt, así que ya no se puede cambiar. Tu texto se queda en el campo de mensaje.",
   "mobile.composer.heldEditFailed": "El cambio no llegó al escritorio. Inténtalo de nuevo o cancela.",

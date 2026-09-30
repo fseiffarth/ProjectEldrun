@@ -16,6 +16,7 @@ import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../store
 import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
 import { agentTabModelTag, tabModeMarks, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
+import { holdPhonePrompt } from "../../lib/agents/phoneHolds";
 import { queuePromptForTab, sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
 import { undoAgentClear } from "../../stores/agents/agentClearUndo";
@@ -2042,11 +2043,12 @@ async function recordTabPrompt(projectId: string, tmuxSession: string, message: 
 }
 
 /** The phone sent a prompt while the agent was at work: rather than the words
- * waiting in the CLI's own queue, where nothing can reach them again, they
- * wait here as a send-now schedule (`queuePromptForTab`) — delivered at the
- * tab's next safe idle point, like the desktop's own Send now — and the phone
- * can rewrite them until then (`editHeldTabPrompt`). The delivery records the
- * prompt in the history, so nothing is recorded here. */
+ * going straight into the CLI's own queue, where nothing can reach them again,
+ * they wait here as a send-now schedule (`queuePromptForTab`) for a short edit
+ * window (`phoneHolds.ts`), in which the phone can rewrite them
+ * (`editHeldTabPrompt`). Then they join the CLI's queue, or go in at once if
+ * the agent falls idle first. The delivery records the prompt in the history,
+ * so nothing is recorded here. */
 async function holdTabPrompt(projectId: string, tmuxSession: string, message: string): Promise<DesktopResponse> {
   const scope = mobileScope(projectId);
   if (!scope) {
@@ -2058,6 +2060,7 @@ async function holdTabPrompt(projectId: string, tmuxSession: string, message: st
   // A command is the CLI's own and never waits: the phone types those.
   if (!text || isSessionCommand(text)) return { status: "error", code: "invalid_prompt", message: "Only prompts are held" };
   const { id } = await queuePromptForTab(scope.id, tab.scheduleTargetId, text);
+  holdPhonePrompt(id);
   return { status: "held", held_id: id };
 }
 
@@ -2089,6 +2092,8 @@ async function editHeldTabPrompt(projectId: string, tmuxSession: string, heldId:
     if (code.includes("schedule_gone")) return gone;
     throw cause;
   }
+  // The reader is still at it: the edit window starts again.
+  holdPhonePrompt(heldId);
   return { status: "held", held_id: heldId };
 }
 
