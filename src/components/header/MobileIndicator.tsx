@@ -37,7 +37,6 @@ interface RuntimeStatus {
 
 interface AdminResponse {
   status: string;
-  devices?: Array<{ id: string }>;
   code?: string;
   expires_at?: number;
   message?: string;
@@ -92,10 +91,8 @@ export function MobileIndicator() {
   const openMenu = useHeaderHoverMenuStore((s) => s.open);
   const closeMenu = useHeaderHoverMenuStore((s) => s.close);
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
-  const [hasPairedPhone, setHasPairedPhone] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [reconnecting, setReconnecting] = useState(false);
-  const [uploadingVersion, setUploadingVersion] = useState(false);
+  const [restarting, setRestarting] = useState<"reconnect" | "update" | null>(null);
   const [pairing, setPairing] = useState(false);
   // The code is only good for `PAIR_TTL` (five minutes), so it is held with its
   // own expiry and dropped when that passes: a code still on screen after it
@@ -103,7 +100,7 @@ export function MobileIndicator() {
   const [pairCode, setPairCode] = useState<{ code: string; expiresAt: number } | null>(null);
   const [lockingDown, setLockingDown] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+  const [updateNotice, setUpdateNotice] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(false);
   const closeTimer = useRef<number | undefined>(undefined);
   const statusRequest = useRef(0);
@@ -116,21 +113,12 @@ export function MobileIndicator() {
     setError(null);
     try {
       let next: RuntimeStatus | null = null;
-      let nextHasPairedPhone = false;
       for (let attempt = 0; attempt < (waitForHost ? RECONNECT_READY_ATTEMPTS : 1); attempt += 1) {
-        const [runtimeStatus, deviceResponse] = await Promise.all([
-          invoke<RuntimeStatus>("mobile_host_status"),
-          invoke<AdminResponse>("mobile_admin", { request: { type: "devices" } }).catch(() => null),
-        ]);
-        next = runtimeStatus;
-        nextHasPairedPhone = deviceResponse?.status === "devices" && (deviceResponse.devices?.length ?? 0) > 0;
+        next = await invoke<RuntimeStatus>("mobile_host_status");
         if (next.running || !waitForHost || attempt === RECONNECT_READY_ATTEMPTS - 1) break;
         await pause(RECONNECT_RETRY_MS);
       }
-      if (request === statusRequest.current) {
-        setStatus(next);
-        setHasPairedPhone(nextHasPairedPhone);
-      }
+      if (request === statusRequest.current) setStatus(next);
     } catch (reason) {
       if (request === statusRequest.current) {
         setStatus(null);
@@ -176,43 +164,30 @@ export function MobileIndicator() {
     closeTimer.current = window.setTimeout(() => closeMenu(MENU_ID), 250);
   };
 
-  const reconnect = async () => {
+  // Reconnect and Update are one step: reinstall the sidecar from this window's
+  // image and restart it. Eldrun Mobile is a PWA embedded in that sidecar, so
+  // the phone then picks up fresh assets through its service-worker update
+  // path. Update is offered only while the installed host is behind this
+  // window (`update_available`, the same test as Settings' "Update mobile
+  // host"); Eldrun's own start already replaces an older host.
+  const restartHost = async (kind: "reconnect" | "update") => {
     // Ignore an earlier focus/interval probe while restart replaces the socket.
     // Without this generation bump, that old `ECONNREFUSED` can land after the
     // successful probe below and repaint the menu red.
     reconnectingRef.current = true;
     statusRequest.current += 1;
-    setReconnecting(true);
+    setRestarting(kind);
     setError(null);
+    setUpdateNotice(null);
     try {
       await invoke("mobile_host_apply", { enabled: true });
       await refresh(true);
+      if (kind === "update") setUpdateNotice(tr("mobile.indUpdateReady"));
     } catch (reason) {
-      setError(String(reason));
+      setError(kind === "update" ? tr("mobile.indUpdateError", { reason: String(reason) }) : String(reason));
     } finally {
       reconnectingRef.current = false;
-      setReconnecting(false);
-    }
-  };
-
-  const uploadMobileVersion = async () => {
-    // Eldrun Mobile is a PWA embedded in the Mobile host. Reinstalling and
-    // restarting that sidecar is the atomic publication step: the phone then
-    // receives the fresh assets through its normal service-worker update path.
-    reconnectingRef.current = true;
-    statusRequest.current += 1;
-    setUploadingVersion(true);
-    setError(null);
-    setUploadNotice(null);
-    try {
-      await invoke("mobile_host_apply", { enabled: true });
-      await refresh(true);
-      setUploadNotice(tr("mobile.indUploadReady"));
-    } catch (reason) {
-      setError(tr("mobile.indUploadError", { reason: String(reason) }));
-    } finally {
-      reconnectingRef.current = false;
-      setUploadingVersion(false);
+      setRestarting(null);
     }
   };
 
@@ -261,8 +236,8 @@ export function MobileIndicator() {
   // Above the early return, because the header's status cluster has to be told
   // this widget renders nothing (a hook cannot hide behind a `return null`, and
   // an unreported member is silently not counted rather than folded).
-  const busy = refreshing || reconnecting || uploadingVersion || pairing || lockingDown;
-  const tone = statusTone(status, refreshing || reconnecting);
+  const busy = refreshing || restarting !== null || pairing || lockingDown;
+  const tone = statusTone(status, refreshing || restarting !== null);
   const title = tone === "connected"
     ? t("mobile.indConnectedTitle")
     : tone === "connecting"
@@ -358,7 +333,7 @@ export function MobileIndicator() {
             </div>
             {status?.origin && <div className="mobile-indicator-origin">{status.origin}</div>}
             {error && <ErrorNote className="mobile-indicator-error" error={error} />}
-            {uploadNotice && <div className="mobile-indicator-notice" role="status">{uploadNotice}</div>}
+            {updateNotice && <div className="mobile-indicator-notice" role="status">{updateNotice}</div>}
             {pairCode && (
               <div className="mobile-indicator-paircode" role="status">
                 <code>{pairCode.code}</code>
@@ -366,23 +341,20 @@ export function MobileIndicator() {
               </div>
             )}
             <div className="mobile-indicator-actions">
-              <button type="button" className="vpn-indicator-connect" disabled={busy} onClick={() => void refresh()}>
-                {refreshing ? t("mobile.refreshing") : t("mobile.indRefresh")}
-              </button>
-              <button type="button" className="vpn-indicator-connect" disabled={busy} onClick={() => void reconnect()}>
-                {reconnecting ? t("mobile.indReconnecting") : t("mobile.indReconnect")}
+              <button type="button" className="vpn-indicator-connect" disabled={busy} onClick={() => void restartHost("reconnect")}>
+                {restarting === "reconnect" ? t("mobile.indReconnecting") : t("mobile.indReconnect")}
               </button>
               <button type="button" className="vpn-indicator-connect" disabled={busy || !status?.running} onClick={() => void createPairingCode()}>
                 {pairing ? t("mobile.creatingCode") : t("mobile.newPairingCode")}
               </button>
-              {status?.running && hasPairedPhone && (
+              {(status?.update_available || restarting === "update") && (
                 <button
                   type="button"
                   className="vpn-indicator-connect"
                   disabled={busy}
-                  onClick={() => void uploadMobileVersion()}
+                  onClick={() => void restartHost("update")}
                 >
-                  {uploadingVersion ? t("mobile.indUploading") : t("mobile.indUpload")}
+                  {restarting === "update" ? t("mobile.indUpdating") : t("mobile.indUpdate")}
                 </button>
               )}
               <button type="button" className="vpn-indicator-connect mobile-indicator-lockdown" disabled={busy || !status?.running} onClick={() => void lockDownNow()}>

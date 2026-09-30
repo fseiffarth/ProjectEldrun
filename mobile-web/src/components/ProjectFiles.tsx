@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
-import { ApiError, listProjectFiles, openOutside, viewerFileUrl, type OutboxFile, type ProjectFileEntry, type ProjectFileListing, type ViewerScope } from "../api";
+import { ApiError, listProjectFiles, type OutboxFile, type ProjectFileEntry, type ProjectFileListing, type ViewerScope } from "../api";
+import { shareAs, useOutboxShare } from "../outboxShare";
 import { sizeLabel } from "../terminal/fileLabels";
 import { installFocusSwipe } from "../terminal/focusSwipe";
 import { OutboxViewer } from "./OutboxViewer";
@@ -42,8 +43,13 @@ function failureKey(reason: unknown): TranslationKey {
 /**
  * The project's own tree, read-only (`files.rs`, #31bo): folders to walk into
  * and files to open — a picture, a PDF or a text — in the outbox's full-screen
- * viewer, with its Save and Share. The "what did the agent just write" glance
- * without a shell. Nothing here can change a file.
+ * viewer, with its Save and Share (a PDF then goes on to the browser's
+ * viewer). The "what did the agent just write" glance without a shell.
+ * Nothing here can change a file.
+ *
+ * A file the phone's share sheet takes carries ↗ Share on its row, as an
+ * outbox tile does: passing a file on to Signal or WhatsApp should not mean
+ * opening it first.
  *
  * The phone never holds a path: each folder and file is a sealed token the
  * sidecar handed out, and the trail across the top is the tokens walked so far.
@@ -63,6 +69,7 @@ export function ProjectFiles({ projectId, label, onClose }: {
   const [failure, setFailure] = useState<TranslationKey | null>(null);
   const [fileOpen, setFileOpen] = useState<OutboxFile | null>(null);
   const scope = useMemo<ViewerScope>(() => ({ files: projectId }), [projectId]);
+  const sharing = useOutboxShare(scope);
   const here = trail[trail.length - 1];
   const drawer = useRef<HTMLElement | null>(null);
 
@@ -106,10 +113,9 @@ export function ProjectFiles({ projectId, label, onClose }: {
       setTrail((current) => [...current, { token: entry.token, name: entry.name }]);
       return;
     }
-    const file = asViewerFile(entry);
-    // A PDF opens in the browser's own viewer, as it does from the outbox.
-    if (entry.kind === "application/pdf") void openOutside(viewerFileUrl(scope, file));
-    else setFileOpen(file);
+    // A PDF too: the browser's own PDF viewer has no Save or Share, so the
+    // viewer's head carries them and its Open button hands the file over.
+    setFileOpen(asViewerFile(entry));
   };
 
   if (fileOpen) {
@@ -119,7 +125,7 @@ export function ProjectFiles({ projectId, label, onClose }: {
     <section ref={drawer} className="option-sheet project-files" role="dialog" aria-modal="true" aria-label={t("mobile.files.title")} onClick={(event) => event.stopPropagation()}>
       <header>
         <button className="sheet-close" onClick={onClose} aria-label={t("mobile.files.close")}>✕</button>
-        <h2>{t("mobile.files.title")} {isUntested("mobile.files.browse") && <small>{t("mobile.outbox.untested")}</small>}</h2>
+        <h2>{t("mobile.files.title")} {(isUntested("mobile.files.browse") || isUntested("mobile.files.share")) && <small>{t("mobile.outbox.untested")}</small>}</h2>
         <span className="sheet-close" aria-hidden="true" />
       </header>
       <nav className="files-trail" aria-label={t("mobile.files.trail")}>
@@ -136,15 +142,26 @@ export function ProjectFiles({ projectId, label, onClose }: {
           ? <p className="sheet-note">{t("mobile.files.loading")}</p>
           : listing.entries.length === 0
             ? <p className="sheet-note">{t("mobile.files.empty")}</p>
-            : <ul className="option-list">{listing.entries.map((entry) => <li key={entry.token}>
-              <button onClick={() => open(entry)} aria-label={entry.kind === "dir" ? t("mobile.files.openFolder", { name: entry.name }) : t("mobile.files.openFile", { name: entry.name })}>
-                <span>
-                  <strong><span aria-hidden="true">{entry.kind === "dir" ? "📁 " : entry.kind.startsWith("image/") ? "🖼 " : "📄 "}</span>{entry.name}</strong>
-                  <small>{rowMeta(entry, t)}</small>
-                </span>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
-              </button>
-            </li>)}</ul>}
+            : <ul className="option-list files-list">{listing.entries.map((entry) => {
+              const file = entry.kind === "dir" ? null : asViewerFile(entry);
+              const ready = sharing.ready === entry.name;
+              return <li key={entry.token}>
+                <button onClick={() => open(entry)} aria-label={entry.kind === "dir" ? t("mobile.files.openFolder", { name: entry.name }) : t("mobile.files.openFile", { name: entry.name })}>
+                  <span>
+                    <strong><span aria-hidden="true">{entry.kind === "dir" ? "📁 " : entry.kind.startsWith("image/") ? "🖼 " : "📄 "}</span>{entry.name}</strong>
+                    <small>{rowMeta(entry, t)}</small>
+                  </span>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+                </button>
+                {file && shareAs(file) && <button
+                  className="files-share"
+                  disabled={sharing.busy === entry.name}
+                  onClick={() => void sharing.share(file)}
+                  aria-label={t(ready ? "mobile.outbox.shareReadyFile" : "mobile.outbox.shareFile", { name: entry.name })}
+                ><span aria-hidden="true">↗</span>{ready && t("mobile.outbox.shareReady")}</button>}
+                {sharing.failed === entry.name && <p className="files-share-error" role="alert">{t("mobile.outbox.shareError")}</p>}
+              </li>;
+            })}</ul>}
       {listing?.truncated && <p className="sheet-note">{t("mobile.files.truncated", { count: listing.entries.length })}</p>}
     </section>
   </div>;

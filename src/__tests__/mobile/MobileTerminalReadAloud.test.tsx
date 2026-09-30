@@ -138,7 +138,7 @@ describe("Eldrun Mobile Reader reads answers aloud", () => {
     vi.stubGlobal("fetch", sidecarFetch(() => ({ available: true, version: `${entries.length}:1`, truncated: false, entries })));
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
+    fireEvent.click(screen.getByRole("button", { name: "Chat" }));
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Read answers aloud/ }));
     expect(localStorage.getItem("eldrun.mobile.focusReadAloud")).toBe("1");
     // Only the silent utterance that lets the page speak later.
@@ -165,7 +165,7 @@ describe("Eldrun Mobile Reader reads answers aloud", () => {
     read();
     expect(spoken.map((utterance) => utterance.lang)).toEqual(["en-GB"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
+    fireEvent.click(screen.getByRole("button", { name: "Chat" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /Voice language/ }));
     // What is still being said was said in the old voice; the picker cuts it.
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Deutsch" }));

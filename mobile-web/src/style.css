@@ -38,26 +38,29 @@ nav button,.keys button { flex:1; }
 .activity-sort.in-header { flex:0 1 auto; min-width:0; margin:0; }
 .activity-sort.in-header select { flex:0 1 auto; max-width:11rem; }
 @media (max-width:420px) { .activity-sort.in-header > span { display:none; } }
-/* Keep the project name readable above the controls on narrow phones. */
-.project-header { flex-wrap:wrap; row-gap:10px; }
-.project-header-tools { flex:1 0 100%; display:flex; align-items:center; gap:10px; min-width:0; }
-.project-header-tools .activity-sort.in-header { flex:1 1 auto; }
-.project-header-tools .activity-sort.in-header > span { display:inline; }
-.project-header-tools .activity-sort.in-header select { flex:1 1 auto; max-width:none; }
-.project-header-tools .new-tab { margin-left:auto; }
+/* One dense row, the agent tab header's shape: plain chevron, the name taking
+   what is left, then the 🖼 pill, the order as a compact select sized like the
+   Focus view switch, and a small ＋. The tools never shrink below their own
+   width; the name ellipsizes instead. */
+.project-header-tools { flex:0 0 auto; display:flex; align-items:center; gap:6px; min-width:0; }
+.project-header-tools .activity-sort.in-header { flex:0 1 auto; gap:0; margin:0; }
+.project-header-tools .activity-sort.in-header > span { display:none; }
+.project-header-tools .activity-sort.in-header select { max-width:8.5rem; height:32px; padding:0 24px 0 9px; border-color:#34384a; border-radius:10px; background-color:#151822; background-position:right 8px center; background-size:10px 7px; font-size:.76rem; }
 /* The sticky bar and cards share a softer surface, while the controls remain
    visible as the tab list scrolls. */
 .project-screen { padding-top:0; background:radial-gradient(ellipse 85% 300px at 50% 0, #1c2034 0, #0e111b 72%, #0e111b 100%); }
-.project-header { position:sticky; top:0; z-index:5; margin:0 -18px 16px; padding:max(8px,env(safe-area-inset-top)) 18px 14px; border-bottom:1px solid #2b3040; background:rgba(15,18,29,.96); box-shadow:0 8px 24px rgba(0,0,0,.16); }
-.project-header > .back { display:grid; place-items:center; width:44px; height:44px; margin-left:-8px; padding:0; border-radius:12px; background:#222637; color:#d9dcf0; font-size:1.7rem; }
-.project-header > .terminal-title { min-width:0; flex:1; min-height:44px; align-content:center; }
-.project-header h1 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:1.3rem; letter-spacing:-.025em; }
-.project-header-tools > * { height:42px; }
-.project-header-tools .terminal-gallery { padding:0 12px; border-color:#3d435a; background:#242a3c; }
-.project-header-tools .activity-sort.in-header { gap:8px; margin:0; }
-.project-header-tools .activity-sort.in-header select { height:42px; padding-block:0; border-color:#3d435a; border-radius:12px; background-color:#242838; }
-.project-header-tools .new-tab { display:grid; place-items:center; width:44px; padding:0; border-radius:12px; box-shadow:0 4px 14px rgba(108,92,231,.25); font-size:1.5rem; }
-@media (max-width:390px) { .project-header-tools .activity-sort.in-header > span { display:none; } }
+.project-header { position:sticky; top:0; z-index:5; gap:8px; margin:0 -18px 12px; padding:env(safe-area-inset-top) 12px 0 6px; border-bottom:1px solid #2b3040; background:rgba(15,18,29,.96); box-shadow:0 8px 24px rgba(0,0,0,.16); }
+.project-header > .terminal-title { align-content:center; }
+.project-header-tools .new-tab { display:grid; place-items:center; width:32px; min-width:32px; height:32px; padding:0; border-radius:10px; font-size:1.1rem; }
+/* The name is the dropdown's button: it reads as the title, with the Focus
+   switch's caret; the menu is Focus's own, pinned under the name instead. */
+.project-header .project-title { display:inline-flex; align-items:center; max-width:100%; min-width:0; padding:4px 0; border:0; background:transparent; font:inherit; color:inherit; text-align:left; }
+.project-title > span:first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.project-title > .view-caret { flex:0 0 auto; }
+.project-menu { right:auto; left:44px; }
+.project-menu .project-menu-icon { flex:0 0 auto; width:22px; font-size:1.1rem; text-align:center; }
+.project-menu .project-menu-count { color:#8fb8ff; font-weight:650; }
+.project-menu-note { margin:2px 6px 0; }
 .cards { display:grid; gap:10px; }
 .project-screen .cards { gap:12px; }
 .card { width:100%; text-align:left; justify-content:space-between; padding:16px; background:rgba(28,31,43,.92); }
@@ -191,6 +194,16 @@ small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-
 .agent-status.done { color:#91e6a9; background:#193a29; }
 /* The desktop tab strip's status glyph, leading the word. ▶ runs large beside
    ? and ✓, so it is set smaller — the same correction the desktop makes. */
+/* PLAN / GOAL (`AgentModeMarks`): the desktop tab strip's pills, outlined
+   like theirs — plan in the violet of Focus's Mode chip, goal in teal — and
+   the card's border tinted to match, so a tab in either mode stands out in a
+   list of look-alikes. A tab colour keeps its left edge. */
+.agent-mode-mark { display:inline-flex; align-items:center; flex:0 0 auto; padding:3px 6px; border:1px solid currentColor; border-radius:6px; background:color-mix(in srgb, currentColor 16%, transparent); font-size:.66rem; font-weight:800; letter-spacing:.05em; line-height:1; }
+.agent-mode-mark.plan { color:#b3a8ff; }
+.agent-mode-mark.goal { color:#6fd6e0; }
+.card.in-plan,.project-screen .tab-card.in-plan { border-color:#7b6ee0; }
+.card.in-goal,.project-screen .tab-card.in-goal { border-color:#4fb3c0; }
+.card.in-plan.has-tab-color,.tab-card.in-plan.has-tab-color,.card.in-goal.has-tab-color,.tab-card.in-goal.has-tab-color { border-left-color:var(--tab-color); }
 .agent-status-glyph { font-size:.85em; line-height:1; }
 .agent-status.working .agent-status-glyph { font-size:.7em; }
 /* The project screen's tab cards carry the glyph alone, as a disc centred on
@@ -899,6 +912,11 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .files-trail { display:flex; flex-wrap:wrap; gap:5px; padding:0 4px; }
 .files-trail button { max-width:100%; padding:5px 10px; overflow:hidden; border:1px solid #34384a; border-radius:999px; background:#1b2333; color:#8fb8ff; font-size:.8rem; text-overflow:ellipsis; white-space:nowrap; }
 .files-trail button:disabled { color:#d8e2f5; opacity:1; }
+/* A file's ↗ Share sits beside its row, drawn as the outbox tile's Share link. */
+.files-list li { display:flex; flex-wrap:wrap; align-items:stretch; gap:3px; }
+.files-list li > button:first-child { flex:1; width:auto; min-width:0; }
+.option-list .files-share { flex:0 0 auto; width:auto; gap:4px; padding:0 14px; color:#8fb8ff; font-size:.85rem; }
+.files-share-error { flex-basis:100%; margin:0; padding:0 14px 4px; color:#f2b8b5; font-size:.75rem; }
 /* Select text (`MessageMenu`): the message again, as plain text the phone's
    own selection handles and callout work on — the bubble's hold is the menu,
    so it cannot be selected in place. */
@@ -942,6 +960,11 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .splash-hint.muted { color:#767a8b; font-size:.76rem; }
 /* "Open Tailscale": the one way out of a stuck tunnel, so it reads as an action. */
 .splash-link { color:#b7acff; font-weight:600; text-decoration:underline; text-underline-offset:3px; }
+/* "Try, in order": a numbered list reads left-aligned inside the centred splash. */
+.splash-steps { max-width:36ch; text-align:left; color:#c8ccdb; font-size:.82rem; line-height:1.5; }
+.splash-steps-title { margin:0 0 4px; font-weight:600; }
+.splash-steps ol { margin:0; padding-left:1.4em; display:grid; gap:6px; }
+.splash-steps-prevent { margin:10px 0 0; color:#767a8b; font-size:.76rem; }
 /* The status/code pair, for reading back into a bug report. */
 .splash-detail { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.7rem; color:#6a6e7f; letter-spacing:.04em; }
 .connect-trace { max-width:100%; margin:0; white-space:pre-wrap; text-align:left; letter-spacing:0; }

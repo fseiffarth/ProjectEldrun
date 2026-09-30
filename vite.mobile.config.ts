@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
@@ -54,13 +55,24 @@ function stampServiceWorker(): Plugin {
   };
 }
 
+/** The short commit HEAD points at, or "" outside git — the same hash the
+ * desktop's `ELDRUN_BUILD_COMMIT` bakes in. */
+function headCommit(): string {
+  try {
+    return execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
+}
+
 export default defineConfig({
   root: "mobile-web",
   plugins: [react(), stampServiceWorker()],
   base: "/",
-  // The build time the phone shows beside its version (see `src/buildInfo.ts`).
+  // The commit and build time the phone shows beside its version (see `src/buildInfo.ts`).
   define: {
     __ELDRUN_MOBILE_BUILT_AT__: JSON.stringify(new Date().toISOString()),
+    __ELDRUN_MOBILE_COMMIT__: JSON.stringify(headCommit()),
   },
   build: {
     outDir: "../mobile-dist",

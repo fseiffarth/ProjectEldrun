@@ -21,12 +21,46 @@ settings.
 
 ## Set it up
 
-1. Open **Settings → Remote & mobile → Mobile** and start the host.
-2. Under **Project access**, switch on the projects the phone may reach. All
-   start off. Only local, non-container projects are eligible.
-3. Click **New pairing code**. The code is valid for five minutes.
-4. On the phone, open the displayed `https://…ts.net` address and finish
-   pairing there. Never send the code by chat, e-mail or screenshot.
+Until Mobile is set up, clicking the Mobile indicator in the header opens a
+**Set up Eldrun Mobile** guide with these same steps and a button for the
+Tailscale command.
+
+1. **Install Tailscale on this computer** and sign in. Eldrun itself only
+   ever listens on loopback; Tailscale carries the phone's connection.
+2. **Install the Tailscale app on the phone** (or tablet) and sign in to the
+   same tailnet.
+3. **Publish Eldrun privately with Tailscale Serve.** On this computer run
+   (8742 is the default port; use yours if you changed it in Mobile
+   settings):
+
+   ```
+   tailscale serve --bg http://127.0.0.1:8742
+   ```
+
+   The guide's **Set up in terminal** button runs it for you in a root
+   terminal after asking. It takes over Tailscale Serve's HTTPS root (`/`), so
+   check `tailscale serve status` first if something else is already served
+   there. If Tailscale asks for approval or HTTPS setup, finish it in the
+   browser it opens. Use Serve, never Funnel.
+4. **Turn Eldrun Mobile on.** Open **Settings → Remote & mobile → Mobile**,
+   press **Detect Tailscale Serve settings**, check the computer name,
+   loopback port and origin it fills in, then switch Mobile on. Eldrun checks
+   the Serve mapping before it starts the host.
+5. **Choose what the phone may open.** Under **Project access**, switch on the
+   projects and boxes the phone may reach. All start off. Only local,
+   non-container projects are eligible.
+6. **Open it on the phone.** Press **Show install QR**: a root terminal checks
+   the Serve mapping again and shows the `https://…ts.net` address as a QR
+   code. Scan it with the phone (Tailscale must be connected there).
+7. **Pair.** Click **New pairing code** on the desktop and type it on the
+   phone. The code is valid for five minutes. Never send it by chat, e-mail or
+   screenshot.
+8. **Optional: install it as an app.** Add the page to the Home Screen
+   (iPhone: Share → Add to Home Screen; Android: browser menu → Install app or
+   Add to Home screen). On iPhone this is needed for notifications.
+
+On Windows the phone cannot open this computer's terminals or agent tabs:
+they attach through tmux, which Windows does not have.
 
 An agent tab that was already running becomes reachable after its next normal
 reopen, because the phone attaches to its terminal session.
@@ -39,6 +73,13 @@ reopen, because the phone attaches to its terminal session.
   Eldrun must be up.
 - A paired phone types into a terminal exactly like your keyboard: keep agent
   approval modes conservative while Mobile is on.
+- An agent tab opens as a **Chat**: the conversation as messages, a text box
+  to write the next one, and the agent's questions as buttons to tap. Tap
+  **Chat** again to choose whether it shows the stored conversation
+  (**Session**) or the screen as text (**Screen**); **Terminal** shows the
+  real terminal. A shell tab has no conversation, so its switch reads
+  **Reader** (the screen as text) and **Terminal**. The desktop offers the
+  same chat on its agent tabs (help topic `agent-clis`).
 
 ## Project files on the phone
 
@@ -46,7 +87,7 @@ Switch on **Project files on the phone** under **Project access** (off by
 default) and a project's screen on the phone opens its files when you swipe
 from left to right across it, the screen's left edge included — a drawer
 slides in from the left (swipe back, or tap beside it, to close it). Inside a
-tab's Focus view the same swipe opens them when it starts in the left third of
+tab's Chat (or a shell tab's Reader) the same swipe opens them when it starts in the left third of
 the screen; further right it shows the agent's status line (a shell tab has
 none, so there any left→right swipe opens the files). Walk the folders and
 open a file —
@@ -92,7 +133,8 @@ agent's turn.
 
 "Connecting to your workspace…" that never finishes, or a splash saying the
 desktop can't be reached or didn't answer, usually means the phone's own
-Tailscale is not carrying traffic:
+Tailscale is not carrying traffic. The splash lists these steps itself, in the
+phone's language:
 
 1. Open the Tailscale app on the phone (on Android the splash has an **Open
    Tailscale** link) and check it is connected.
@@ -101,12 +143,16 @@ Tailscale is not carrying traffic:
    networks Tailscale can stay "connected" while passing nothing, and its own
    off/on switch does not clear that; a force stop (or restarting the phone)
    does.
-3. Only one VPN runs at a time on a phone: another VPN app switched on
+3. Still nothing: turn airplane mode on for a few seconds, then off, and
+   press Retry.
+4. Only one VPN runs at a time on a phone: another VPN app switched on
    silently takes Tailscale's place.
-4. Still stuck: check the desktop is awake and Eldrun is running on it.
+5. Still stuck: check the desktop is awake and Eldrun is running on it.
 
 To make it rarer on Android, set Tailscale's battery use to **Unrestricted**
-and turn on **Always-on VPN** for it.
+and turn on **Always-on VPN** for it (search Settings for "VPN", then tap the
+gear next to Tailscale; Samsung lists it under Connections → More connection
+settings → VPN).
 
 The splash also shows the phone app's version and build time (`v0.1.x ·
 dd-mm hh:mm`), the same line as the home screen's header. After the desktop
@@ -116,7 +162,9 @@ running an old copy: close and reopen the app.
 The desktop keeps the phone's server up to date by itself: each time Eldrun
 starts, a server older than Eldrun is replaced (phones reconnect within
 seconds). If that fails — Tailscale down, say — the old server keeps running
-and **Settings → Mobile → Update host** does it by hand.
+and **Update** in the header's Mobile menu (or **Settings → Mobile → Update
+mobile host**) does it by hand; either appears only while the server is behind.
+**Reconnect** in that menu restarts the server if it stopped.
 
 ## If a phone goes missing
 

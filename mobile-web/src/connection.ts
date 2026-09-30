@@ -1,4 +1,5 @@
 import { ApiError } from "./api";
+import type { TranslationKey } from "../../src/lib/i18n";
 
 /**
  * Why Eldrun Mobile could not reach the workspace, at the granularity the
@@ -96,7 +97,7 @@ export function describeUnavailable(reason: UnavailableReason): UnavailableCopy 
     case "unreachable":
       return {
         title: "Can't reach your desktop. Is Tailscale on?",
-        hint: "Nothing answered at your desktop's address. Open the Tailscale app on this phone and check it is connected. If it already says connected, force-stop it (Settings → Apps → Tailscale → Force stop) and open it again — after the phone changes networks it can stay \"connected\" and carry nothing, and switching it off and on does not clear that. If that does not help, the desktop is asleep or shut down.",
+        hint: "Nothing answered at your desktop's address. Usually Tailscale on this phone is off or stuck; otherwise the desktop is asleep or shut down.",
       };
     // With Tailscale off, the desktop's 100.x address routes nowhere and the
     // request stalls instead of failing — so a timeout is the usual shape of
@@ -104,7 +105,7 @@ export function describeUnavailable(reason: UnavailableReason): UnavailableCopy 
     case "timeout":
       return {
         title: "Your desktop didn't answer. Is Tailscale on?",
-        hint: "Nothing came back in time. Open the Tailscale app on this phone and check it is connected — while it is off, requests to your desktop go nowhere. If it already says connected, force-stop it (Settings → Apps → Tailscale → Force stop) and open it again: after the phone changes networks it can stay \"connected\" and carry nothing, and switching it off and on does not clear that. If that does not help, the desktop may be asleep or the signal weak.",
+        hint: "Nothing came back in time. Usually Tailscale on this phone is off or stuck — while it is, requests to your desktop go nowhere; otherwise the desktop may be asleep or the signal weak.",
       };
     case "host_down":
       return {
@@ -309,6 +310,17 @@ export function localFailureText(reason: unknown): string {
 export function suspectsTunnel(reason: UnavailableReason): boolean {
   return reason === "unreachable" || reason === "timeout";
 }
+
+/** What to try, in order, when `suspectsTunnel`: cheapest first, the phone
+ * restart never — a force stop clears the jam as well (confirmed 2026-09-30,
+ * after an eduroam → home Wi‑Fi switch). Each step names the phone's own
+ * settings path in the reader's language. */
+export const TUNNEL_STEPS: readonly TranslationKey[] = [
+  "mobile.tunnel.step.open",
+  "mobile.tunnel.step.forceStop",
+  "mobile.tunnel.step.airplane",
+  "mobile.tunnel.step.desktop",
+];
 
 /** Opens the Tailscale app on Android (Chrome resolves `intent:` links on a
  * tap), falling back to its store page when it is not installed. `null`

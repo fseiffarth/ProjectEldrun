@@ -1141,6 +1141,14 @@ pub struct AgentTabStatus {
     /// model the tab last answered with when no pane here has its screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The session's own status line reads plan mode / a running `/goal`, as
+    /// the desktop's PLAN and GOAL tab pills read it
+    /// (`lib/agents/agentModel.screenModeMarks`). Sticky across an unreadable
+    /// screen, like the model; absent means "not seen", not "off".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub goal: bool,
     /// Desktop wall clock (ms since the epoch) of the tab's last output while
     /// working, and of the last turn it finished. Both are session-only on the
     /// desktop and absent until the tab has done the thing they name.
@@ -1162,6 +1170,11 @@ pub struct AgentTabTiming {
     /// with no status still shows which model it will answer with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The quiet tab's plan / goal marks, as `AgentTabStatus::plan`/`goal`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub goal: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1596,6 +1609,8 @@ mod tests {
                 tmux_session: "eldrun-project-0--agent-123456789".into(),
                 status: "question".into(),
                 model: Some("opus-4-1".into()),
+                plan: true,
+                goal: false,
                 working_at: Some(1_700_000_000_000),
                 done_at: None,
             }],
@@ -1619,6 +1634,8 @@ mod tests {
             timings: vec![AgentTabTiming {
                 tmux_session: "eldrun-project-0--agent-987654321".into(),
                 model: None,
+                plan: false,
+                goal: true,
                 working_at: None,
                 done_at: Some(1_700_000_100_000),
             }],
@@ -1654,6 +1671,11 @@ mod tests {
         );
         assert_eq!(response_json["timings"][0]["done_at"], 1_700_000_100_000u64);
         assert!(response_json["timings"][0].get("working_at").is_none());
+        // The plan / goal marks ride only while on.
+        assert_eq!(response_json["statuses"][0]["plan"], true);
+        assert!(response_json["statuses"][0].get("goal").is_none());
+        assert_eq!(response_json["timings"][0]["goal"], true);
+        assert!(response_json["timings"][0].get("plan").is_none());
     }
 
     /// A desktop one build ahead of this sidecar must cost the phone the field

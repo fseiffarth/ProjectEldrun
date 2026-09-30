@@ -167,6 +167,13 @@ pub struct PublicTab {
     /// answered with, shortened from the transcript's id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_model: Option<String>,
+    /// The agent tab's session is in plan mode / running a `/goal`, as its
+    /// own status line says — the desktop's PLAN and GOAL tab pills, which
+    /// the phone's cards wear too. Omitted while off or unknown.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub agent_plan: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub agent_goal: bool,
     /// Desktop wall clock (ms) of the tab's last working output and of its last
     /// finished turn — the two keys the phone's Agents list can sort by. The
     /// desktop's numbers travel untouched: they are compared with each other,
@@ -702,6 +709,8 @@ fn resolve_scope(
             agent_label: agent.then(|| agent_label_of(&tab)),
             agent_status: None,
             agent_model: None,
+            agent_plan: false,
+            agent_goal: false,
             working_at: None,
             done_at: None,
             schedules: None,

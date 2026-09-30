@@ -499,6 +499,8 @@ mod tests {
                 agent_label: None,
                 agent_status: None,
                 agent_model: None,
+                agent_plan: false,
+                agent_goal: false,
                 working_at: None,
                 done_at: None,
                 schedules: None,

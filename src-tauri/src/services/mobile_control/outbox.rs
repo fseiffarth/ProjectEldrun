@@ -36,6 +36,9 @@ const MAX_TAB_ID: u64 = 64;
 pub struct OutboxFile {
     /// The leaf the phone asks for again — the file name, validated.
     pub name: String,
+    /// What the phone shows, saves and shares it as: the leaf without the
+    /// send stamps in front ([`sent_name`]).
+    pub original: String,
     /// Closed media type determined by the bytes, never by the extension.
     pub kind: &'static str,
     pub size: u64,
@@ -213,6 +216,27 @@ fn sender(dir: &Path, name: &str) -> Option<String> {
         .then(|| id.to_string())
 }
 
+/// `name` without the `YYYYMMDD-HHMMSS-` stamps `eldrun-send` and the phone
+/// inbox put in front of a leaf to keep it unique — a photo the phone sent and
+/// an agent sent back carries two. A leaf that is nothing but stamps stays.
+pub fn sent_name(name: &str) -> &str {
+    let mut rest = name;
+    while let Some(tail) = strip_stamp(rest) {
+        if tail.is_empty() {
+            break;
+        }
+        rest = tail;
+    }
+    rest
+}
+
+fn strip_stamp(name: &str) -> Option<&str> {
+    let bytes = name.as_bytes();
+    let digits = |range: std::ops::Range<usize>| bytes[range].iter().all(u8::is_ascii_digit);
+    (bytes.len() >= 16 && digits(0..8) && bytes[8] == b'-' && digits(9..15) && bytes[15] == b'-')
+        .then(|| &name[16..])
+}
+
 pub fn unix_secs(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -242,6 +266,7 @@ pub fn list_for(root: &Path, tab: Option<&str>) -> Result<Vec<OutboxFile>, Outbo
         };
         let from_tab = tab.is_some_and(|tab| sender(&dir, &name).as_deref() == Some(tab));
         images.push(OutboxFile {
+            original: sent_name(&name).to_string(),
             name,
             kind,
             size: meta.len(),
@@ -355,6 +380,22 @@ mod tests {
         assert!(!valid_name("sp ace.png"));
         assert!(!valid_name("Größe.png"));
         assert!(!valid_name(&"x".repeat(MAX_NAME + 1)));
+    }
+
+    #[test]
+    fn the_sent_name_drops_every_send_stamp() {
+        assert_eq!(sent_name("20260930-101530-plot.png"), "plot.png");
+        // Phone → inbox → `eldrun-send` back: two stamps.
+        assert_eq!(sent_name("20260930-101530-20260930-101010-IMG_4711.jpg"), "IMG_4711.jpg");
+        assert_eq!(sent_name("plot.png"), "plot.png");
+        assert_eq!(sent_name("2026-09-30-notes.md"), "2026-09-30-notes.md");
+        assert_eq!(sent_name("20260930-1015-plot.png"), "20260930-1015-plot.png");
+        // Nothing but a stamp: the leaf stays whole rather than going empty.
+        assert_eq!(sent_name("20260930-101530-"), "20260930-101530-");
+        assert_eq!(sent_name("20260930-101530-20260930-101010-"), "20260930-101010-");
+        let dir = tempfile::tempdir().unwrap();
+        touch(&outbox(dir.path()), "20260930-101530-IMG_1.jpg", JPEG, Duration::from_secs(1));
+        assert_eq!(list(dir.path()).unwrap()[0].original, "IMG_1.jpg");
     }
 
     #[test]

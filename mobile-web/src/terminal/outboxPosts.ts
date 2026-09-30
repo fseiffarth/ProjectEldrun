@@ -52,7 +52,9 @@ export function outboxPosts(entries: readonly TranscriptEntry[], files: readonly
   const posts = new Map<number, OutboxPost[]>();
   if (files.length === 0 || entries.length === 0) return posts;
   let last: number | null = null;
-  const times = entries.map((entry) => (last = entrySeconds(entry) ?? last));
+  // A prompt still queued on the desktop stands at the end with its send's
+  // time: nothing the agent sent meanwhile belongs below it.
+  const times = entries.map((entry) => (entry.queued ? null : (last = entrySeconds(entry) ?? last)));
   const oldestFirst = [...files].sort((a, b) => a.modified - b.modified || a.name.localeCompare(b.name));
   let open: { index: number; post: OutboxPost; last: number } | null = null;
   for (const file of oldestFirst) {

@@ -44,7 +44,7 @@ import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readFlag, readTerminalView, writeFlag, writeTerminalView, type TerminalViewChoice } from "../prefs";
 import { readSpeechLang, speechTag, type SpeechLang } from "../speechLang";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
-import { dedentLines, dedentRows, joinProseWraps, readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
+import { dedentRows, readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
 import {
   absorbHistory,
   emptyHistory,
@@ -60,7 +60,6 @@ import { sessionLimits } from "../terminal/sessionUsage";
 import { installFocusSwipe } from "../terminal/focusSwipe";
 import {
   mergeSelectRows,
-  readQuestionTabs,
   readSelectPrompt,
   revealSelectRow,
   sameSelectStep,
@@ -72,6 +71,7 @@ import {
   type SelectPrompt,
   type SelectStep,
 } from "../terminal/selectPrompt";
+import { questionParts, type QuestionParts } from "../terminal/questionParts";
 import {
   isOpenCodeTab,
   openCodePickKeys,
@@ -191,6 +191,21 @@ const AGENT_SUBMIT_GAP = 200;
  * "Where should the new conversation run?" picker, which the button's single
  * Enter leaves waiting on the desktop (2026-09-23). */
 const NEW_CONVERSATION_COMMAND = "/clear";
+const CLEAR_COMMAND = /^\s*\/clear\b/u;
+const SLASH_COMMAND = /^\s*\//u;
+/** A slash command owns a turn of the agent's own: `/clear` redraws and has
+ * Claude run its session hooks, `/model` swaps the model or opens a picker —
+ * and while it does, stdin may go unread. A message typed then reached it in
+ * one read, text and CR together: a paste, whose CR is a new line, not a
+ * submit — after a `/clear` the prompt sat unsent in the agent's composer. So
+ * the next message after any command (and after an Undo the desktop typed)
+ * waits until the screen has been quiet for COMMAND_SETTLE_QUIET, at least
+ * COMMAND_SETTLE_MIN after the command and at most COMMAND_SETTLE_MAX — the
+ * desktop's scheduled prefaces settle the same way (`AgentScheduleHost`). */
+const COMMAND_SETTLE_MIN = 1_200;
+const COMMAND_SETTLE_QUIET = 700;
+const COMMAND_SETTLE_MAX = 6_000;
+const COMMAND_SETTLE_POLL = 150;
 /** How long an Undo that found no clear recorded yet waits before its one
  * retry: the desktop's hook writes the record as Claude starts the new chat. */
 const UNDO_CLEAR_RETRY = 1_200;
@@ -412,9 +427,13 @@ function SubagentCard({ turn, label, untested, onOpen }: {
  * As in a messenger, each bubble carries its time in the corner and a day
  * chip opens each day (`chatTimes`); a record with no stamp has neither.
  * What the agent sent to the phone sits after the record it followed
- * (`outboxPosts`), as picture messages. */
-const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, planLabel = "", planUntested = "", agentLabel = "", agentUntested = "", onOpenAgent, onResend, onEdit, posts, renderPost }: {
+ * (`outboxPosts`), as picture messages.
+ * `part` draws only the settled chat or only the prompts the desktop still
+ * holds (`queued`), so the agent at work can be drawn between the two; both
+ * halves key and date their bubbles from the whole of `entries`. */
+const TranscriptTurns = memo(function TranscriptTurns({ entries, part, cutLabel, promptLabel, planLabel = "", planUntested = "", agentLabel = "", agentUntested = "", onOpenAgent, onResend, onEdit, posts, renderPost }: {
   entries: SessionTranscript["entries"];
+  part?: "settled" | "queued";
   cutLabel: string;
   promptLabel: string;
   /** The heading over a plan's bubble, and its untested mark. */
@@ -441,6 +460,7 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
   const dayLabels = { today: t("mobile.transcript.today"), yesterday: t("mobile.transcript.yesterday") };
   const timesUntested = isUntested("mobile.transcript.times");
   return <>{turns.map((turn, index) => {
+    if (part && (part === "queued") !== (turn.queued === true)) return null;
     const moment = chatMoment(turn.stamp);
     const time = moment && <small className="transcript-time">{chatTime(moment)}</small>;
     return <Fragment key={turn.key}>
@@ -512,17 +532,6 @@ function noSessionReason(transcript: SessionTranscript | null): TranslationKey {
  * back: no parsing, no keystrokes. The row the dialog highlights is marked as
  * the one Enter would take, not as an answer already given.
  */
-/** A range of read lines without the blank rows at its ends — the gutter a
- * dialog leaves around its own text, which is a paragraph break only when
- * there is something on both sides of it. */
-function withoutEdgeBlanks(lines: readonly ReadableLine[]): ReadableLine[] {
-  let first = 0;
-  let end = lines.length;
-  while (first < end && lines[first].text === "") first += 1;
-  while (end > first && lines[end - 1].text === "") end -= 1;
-  return lines.slice(first, end);
-}
-
 /** The mark Claude Code asks agents to put on the option they would pick. It
  * is shown as a tag beside the label rather than as part of it. */
 const RECOMMENDED = /\s+\((Recommended)\)$/u;
@@ -603,6 +612,12 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   const voiceProgress = useRef<DictationProgress>(DICTATION_START);
   const copiedTimer = useRef<number>();
   const sendTimers = useRef<number[]>([]);
+  /** When this screen last sent a slash command, and last drew output from
+   * the pane: what `sendAgentText` waits on before typing after a command. */
+  const commandSentAt = useRef(0);
+  const lastOutputAt = useRef(0);
+  /** Messages waiting for a command to settle, in the order they were sent. */
+  const settleQueue = useRef<{ writes: string[]; prompt?: number; settles: boolean }[]>([]);
   /** Whether the attached pane has bracketed paste on right now. xterm tracks
    * the mode from the same stream it renders, and tmux forwards the pane's
    * DECSET 2004 to every client, so the phone knows what the agent supports
@@ -1023,6 +1038,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
       window.clearTimeout(copiedTimer.current);
       sendTimers.current.forEach(window.clearTimeout);
       sendTimers.current = [];
+      settleQueue.current = [];
+      commandSentAt.current = 0;
       // Abandons a mode walk still waiting between two Shift+Tabs.
       modeWalk.current += 1;
     };
@@ -1465,6 +1482,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
       next.onmessage = (event) => {
         if (ws !== next) return;
         if (event.data instanceof ArrayBuffer) {
+          lastOutputAt.current = Date.now();
           term.write(new Uint8Array(event.data), updateReadable);
           return;
         }
@@ -1760,6 +1778,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   const storedEntries = useMemo(() => sinceClear ?? transcript?.entries ?? [], [sinceClear, transcript]);
   const sessionEntries = useMemo(() => withPending(storedEntries, pending), [storedEntries, pending]);
   const sessionAgents = useMemo(() => sessionEntries.filter((entry) => entry.kind === "agent"), [sessionEntries]);
+  /** A prompt the desktop still holds sits below the agent at work. */
+  const queuedShown = sessionEntries.some((entry) => entry.queued);
   /** The files the agent sent while this conversation ran, as its messages. */
   // The gallery holds every file of the project; the chat only what this tab sent.
   const chatPosts = useMemo(() => outboxPosts(sessionEntries, outbox.filter((file) => file.from_tab)), [sessionEntries, outbox]);
@@ -2076,9 +2096,47 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
    * on and the family wants them (`bracketsAgentMessage`). Shared by the
    * composer's Send and the composer chips' slash commands. */
   const sendAgentText = (text: string, prompt?: number) => {
-    clearPending();
     const bracketed = bracketsAgentMessage(tab.agent_label ?? tab.label, bracketedPaste.current());
-    return deliver(agentInputWrites(text, bracketed), prompt);
+    const message = { writes: agentInputWrites(text, bracketed), prompt, settles: SLASH_COMMAND.test(text) };
+    // Behind a command still settling, and behind anything already waiting on
+    // one, a message queues; the writes it reports as sent go once it drains.
+    if (message.writes.length > 0 && (settleQueue.current.length > 0 || !commandSettled())) {
+      if (!connectedRef.current) return false;
+      settleQueue.current.push(message);
+      if (settleQueue.current.length === 1) later(COMMAND_SETTLE_POLL, drainSettled);
+      return true;
+    }
+    clearPending();
+    return deliverMessage(message);
+  };
+  /** How long `deliver` takes to put `writes` out, CR included. */
+  const writesSpan = (writes: string[]) => writes.length < 2 ? 0 : (writes.length - 2) * AGENT_KEY_GAP + AGENT_SUBMIT_GAP;
+  const commandSettled = () => {
+    const now = Date.now();
+    const since = now - commandSentAt.current;
+    if (since >= COMMAND_SETTLE_MAX) return true;
+    return since >= COMMAND_SETTLE_MIN && now - Math.max(lastOutputAt.current, commandSentAt.current) >= COMMAND_SETTLE_QUIET;
+  };
+  const deliverMessage = (message: { writes: string[]; prompt?: number; settles?: boolean }) => {
+    const delivered = deliver(message.writes, message.prompt);
+    // Timed from its CR, the write the agent acts on.
+    if (delivered && message.settles) commandSentAt.current = Date.now() + writesSpan(message.writes);
+    return delivered;
+  };
+  /** Types the queued messages once the command before them has settled, one
+   * at a time, each after the last one's writes are out — a queued command
+   * holds the ones behind it in turn. */
+  const drainSettled = () => {
+    if (!commandSettled()) {
+      later(COMMAND_SETTLE_POLL, drainSettled);
+      return;
+    }
+    const next = settleQueue.current.shift();
+    if (!next) return;
+    if (!deliverMessage(next) && next.prompt !== undefined) {
+      setPending((current) => current.map((entry) => entry.id === next.prompt ? { ...entry, failed: true, retrying: false } : entry));
+    }
+    if (settleQueue.current.length > 0) later(writesSpan(next.writes) + AGENT_SUBMIT_GAP, drainSettled);
   };
   /** Once dictated words have left the composer by its ✕, "Heard:" stops
    * quoting them. They stay counted as inserted: the recognizer, still
@@ -2131,7 +2189,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
     setLastSent(draft);
     setEditNote("");
     if (id === undefined) {
-      if (/^\s*\/clear\b/u.test(draft)) startedOver();
+      if (CLEAR_COMMAND.test(draft)) startedOver();
       rememberSlashCommand(slashCliKey, draft);
       setUsedSlash(readSlashCommands(slashCliKey));
     } else {
@@ -2288,6 +2346,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
           // The cleared conversation is the session read again, all of it:
           // read it afresh now, and again while a relaunched agent comes up.
           setClearedAt(null);
+          // The desktop just typed the resume, or relaunched the agent.
+          commandSentAt.current = Date.now();
           transcriptVersion.current = undefined;
           setTranscriptReload((count) => count + 1);
           for (const delay of UNDO_RELOADS) {
@@ -2932,19 +2992,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
    * the list shows it as chips. Such a question and the agent's prose above it
    * are rejoined into paragraphs (`joinProseWraps`) — any other dialog's
    * screen, a diff or a command, stays as drawn. */
-  const [questionAsk, questionContext, questionTabs] = useMemo((): [ReadableLine[], ReadableLine[], QuestionTab[]] => {
-    if (!liveQuestion) return [[], [], []];
-    let ask = withoutEdgeBlanks(liveTail.slice(liveQuestion.question, liveQuestion.start));
-    let context = withoutEdgeBlanks(liveTail.slice(liveQuestion.context, liveQuestion.question));
-    let tabs = ask.length > 1 ? readQuestionTabs(ask[0].text) : null;
-    if (tabs) {
-      ask = withoutEdgeBlanks(ask.slice(1));
-    } else if (context.length > 0) {
-      tabs = readQuestionTabs(context[context.length - 1].text);
-      if (tabs) context = withoutEdgeBlanks(context.slice(0, -1));
-    }
-    return [joinProseWraps(dedentLines(ask)), tabs ? joinProseWraps(context) : context, tabs ?? []];
-  }, [liveQuestion, liveTail]);
+  const { ask: questionAsk, context: questionContext, tabs: questionTabs } = useMemo(
+    (): QuestionParts => (liveQuestion ? questionParts(liveTail, liveQuestion) : { ask: [], context: [], tabs: [] }),
+    [liveQuestion, liveTail],
+  );
   /** What the list on screen *is*, as a string: a stable dep for the effects
    * below, which must not restart on every repaint of the same question. */
   const questionSignature = liveQuestion ? selectSignature(liveQuestion) : "";
@@ -3188,7 +3239,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
       // An agent tab's Reader is a list once it is up: where it reads from.
       if (chat && view === "focus") setFocusMenu((open) => !open);
       else chooseView("focus");
-    }}>{t("mobile.focus.reader")}{chat && <span className="view-caret" aria-hidden="true" />}</button><button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => { setFocusMenu(false); chooseView("terminal"); }}>{t("mobile.focus.terminal")}</button></div><span className={connected ? "lamp" : "lamp off"} /></header>
+    }}>{t(chat ? "mobile.focus.chat" : "mobile.focus.reader")}{chat && <span className="view-caret" aria-hidden="true" />}</button><button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => { setFocusMenu(false); chooseView("terminal"); }}>{t("mobile.focus.terminal")}</button></div><span className={connected ? "lamp" : "lamp off"} /></header>
     {focusMenu && chat && view === "focus" && <div className="focus-menu-backdrop" role="presentation" onClick={() => setFocusMenu(false)}>
       <div className="focus-menu" role="menu" aria-label={t("mobile.focus.source")} onClick={(event) => event.stopPropagation()}>
         {/* Dimmed when the stored session cannot be read (an agent whose
@@ -3278,7 +3329,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
               ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && !sinceClear && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
-                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} planLabel={t("mobile.transcript.plan")} planUntested={planUntested} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} onResend={resendPrompt} onEdit={startEdit} posts={chatPosts} renderPost={renderPost} />
+                  <TranscriptTurns entries={sessionEntries} part="settled" cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} planLabel={t("mobile.transcript.plan")} planUntested={planUntested} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} onResend={resendPrompt} onEdit={startEdit} posts={chatPosts} renderPost={renderPost} />
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.question")}>
                     <small>{t("mobile.transcript.question")}{isUntested("mobile.focus.onScreen") && <> · {t("mobile.focus.untested")}</>}</small>
                     {/* The screen the dialog was drawn onto, as the screen drew
@@ -3301,6 +3352,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
                       {isUntested("mobile.focus.workingFacts") && <em> · {t("mobile.focus.untested")}</em>}
                     </small>}
                   </div>}
+                  {/* A prompt sent while the agent worked waits below its work
+                      until the desktop types it in: not taken yet. */}
+                  {queuedShown && <TranscriptTurns entries={sessionEntries} part="queued" cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} onResend={resendPrompt} onEdit={startEdit} />}
                 </div>)
             : painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
             ? <div className="readable-empty"><strong>Waiting for output</strong><span>The exact terminal is running behind this view.</span></div>

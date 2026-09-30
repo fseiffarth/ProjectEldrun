@@ -81,10 +81,10 @@ const MOBILE_DESKTOP_EVENT = "eldrun-mobile-desktop-request";
 
 interface AgentInfo { bin: string; installed: boolean }
 interface CatalogAgent { id: string; label: string; modes: string[] }
-interface AgentTabStatus { tmux_session: string; status: "working" | "question" | "done"; model?: string; working_at?: number; done_at?: number }
+interface AgentTabStatus { tmux_session: string; status: "working" | "question" | "done"; model?: string; plan?: boolean; goal?: boolean; working_at?: number; done_at?: number }
 /** The same readings for an agent tab with no status: a finished turn stays
  * sorted among the finished ones on the phone after it has been read. */
-interface AgentTabTiming { tmux_session: string; model?: string; working_at?: number; done_at?: number }
+interface AgentTabTiming { tmux_session: string; model?: string; plan?: boolean; goal?: boolean; working_at?: number; done_at?: number }
 interface AgentTabPrompt { text: string; at?: string }
 /** `upcoming` carries the soonest scheduled messages, `at` desktop-local
  * `YYYY-MM-DDTHH:MM` like `next`. */
@@ -521,6 +521,16 @@ function mobileModelTag(projectId: string, tab: TabEntry): string | undefined {
     ?? (tab.kind === "local_agent" ? tab.env?.ELDRUN_LOCAL_MODEL : undefined);
 }
 
+/** The PLAN / GOAL marks the desktop's tab strip shows for a tab
+ * (`TabAgentModeMarks`), onto a phone row — only the ones that are on. Read
+ * after `mobileModelTag`, whose screen re-read refreshes them too. */
+function withModeMarks<Row extends { plan?: boolean; goal?: boolean }>(row: Row, ptyId: string): Row {
+  const marks = useAgentModelsStore.getState().modeByTab[ptyId];
+  if (marks?.plan) row.plan = true;
+  if (marks?.goal) row.goal = true;
+  return row;
+}
+
 /** An agent tab as the phone counts one: a local-model tab is one too — the
  * catalog lists it as `agent` (`services::mobile_control::discovery`). */
 function isAgentKind(kind: TabEntry["kind"]): boolean {
@@ -542,6 +552,7 @@ function projectAgentStatuses(projectId: string): AgentTabStatus[] {
     const row: AgentTabStatus = { tmux_session: tab.tmuxSession, status };
     const model = mobileModelTag(projectId, tab);
     if (model) row.model = model;
+    withModeMarks(row, ptyId);
     const workingAt = status === "working" ? Date.now() : activity.lastWorkingByTab[ptyId];
     if (workingAt !== undefined) row.working_at = workingAt;
     const doneAt = activity.lastDoneByTab[ptyId];
@@ -563,11 +574,12 @@ function projectAgentTimings(projectId: string): AgentTabTiming[] {
     const row: AgentTabTiming = { tmux_session: tab.tmuxSession };
     const model = mobileModelTag(projectId, tab);
     if (model) row.model = model;
+    withModeMarks(row, ptyId);
     const workingAt = activity.lastWorkingByTab[ptyId];
     if (workingAt !== undefined) row.working_at = workingAt;
     const doneAt = activity.lastDoneByTab[ptyId];
     if (doneAt !== undefined) row.done_at = doneAt;
-    return row.model === undefined && row.working_at === undefined && row.done_at === undefined ? [] : [row];
+    return row.model === undefined && !row.plan && !row.goal && row.working_at === undefined && row.done_at === undefined ? [] : [row];
   });
 }
 
