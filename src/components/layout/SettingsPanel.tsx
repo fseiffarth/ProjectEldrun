@@ -393,7 +393,10 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
         return;
       }
       if (e.key === "Escape") {
+        // Only the capture ends — not steering's settings region, whose
+        // Escape would close the dialog.
         e.preventDefault();
+        e.stopPropagation();
         setCapturing(null);
         return;
       }

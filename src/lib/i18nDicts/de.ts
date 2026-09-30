@@ -1041,7 +1041,8 @@ export const dict: Dict = {
 
   "steering.newAgent.label": "Neuer Agent-Tab",
 
-  "steering.newAgent.desc": "Ein neuer Agent-Tab im fokussierten Unterfenster: 1 ist der Standard-Agent, 2–9 die weiteren des +-Menüs (die Legende nennt sie). Beendet den Steuerungsmodus.",
+  "steering.newAgent.desc": "Ein neuer Agent-Tab im fokussierten Unterfenster: 1 ist der Standard-Agent, 2–9 die weiteren des +-Menüs in dessen Reihenfolge (die Legende zeigt, wie viele). Beendet den Steuerungsmodus.",
+  "steering.newAgent.clis": "CLIs",
 
   "steering.newTabMenu.label": "Alle Tab-Arten",
 
@@ -1058,6 +1059,8 @@ export const dict: Dict = {
   "steering.sideView.label": "Ansicht wechseln",
 
   "steering.sideView.desc": "Vorherige / nächste Ansicht des Seitenpanels: Dateien, Git, Apps, Agenten.",
+  "steering.settingsPage.label": "Seite wechseln",
+  "steering.settingsPage.desc": "Vorherige / nächste Einstellungsseite, in der Reihenfolge der Liste links.",
 
   "steering.press.label": "Drücken",
 
@@ -1065,7 +1068,11 @@ export const dict: Dict = {
 
   "steering.sidePanel.label": "Seitenpanel",
 
-  "steering.sidePanel.desc": "Öffnet das Seitenpanel zum Durchlaufen mit den Pfeiltasten; Escape schließt es wieder.",
+  "steering.sidePanel.desc": "Öffnet das Seitenpanel zum Durchlaufen mit den Pfeiltasten; dieselbe Taste oder Escape schließt es wieder.",
+
+  "steering.sidePanelBack.label": "Seitenpanel schließen",
+
+  "steering.sidePanelBack.desc": "Die Taste, die das Seitenpanel geöffnet hat, verlässt es wieder — wie Zurück.",
 
   "steering.back.label": "Zurück",
 
@@ -1082,12 +1089,26 @@ export const dict: Dict = {
   "steering.panels.desc": "Schaltet die Seitenpanels um.",
   "steering.closeTab.label": "Tab schließen",
   "steering.closeTab.desc": "Schließt den aktiven Tab.",
+  "steering.agentClear.label": "Unterhaltung leeren",
+  "steering.agentClear.desc": "Tippt /clear in den aktiven Agent-Tab: eine neue Unterhaltung, mit „Leeren rückgängig“ am Tab. Verlässt den Steuermodus.",
+  "steering.agentPlan.label": "Plan",
+  "steering.agentPlan.desc": "Setzt /plan an den Anfang der Eingabe des aktiven Agent-Tabs und verlässt den Steuermodus für den Rest.",
+  "steering.agentGoal.label": "Ziel",
+  "steering.agentGoal.desc": "Setzt /goal an den Anfang der Eingabe des aktiven Agent-Tabs und verlässt den Steuermodus für den Rest.",
+  "steering.agentPrompt.label": "Prompt",
+  "steering.agentPrompt.desc": "Öffnet ein Textfeld in der Fenstermitte für den aktiven Agent-Tab. Enter sendet (ersetzt einen Entwurf in der Eingabe des Agenten), danach geht die Steuerung weiter; Esc kehrt ohne Senden zurück.",
+  "steering.prompt.title": "Prompt · {tab}",
+  "steering.prompt.placeholder": "Prompt eingeben…",
+  "steering.prompt.hint": "Enter sendet · Umschalt+Enter neue Zeile · Esc zurück zur Steuerung",
+  "steering.prompt.send": "Senden",
   "steering.settings.label": "Einstellungen",
-  "steering.settings.desc": "Öffnet den Einstellungsdialog. Beendet den Steuerungsmodus.",
+  "steering.settings.desc": "Öffnet den Einstellungsdialog und steuert durch ihn: ←/→ Seiten, ↑/↓ Bedienelemente, Esc schließt ihn.",
   "steering.help.label": "Tastenkürzel-Hilfe",
   "steering.help.desc": "Öffnet die Tastenkürzel-Übersicht. Beendet den Steuerungsmodus.",
   "steering.search.label": "Suchen",
   "steering.search.desc": "In das Suchfeld der Fläche tippen (Filter des +-Menüs, Mail-Suche, …). Beendet den Steuerungsmodus.",
+  "steering.jumpProject.label": "Zu Projekt springen",
+  "steering.jumpProject.desc": "Namen eines offenen oder inaktiven Projekts tippen und mit Enter hinwechseln; ein inaktives wird aktiviert. Danach geht die Steuerung weiter.",
   "steering.exit.label": "Beenden",
   "steering.exit.desc": "Verlässt den Steuerungsmodus.",
   "steeringKeys.section.mode": "Jede Ebene",
@@ -2541,6 +2562,8 @@ export const dict: Dict = {
   "common.next": "Weiter",
   "projectSearch.placeholder": "Inaktive durchsuchen...",
   "projectSearch.noProjects": "Keine Projekte",
+  "projectSearch.jumpPlaceholder": "Zu Projekt springen...",
+  "projectSearch.openTag": "offen",
   "projectSearch.boxMemberOne": "Box · {count} Mitglied",
   "projectSearch.boxMemberMany": "Box · {count} Mitglieder",
   "categoryEditor.titleSuffix": "Kategorien",
@@ -7015,7 +7038,7 @@ export const dict: Dict = {
   "lessons.keyboardSteering.moveFocusTitle": "Ebenen: Projekte, Fenster, Tabs",
   "lessons.keyboardSteering.moveFocusBody": "Die Steuerung beginnt bei den Tabs des aktuellen Projekts: ←/→ wechseln den Tab, ↑ steigt zu den Unterfenstern und weiter zu den Projekten auf, ↓ geht wieder hinein. Bei den Unterfenstern wechseln ←/→ zwischen ihnen (jedes trägt ein Abzeichen mit seinem Abstand zum fokussierten); bei den Projekten wechseln ←/→ das Projekt. E S D F wirken wie ↑ ← ↓ →, die linke Hand bleibt also auf der Grundreihe.",
   "lessons.keyboardSteering.singleKeysTitle": "Aktionen mit einer Taste",
-  "lessons.keyboardSteering.singleKeysBody": "In einem Unterfenster wirken einzelne Tasten darauf: N öffnet eine Shell, M einen Systemmonitor, 1–9 einen Agenten (die Legende nennt sie), + das ganze Neuer-Tab-Menü; V schaltet die angedockte Dateiansicht um, W schließt den aktiven Tab. B öffnet das Seitenpanel, und oben bei den Projekten öffnen M, C und T Mail, Kalender und To-do-Board — ↑/↓ (oder E/D) durchlaufen ihre Bedienelemente, Enter drückt eines. P schaltet die Seitenpanels um. Q, R und X springen zum nächsten Tab, der auf Antwort wartet, arbeitet oder fertig ist — in jedem Projekt; Umschalt geht zurück.",
+  "lessons.keyboardSteering.singleKeysBody": "In einem Unterfenster wirken einzelne Tasten darauf: N öffnet eine Shell, O einen Systemmonitor, 1–9 einen Agenten (die Legende nennt sie), + das ganze Neuer-Tab-Menü; V schaltet die angedockte Dateiansicht um, W schließt den aktiven Tab; in einem Agent-Tab leert K die Unterhaltung und L / G beginnen eine /plan- oder /goal-Eingabe. B öffnet das Seitenpanel, und M, C und T öffnen auf jeder Ebene Mail, Kalender und To-do-Board — ↑/↓ (oder E/D) durchlaufen ihre Bedienelemente, Enter drückt eines. P schaltet die Seitenpanels um. Q, R und X springen zum nächsten Tab, der auf Antwort wartet, arbeitet oder fertig ist — in jedem Projekt; Umschalt geht zurück.",
   "lessons.keyboardSteering.exitsTitle": "Den Modus verlassen",
   "lessons.keyboardSteering.exitsBody": "Leertaste, Escape oder Enter beenden die Steuerung genau dort, wo du bist (in einem Panel oder Overlay führt Escape nur aus diesem heraus). Zwei Tasten beenden mit Ziel: , öffnet die Einstellungen, ? die Tastenkürzel-Übersicht.",
   "lessons.keyboardSteering.cheatSheetTitle": "Die F1-Übersicht",

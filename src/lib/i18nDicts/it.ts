@@ -1039,7 +1039,8 @@ export const dict: Dict = {
 
   "steering.newAgent.label": "Nuova scheda agente",
 
-  "steering.newAgent.desc": "Una nuova scheda agente nella sottofinestra a fuoco: 1 è l'agente predefinito, 2–9 gli altri del menu + (la legenda li nomina). Esce dalla modalità di navigazione.",
+  "steering.newAgent.desc": "Una nuova scheda agente nella sottofinestra a fuoco: 1 è l'agente predefinito, 2–9 gli altri del menu + nel suo ordine (la legenda mostra quanti). Esce dalla modalità di navigazione.",
+  "steering.newAgent.clis": "CLI",
 
   "steering.newTabMenu.label": "Tutti i tipi di scheda",
 
@@ -1056,6 +1057,8 @@ export const dict: Dict = {
   "steering.sideView.label": "Cambia vista",
 
   "steering.sideView.desc": "Vista precedente / successiva del pannello laterale: File, Git, App, Agenti.",
+  "steering.settingsPage.label": "Cambia pagina",
+  "steering.settingsPage.desc": "Pagina delle impostazioni precedente / successiva, nell’ordine dell’elenco a sinistra.",
 
   "steering.press.label": "Premi",
 
@@ -1063,7 +1066,11 @@ export const dict: Dict = {
 
   "steering.sidePanel.label": "Pannello laterale",
 
-  "steering.sidePanel.desc": "Apre il pannello laterale da percorrere con le frecce; Esc lo richiude.",
+  "steering.sidePanel.desc": "Apre il pannello laterale da percorrere con le frecce; lo stesso tasto o Esc lo richiude.",
+
+  "steering.sidePanelBack.label": "Chiudi pannello laterale",
+
+  "steering.sidePanelBack.desc": "Il tasto che ha aperto il pannello laterale lo richiude, come Indietro.",
 
   "steering.back.label": "Indietro",
 
@@ -1080,12 +1087,26 @@ export const dict: Dict = {
   "steering.panels.desc": "Attiva/disattiva i pannelli laterali.",
   "steering.closeTab.label": "Chiudi scheda",
   "steering.closeTab.desc": "Chiude la scheda attiva.",
+  "steering.agentClear.label": "Cancella conversazione",
+  "steering.agentClear.desc": "Digita /clear nella scheda agente attiva: una nuova conversazione, che «Annulla cancellazione» sulla scheda riprende. Esce dalla modalità di guida.",
+  "steering.agentPlan.label": "Piano",
+  "steering.agentPlan.desc": "Mette /plan all'inizio dell'input della scheda agente attiva ed esce dalla modalità di guida per scrivere il resto.",
+  "steering.agentGoal.label": "Obiettivo",
+  "steering.agentGoal.desc": "Mette /goal all'inizio dell'input della scheda agente attiva ed esce dalla modalità di guida per scrivere il resto.",
+  "steering.agentPrompt.label": "Prompt",
+  "steering.agentPrompt.desc": "Apre una casella di testo al centro della finestra per la scheda agente attiva. Invio la invia (sostituendo qualsiasi bozza nell'input dell'agente) e si torna alla modalità di guida; Esc torna senza inviare.",
+  "steering.prompt.title": "Prompt · {tab}",
+  "steering.prompt.placeholder": "Scrivi un prompt…",
+  "steering.prompt.hint": "Invio invia · Maiusc+Invio nuova riga · Esc torna alla guida",
+  "steering.prompt.send": "Invia",
   "steering.settings.label": "Impostazioni",
-  "steering.settings.desc": "Apre la finestra delle impostazioni. Esce dalla modalità di navigazione.",
+  "steering.settings.desc": "Apre la finestra delle impostazioni e la percorre: ←/→ pagine, ↑/↓ controlli, Esc la chiude.",
   "steering.help.label": "Aiuto scorciatoie",
   "steering.help.desc": "Apre il riepilogo delle scorciatoie. Esce dalla modalità di navigazione.",
   "steering.search.label": "Cerca",
   "steering.search.desc": "Scrivere nel campo di ricerca della superficie (filtro del menu +, ricerca della posta, …). Esce dalla modalità di navigazione.",
+  "steering.jumpProject.label": "Vai al progetto",
+  "steering.jumpProject.desc": "Digitare il nome di un progetto aperto o inattivo e premere Invio per passarci; uno inattivo viene attivato. Poi si torna alla modalità di navigazione.",
   "steering.exit.label": "Esci",
   "steering.exit.desc": "Esce dalla modalità di navigazione.",
   "steeringKeys.section.mode": "Ogni livello",
@@ -2536,6 +2557,8 @@ export const dict: Dict = {
   "common.next": "Avanti",
   "projectSearch.placeholder": "Cerca inattivi...",
   "projectSearch.noProjects": "Nessun progetto",
+  "projectSearch.jumpPlaceholder": "Vai al progetto...",
+  "projectSearch.openTag": "aperto",
   "projectSearch.boxMemberOne": "Box · {count} membro",
   "projectSearch.boxMemberMany": "Box · {count} membri",
   "categoryEditor.titleSuffix": "Categorie",
@@ -7011,7 +7034,7 @@ export const dict: Dict = {
   "lessons.keyboardSteering.moveFocusTitle": "Livelli: progetti, finestre, schede",
   "lessons.keyboardSteering.moveFocusBody": "La navigazione si apre sulle schede del progetto corrente: ←/→ cambiano scheda, ↑ sale alle sottofinestre e poi ai progetti, ↓ ridiscende. Sulle sottofinestre ←/→ passano dall'una all'altra (ognuna porta un badge con la sua distanza da quella a fuoco); sui progetti ←/→ cambiano progetto. E S D F funzionano come ↑ ← ↓ →, così la mano sinistra resta sulla riga base.",
   "lessons.keyboardSteering.singleKeysTitle": "Azioni a un tasto",
-  "lessons.keyboardSteering.singleKeysBody": "Dentro una sottofinestra singoli tasti agiscono su di essa: N apre una shell, M un Monitor di sistema, 1–9 un agente (la legenda li nomina), + l'intero menu nuova scheda; V attiva/disattiva il visore file agganciato, W chiude la scheda attiva. B apre il pannello laterale, e sui progetti M, C e T aprono posta, calendario e bacheca attività — ↑/↓ (o E/D) ne percorrono i controlli e Invio ne preme uno. P attiva/disattiva i pannelli laterali. Q, R e X vanno alla prossima scheda che attende risposta, lavora o ha finito — in qualsiasi progetto; Maiusc torna indietro.",
+  "lessons.keyboardSteering.singleKeysBody": "Dentro una sottofinestra singoli tasti agiscono su di essa: N apre una shell, O un Monitor di sistema, 1–9 un agente (la legenda li nomina), + l'intero menu nuova scheda; V attiva/disattiva il visore file agganciato, W chiude la scheda attiva; in una scheda agente K cancella la conversazione e L / G iniziano un input /plan o /goal. B apre il pannello laterale, e a ogni livello M, C e T aprono posta, calendario e bacheca attività — ↑/↓ (o E/D) ne percorrono i controlli e Invio ne preme uno. P attiva/disattiva i pannelli laterali. Q, R e X vanno alla prossima scheda che attende risposta, lavora o ha finito — in qualsiasi progetto; Maiusc torna indietro.",
   "lessons.keyboardSteering.exitsTitle": "Uscire dalla modalità",
   "lessons.keyboardSteering.exitsBody": "Spazio, Esc o Invio escono dalla navigazione proprio dove sei (in un pannello o overlay, Esc esce solo da quello). Due tasti escono con una destinazione: , apre le Impostazioni e ? il riepilogo delle scorciatoie.",
   "lessons.keyboardSteering.cheatSheetTitle": "Il riepilogo con F1",

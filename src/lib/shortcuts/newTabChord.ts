@@ -41,6 +41,8 @@ export interface NewTabShortcutDetail {
   request: NewTabRequest;
   /** The pane that takes the tab. */
   groupId: string;
+  /** Land the tab right of the pane's active tab, not at its end (steering). */
+  besideActive?: boolean;
 }
 
 /** The new-tab request `e` is, if any. */
@@ -60,12 +62,17 @@ export function newTabRequestFor(
  * Ask the main window's focused pane (the first pane when none is focused) to
  * open `request`. True when a bar opened it — false for an agent number with
  * no agent behind it, so the key can go on to wherever it was typed.
+ * `besideActive`: see {@link NewTabShortcutDetail}; for `menu`, it holds for
+ * whatever that menu opens.
  */
-export function requestNewTab(request: NewTabRequest): boolean {
+export function requestNewTab(
+  request: NewTabRequest,
+  opts?: { besideActive?: boolean },
+): boolean {
   const groupId = targetGroupId();
   if (!groupId) return false;
   const event = new CustomEvent<NewTabShortcutDetail>(NEW_TAB_SHORTCUT_EVENT, {
-    detail: { request, groupId },
+    detail: { request, groupId, besideActive: opts?.besideActive },
     cancelable: true,
   });
   return !window.dispatchEvent(event);

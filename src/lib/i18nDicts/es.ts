@@ -1039,7 +1039,8 @@ export const dict: Dict = {
 
   "steering.newAgent.label": "Nueva pestaña de agente",
 
-  "steering.newAgent.desc": "Una nueva pestaña de agente en la subventana enfocada: 1 es el agente predeterminado, 2–9 los demás del menú + (la leyenda los nombra). Sale del modo de navegación.",
+  "steering.newAgent.desc": "Una nueva pestaña de agente en la subventana enfocada: 1 es el agente predeterminado, 2–9 los demás del menú + en su orden (la leyenda muestra cuántos). Sale del modo de navegación.",
+  "steering.newAgent.clis": "CLIs",
 
   "steering.newTabMenu.label": "Todos los tipos de pestaña",
 
@@ -1056,6 +1057,8 @@ export const dict: Dict = {
   "steering.sideView.label": "Cambiar vista",
 
   "steering.sideView.desc": "Vista anterior / siguiente del panel lateral: Archivos, Git, Apps, Agentes.",
+  "steering.settingsPage.label": "Cambiar página",
+  "steering.settingsPage.desc": "Página de ajustes anterior / siguiente, en el orden de la lista de la izquierda.",
 
   "steering.press.label": "Pulsar",
 
@@ -1063,7 +1066,11 @@ export const dict: Dict = {
 
   "steering.sidePanel.label": "Panel lateral",
 
-  "steering.sidePanel.desc": "Abre el panel lateral para recorrerlo con las flechas; Escape lo vuelve a cerrar.",
+  "steering.sidePanel.desc": "Abre el panel lateral para recorrerlo con las flechas; la misma tecla o Escape lo vuelve a cerrar.",
+
+  "steering.sidePanelBack.label": "Cerrar panel lateral",
+
+  "steering.sidePanelBack.desc": "La tecla que abrió el panel lateral vuelve a salir de él, igual que Atrás.",
 
   "steering.back.label": "Atrás",
 
@@ -1080,12 +1087,26 @@ export const dict: Dict = {
   "steering.panels.desc": "Alterna los paneles laterales.",
   "steering.closeTab.label": "Cerrar pestaña",
   "steering.closeTab.desc": "Cierra la pestaña activa.",
+  "steering.agentClear.label": "Borrar conversación",
+  "steering.agentClear.desc": "Escribe /clear en la pestaña de agente activa: una conversación nueva, que «Deshacer borrado» en la pestaña recupera. Sale del modo de control.",
+  "steering.agentPlan.label": "Plan",
+  "steering.agentPlan.desc": "Pone /plan al principio de la entrada de la pestaña de agente activa y sale del modo de control para escribir el resto.",
+  "steering.agentGoal.label": "Objetivo",
+  "steering.agentGoal.desc": "Pone /goal al principio de la entrada de la pestaña de agente activa y sale del modo de control para escribir el resto.",
+  "steering.agentPrompt.label": "Prompt",
+  "steering.agentPrompt.desc": "Abre un cuadro de texto en el centro de la ventana para la pestaña de agente activa. Intro lo envía (sustituye cualquier borrador en la entrada del agente) y vuelve el modo de control; Esc vuelve sin enviar.",
+  "steering.prompt.title": "Prompt · {tab}",
+  "steering.prompt.placeholder": "Escribe un prompt…",
+  "steering.prompt.hint": "Intro envía · Mayús+Intro nueva línea · Esc vuelve al modo de control",
+  "steering.prompt.send": "Enviar",
   "steering.settings.label": "Ajustes",
-  "steering.settings.desc": "Abre el diálogo de ajustes. Sale del modo de navegación.",
+  "steering.settings.desc": "Abre el diálogo de ajustes y navega por él: ←/→ páginas, ↑/↓ controles, Esc lo cierra.",
   "steering.help.label": "Ayuda de atajos",
   "steering.help.desc": "Abre la guía de atajos. Sale del modo de navegación.",
   "steering.search.label": "Buscar",
   "steering.search.desc": "Escribir en el campo de búsqueda de la superficie (filtro del menú +, búsqueda del correo, …). Sale del modo de navegación.",
+  "steering.jumpProject.label": "Ir a proyecto",
+  "steering.jumpProject.desc": "Escribir el nombre de un proyecto abierto o inactivo y pulsar Intro para cambiar a él; uno inactivo se activa. Después vuelve el modo de navegación.",
   "steering.exit.label": "Salir",
   "steering.exit.desc": "Sale del modo de navegación.",
   "steeringKeys.section.mode": "Todos los niveles",
@@ -2536,6 +2557,8 @@ export const dict: Dict = {
   "common.next": "Siguiente",
   "projectSearch.placeholder": "Buscar inactivos...",
   "projectSearch.noProjects": "No hay proyectos",
+  "projectSearch.jumpPlaceholder": "Ir a proyecto...",
+  "projectSearch.openTag": "abierto",
   "projectSearch.boxMemberOne": "Caja · {count} miembro",
   "projectSearch.boxMemberMany": "Caja · {count} miembros",
   "categoryEditor.titleSuffix": "Categorías",
@@ -7011,7 +7034,7 @@ export const dict: Dict = {
   "lessons.keyboardSteering.moveFocusTitle": "Niveles: proyectos, ventanas, pestañas",
   "lessons.keyboardSteering.moveFocusBody": "La navegación se abre en las pestañas del proyecto actual: ←/→ cambian de pestaña, ↑ sube a las subventanas y luego a los proyectos, ↓ vuelve a bajar. En las subventanas, ←/→ pasan de una a otra (cada una lleva una insignia con su distancia a la enfocada); en los proyectos, ←/→ cambian de proyecto. E S D F funcionan como ↑ ← ↓ →, así la mano izquierda no deja la fila guía.",
   "lessons.keyboardSteering.singleKeysTitle": "Acciones de una tecla",
-  "lessons.keyboardSteering.singleKeysBody": "Dentro de una subventana, teclas sueltas actúan sobre ella: N abre un shell, M un Monitor del sistema, 1–9 un agente (la leyenda los nombra), + todo el menú de pestaña nueva; V alterna el visor de archivos acoplado, W cierra la pestaña activa. B abre el panel lateral, y en los proyectos M, C y T abren el correo, el calendario y el tablero de tareas — ↑/↓ (o E/D) recorren sus controles e Intro pulsa uno. P alterna los paneles laterales. Q, R y X saltan a la siguiente pestaña que espera respuesta, trabaja o ha terminado — en cualquier proyecto; Mayús vuelve atrás.",
+  "lessons.keyboardSteering.singleKeysBody": "Dentro de una subventana, teclas sueltas actúan sobre ella: N abre un shell, O un Monitor del sistema, 1–9 un agente (la leyenda los nombra), + todo el menú de pestaña nueva; V alterna el visor de archivos acoplado, W cierra la pestaña activa; en una pestaña de agente K borra la conversación y L / G empiezan una entrada /plan o /goal. B abre el panel lateral, y en cada nivel M, C y T abren el correo, el calendario y el tablero de tareas — ↑/↓ (o E/D) recorren sus controles e Intro pulsa uno. P alterna los paneles laterales. Q, R y X saltan a la siguiente pestaña que espera respuesta, trabaja o ha terminado — en cualquier proyecto; Mayús vuelve atrás.",
   "lessons.keyboardSteering.exitsTitle": "Salir del modo",
   "lessons.keyboardSteering.exitsBody": "Espacio, Escape o Intro salen de la navegación justo donde estás (en un panel o superposición, Escape solo sale de él). Dos teclas salen con destino: , abre los Ajustes y ? la guía de atajos.",
   "lessons.keyboardSteering.cheatSheetTitle": "La guía con F1",

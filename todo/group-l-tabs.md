@@ -330,6 +330,29 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
 
+213d. **Live-QA steering through settings.** ✅ Implemented · 🧪 Awaiting
+    live QA (2026-09-30). `,` in steering opens settings and stays in steering
+    on a "Settings" region: ←/→ previous/next page of the left-hand list,
+    ↑/↓ walk the page's controls (never landing on × first), Enter presses — a
+    dropdown opens, ↓ to an option and Enter picks it with the cursor back on
+    the dropdown; a text field takes the caret and steering steps aside
+    (Shift+Space over settings comes back to it). `/` types in the settings
+    search, Esc closes an open dropdown, then settings (back on the level it
+    was opened from). Verify: Shift+Space, `,`, walk General → Layout with F,
+    change the zoom dropdown, Esc twice; Shortcuts page: Enter on a key button
+    still captures the next key. *Files: `src/hooks/useKeyboard.ts`,
+    `src/lib/shortcuts/steeringRegion.ts`, `ProjectSwitcher.tsx`.*
+    - [x] 🤖 Automated test — `SteeringSettings`.
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
 215. **Live-QA one-click installs in the root console.** ✅ Implemented · 🧪
     Awaiting live QA. Every one-click install (`runInstallInTab`: Ollama/agent
     CLI installs, the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login,

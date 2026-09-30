@@ -114,8 +114,14 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
       setSettingsAnchor(named?.anchor);
       setShowSettings(true);
     };
+    // Steering's Escape out of the settings region closes the dialog again.
+    const onCloseSettings = () => setShowSettings(false);
     window.addEventListener("eldrun:open-settings", onOpenSettings);
-    return () => window.removeEventListener("eldrun:open-settings", onOpenSettings);
+    window.addEventListener("eldrun:close-settings", onCloseSettings);
+    return () => {
+      window.removeEventListener("eldrun:open-settings", onOpenSettings);
+      window.removeEventListener("eldrun:close-settings", onCloseSettings);
+    };
   }, []);
 
   // The intro wizard's New / Import / Clone buttons open the very dialogs the

@@ -33,7 +33,12 @@ import {
   steeringRowLabel,
   type SteeringLegendState,
 } from "../../lib/shortcuts/shortcuts";
-import { NEW_TAB_SHORTCUT_EVENT, type NewTabShortcutDetail } from "../../lib/shortcuts/newTabChord";
+import {
+  NEW_TAB_SHORTCUT_EVENT,
+  NEW_TAB_SLOTS_EVENT,
+  type NewTabShortcutDetail,
+  type NewTabSlotsDetail,
+} from "../../lib/shortcuts/newTabChord";
 import { nextStatusTab, statusTabs } from "../../lib/shortcuts/statusJump";
 import {
   activateRegionCursor,
@@ -305,6 +310,72 @@ describe("steering levels", () => {
     expect(root.dataset.steerRegion).toBeUndefined();
     act(() => steering().exit());
     expect(root.dataset.steer).toBeUndefined();
+  });
+
+  it("leaves the side panel on the key that opened it, as on Escape", () => {
+    twoPanes();
+    const onSidePanel = vi.fn((open: boolean) => {
+      document.querySelector(".side-panel")?.remove();
+      if (open) document.body.insertAdjacentHTML("beforeend", `<div class="side-panel open"><button>x</button></div>`);
+    });
+    function SideHarness() {
+      useKeyboard({ onTogglePanels: () => {}, onSidePanel });
+      return null;
+    }
+    render(<SideHarness />);
+    press({ key: " ", shiftKey: true });
+    press({ key: "b" });
+    expect(steering()).toMatchObject({ level: "region", region: "side" });
+    expect(onSidePanel).toHaveBeenLastCalledWith(true);
+    press({ key: "b" });
+    expect(steering()).toMatchObject({ active: true, level: "tabs" });
+    expect(onSidePanel).toHaveBeenLastCalledWith(false);
+    // Escape still does the same.
+    press({ key: "b" });
+    press({ key: "Escape" });
+    expect(steering()).toMatchObject({ active: true, level: "tabs" });
+    expect(document.querySelector(".side-panel.open")).toBeNull();
+  });
+
+  it("shows the pane's agent digits as one 1–N CLIs entry, names on hover", () => {
+    twoPanes();
+    const answer = (e: Event) => {
+      (e as CustomEvent<NewTabSlotsDetail>).detail.labels = ["Claude", "Codex", "Gemini", null];
+    };
+    window.addEventListener(NEW_TAB_SLOTS_EVENT, answer);
+    try {
+      render(<SteeringLegend />);
+      act(() => steering().enter());
+      const items = [...document.querySelectorAll(".steering-legend-item")];
+      const clis = items.find((el) => el.textContent?.includes("CLIs"));
+      expect(clis?.querySelector("kbd")?.textContent).toBe("1–3");
+      expect(clis?.getAttribute("title")).toBe("1 Claude · 2 Codex · 3 Gemini");
+      expect(items.some((el) => el.textContent?.includes("Codex"))).toBe(false);
+    } finally {
+      window.removeEventListener(NEW_TAB_SLOTS_EVENT, answer);
+    }
+  });
+
+  it("hides the mouse pointer until the mouse really moves, and again on the next key", () => {
+    const root = document.documentElement;
+    const move = (x: number, y: number) =>
+      act(() => {
+        window.dispatchEvent(new MouseEvent("mousemove", { screenX: x, screenY: y }));
+      });
+    render(<SteeringLegend />);
+    expect(root.dataset.steerPointer).toBeUndefined();
+    act(() => steering().enter());
+    expect(root.dataset.steerPointer).toBe("hidden");
+    // A still pointer (layout changed under it) keeps it hidden.
+    move(100, 100);
+    move(100, 100);
+    expect(root.dataset.steerPointer).toBe("hidden");
+    move(140, 100);
+    expect(root.dataset.steerPointer).toBeUndefined();
+    press({ key: "ArrowRight" });
+    expect(root.dataset.steerPointer).toBe("hidden");
+    act(() => steering().exit());
+    expect(root.dataset.steerPointer).toBeUndefined();
   });
 });
 

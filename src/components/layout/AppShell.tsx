@@ -36,6 +36,7 @@ import { ScreenshotSaveOverlay } from "./ScreenshotSaveOverlay";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
 import { SteeringLegend } from "./SteeringLegend";
+import { SteeringPromptOverlay } from "./SteeringPromptOverlay";
 import { ShortcutHelpOverlay } from "./ShortcutHelpOverlay";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { RemoteMachinesDialogHost } from "../projects/RemoteMachinesWindow";
@@ -1462,6 +1463,8 @@ export function AppShell() {
       {/* Keyboard steering mode's bottom legend — display-only echo of the
           swallowed keys, mounted at the shell like the other overlays. */}
       <SteeringLegend />
+      {/* Steering's prompt box (I): a prompt for the active agent tab. */}
+      <SteeringPromptOverlay />
       <QuickOpen />
       <HintHost />
       <TourHost />

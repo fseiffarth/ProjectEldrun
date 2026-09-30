@@ -1040,7 +1040,8 @@ export const dict: Dict = {
 
   "steering.newAgent.label": "Nouvel onglet agent",
 
-  "steering.newAgent.desc": "Un nouvel onglet agent dans la sous-fenêtre focalisée : 1 est l'agent par défaut, 2–9 les autres du menu + (la légende les nomme). Quitte le mode pilotage.",
+  "steering.newAgent.desc": "Un nouvel onglet agent dans la sous-fenêtre focalisée : 1 est l'agent par défaut, 2–9 les autres du menu + dans son ordre (la légende indique combien). Quitte le mode pilotage.",
+  "steering.newAgent.clis": "CLI",
 
   "steering.newTabMenu.label": "Tous les types d'onglet",
 
@@ -1057,6 +1058,8 @@ export const dict: Dict = {
   "steering.sideView.label": "Changer de vue",
 
   "steering.sideView.desc": "Vue précédente / suivante du panneau latéral : Fichiers, Git, Apps, Agents.",
+  "steering.settingsPage.label": "Changer de page",
+  "steering.settingsPage.desc": "Page de paramètres précédente / suivante, dans l’ordre de la liste de gauche.",
 
   "steering.press.label": "Appuyer",
 
@@ -1064,7 +1067,11 @@ export const dict: Dict = {
 
   "steering.sidePanel.label": "Panneau latéral",
 
-  "steering.sidePanel.desc": "Ouvre le panneau latéral, à parcourir avec les flèches ; Échap le referme.",
+  "steering.sidePanel.desc": "Ouvre le panneau latéral, à parcourir avec les flèches ; la même touche ou Échap le referme.",
+
+  "steering.sidePanelBack.label": "Fermer le panneau latéral",
+
+  "steering.sidePanelBack.desc": "La touche qui a ouvert le panneau latéral le referme, comme Retour.",
 
   "steering.back.label": "Retour",
 
@@ -1081,12 +1088,26 @@ export const dict: Dict = {
   "steering.panels.desc": "Bascule les panneaux latéraux.",
   "steering.closeTab.label": "Fermer l'onglet",
   "steering.closeTab.desc": "Ferme l'onglet actif.",
+  "steering.agentClear.label": "Effacer la conversation",
+  "steering.agentClear.desc": "Tape /clear dans l'onglet d'agent actif : une nouvelle conversation, que « Annuler l'effacement » sur l'onglet peut reprendre. Quitte le mode pilotage.",
+  "steering.agentPlan.label": "Plan",
+  "steering.agentPlan.desc": "Place /plan au début de la saisie de l'onglet d'agent actif et quitte le mode pilotage pour taper la suite.",
+  "steering.agentGoal.label": "Objectif",
+  "steering.agentGoal.desc": "Place /goal au début de la saisie de l'onglet d'agent actif et quitte le mode pilotage pour taper la suite.",
+  "steering.agentPrompt.label": "Prompt",
+  "steering.agentPrompt.desc": "Ouvre une zone de texte au milieu de la fenêtre pour l'onglet d'agent actif. Entrée l'envoie (en remplaçant tout brouillon dans la saisie de l'agent) et le mode pilotage revient ; Échap revient sans envoyer.",
+  "steering.prompt.title": "Prompt · {tab}",
+  "steering.prompt.placeholder": "Saisir un prompt…",
+  "steering.prompt.hint": "Entrée envoie · Maj+Entrée nouvelle ligne · Échap retour au pilotage",
+  "steering.prompt.send": "Envoyer",
   "steering.settings.label": "Paramètres",
-  "steering.settings.desc": "Ouvre la boîte de dialogue des paramètres. Quitte le mode pilotage.",
+  "steering.settings.desc": "Ouvre la boîte de dialogue des paramètres et la parcourt : ←/→ pages, ↑/↓ contrôles, Échap la ferme.",
   "steering.help.label": "Aide des raccourcis",
   "steering.help.desc": "Ouvre l'aide-mémoire des raccourcis. Quitte le mode pilotage.",
   "steering.search.label": "Rechercher",
   "steering.search.desc": "Saisir dans le champ de recherche de la surface (filtre du menu +, recherche du courrier, …). Quitte le mode pilotage.",
+  "steering.jumpProject.label": "Aller au projet",
+  "steering.jumpProject.desc": "Saisir le nom d'un projet ouvert ou inactif et appuyer sur Entrée pour y passer ; un projet inactif est activé. Le mode pilotage revient ensuite.",
   "steering.exit.label": "Quitter",
   "steering.exit.desc": "Quitte le mode pilotage.",
   "steeringKeys.section.mode": "Tous les niveaux",
@@ -2538,6 +2559,8 @@ export const dict: Dict = {
   "common.next": "Suivant",
   "projectSearch.placeholder": "Rechercher les inactifs...",
   "projectSearch.noProjects": "Aucun projet",
+  "projectSearch.jumpPlaceholder": "Aller au projet...",
+  "projectSearch.openTag": "ouvert",
   "projectSearch.boxMemberOne": "Boîte · {count} membre",
   "projectSearch.boxMemberMany": "Boîte · {count} membres",
   "categoryEditor.titleSuffix": "Catégories",
@@ -7013,7 +7036,7 @@ export const dict: Dict = {
   "lessons.keyboardSteering.moveFocusTitle": "Niveaux : projets, fenêtres, onglets",
   "lessons.keyboardSteering.moveFocusBody": "Le pilotage s'ouvre sur les onglets du projet courant : ←/→ changent d'onglet, ↑ remonte aux sous-fenêtres puis aux projets, ↓ redescend. Sur les sous-fenêtres, ←/→ passent de l'une à l'autre (chacune porte un badge indiquant sa distance à celle focalisée) ; sur les projets, ←/→ changent de projet. E S D F agissent comme ↑ ← ↓ →, la main gauche reste donc sur la rangée de repos.",
   "lessons.keyboardSteering.singleKeysTitle": "Actions en une touche",
-  "lessons.keyboardSteering.singleKeysBody": "Dans une sous-fenêtre, des touches simples agissent sur elle : N ouvre un shell, M un Moniteur système, 1–9 un agent (la légende les nomme), + tout le menu de nouvel onglet ; V bascule la visionneuse de fichiers ancrée, W ferme l'onglet actif. B ouvre le panneau latéral, et au niveau des projets M, C et T ouvrent le courrier, le calendrier et le tableau des tâches — ↑/↓ (ou E/D) parcourent leurs contrôles et Entrée en actionne un. P bascule les panneaux latéraux. Q, R et X vont à l'onglet suivant qui attend une réponse, travaille ou a terminé — dans n'importe quel projet ; Maj revient en arrière.",
+  "lessons.keyboardSteering.singleKeysBody": "Dans une sous-fenêtre, des touches simples agissent sur elle : N ouvre un shell, O un Moniteur système, 1–9 un agent (la légende les nomme), + tout le menu de nouvel onglet ; V bascule la visionneuse de fichiers ancrée, W ferme l'onglet actif ; dans un onglet d'agent K efface la conversation et L / G commencent une saisie /plan ou /goal. B ouvre le panneau latéral, et à chaque niveau M, C et T ouvrent le courrier, le calendrier et le tableau des tâches — ↑/↓ (ou E/D) parcourent leurs contrôles et Entrée en actionne un. P bascule les panneaux latéraux. Q, R et X vont à l'onglet suivant qui attend une réponse, travaille ou a terminé — dans n'importe quel projet ; Maj revient en arrière.",
   "lessons.keyboardSteering.exitsTitle": "Quitter le mode",
   "lessons.keyboardSteering.exitsBody": "Espace, Échap ou Entrée quittent le pilotage sur place (dans un panneau ou une surcouche, Échap en sort seulement). Deux touches sortent avec une destination : , ouvre les Paramètres, et ? l'aide-mémoire des raccourcis.",
   "lessons.keyboardSteering.cheatSheetTitle": "L'aide-mémoire F1",
