@@ -15,6 +15,8 @@
 // does not have. Kept beside the drafts (`drafts.ts`) and like them never sent
 // across the bridge.
 
+import { agentDraftPrefixes, agentFamily } from "../../shared/agentComposer";
+
 const KEY = "eldrun.mobile.slashCommands";
 
 /** Lines kept per CLI; past it the oldest goes. */
@@ -52,29 +54,10 @@ export interface SlashSuggestion {
   args: boolean;
 }
 
-/** Which CLI a tab runs, as the store keys it. The families are matched on the
- * tab's agent label the way the rest of the composer matches them; any other
- * label keys by its first word, so a CLI with no catalog here still keeps its
- * own commands apart from every other one's. */
-const FAMILIES: [RegExp, string][] = [
-  [/claude/iu, "claude"],
-  [/codex/iu, "codex"],
-  [/gemini/iu, "gemini"],
-  [/qwen/iu, "qwen"],
-  [/opencode/iu, "opencode"],
-  [/aider/iu, "aider"],
-  [/kimi/iu, "kimi"],
-  [/copilot/iu, "copilot"],
-  [/cursor/iu, "cursor"],
-  [/antigravity/iu, "antigravity"],
-  // The new-tab menu labels Mistral's `vibe` "Mistral".
-  [/mistral|\bvibe\b/iu, "vibe"],
-];
-
+/** Which CLI a tab runs, as the store keys it (`agentFamily`, shared with the
+ * desktop's steering keys). */
 export function slashCli(agentLabel: string): string {
-  for (const [pattern, key] of FAMILIES) if (pattern.test(agentLabel)) return key;
-  const word = agentLabel.trim().toLowerCase().split(/\s+/u)[0]?.replace(/[^\p{L}\p{N}_-]/gu, "");
-  return word || "agent";
+  return agentFamily(agentLabel);
 }
 
 /** Only commands each CLI documents; anything unsure is left for the reader's
@@ -186,21 +169,10 @@ const CATALOG: Record<string, CatalogEntry[]> = {
   ],
 };
 
-/** The commands the composer bar offers as chips beside ＋: each one leads the
- * draft with the reader's own words after it. Each CLI gets only the ones it
- * documents (checked 2026-09-27); a CLI with neither shows no chips. */
-const DRAFT_PREFIXES: Record<string, readonly string[]> = {
-  claude: ["/plan", "/goal"],
-  codex: ["/plan", "/goal"],
-  antigravity: ["/plan", "/goal"],
-  gemini: ["/plan"],
-  copilot: ["/plan"],
-  cursor: ["/plan"],
-  kimi: ["/plan"],
-};
-
+/** The commands the composer bar offers as chips beside ＋ (`agentDraftPrefixes`,
+ * shared with the desktop's steering keys). */
 export function draftPrefixes(cli: string): readonly string[] {
-  return DRAFT_PREFIXES[cli] ?? [];
+  return agentDraftPrefixes(cli);
 }
 
 /** The draft's leading command when it is one of `commands`, else null. */

@@ -36,6 +36,12 @@ export interface PendingPrompt {
   failed?: boolean;
   /** A resend is on its way and waiting for its acknowledgement. */
   retrying?: boolean;
+  /** Sent while the agent worked: the desktop holds it, by this id, and
+   * types it at the agent's next idle point. Until the session records it
+   * the reader can still change its words (`reworded`) — the one change a
+   * shown bubble takes, and only because the reader made it. `""` while the
+   * desktop has not answered with the id yet. */
+  held?: string;
 }
 
 /** At most this many are held; the oldest goes first. */
@@ -49,6 +55,12 @@ function words(text: string): string {
 
 function isCopy(entry: TranscriptEntry, text: string): boolean {
   return entry.kind === "prompt" && words(entry.text) === words(text);
+}
+
+/** `prompt` with the reader's new words. It keeps its place; only what tells
+ * its record apart is counted again, against the session as it stands. */
+export function reworded(prompt: PendingPrompt, text: string, entries: readonly TranscriptEntry[]): PendingPrompt {
+  return { ...prompt, text: text.trim(), seen: entries.filter((entry) => isCopy(entry, text)).length };
 }
 
 /** The pending prompt for `text`, sent against `entries`. */
@@ -78,17 +90,11 @@ function recordOf(prompt: PendingPrompt, entries: readonly TranscriptEntry[]): n
   return copies.length > prompt.seen ? copies[copies.length - 1] : -1;
 }
 
-/**
- * The session's entries as the chat shows them: each held prompt in its
- * place, its record — once there — left out. A held prompt is an ordinary
- * prompt entry stamped with its place's time, so the chat keys it, and
- * places the agent's files around it, the way it does a recorded one.
- */
-export function withPending(entries: readonly TranscriptEntry[], pending: readonly PendingPrompt[]): TranscriptEntry[] {
-  if (pending.length === 0) return entries as TranscriptEntry[];
+/** `entries` without the records of the held prompts that have arrived, and
+ * which those are. A prompt the session recorded reached it, whatever the
+ * link said. */
+function takeRecords(entries: readonly TranscriptEntry[], pending: readonly PendingPrompt[]): { shown: TranscriptEntry[]; arrived: Set<number> } {
   const shown = [...entries];
-  let lastSlot = -1;
-  // A prompt the session recorded reached it, whatever the link said.
   const arrived = new Set<number>();
   for (const prompt of pending) {
     const record = recordOf(prompt, shown);
@@ -97,6 +103,25 @@ export function withPending(entries: readonly TranscriptEntry[], pending: readon
       arrived.add(prompt.id);
     }
   }
+  return { shown, arrived };
+}
+
+/** The ids of the pending prompts the session has recorded: the agent has
+ * them, and their words are final. */
+export function arrivedPending(entries: readonly TranscriptEntry[], pending: readonly PendingPrompt[]): Set<number> {
+  return takeRecords(entries, pending).arrived;
+}
+
+/**
+ * The session's entries as the chat shows them: each held prompt in its
+ * place, its record — once there — left out. A held prompt is an ordinary
+ * prompt entry stamped with its place's time, so the chat keys it, and
+ * places the agent's files around it, the way it does a recorded one.
+ */
+export function withPending(entries: readonly TranscriptEntry[], pending: readonly PendingPrompt[]): TranscriptEntry[] {
+  if (pending.length === 0) return entries as TranscriptEntry[];
+  const { shown, arrived } = takeRecords(entries, pending);
+  let lastSlot = -1;
   for (const prompt of pending) {
     // After the last entry at or before the send — an entry without a stamp
     // stands at the one before it (as `outboxPosts` reads them), and an
@@ -136,6 +161,7 @@ export function withPending(entries: readonly TranscriptEntry[], pending: readon
       ...(prompt.sentAt ? { sentAt: prompt.sentAt } : {}),
       ...(prompt.failed && !arrived.has(prompt.id) ? { failed: true } : {}),
       ...(prompt.retrying && !arrived.has(prompt.id) ? { retrying: true } : {}),
+      ...(prompt.held && !arrived.has(prompt.id) ? { held: true } : {}),
     });
     lastSlot = slot;
   }

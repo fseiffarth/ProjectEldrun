@@ -17,7 +17,7 @@ import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../store
 import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
 import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
-import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
+import { queuePromptForTab, sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
 import { undoAgentClear } from "../../stores/agents/agentClearUndo";
 import { reopenClosedAgentTab, useClosedAgentTabsStore } from "../../stores/agents/closedAgentTabs";
@@ -262,6 +262,8 @@ type DesktopRequest =
   | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_input"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_prompt"; request_id: string; project_id: string; tmux_session: string; message: string }
+  | { type: "hold_prompt"; request_id: string; project_id: string; tmux_session: string; message: string }
+  | { type: "edit_held_prompt"; request_id: string; project_id: string; tmux_session: string; held_id: string; message: string }
   | { type: "undo_clear"; request_id: string; project_id: string; tmux_session: string }
   | { type: "desktop_images"; request_id: string; project_id: string }
   | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string }
@@ -286,6 +288,7 @@ type DesktopResponse =
   | { status: "agent_status"; report: MobileAgentStatus }
   | { status: "agent_transcript"; transcript: MobileAgentTranscript }
   | { status: "seen" }
+  | { status: "held"; held_id: string }
   | { status: "desktop_images"; images: DesktopImage[] }
   | { status: "attached"; attachment: InboxAttachment }
   | { status: "error"; code: string; message: string };
@@ -2025,6 +2028,57 @@ async function recordTabPrompt(projectId: string, tmuxSession: string, message: 
   return { status: "seen" };
 }
 
+/** The phone sent a prompt while the agent was at work: rather than the words
+ * waiting in the CLI's own queue, where nothing can reach them again, they
+ * wait here as a send-now schedule (`queuePromptForTab`) — delivered at the
+ * tab's next safe idle point, like the desktop's own Send now — and the phone
+ * can rewrite them until then (`editHeldTabPrompt`). The delivery records the
+ * prompt in the history, so nothing is recorded here. */
+async function holdTabPrompt(projectId: string, tmuxSession: string, message: string): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const tab = scheduleTargetTab(scope.id, tmuxSession);
+  if (!tab?.scheduleTargetId) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
+  const text = message.trim();
+  // A command is the CLI's own and never waits: the phone types those.
+  if (!text || isSessionCommand(text)) return { status: "error", code: "invalid_prompt", message: "Only prompts are held" };
+  const { id } = await queuePromptForTab(scope.id, tab.scheduleTargetId, text);
+  return { status: "held", held_id: id };
+}
+
+/** New words for a prompt `holdTabPrompt` holds, kept only while the rule is
+ * still waiting: `expectExistingOn` makes the backend refuse a rule already
+ * delivered (`schedule_gone`) or being typed (`schedule_busy`) instead of
+ * creating it afresh, which would send the prompt a second time. */
+async function editHeldTabPrompt(projectId: string, tmuxSession: string, heldId: string, message: string): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const tab = scheduleTargetTab(scope.id, tmuxSession);
+  const target = tab?.scheduleTargetId;
+  if (!target) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
+  const text = message.trim();
+  if (!text || isSessionCommand(text)) return { status: "error", code: "invalid_prompt", message: "Only prompts are held" };
+  const gone: DesktopResponse = { status: "error", code: "held_gone", message: "The agent already has this prompt" };
+  const held = (await invoke<ScheduledAgentPrompt[]>("agent_schedules_list", { projectId: scope.id, scheduleTargetId: target }))
+    .find((schedule) => schedule.id === heldId);
+  // Only a waiting send-now rule is a held prompt; a recurring rule the phone
+  // happens to name is not one to rewrite from the chat.
+  if (!held || held.rule.type !== "once" || held.last) return gone;
+  try {
+    await useAgentSchedulesStore.getState().upsert(scope.id, target, { ...held, message: text }, { expectExistingOn: target });
+  } catch (cause) {
+    const code = String(cause);
+    if (code.includes("schedule_busy")) return { status: "error", code: "held_busy", message: "The prompt is being delivered" };
+    if (code.includes("schedule_gone")) return gone;
+    throw cause;
+  }
+  return { status: "held", held_id: heldId };
+}
+
 /** The phone's Undo after a Clear: this window brings back the conversation
  * the tab's last `/clear` ended (`undoAgentClear` — in-session for Claude, a
  * relaunch onto it for the other resumable agents), so the session id stays
@@ -2220,6 +2274,8 @@ async function handleRequest(
     case "tab_seen": return markTabSeen(request.project_id, request.tmux_session);
     case "tab_input": return markTabInput(request.project_id, request.tmux_session);
     case "tab_prompt": return recordTabPrompt(request.project_id, request.tmux_session, request.message);
+    case "hold_prompt": return holdTabPrompt(request.project_id, request.tmux_session, request.message);
+    case "edit_held_prompt": return editHeldTabPrompt(request.project_id, request.tmux_session, request.held_id, request.message);
     case "undo_clear": return undoTabClear(request.project_id, request.tmux_session);
     case "desktop_images": return desktopImagesFor(request.project_id);
     case "attach_desktop_image": return attachDesktopImage(request.project_id, request.image_id);
@@ -2240,7 +2296,7 @@ function mutationDomain(type: DesktopRequest["type"]): string | null {
     case "create": case "activate": case "rename_tab": case "close_tab": case "reopen_tab": case "color_tab": case "reorder_tab": return "tabs";
     case "todo_mutate": case "alert_resolve": case "calendar_mutate": return "board";
     case "mail_mark": case "mail_reply": return "mail";
-    case "schedule_mutate": case "prompt_mutate": return "schedules";
+    case "schedule_mutate": case "prompt_mutate": case "hold_prompt": case "edit_held_prompt": return "schedules";
     default: return null;
   }
 }

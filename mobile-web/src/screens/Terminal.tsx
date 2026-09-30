@@ -26,6 +26,8 @@ import {
   openOutside,
   openSignInTab,
   recoverSession,
+  editHeldPrompt,
+  holdPrompt,
   reportSentPrompt,
   undoClear,
   uploadToInbox,
@@ -34,6 +36,7 @@ import {
   type ProjectDetail,
   type SessionTranscript,
   type TabRow,
+  type TranscriptEntry,
 } from "../api";
 import { describeFailure } from "../connection";
 import { DRAFT_SAVE_DELAY, readDraft, writeDraft } from "../drafts";
@@ -91,11 +94,11 @@ import { answerHtml } from "../terminal/answerMarkdown";
 import { chatDayLabel, chatMoment, chatTime, dayOpeners } from "../terminal/chatTimes";
 import { commandArgsInline, slashCommand, transcriptTurns, type SlashCommand, type TranscriptTurn } from "../terminal/transcriptTurns";
 import { openSubagent, siblingPosition, stepSibling, type SubagentStep } from "../terminal/subagents";
-import { MAX_PENDING, pendingPrompt, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
+import { MAX_PENDING, arrivedPending, pendingPrompt, reworded, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
 import { outboxPosts, type OutboxPost as ChatPost } from "../terminal/outboxPosts";
 import { afterClear, clearMark, type ClearMark } from "../terminal/clearedSession";
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
-import { resetText, StatusSheet } from "./StatusSheet";
+import { resetCountdown, resetText, StatusSheet } from "./StatusSheet";
 import { SignInSheet } from "./SignInSheet";
 import { copiedSignIn, hasSignInTab, osc52Text, readHiddenSignIn, readSignedOut, readSignIn, signInAlternate, signInCommand, signInDone, type SignIn } from "../terminal/signIn";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
@@ -410,7 +413,7 @@ function SubagentCard({ turn, label, untested, onOpen }: {
  * chip opens each day (`chatTimes`); a record with no stamp has neither.
  * What the agent sent to the phone sits after the record it followed
  * (`outboxPosts`), as picture messages. */
-const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, planLabel = "", planUntested = "", agentLabel = "", agentUntested = "", onOpenAgent, onResend, posts, renderPost }: {
+const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, planLabel = "", planUntested = "", agentLabel = "", agentUntested = "", onOpenAgent, onResend, onEdit, posts, renderPost }: {
   entries: SessionTranscript["entries"];
   cutLabel: string;
   promptLabel: string;
@@ -422,6 +425,8 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
   onOpenAgent?: (turn: TranscriptTurn) => void;
   /** Send a prompt the link lost once more, by its pending id. */
   onResend?: (pending: number) => void;
+  /** Rewrite a prompt the desktop still holds, by its pending id. */
+  onEdit?: (pending: number) => void;
   /** The agent's files to draw after each record, by its index. */
   posts?: ReadonlyMap<number, readonly ChatPost[]>;
   renderPost?: (post: ChatPost) => ReactNode;
@@ -447,7 +452,7 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
       : turn.command
       ? <CommandDivider command={turn.command} label={promptLabel} press={hold(turn.key, () => turn.text)} />
       : turn.kind === "prompt"
-      ? <div className="readable-turn user" role="group" aria-label={promptLabel} data-prompt={turn.text} data-send-failed={turn.failed || undefined} {...hold(turn.key, () => turn.text)}>
+      ? <div className="readable-turn user" role="group" aria-label={promptLabel} data-prompt={turn.text} data-send-failed={turn.failed || undefined} {...hold(turn.key, () => turn.text, turn.held && onEdit && turn.pending !== undefined ? onEdit.bind(null, turn.pending) : undefined)}>
           <p className="transcript-text">{turn.text}</p>
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
           {time}
@@ -644,6 +649,17 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
    * re-subscribe per keystroke. */
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  /** A held prompt being rewritten in the composer (`startEdit`), by its
+   * pending id, with the draft it pushed aside. The composer's text is then
+   * the prompt's, not the tab's draft: the draft store keeps `before`. */
+  const [editing, setEditing] = useState<{ id: number; before: string } | null>(null);
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
+  /** What the draft store keeps for this tab: never a held prompt's words
+   * mid-edit, which a later Send would otherwise deliver a second time. */
+  const savedDraft = () => editingRef.current?.before ?? draftRef.current;
+  /** An edit is on its way to the desktop. */
+  const [editSending, setEditSending] = useState(false);
   /** The composer grows with its draft, line by line, up to the CSS
    * max-height, then scrolls; an emptied draft drops it back to one line. */
   useLayoutEffect(() => {
@@ -797,6 +813,12 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
    * panel the status sheet shows — the facts row prints them beside the
    * context figure. Empty until a read answers or for a CLI without one. */
   const [limits, setLimits] = useState<LimitMeters>({});
+  const [limitsNow, setLimitsNow] = useState(() => Date.now());
+  const [limitsReadAt, setLimitsReadAt] = useState(() => Date.now());
+  const rememberLimits = useCallback((next: LimitMeters) => {
+    setLimits(next);
+    setLimitsReadAt(Date.now());
+  }, []);
   /** The composer's **+**: a phone file into the project inbox, an image
    * already on the desktop, or an `@`. */
   const [addSheet, setAddSheet] = useState(false);
@@ -836,6 +858,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
    * Undo until the new chat is given a prompt (Claude only — the desktop
    * types the resume of the conversation cleared, `undoClear`). */
   const [undoable, setUndoable] = useState(false);
+  /** What became of the last edit of a held prompt, shown under the composer. */
+  const [editNote, setEditNote] = useState<TranslationKey | "">("");
   /** Why the last Undo did nothing, shown under the composer. */
   const [undoNote, setUndoNote] = useState<TranslationKey | "">("");
   /** Bumped to make the Reader read the stored session again at once. */
@@ -844,6 +868,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
    * `/clear` then, and says so only on the desktop's screen. */
   const [clearRefused, setClearRefused] = useState(false);
   const liveBusy = useMemo(() => agentWork(liveScreen) !== null, [liveScreen]);
+  /** The agent is in a turn — by its screen, or by the desktop's word — so a
+   * prompt sent now is held for its next idle point (`holdDraft`). */
+  const agentAtWork = tab.kind === "agent" && (liveBusy || tab.agent_status === "working");
   // Once the turn is over the button works again; the note goes with it.
   useEffect(() => { if (clearRefused && !liveBusy) setClearRefused(false); }, [clearRefused, liveBusy]);
   const [focusSource, setFocusSource] = useState<"session" | "screen">("session");
@@ -893,6 +920,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   /** The subagents walked into from the stored session (`subagents.ts`),
    * outermost first; empty while the session itself is read. */
   const [subagentPath, setSubagentPath] = useState<readonly SubagentStep[]>([]);
+  const [subagentListOpen, setSubagentListOpen] = useState(false);
   const openStep = subagentPath[subagentPath.length - 1];
   /** The last read of a subagent's conversation, and whose it is — a read
    * that belongs to another subagent is never drawn under this one's bar. */
@@ -945,6 +973,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
     setDraft(readDraft(tab.id));
     setTranscript(null);
     setPending([]);
+    setEditing(null);
+    setEditNote("");
     setClearedAt(null);
     setClearRefused(false);
     setUndoable(false);
@@ -1729,6 +1759,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   const sinceClear = useMemo(() => afterClear(transcript?.entries ?? [], clearedAt), [transcript, clearedAt]);
   const storedEntries = useMemo(() => sinceClear ?? transcript?.entries ?? [], [sinceClear, transcript]);
   const sessionEntries = useMemo(() => withPending(storedEntries, pending), [storedEntries, pending]);
+  const sessionAgents = useMemo(() => sessionEntries.filter((entry) => entry.kind === "agent"), [sessionEntries]);
   /** The files the agent sent while this conversation ran, as its messages. */
   // The gallery holds every file of the project; the chat only what this tab sent.
   const chatPosts = useMemo(() => outboxPosts(sessionEntries, outbox.filter((file) => file.from_tab)), [sessionEntries, outbox]);
@@ -1737,6 +1768,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   const subTranscript = subRead && subRead.token === subToken ? subRead.transcript : null;
   // Another tab is another session, with subagents of its own.
   useEffect(() => { setSubagentPath([]); }, [tab.id]);
+  useEffect(() => { setSubagentListOpen(false); }, [tab.id]);
   useEffect(() => { setSubLimit(TRANSCRIPT_STEP); }, [subToken]);
   /** Reads the open subagent's conversation as the session itself is read: at
    * once, then every TRANSCRIPT_POLL while the page is visible — a subagent
@@ -1777,15 +1809,20 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   const levelEntries = openStep ? (subTranscript?.entries ?? []) : sessionEntries;
   const levelEntriesRef = useRef(levelEntries);
   levelEntriesRef.current = levelEntries;
-  const openSubagentTurn = useCallback((turn: TranscriptTurn) => {
+  const openSubagentTurn = useCallback((turn: Pick<TranscriptTurn, "subagent" | "text" | "role">, fromList = false) => {
     const token = turn.subagent;
     if (!token) return;
     const top = readableHost.current?.scrollTop ?? 0;
     setSubagentPath((path) => openSubagent(path, { token, task: turn.text, role: turn.role }, levelEntriesRef.current, top));
+    if (!fromList) setSubagentListOpen(false);
     // A conversation opens on its newest turn, as the session does.
     atBottomRef.current = true;
     setAtBottom(true);
   }, []);
+  const openListedSubagent = (entry: TranscriptEntry) => {
+    if (!entry.subagent) return;
+    openSubagentTurn(entry, true);
+  };
   /** Back up one level, to where that conversation was scrolled. */
   const subagentUp = () => {
     if (!openStep) return;
@@ -1903,7 +1940,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
             stopped = true;
             return;
           }
-          if (report.usage.raw) setLimits(limitMeters(parseUsageReport(report.usage.raw)));
+          if (report.usage.raw) rememberLimits(limitMeters(parseUsageReport(report.usage.raw)));
         },
         () => {},
       );
@@ -1916,7 +1953,12 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", poll);
     };
-  }, [tab.id, tab.kind]);
+  }, [tab.id, tab.kind, rememberLimits]);
+  useEffect(() => {
+    if (tab.kind !== "agent") return;
+    const timer = window.setInterval(() => setLimitsNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, [tab.kind]);
   useEffect(() => {
     if (!outboxOpen && !gallery) return;
     // The viewer opens from the gallery, so Escape closes the top one first.
@@ -2063,6 +2105,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
     setVoiceStatus(null);
   };
   const submitDraft = () => {
+    if (editing) {
+      submitEdit(editing);
+      return;
+    }
     if (!connected || !draft.trim()) return;
     // Only confirm what actually left the device. `readyState === OPEN` on a
     // half-open cellular link silently buffers, and "Sent" was shown regardless.
@@ -2077,8 +2123,13 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
     // so a bubble for it would wait forever. `/clear` also ends the chat the
     // earlier bubbles were waiting in.
     const id = /^\s*\//u.test(draft) ? undefined : ++pendingId.current;
+    if (id !== undefined && agentAtWork) {
+      holdDraft(id);
+      return;
+    }
     if (!sendAgentText(draft, id)) return;
     setLastSent(draft);
+    setEditNote("");
     if (id === undefined) {
       if (/^\s*\/clear\b/u.test(draft)) startedOver();
       rememberSlashCommand(slashCliKey, draft);
@@ -2097,6 +2148,103 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
     setDraft("");
     endDictation();
   };
+  /** Send while the agent works: the desktop holds the prompt for the tab's
+   * next idle point (`holdPrompt`) instead of it going into the CLI's own
+   * queue, where nothing can reach it again — so until the agent takes it in,
+   * its bubble's hold menu offers Edit. The bubble shows at once, as any
+   * prompt's does. A desktop that cannot hold it (no window, an older build)
+   * costs nothing: the words are typed as they always were. The delivery
+   * records the prompt in the desktop's history, so it is not reported here. */
+  const holdDraft = (id: number) => {
+    const text = draft;
+    setLastSent(text);
+    setUndoable(false);
+    setUndoNote("");
+    setEditNote("mobile.composer.heldNote");
+    // `held: ""` — asked for, id not known yet: waiting, not yet editable.
+    setPending((current) => [...current, { ...pendingPrompt(id, text, storedEntries), held: "" }].slice(-MAX_PENDING));
+    setDraft("");
+    endDictation();
+    holdPrompt(tab.id, text).then(
+      (held) => setPending((current) => current.map((entry) => entry.id === id ? { ...entry, held } : entry)),
+      () => {
+        setPending((current) => current.map((entry) => entry.id === id ? { ...entry, held: undefined } : entry));
+        setEditNote("");
+        if (!sendAgentText(text, id)) {
+          setPending((current) => current.map((entry) => entry.id === id ? { ...entry, failed: true, retrying: false } : entry));
+          return;
+        }
+        void reportSentPrompt(tab.id, text).catch(() => {});
+      },
+    );
+  };
+  /** The bubble's Edit: its words go into the composer, the draft steps
+   * aside until the edit is sent or cancelled. */
+  const startEdit = (id: number) => {
+    const prompt = pending.find((entry) => entry.id === id);
+    if (!prompt?.held || arrivedPending(storedEntries, pending).has(id)) {
+      setEditNote("mobile.composer.heldGone");
+      return;
+    }
+    setEditNote("");
+    setEditing({ id, before: editing?.before ?? draft });
+    setDraft(prompt.text);
+    composerInput.current?.focus();
+  };
+  const cancelEdit = () => {
+    if (!editing) return;
+    setDraft(editing.before);
+    setEditing(null);
+    setEditNote("");
+  };
+  /** Send in edit mode: the desktop rewrites the held prompt, and only once
+   * it says so does the bubble take the new words — it keeps its place. An
+   * agent that took the prompt first keeps the old words: the new ones stay
+   * in the composer, now an ordinary draft, to be sent or dropped. */
+  const submitEdit = (target: { id: number; before: string }) => {
+    const prompt = pending.find((entry) => entry.id === target.id);
+    const text = draft.trim();
+    if (!connected || !text || editSending || !prompt?.held) return;
+    if (text === prompt.text) {
+      cancelEdit();
+      return;
+    }
+    setEditSending(true);
+    editHeldPrompt(tab.id, prompt.held, text)
+      .then(() => {
+        setPending((current) => current.map((entry) => entry.id === target.id ? reworded(entry, text, storedEntries) : entry));
+        if (editingRef.current?.id === target.id) {
+          setDraft(target.before);
+          setEditing(null);
+        }
+        setEditNote("mobile.composer.heldEdited");
+      })
+      .catch((error) => {
+        const code = error instanceof ApiError ? error.code : "";
+        if (code === "held_gone" || code === "held_busy") {
+          setEditing(null);
+          setEditNote("mobile.composer.heldGone");
+        } else setEditNote("mobile.composer.heldEditFailed");
+      })
+      .finally(() => setEditSending(false));
+  };
+  /** Some prompt sent from here still waits on the desktop. */
+  const heldWaiting = useMemo(() => {
+    const arrived = arrivedPending(storedEntries, pending);
+    return pending.some((entry) => entry.held !== undefined && !arrived.has(entry.id));
+  }, [storedEntries, pending]);
+  // What the notes about waiting prompts say is over once none waits.
+  useEffect(() => {
+    if (!heldWaiting && (editNote === "mobile.composer.heldNote" || editNote === "mobile.composer.heldEdited")) setEditNote("");
+  }, [heldWaiting, editNote]);
+  // The agent took the prompt being edited: its words are final. What the
+  // reader typed stays in the composer as an ordinary draft.
+  useEffect(() => {
+    if (editing && !editSending && arrivedPending(storedEntries, pending).has(editing.id)) {
+      setEditing(null);
+      setEditNote("mobile.composer.heldGone");
+    }
+  }, [editing, editSending, storedEntries, pending]);
   /** A prompt the link lost goes again, as the same bubble: the same words
    * into the agent's line editor (which is reset first, so a half-delivered
    * first try is not doubled), tagged with the same id so the ack clears
@@ -2208,7 +2356,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
    * synchronous store write between the reader and their next letter, and the
    * only thing the delay can cost is text that is still on the screen. */
   useEffect(() => {
-    const timer = window.setTimeout(() => writeDraft(tab.id, draftRef.current), DRAFT_SAVE_DELAY);
+    const timer = window.setTimeout(() => writeDraft(tab.id, savedDraft()), DRAFT_SAVE_DELAY);
     return () => window.clearTimeout(timer);
   }, [tab.id, draft]);
   /** …and once more when this screen goes away, which the delay above would
@@ -2216,7 +2364,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
    * PWA away kills it without unmounting anything (`pagehide` is the last word
    * either way — `beforeunload` never fires on iOS). */
   useEffect(() => {
-    const flush = () => writeDraft(tab.id, draftRef.current);
+    const flush = () => writeDraft(tab.id, savedDraft());
     window.addEventListener("pagehide", flush);
     return () => {
       window.removeEventListener("pagehide", flush);
@@ -2252,7 +2400,11 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   // The cleared conversation's figures are not the new chat's.
   const storedUsage = sinceClear ? undefined : transcript?.usage;
   const contextLeft = status?.context ?? (storedUsage?.contextLeft != null ? `${storedUsage.contextLeft}%` : undefined);
-  const shownLimits = limits.session || limits.week ? limits : sessionLimits(storedUsage, new Date(Date.now()));
+  const limitTime = new Date(limitsNow);
+  const shownLimits = limits.session || limits.week ? limits : sessionLimits(storedUsage, limitTime);
+  const readTime = limits.session || limits.week ? new Date(limitsReadAt) : limitTime;
+  const sessionReset = shownLimits.session?.resets ? resetCountdown(shownLimits.session.resets, limitTime, readTime) : "";
+  const weekReset = shownLimits.week?.resets ? resetCountdown(shownLimits.week.resets, limitTime, readTime) : "";
   /** The picker the model chip opened, read off the screen while the sheet is
    * up — a list of the session's own rows, not a list of models Eldrun
    * believes in. None of OpenCode's, Antigravity's or Cursor's is the numbered
@@ -3104,6 +3256,21 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
             followReadable(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
             checkPinnedPrompt();
           }}>
+          {sessionShown && !openStep && (sessionAgents.length > 0 || (transcript?.truncated && !sinceClear)) &&
+            <nav className="subagent-index" aria-label={t("mobile.subagent.indexRegion")}>
+              <button type="button" className="subagent-index-toggle" aria-expanded={subagentListOpen} aria-controls="mobile-subagent-list" onClick={() => setSubagentListOpen((open) => !open)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v7a4 4 0 0 0 4 4h7m-3-3 3 3-3 3" /></svg>
+                <span>{t("mobile.subagent.index", { count: `${sessionAgents.length}${transcript?.truncated && !sinceClear ? "+" : ""}` })}{subagentUntested && <em> · {subagentUntested}</em>}</span>
+                <svg className={subagentListOpen ? "expanded" : ""} viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+              </button>
+              {subagentListOpen && <div id="mobile-subagent-list" className="subagent-index-list">
+                {sessionAgents.map((entry, index) => <button type="button" key={`${entry.at ?? index}:${index}`} disabled={!entry.subagent} aria-label={`${entry.role ?? t("mobile.subagent.region")} · ${entry.text}`} onClick={() => openListedSubagent(entry)}>
+                  <small>{entry.role ?? t("mobile.subagent.region")}</small>
+                  <span>{entry.text}{entry.cut && "…"}</span>
+                </button>)}
+                {transcript?.truncated && !sinceClear && <button type="button" className="subagent-index-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.subagent.earlier")}</button>}
+              </div>}
+            </nav>}
           {sessionShown && openStep
             ? subagentView
             : sessionShown
@@ -3111,7 +3278,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
               ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && !sinceClear && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
-                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} planLabel={t("mobile.transcript.plan")} planUntested={planUntested} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} onResend={resendPrompt} posts={chatPosts} renderPost={renderPost} />
+                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} planLabel={t("mobile.transcript.plan")} planUntested={planUntested} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} onResend={resendPrompt} onEdit={startEdit} posts={chatPosts} renderPost={renderPost} />
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.question")}>
                     <small>{t("mobile.transcript.question")}{isUntested("mobile.focus.onScreen") && <> · {t("mobile.focus.untested")}</>}</small>
                     {/* The screen the dialog was drawn onto, as the screen drew
@@ -3179,6 +3346,11 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}{isUntested("mobile.link.failureText") && <em> · {t("mobile.focus.untested")}</em>}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. Send it again once it is back.</div>}
       {undoNote && <div className="voice-feedback" role="status">{t(undoNote)}</div>}
+      {editNote && !editing && <div className={editNote === "mobile.composer.heldEditFailed" ? "voice-feedback error" : "voice-feedback"} role="status">{t(editNote)}{isUntested("mobile.chat.editHeld") && <> · <em>{t("mobile.focus.untested")}</em></>}</div>}
+      {editing && <div className="sign-in-notice" role="status">
+        <span>{t(editNote === "mobile.composer.heldEditFailed" ? "mobile.composer.heldEditFailed" : "mobile.composer.editingHeld")}{isUntested("mobile.chat.editHeld") && <> · <em>{t("mobile.focus.untested")}</em></>}</span>
+        <button onPointerDown={(event) => event.preventDefault()} onClick={cancelEdit}>{t("mobile.composer.editCancel")}</button>
+      </div>}
       {clearRefused && liveBusy && <div className="voice-feedback" role="status">{t("mobile.composer.clearBusy")}{isUntested("mobile.composer.clearBusy") && <> · <em>{t("mobile.focus.untested")}</em></>}</div>}
       {lastSent && !sessionShown && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
       {uploads.map((upload) => upload.failure
@@ -3217,8 +3389,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
         </>}
         {status?.branch && <span className="fact-branch">⎇ {status.branch}</span>}
         {contextLeft && <span className="fact-context">{contextLeft} context</span>}
-        {shownLimits.session && <span className={`fact-limit${shownLimits.session.percent >= 90 ? " high" : ""}`} title={shownLimits.session.resets ? resetText(shownLimits.session.resets, new Date()) : undefined}>{t("mobile.facts.session", { percent: Math.round(100 - shownLimits.session.percent) })}</span>}
-        {shownLimits.week && <span className={`fact-limit${shownLimits.week.percent >= 90 ? " high" : ""}`} title={shownLimits.week.resets ? resetText(shownLimits.week.resets, new Date()) : undefined}>{t("mobile.facts.week", { percent: Math.round(100 - shownLimits.week.percent) })}</span>}
+        {shownLimits.session && <span className={`fact-limit${shownLimits.session.percent >= 90 ? " high" : ""}`} title={shownLimits.session.resets ? resetText(shownLimits.session.resets, limitTime, readTime) : undefined}>{t("mobile.facts.session", { percent: Math.round(100 - shownLimits.session.percent) })}{sessionReset && <> · {t("mobile.facts.resetIn", { time: sessionReset })}</>}</span>}
+        {shownLimits.week && <span className={`fact-limit${shownLimits.week.percent >= 90 ? " high" : ""}`} title={shownLimits.week.resets ? resetText(shownLimits.week.resets, limitTime, readTime) : undefined}>{t("mobile.facts.week", { percent: Math.round(100 - shownLimits.week.percent) })}{weekReset && <> · {t("mobile.facts.resetIn", { time: weekReset })}</>}</span>}
+        {(sessionReset || weekReset) && isUntested("mobile.facts.limitResets") && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
       </div>}
       <div className="prompt-composer">
         {slashMenu.length > 0 && <div className="slash-menu" role="group" aria-label={t("mobile.slash.title")}>
@@ -3272,7 +3445,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
             <button className={`composer-keys${keysShown ? " open" : ""}`} onPointerDown={(event) => event.preventDefault()} onClick={toggleKeys} aria-label={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")} aria-expanded={keysShown} aria-controls="terminal-keys" title={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8" /></svg></button>
             <span className="composer-spacer" />
           </>}
-          <button className="send-icon" disabled={!connected || !draft.trim()} onClick={submitDraft} aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
+          <button className="send-icon" disabled={!connected || !draft.trim() || editSending} onClick={submitDraft} aria-label={editing ? t("mobile.composer.editSave") : "Send"} title={editing ? t("mobile.composer.editSave") : "Send"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
         </div>
       </div>
       {keysShown && <div className="keys" id="terminal-keys">
@@ -3336,7 +3509,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
       onPick={(key) => void applyMode(key)}
       onClose={() => { if (!switching) setModeSheet(false); }}
     />}
-    {statusSheet && <StatusSheet tab={tab} live={status} onLimits={setLimits} onClose={() => setStatusSheet(false)} signIn={signInWay} />}
+    {statusSheet && <StatusSheet tab={tab} live={status} onLimits={rememberLimits} onClose={() => setStatusSheet(false)} signIn={signInWay} />}
     {signInSheet && <SignInSheet
       tabId={tab.id}
       agent={agentLabel}

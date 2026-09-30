@@ -66,11 +66,11 @@ pub const PROBE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// add an agent: run its `--version`, paste the output as the comment, add the
 /// line. Do not add one from a README.
 const VERSION_ARGV: &[(&str, &[&str])] = &[
-    // "2.1.282 (Claude Code)"
+    // "2.1.284 (Claude Code)"
     ("claude", &["--version"]),
     // "codex-cli 0.157.0"
     ("codex", &["--version"]),
-    // "0.0.393 Commit: ea52078"
+    // "GitHub Copilot CLI 1.0.88." (1.0.88; 0.0.393 printed "0.0.393 Commit: ea52078")
     ("copilot", &["--version"]),
     // "1.2.9"
     ("antigravity", &["--version"]),
@@ -114,7 +114,7 @@ pub struct Verified {
 const VERIFIED: &[Verified] = &[
     Verified {
         agent: "claude",
-        version: "2.1.282",
+        version: "2.1.284",
         surface: "§1.1 — SessionStart/Stop hook payload, --resume, /usage envelope",
     },
     Verified {
@@ -588,8 +588,9 @@ mod tests {
         assert!(!claude_takes_name_flag(None));
     }
 
-    /// The three shapes the recipes were verified against, and the one that
-    /// must not be read as a version: `copilot`'s trailing commit hash.
+    /// The shapes the recipes were verified against, and the one that must
+    /// not be read as a version: `copilot`'s trailing commit hash (0.0.x), then
+    /// its sentence with a closing full stop (1.0.x).
     #[test]
     fn parses_the_version_lines_the_recipes_were_verified_against() {
         assert_eq!(parse_version("2.1.263 (Claude Code)").as_deref(), Some("2.1.263"));
@@ -597,6 +598,10 @@ mod tests {
         assert_eq!(
             parse_version("0.0.393 Commit: ea52078").as_deref(),
             Some("0.0.393")
+        );
+        assert_eq!(
+            parse_version("GitHub Copilot CLI 1.0.88.").as_deref(),
+            Some("1.0.88")
         );
         assert_eq!(parse_version("1.2.9").as_deref(), Some("1.2.9"));
         assert_eq!(
@@ -692,10 +697,10 @@ mod tests {
 
     #[test]
     fn matching_every_note_is_a_match_and_no_notes_is_unverified() {
-        assert_eq!(drift("claude", Some("2.1.282")).0, DriftState::Match);
+        assert_eq!(drift("claude", Some("2.1.284")).0, DriftState::Match);
         // `copilot` has a recipe but no recorded check — the honest answer is
         // "nobody has verified this", not a tick.
-        assert_eq!(drift("copilot", Some("0.0.393")).0, DriftState::Unverified);
+        assert_eq!(drift("copilot", Some("1.0.88")).0, DriftState::Unverified);
         assert_eq!(drift("claude", None).0, DriftState::Unknown);
     }
 

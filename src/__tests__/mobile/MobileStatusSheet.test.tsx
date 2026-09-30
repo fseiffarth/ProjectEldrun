@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentStatusReport, TabRow } from "../../../mobile-web/src/api";
-import { StatusSheet, resetText } from "../../../mobile-web/src/screens/StatusSheet";
+import { StatusSheet, resetCountdown, resetText } from "../../../mobile-web/src/screens/StatusSheet";
 
 // `fetch` rather than the api module: `getAgentStatus` calls `api` through its
 // own module-local binding, which a module mock never reaches — and stubbing
@@ -88,6 +88,12 @@ describe("Eldrun Mobile agent status sheet", () => {
     expect(resetText("Sep 15, 9am (Europe/Berlin)", now)).not.toContain(" · in ");
     // What cannot be placed is shown as the CLI said it, never guessed at.
     expect(resetText("when the moon is full", now)).toBe("resets when the moon is full");
+  });
+
+  it("does not move a bare reset clock to tomorrow after the panel gets old", () => {
+    const readAt = new Date(2026, 8, 15, 17, 0);
+    expect(resetCountdown("6:20pm", new Date(2026, 8, 15, 18, 0), readAt)).toBe("20m");
+    expect(resetCountdown("6:20pm", new Date(2026, 8, 15, 18, 21), readAt)).toBe("");
   });
 
   it("labels the project-wide counters as project-wide, not as this agent's", async () => {

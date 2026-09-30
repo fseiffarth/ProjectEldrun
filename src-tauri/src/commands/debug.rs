@@ -69,6 +69,15 @@ pub async fn dev_build_status() -> Option<crate::services::dev_build::DevBuildSt
         .flatten()
 }
 
+/// Pause (cancelling a running compile) or resume the background "Eldrun
+/// (dev)" auto-builds, from the dev-build chip's switch. User-clicked only.
+#[tauri::command]
+pub async fn dev_build_set_paused(paused: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::services::dev_build::set_paused(paused))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Close this frozen "Eldrun (dev)" window and reopen it on the newest
 /// snapshot: a detached helper waits for the exit and runs the launcher, which
 /// adopts the snapshot. The close goes through the main window, so the quit is
@@ -88,6 +97,38 @@ pub async fn dev_build_relaunch(app: tauri::AppHandle) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// The checkout's todo groups for the side panel's Todo view; `None` outside a
+/// dev build, which hides the view (see `services::dev_todo`).
+#[tauri::command]
+pub async fn dev_todo_groups() -> Result<Option<Vec<crate::services::dev_todo::TodoGroup>>, String> {
+    tauri::async_runtime::spawn_blocking(crate::services::dev_todo::list)
+        .await
+        .map_err(|e| e.to_string())?
+        .transpose()
+}
+
+#[tauri::command]
+pub async fn dev_todo_read(name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::services::dev_todo::read(&name))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// A checkbox click's write-back: lands only while the file still reads
+/// `expected`, else returns what is on disk now.
+#[tauri::command]
+pub async fn dev_todo_write(
+    name: String,
+    expected: String,
+    next: String,
+) -> Result<crate::services::dev_todo::WriteOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::dev_todo::write(&name, &expected, &next)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Resident size (KiB) of the largest webview *renderer* process under the app.

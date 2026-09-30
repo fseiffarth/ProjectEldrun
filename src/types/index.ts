@@ -129,7 +129,8 @@ export type FilesPanelView =
   | "orange"
   | "sessions"
   | "jobs"
-  | "remarks";
+  | "remarks"
+  | "todo";
 
 export interface Settings {
   /** The file's revision (headless owner plan, H1): every write moves it, and

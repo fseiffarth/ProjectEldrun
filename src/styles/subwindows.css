@@ -682,25 +682,30 @@
   gap: 6px 14px;
   max-width: min(92vw, 1100px);
   padding: 8px 14px;
-  background: var(--bg-panel);
+  background: color-mix(in srgb, var(--accent) 22%, var(--bg-panel));
   color: var(--text-primary);
-  border: 1px solid var(--accent);
+  border: 2px solid var(--accent);
   border-radius: var(--radius);
   box-shadow: var(--shadow-2);
   pointer-events: none;
   font-size: var(--text-md);
 }
+/* The title is a filled accent badge, so "steering is on" reads from across
+   the room, not just the key list. */
 .steering-legend-title {
+  padding: 2px 8px;
   font-size: var(--text-sm);
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--bg-main);
+  background: var(--accent);
+  border-radius: var(--radius);
 }
 .steering-legend-level {
   text-transform: none;
   letter-spacing: normal;
-  color: var(--text-primary);
+  color: inherit;
 }
 .steering-legend-item {
   display: inline-flex;
@@ -737,6 +742,9 @@
   bottom: 10px;
   z-index: 5;
   max-width: calc(100% - 24px);
+  /* Not steering mode, so none of its loud tint. */
+  background: var(--bg-panel);
+  border-width: 1px;
 }
 
 /* Steering's region cursor (lib/shortcuts/steeringRegion): the one control
@@ -746,6 +754,47 @@
   outline: 2px solid var(--accent) !important;
   outline-offset: -2px;
   background-color: var(--control-hover-bg);
+}
+
+/* Steering's prompt box (SteeringPromptOverlay): the file-operation dialog,
+   wide enough for a prompt, the hint on the actions row's left. */
+.file-delete-dialog.steering-prompt-dialog {
+  width: min(640px, calc(100vw - 32px));
+}
+.steering-prompt-input {
+  min-height: 96px;
+  max-height: 50vh;
+  resize: vertical;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.steering-prompt-hint {
+  margin-right: auto;
+  align-self: center;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* No mouse pointer while steering (SteeringLegend sets `data-steer-pointer`
+   until the mouse actually moves). `*` with !important beats the per-element
+   cursors — xterm's, resize handles, links. */
+html[data-steer-pointer="hidden"],
+html[data-steer-pointer="hidden"] * {
+  cursor: none !important;
+}
+
+/* Steering on at any level: the whole window wears an accent frame plus a
+   faint accent wash, so the mode is unmistakable before reading the legend.
+   One fixed, click-through layer; a flat (0-blur) inset, never animated. */
+html[data-steer] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9997; /* under the legend (9998) and drag ghosts (9999) */
+  pointer-events: none;
+  border: 3px solid var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
 /* Steering's current object (SteeringLegend sets `data-steer` = the level and
@@ -773,6 +822,7 @@ html[data-steer="panes"] .focus-frame {
 }
 html[data-steer-region="side"] .side-panel.open,
 html[data-steer-region="addTab"] .tab-add-menu,
+html[data-steer-region="settings"] .settings-dialog,
 html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-region="todo"])
   .app-overlay-backdrop .root-overlay {
   outline: 3px solid var(--accent);

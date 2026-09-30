@@ -15,6 +15,7 @@ import {
   useTabsStore,
   useGroup,
   useGroupTabs,
+  type AddTabOpts,
   type TabEntry,
   type TabKind,
 } from "../../stores/tabs";
@@ -206,9 +207,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const renameTab = useTabsStore((s) => s.renameTab);
   const setTabColor = useTabsStore((s) => s.setTabColor);
   const setTabStack = useTabsStore((s) => s.setTabStack);
-  const addTab = useTabsStore((s) => s.addTab);
+  const storeAddTab = useTabsStore((s) => s.addTab);
   const duplicateTab = useTabsStore((s) => s.duplicateTab);
-  const ensureTab = useTabsStore((s) => s.ensureTab);
+  const storeEnsureTab = useTabsStore((s) => s.ensureTab);
   const setTabLocation = useTabsStore((s) => s.setTabLocation);
   // Experimental — off for users, on in debug: the in-app browser (#61). This is
   // the entry-point half of the gate; the other half is the withdrawal
@@ -301,6 +302,20 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   });
 
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  // Steering's new tabs land right of the active tab (`besideActive` on its
+  // request): true while a direct request's handler runs, and for as long as a
+  // + menu steering opened stays up. A launch that awaits (worktree question,
+  // model prep) reads it with `placement()` before the await.
+  const besideActive = useRef(false);
+  const placement = (): AddTabOpts | undefined =>
+    besideActive.current ? { besideActive: true } : undefined;
+  const addTab = (tab: Omit<TabEntry, "key">, opts?: AddTabOpts) =>
+    storeAddTab(tab, { ...placement(), ...opts });
+  const ensureTab = (tab: Omit<TabEntry, "key">, matches: (tab: TabEntry) => boolean) =>
+    storeEnsureTab(tab, matches, placement());
+  useEffect(() => {
+    if (!menuPos) besideActive.current = false;
+  }, [menuPos]);
   // Tab currently hovered → drives the styled hover card (the tab-bar
   // counterpart to the project pill's hover popup). Anchored to the tab's
   // bottom-center; cleared on leave, drag, or when a menu opens.
@@ -482,10 +497,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     // asked which one first; the menu closes either way and the tab appears
     // once the question is answered (or not at all if it is dismissed).
     setMenuPos(null);
+    const place = placement();
     void worktreePicker.specFor(item).then((spec) => {
       if (!spec) return;
       focusGroup(groupId);
-      addTab(spec);
+      addTab(spec, place);
     });
   }
 
@@ -495,10 +511,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     scope !== "root" && !scope.startsWith(BOX_SCOPE_PREFIX)
       ? (item: StaticMenuItem, launch: CloudLaunch) => {
           setMenuPos(null);
+          const place = placement();
           void worktreePicker.cloudSpecFor(item, launch).then((spec) => {
             if (!spec) return;
             focusGroup(groupId);
-            addTab(spec);
+            addTab(spec, place);
           });
         }
       : undefined;
@@ -680,8 +697,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   };
   useEffect(() => {
     const onRequest = (e: Event) => {
-      const { request, groupId: target } = (e as CustomEvent<NewTabShortcutDetail>).detail;
-      if (target === groupId && onNewTabChord.current(request)) e.preventDefault();
+      const { request, groupId: target, besideActive: beside } = (
+        e as CustomEvent<NewTabShortcutDetail>
+      ).detail;
+      if (target !== groupId) return;
+      besideActive.current = !!beside;
+      if (onNewTabChord.current(request)) e.preventDefault();
+      // A menu keeps the placement until it closes (the effect on `menuPos`).
+      if (request.kind !== "menu") besideActive.current = false;
     };
     // Steering's legend names the agents behind 1–9 for the focused pane.
     const onSlots = (e: Event) => {
@@ -699,10 +722,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
 
   async function handleOllamaModel(model: string) {
     setMenuPos(null);
+    const place = placement();
     try {
       const spec = await vibeLocalTabSpec(scope, model, projectCwd);
       focusGroup(groupId);
-      addTab(spec);
+      addTab(spec, place);
     } catch {
       // Ollama not running or agent prep failed — don't create a tab with no model config.
     }
@@ -712,10 +736,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // Codex, OpenCode, Droid) — `lib/agents/localTabSpec`.
   async function handleLocalLaunch(agentId: string, label: string, model: string) {
     setMenuPos(null);
+    const place = placement();
     try {
       const spec = await localLaunchTabSpec(scope, agentId, label, model, projectCwd);
       focusGroup(groupId);
-      addTab(spec);
+      addTab(spec, place);
     } catch {
       // ollama launch unavailable / agent prep failed — don't create a broken tab.
     }

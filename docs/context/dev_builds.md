@@ -131,7 +131,14 @@ change was not run live.
   recorded path is stale.
   It declines in CI and from a linked worktree (freezing an agent's tree over
   the user's binary is exactly the surprise to avoid). Off with `git config
-  eldrun.autoDevBuild false`, or `ELDRUN_NO_AUTO_DEV_BUILD=1` for one commit;
+  eldrun.autoDevBuild false`, or `ELDRUN_NO_AUTO_DEV_BUILD=1` for one commit.
+  **Pause** (user, 2026-09-30) is the temporary switch for when the cores are
+  wanted elsewhere: `package-dev-auto.sh --pause` (the chip's "Pause
+  auto-builds", `dev_build_set_paused`) leaves `package-dev-auto.paused`, which
+  declines every queue — the hook's and `queue_if_behind`'s — and makes a
+  running pass cancel itself like a superseded one (not recorded as a failure,
+  and an install already under way still finishes). `--resume` removes it and
+  queues HEAD if the snapshot fell behind meanwhile;
   `scripts/package-dev-auto.sh --status` says what it is doing and
   `~/.local/share/eldrun/package-dev-auto.log` holds the last build's output.
   The header's dev-build chip (`header/DevBuildIndicator.tsx`,

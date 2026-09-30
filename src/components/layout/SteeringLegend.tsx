@@ -8,6 +8,7 @@ import { steeringSlotKey, type SteeringKeyMap } from "../../lib/shortcuts/steeri
 import { newTabSlotLabels } from "../../lib/shortcuts/newTabChord";
 import { steeringAppEnabled } from "../../lib/shortcuts/steeringRegion";
 import { statusTabs } from "../../lib/shortcuts/statusJump";
+import { steeringAgentOffer } from "../../lib/shortcuts/steeringAgent";
 import { useActivityStore } from "../../stores/activity";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
@@ -18,6 +19,7 @@ const REGION_LABEL: Record<string, TranslationKey> = {
   calendar: "steering.calendar.label",
   todo: "steering.todo.label",
   addTab: "steering.newTabMenu.label",
+  settings: "steering.settings.label",
 };
 
 const LEVEL_LABEL: Record<string, TranslationKey> = {
@@ -33,8 +35,9 @@ const LEVEL_LABEL: Record<string, TranslationKey> = {
  * the level steering is on and lists only that level's keys
  * (`steeringKeysFor` over `STEERING_KEYS`, the same table the cheat-sheet/lesson
  * surfaces use), so the legend can never list a key the handler doesn't act on.
- * Inside a pane the agent digits are spelled out by name — the focused pane's
- * own 1–9 (`newTabSlotLabels`). Every key shown is the user's steering binding
+ * Inside a pane the agent digits collapse to one "1–N CLIs" entry — N is how
+ * many agents the focused pane's own 1–9 open (`newTabSlotLabels`), their
+ * names on hover. Every key shown is the user's steering binding
  * (`steeringRowLabel`, `steeringSlotKey`).
  *
  * Mounted once in `AppShell` (the FocusFrameOverlay/host pattern) and
@@ -54,6 +57,7 @@ export function SteeringLegend() {
   const busyByTab = useActivityStore((s) => s.busyByTab);
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
   const tabsByScope = useTabsStore((s) => s.tabsByScope);
+  const activeTab = useTabsStore((s) => (s.activeKey ? s.tabs.find((tab) => tab.key === s.activeKey) : undefined));
   const steerKeys = useSettingsStore((s) => s.settings?.steering_keys) as SteeringKeyMap | undefined;
 
   const inPane = active && (level === "panes" || level === "tabs");
@@ -80,6 +84,33 @@ export function SteeringLegend() {
     };
   }, [active, level, region]);
 
+  // Steering is a keyboard mode, so the mouse pointer hides while it is on
+  // (`data-steer-pointer` on <html>). Moving the mouse brings it back; the
+  // next steering key hides it again. Only real movement counts: the engine
+  // fires mousemove under a still pointer when a tab switch changes what lies
+  // beneath it, and that must not unhide.
+  useEffect(() => {
+    if (!active) return;
+    const root = document.documentElement;
+    let last: { x: number; y: number } | null = null;
+    const hide = () => {
+      root.dataset.steerPointer = "hidden";
+    };
+    const onMove = (e: MouseEvent) => {
+      const moved = last !== null && Math.hypot(e.screenX - last.x, e.screenY - last.y) > 3;
+      last = { x: e.screenX, y: e.screenY };
+      if (moved) delete root.dataset.steerPointer;
+    };
+    hide();
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("keydown", hide, true);
+    return () => {
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("keydown", hide, true);
+      delete root.dataset.steerPointer;
+    };
+  }, [active]);
+
   if (!active) return null;
   const count = (kind: "decision" | "working" | "done") =>
     statusTabs(kind, busyByTab, attentionByTab, tabsByScope).length;
@@ -87,8 +118,10 @@ export function SteeringLegend() {
   const keys = steeringKeysFor({
     level,
     sideRegion: region === "side",
+    settingsRegion: region === "settings",
     multiPane,
     apps: { mail, calendar, todo },
+    agent: steeringAgentOffer(activeTab),
     statusCounts,
   });
   const where = level === "region" ? (region ? REGION_LABEL[region] : null) : LEVEL_LABEL[level];
@@ -99,21 +132,25 @@ export function SteeringLegend() {
         {t("steering.legendTitle")}
         {where && <span className="steering-legend-level"> · {t(where)}</span>}
         <UntestedTag id="steering.levels" />
+        <UntestedTag id="steering.hidePointer" />
+        <UntestedTag id="steering.agentKeys" />
+        {region === "settings" && <UntestedTag id="steering.settings" />}
+        <UntestedTag id="steering.agentPrompt" />
       </span>
       {keys.flatMap((k) => {
-        const named = k.agentSlots
-          ? agents.flatMap((label, i) => {
-              // An unbound slot has no key to press, so it is not listed.
-              const key = label ? steeringSlotKey(i + 1, steerKeys) : null;
-              return key ? [{ slot: i + 1, key, label }] : [];
-            })
-          : [];
-        if (named.length > 0) {
-          return named.map((a) => (
-            <span className="steering-legend-item" key={`agent-${a.slot}`} title={t(k.descKey)}>
-              <kbd>{a.key}</kbd> {a.label}
-            </span>
-          ));
+        if (k.agentSlots) {
+          const slots = agents.flatMap((label, i) => {
+            // An unbound slot has no key to press, so it is not counted.
+            const key = label ? steeringSlotKey(i + 1, steerKeys) : null;
+            return key ? [{ key, label }] : [];
+          });
+          if (slots.length > 0) {
+            return [
+              <span className="steering-legend-item" key="agent-slots" title={slots.map((a) => `${a.key} ${a.label}`).join(" · ")}>
+                <kbd>{slotRange(slots.map((a) => a.key))}</kbd> {t("steering.newAgent.clis")}
+              </span>,
+            ];
+          }
         }
         return [
           <span className="steering-legend-item" key={`${k.actions.join(",")}|${k.labelKey}`} title={t(k.descKey)}>
@@ -125,4 +162,10 @@ export function SteeringLegend() {
     </div>,
     document.body,
   );
+}
+
+/** "1–N" when the slots are the default digits 1..N, else the keys in order. */
+function slotRange(keys: string[]): string {
+  if (keys.every((k, i) => k === String(i + 1))) return keys.length === 1 ? "1" : `1–${keys.length}`;
+  return keys.join(" ");
 }

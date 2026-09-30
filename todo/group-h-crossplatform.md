@@ -3371,6 +3371,40 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31bq — Edit a phone prompt until the agent takes it in** (2026-09-29;
+  ✅ code-complete, automated tests passing — `MobileHeldPromptEdit.test.tsx`,
+  bridge case in `MobilePhoneDrivenStatus.test.tsx`, protocol
+  `held_prompts_carry_the_tab_pair_…`; ⚠️ never seen live). A prompt sent from
+  the Focus composer while the agent works (its screen's busy row, or the
+  desktop's `working`) no longer goes into the CLI's own queue: the desktop
+  holds it as a send-now rule (`POST /tabs/{id}/held` → `queuePromptForTab`) and
+  types it at the tab's next safe idle point. Until the session records it, the
+  bubble's hold menu offers **Edit**: the words go into the composer (the
+  draft steps aside), Save rewrites the rule (`PUT /tabs/{id}/held/{id}`,
+  guarded by `expectExistingOn` — refused once claimed or delivered), and the
+  bubble takes the new words in its place. Trade-off chosen by the user: no
+  mid-turn pickup — the prompt arrives when the turn ends. A desktop that cannot
+  hold it (no window, older build) → the phone types it as before. Untested id
+  `mobile.chat.editHeld`.
+  - Needs the sidecar updated and the PWA rebuilt (`npm run backend:stale`).
+  - [ ] 🖐️ Manual phone QA — give a Claude tab a long task from the phone;
+    while it works send "also the tests" → the bubble shows at once, the note
+    under the composer says it waits on the desktop, and the desktop's tab does
+    NOT show it queued in Claude's input. Hold the bubble → Edit → change the
+    words → Save the edit → the bubble shows the new words in the same place.
+    When the turn ends the agent gets the NEW words (once), and the bubble's
+    menu no longer offers Edit. Try Edit right as the turn ends → "already
+    took this prompt", your words stay in the composer. Send while the agent
+    is idle → typed at once as before (no Edit). Repeat once with Codex.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member

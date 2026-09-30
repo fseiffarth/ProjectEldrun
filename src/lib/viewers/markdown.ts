@@ -673,8 +673,28 @@ const TASK_LINE_RE = /^(\s*[-*+]\s+\[)([ xX])(\]\s+)/;
  *  task (out of range) — the caller then does nothing. */
 export function toggleTaskCheckbox(src: string, index: number): string | null {
   const lines = src.split("\n");
+  const i = taskLineNumbers(lines)[index];
+  if (i == null) return null;
+  const line = lines[i];
+  const m = line.match(TASK_LINE_RE)!;
+  const next = m[2].toLowerCase() === "x" ? " " : "x";
+  lines[i] = line.replace(TASK_LINE_RE, `$1${next}$3`);
+  return lines.join("\n");
+}
+
+/** The source line of every task checkbox, in the order `toggleTaskCheckbox`
+ *  counts them — so a caller holding a box's index against text that has since
+ *  changed can find the same task again by its line. */
+export function taskSourceLines(src: string): string[] {
+  const lines = src.split("\n");
+  return taskLineNumbers(lines).map((i) => lines[i]);
+}
+
+/** Indexes into `lines` of the task lines outside fenced code blocks, with the
+ *  same fence bookkeeping the renderer uses. */
+function taskLineNumbers(lines: string[]): number[] {
+  const found: number[] = [];
   let fence: string | null = null; // the opening fence's marker char while open
-  let seen = -1;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const fenceM = line.match(/^\s*(`{3,}|~{3,})/);
@@ -686,13 +706,7 @@ export function toggleTaskCheckbox(src: string, index: number): string | null {
       continue;
     }
     if (fence != null) continue;
-    const m = line.match(TASK_LINE_RE);
-    if (!m) continue;
-    seen++;
-    if (seen !== index) continue;
-    const next = m[2].toLowerCase() === "x" ? " " : "x";
-    lines[i] = line.replace(TASK_LINE_RE, `$1${next}$3`);
-    return lines.join("\n");
+    if (TASK_LINE_RE.test(line)) found.push(i);
   }
-  return null;
+  return found;
 }

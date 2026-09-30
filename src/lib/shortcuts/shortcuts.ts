@@ -732,10 +732,27 @@ export const STEERING_CONTEXTS: { id: SteeringContext; labelKey: TranslationKey 
  *   stepsPanes — the panes level with two or more subwindows (←/→ walk them)
  *   stepsTabs  — the tabs level, or the panes level with one subwindow, where
  *                ←/→ step its tabs instead
- *   sideRegion — the region cursor is in the side panel (←/→ switch its view)
+ *   sideRegion — the region cursor is in the side panel (←/→ switch its view,
+ *                and its opening key leaves it as Back does)
+ *   settingsRegion — the region cursor is in the settings dialog (←/→ step
+ *                its pages)
  *   mail / calendar / todo — that header app is switched on
+ *   agentClear / agentPlan / agentGoal — the active tab is an agent that takes
+ *                /clear, /plan, /goal (`steeringAgent.steeringAgentOffer`)
+ *   agentPrompt — the active tab is an agent (the prompt box sends to it)
  */
-export type SteeringCondition = "stepsPanes" | "stepsTabs" | "sideRegion" | "mail" | "calendar" | "todo";
+export type SteeringCondition =
+  | "stepsPanes"
+  | "stepsTabs"
+  | "sideRegion"
+  | "settingsRegion"
+  | "mail"
+  | "calendar"
+  | "todo"
+  | "agentClear"
+  | "agentPlan"
+  | "agentGoal"
+  | "agentPrompt";
 
 /** One row of the steering legend / cheat sheet: the steering actions it
  *  explains (their keys render through `steeringRowLabel`, so a rebind shows
@@ -752,8 +769,8 @@ export interface SteeringKeyDef {
   /** The levels whose legend lists the key. */
   levels: readonly SteeringContext[];
   when?: SteeringCondition;
-  /** The legend spells the key family out as one entry per agent: the focused
-   *  pane's 1–9 (`newTabSlotLabels`). */
+  /** The legend shows the key family as one "1–N CLIs" entry, N being the
+   *  agents the focused pane's 1–9 open (`newTabSlotLabels`). */
   agentSlots?: true;
   /** A status jump: the legend lists it, with its count, only while some tab
    *  is in that state (`lib/shortcuts/statusJump`). */
@@ -764,8 +781,12 @@ export interface SteeringKeyDef {
 export interface SteeringLegendState {
   level: SteeringContext;
   sideRegion: boolean;
+  /** The region cursor is in the settings dialog. */
+  settingsRegion?: boolean;
   multiPane: boolean;
   apps: { mail: boolean; calendar: boolean; todo: boolean };
+  /** The agent keys the active tab takes; unset = none. */
+  agent?: { clear: boolean; plan: boolean; goal: boolean; prompt: boolean };
   /** How many tabs, in every scope, need an answer / work / finished unseen. */
   statusCounts: { decision: number; working: number; done: number };
 }
@@ -778,6 +799,16 @@ function steeringConditionHolds(cond: SteeringCondition, s: SteeringLegendState)
       return s.level === "tabs" || (s.level === "panes" && !s.multiPane);
     case "sideRegion":
       return s.sideRegion;
+    case "settingsRegion":
+      return !!s.settingsRegion;
+    case "agentClear":
+      return !!s.agent?.clear;
+    case "agentPlan":
+      return !!s.agent?.plan;
+    case "agentGoal":
+      return !!s.agent?.goal;
+    case "agentPrompt":
+      return !!s.agent?.prompt;
     default:
       return s.apps[cond];
   }
@@ -833,9 +864,6 @@ export const STEERING_KEYS: SteeringKeyDef[] = [
   { actions: [], slots: true, labelKey: "steering.jump.label", descKey: "steering.jump.desc", levels: ["projects"] },
   { actions: ["down"], labelKey: "steering.into.label", descKey: "steering.into.desc", levels: ["projects"] },
   { actions: ["newProject"], labelKey: "steering.newProject.label", descKey: "steering.newProject.desc", levels: ["projects"] },
-  { actions: ["mail"], labelKey: "steering.mail.label", descKey: "steering.mail.desc", levels: ["projects"], when: "mail" },
-  { actions: ["calendar"], labelKey: "steering.calendar.label", descKey: "steering.calendar.desc", levels: ["projects"], when: "calendar" },
-  { actions: ["todo"], labelKey: "steering.todo.label", descKey: "steering.todo.desc", levels: ["projects"], when: "todo" },
   // Subwindows and their tabs.
   { actions: ["left", "right"], pair: true, labelKey: "steering.focus.label", descKey: "steering.focus.desc", levels: ["panes"], when: "stepsPanes" },
   { actions: ["left", "right"], pair: true, labelKey: "steering.tabs.label", descKey: "steering.tabs.desc", levels: PANE_LEVELS, when: "stepsTabs" },
@@ -847,21 +875,31 @@ export const STEERING_KEYS: SteeringKeyDef[] = [
   { actions: ["newTabMenu"], labelKey: "steering.newTabMenu.label", descKey: "steering.newTabMenu.desc", levels: PANE_LEVELS },
   { actions: ["files"], labelKey: "steering.files.label", descKey: "steering.files.desc", levels: PANE_LEVELS },
   { actions: ["closeTab"], labelKey: "steering.closeTab.label", descKey: "steering.closeTab.desc", levels: PANE_LEVELS },
+  { actions: ["agentClear"], labelKey: "steering.agentClear.label", descKey: "steering.agentClear.desc", levels: PANE_LEVELS, when: "agentClear" },
+  { actions: ["agentPlan"], labelKey: "steering.agentPlan.label", descKey: "steering.agentPlan.desc", levels: PANE_LEVELS, when: "agentPlan" },
+  { actions: ["agentGoal"], labelKey: "steering.agentGoal.label", descKey: "steering.agentGoal.desc", levels: PANE_LEVELS, when: "agentGoal" },
+  { actions: ["agentPrompt"], labelKey: "steering.agentPrompt.label", descKey: "steering.agentPrompt.desc", levels: PANE_LEVELS, when: "agentPrompt" },
   { actions: ["exit", "work"], labelKey: "steering.work.label", descKey: "steering.work.desc", levels: PANE_LEVELS },
-  // The region cursor (side panel, header apps, + menu).
+  // The region cursor (side panel, header apps, + menu, settings).
   { actions: ["up", "down"], pair: true, labelKey: "steering.move.label", descKey: "steering.move.desc", levels: ["region"] },
   { actions: ["left", "right"], pair: true, labelKey: "steering.sideView.label", descKey: "steering.sideView.desc", levels: ["region"], when: "sideRegion" },
+  { actions: ["left", "right"], pair: true, labelKey: "steering.settingsPage.label", descKey: "steering.settingsPage.desc", levels: ["region"], when: "settingsRegion" },
   { actions: ["press"], labelKey: "steering.press.label", descKey: "steering.press.desc", levels: ["region"] },
   { actions: ["search"], labelKey: "steering.search.label", descKey: "steering.search.desc", levels: ["region"] },
   // Wherever the tab bars are. Shift walks the status jumps backwards.
+  { actions: ["mail"], labelKey: "steering.mail.label", descKey: "steering.mail.desc", levels: BASE_LEVELS, when: "mail" },
+  { actions: ["calendar"], labelKey: "steering.calendar.label", descKey: "steering.calendar.desc", levels: BASE_LEVELS, when: "calendar" },
+  { actions: ["todo"], labelKey: "steering.todo.label", descKey: "steering.todo.desc", levels: BASE_LEVELS, when: "todo" },
   { actions: ["nextDecision"], labelKey: "steering.nextDecision.label", descKey: "steering.nextDecision.desc", levels: BASE_LEVELS, status: "decision" },
   { actions: ["nextWorking"], labelKey: "steering.nextWorking.label", descKey: "steering.nextWorking.desc", levels: BASE_LEVELS, status: "working" },
   { actions: ["nextDone"], labelKey: "steering.nextDone.label", descKey: "steering.nextDone.desc", levels: BASE_LEVELS, status: "done" },
   { actions: ["sidePanel"], labelKey: "steering.sidePanel.label", descKey: "steering.sidePanel.desc", levels: BASE_LEVELS },
   { actions: ["panels"], labelKey: "steering.panels.label", descKey: "steering.panels.desc", levels: BASE_LEVELS },
   { actions: ["settings"], labelKey: "steering.settings.label", descKey: "steering.settings.desc", levels: BASE_LEVELS },
+  { actions: ["jumpProject"], labelKey: "steering.jumpProject.label", descKey: "steering.jumpProject.desc", levels: BASE_LEVELS },
   { actions: ["help"], labelKey: "steering.help.label", descKey: "steering.help.desc", levels: ALL_LEVELS },
   { actions: ["back"], labelKey: "steering.back.label", descKey: "steering.back.desc", levels: ["region"] },
+  { actions: ["sidePanel"], labelKey: "steering.sidePanelBack.label", descKey: "steering.sidePanelBack.desc", levels: ["region"], when: "sideRegion" },
   { actions: ["exit"], labelKey: "steering.exit.label", descKey: "steering.exit.desc", levels: ["region"] },
   { actions: ["exit", "work"], labelKey: "steering.exit.label", descKey: "steering.exit.desc", levels: ["projects"] },
 ];

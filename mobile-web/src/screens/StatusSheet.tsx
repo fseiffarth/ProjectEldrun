@@ -24,16 +24,18 @@ function duration(seconds: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-/** `in 5h 12m` to an instant ahead of `now`; empty once it has passed, which is
- * a panel read before its own rollover and not worth a negative countdown. */
-function countdown(at: Date, now: Date): string {
+/** A compact time left for a reset the reader can place. Empty for an unknown
+ * phrase or a reset that has already passed. */
+export function resetCountdown(phrase: string, now: Date, readAt = now): string {
+  const at = resolveResetAt(phrase, readAt);
+  if (!at) return "";
   const minutes = Math.floor((at.getTime() - now.getTime()) / 60_000);
   if (minutes < 0) return "";
-  if (minutes < 1) return "in <1m";
-  if (minutes < 60) return `in ${minutes}m`;
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `in ${hours}h ${minutes % 60}m`;
-  return `in ${Math.floor(hours / 24)}d ${hours % 24}h`;
+  if (hours < 48) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
 /**
@@ -45,14 +47,14 @@ function countdown(at: Date, now: Date): string {
  * auto-continue arms off, so the two cannot disagree; a phrase it cannot place
  * is shown in the CLI's own words rather than guessed at.
  */
-export function resetText(phrase: string, now: Date): string {
-  const at = resolveResetAt(phrase, now);
+export function resetText(phrase: string, now: Date, readAt = now): string {
+  const at = resolveResetAt(phrase, readAt);
   if (!at) return `resets ${phrase}`;
   const when = new Intl.DateTimeFormat(undefined, {
     weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   }).format(at);
-  const left = countdown(at, now);
-  return left ? `resets ${when} · ${left}` : `resets ${when}`;
+  const left = resetCountdown(phrase, now, readAt);
+  return left ? `resets ${when} · in ${left}` : `resets ${when}`;
 }
 
 function plural(count: number, one: string, many = `${one}s`): string {

@@ -57,6 +57,7 @@ import { formatTime } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agents/agentFence";
 import { loginIdForCmd } from "../../lib/agents/signInLaunch";
+import { useAgentVersionNoticeStore } from "../../stores/agents/agentVersionNotice";
 import {
   AGENT_ITEMS,
   agentShortcutSlots,
@@ -1772,6 +1773,7 @@ export function AgentsPanel({
     try {
       await invoke("dismiss_agent_version", { agent: id, version });
       setVersions((prev) => ({ ...prev, [id]: { ...prev[id], dismissed: true } }));
+      useAgentVersionNoticeStore.getState().noteDismissed(id, version);
     } catch {
       // A dismissal that did not stick costs one more notice, nothing else.
     }

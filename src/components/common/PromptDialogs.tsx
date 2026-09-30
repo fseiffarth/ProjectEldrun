@@ -97,9 +97,12 @@ export type MessageSpec = {
 export function DialogShell({
   onDismiss,
   children,
+  className,
 }: {
   onDismiss: () => void;
   children: ReactNode;
+  /** Extra class beside `file-delete-dialog` (a wider box, say). */
+  className?: string;
 }) {
   const ref = useModalFocus(onDismiss);
   const titleId = useId();
@@ -113,7 +116,7 @@ export function DialogShell({
         ref={ref}
         tabIndex={-1}
         aria-labelledby={titleId}
-        className="file-delete-dialog"
+        className={className ? `file-delete-dialog ${className}` : "file-delete-dialog"}
         role="dialog"
         aria-modal="true"
         onMouseDown={(e) => e.stopPropagation()}

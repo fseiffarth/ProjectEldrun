@@ -18,6 +18,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `paths.rs` | Canonical Eldrun directory paths. |
 | `sysstat.rs` | Per-process CPU via `/proc` (`descendant_pids`), whole-system `SystemSnapshot`, and `machine_load()` — aggregate-only, no process table (cheap enough to poll). Unsupported target answers `supported: false`, never zeros. |
 | `gpustat.rs` | Whole-device GPU memory as two pools (dedicated VRAM + shared/GTT; callers sum) plus sensors, from DRM sysfs or `nvidia-smi`; ~1 s cache. Missing readings are `None`, never 0. Per-process GPU is separate (monitor only). Remote hosts parsed by the same parsers. |
+| `../patches/tauri-runtime-wry/` | Vendored tauri-runtime-wry 2.11.3 via root `[patch.crates-io]`; one `ELDRUN PATCH` (`Context.main_thread` behind an `Arc`) stops off-thread `AppHandle` clones racing tao's Linux `Rc` — re-apply on every tauri bump. |
 
 **Commands (`commands/`)** — Tauri command handlers exposed to the frontend.
 
@@ -92,7 +93,8 @@ only when breaking it does damage. The *why* goes in code comments or
 | `caldav.rs` | CalDAV transport (RFC 4791/6578) on `reqwest` + `roxmltree`: fixed XML templates, multistatus parsing. Never parses iCalendar (opaque text to the frontend). |
 | `calendar_recurrence.rs` | Recurrence expansion, the backend twin of `src/lib/calendar/recurrence.ts` (window-bounded generation from the master, `exdates`, `overrides`, month-grid window); the frontend's cases are ported as tests. Lets the Mobile sidecar answer a month with no window (headless owner plan, H0). |
 | `todo_board.rs` | Board routing, the backend twin of `src/lib/todoBoard.ts` (`board_columns`, `fallback_column_id`, `column_of` with the Overdue/Today date rules). Same purpose as `calendar_recurrence.rs`. |
-| `dev_build.rs` | Reads `package-dev-auto.sh`'s state files + log tail for the header dev-build chip (step, estimate, failure, behind, relaunch); `spawn_relauncher` backs the chip's "Relaunch now". `queue_if_behind` queues the freeze a fenced agent commit's hook could not. `None` unless compiled with `ELDRUN_DEV_SOURCE_ROOT`. |
+| `dev_build.rs` | Reads `package-dev-auto.sh`'s state files + log tail for the header dev-build chip (step, estimate, failure, behind, relaunch); `spawn_relauncher` backs the chip's "Relaunch now", `set_paused` its pause switch (`--pause`/`--resume`). `queue_if_behind` queues the freeze a fenced agent commit's hook could not. `None` unless compiled with `ELDRUN_DEV_SOURCE_ROOT`. |
+| `dev_todo.rs` | The checkout's `todo/*.md` for the dev side panel's Todo view: list with open/done counts, read, compare-and-swap write (temp + rename). Bare `*.md` names only. `None` outside a dev build. |
 | `desktop_images.rs` | Desktop images the phone composer may attach (#31u): newest screenshots/pictures by opaque id; `resolve` re-scans, so no path crosses the API; copies via `mobile_control::inbox::store`. |
 | `browser_engine.rs` | Browser engine work: reader fetch (rustls, no cookies/Referer, fixed UA, 15 s / 5 MB / 3-hop caps), live-window registry, download quarantine + sniffing. SSRF rule: only hop 0 (the user's URL) may be loopback/private. |
 | `sync_auto.rs` | Auto-sync on top of `remote_sync` (watcher + interval, safe-direction policy). Skips lockstep-owned tracked files; ignores `.git`/`.eldrun` writes; HPC tag stops it. |

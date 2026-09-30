@@ -38,6 +38,7 @@ import { keySelectHighlight, keySelectRange, keySelectStep, scrollToShow, startK
 import { findSignInRequest, findWrappedUrls, type SignInRequest } from "../../lib/terminal/terminalUrls";
 import { SIGN_IN_CARD_CLASS, TerminalSignInCard } from "./TerminalSignInCard";
 import { TerminalUndoClearCard } from "./TerminalUndoClearCard";
+import { TerminalVersionCard } from "./TerminalVersionCard";
 import { UntestedTag } from "../common/UntestedTag";
 import { noteTypedClear, useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
 import { noteTypedLine } from "../../lib/agents/typedClear";
@@ -388,6 +389,17 @@ function readAgentFontSize(): number {
     /* ignore storage failures */
   }
   return DEFAULT_FONT_SIZE;
+}
+
+/** Remove the xterm elements from a pane container, and only those. The pane's
+ *  cards (sign-in, undo clear, version drift, key-select legend) are React
+ *  portals into the same node: removing one behind React's back makes React's
+ *  own removal throw `NotFoundError` when the card later unmounts — on a tab
+ *  close that aborts the whole window's tree (a black main window). */
+function sweepXtermElements(container: HTMLElement) {
+  for (const el of Array.from(container.children)) {
+    if (el.classList.contains("xterm")) el.remove();
+  }
 }
 
 export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, hostSession = false, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false, kind: declaredKind, scheduleTargetId, relaunchSeq = 0 }: Props) {
@@ -743,9 +755,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     const tryOpen = () => {
       if (openedRef.current || cancelled) return;
       if (!visibleRef.current || !hasLayout() || !containerRef.current) return;
-      // Sweep the container before opening. It is rendered with NO React
-      // children, so anything still in it is a LEAKED xterm element from an
-      // earlier lifecycle whose `dispose()` did not get as far as removing it
+      // Sweep the container before opening. Any xterm element still in it is
+      // a LEAKED one from an earlier lifecycle whose `dispose()` did not get
+      // as far as removing it
       // (see the teardown below). xterm's `open()` unconditionally creates a
       // fresh element and appends it, so without this the leftover survives as a
       // sibling — and since the container is a flex COLUMN, the two split the
@@ -753,8 +765,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // with its own scrollbar and each painting whatever theme it was last
       // given. That is the "one Claude tab, two scrollable halves, one light one
       // dark" report. Clearing here makes the duplicate impossible whatever the
-      // dispose failed on.
-      containerRef.current.replaceChildren();
+      // dispose failed on. Only xterm elements: a card already portaled in
+      // is React's (`sweepXtermElements`).
+      sweepXtermElements(containerRef.current);
       term.open(containerRef.current);
       openedRef.current = true;
       // Renderer addons need the opened element — see the manager above.
@@ -1784,9 +1797,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       } catch {
         /* a renderer/addon that was already gone; the refs below still matter */
       }
-      // Whatever dispose managed, the container must end up empty — it is the
-      // React node the NEXT lifecycle opens into (see the sweep in `tryOpen`).
-      containerRef.current?.replaceChildren();
+      // Whatever dispose managed, the container must end up without an xterm
+      // — it is the node the NEXT lifecycle opens into (see the sweep in
+      // `tryOpen`). The cards portaled into it stay: they are React's.
+      if (containerRef.current) sweepXtermElements(containerRef.current);
       // Retire the lifecycle refs WITH the terminal they describe. Every guard in
       // this file asks one of these three whether there is a terminal to touch
       // (`openedRef` in the focus effect, `termRef` in the theme effect, both in
@@ -1923,6 +1937,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     )}
     {undoClearOffered && !signIn && containerRef.current && (
       <TerminalUndoClearCard host={containerRef.current} ptyId={id} />
+    )}
+    {/* The host's CLI only: a remote or container tab runs another install. */}
+    {zoomable && !remoteHostId && !sandbox && !undoClearOffered && !signIn && containerRef.current && (
+      <TerminalVersionCard host={containerRef.current} cmd={cmd} />
     )}
     {keySelecting && containerRef.current && createPortal(
       // The keyboard-steering legend's look, pinned inside the pane.

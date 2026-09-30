@@ -2248,6 +2248,126 @@ async fn sent_prompt(
     }
 }
 
+/// The words of a held prompt, as a route reads them off the body: trimmed,
+/// and bounded like a sent prompt.
+fn held_message(body: &Bytes) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct HeldBody {
+        message: String,
+    }
+    let Ok(request) = serde_json::from_slice::<HeldBody>(body) else {
+        return Err(api_error(StatusCode::BAD_REQUEST, "invalid_request"));
+    };
+    let message = request.message.trim();
+    if message.is_empty() || message.len() > MAX_SENT_PROMPT {
+        return Err(api_error(StatusCode::BAD_REQUEST, "invalid_prompt"));
+    }
+    Ok(message.to_string())
+}
+
+/// A held prompt's id is a rule id the desktop minted (a UUID); anything
+/// else never reaches it.
+fn valid_held_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+async fn held_call(state: &HostState, request: DesktopRequest) -> (StatusCode, Json<serde_json::Value>) {
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    match admin::desktop_call(&desktop_socket, &request).await {
+        Ok(DesktopResponse::Held { held_id }) => (StatusCode::OK, Json(json!({ "id": held_id }))),
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                "tab_not_found" => StatusCode::NOT_FOUND,
+                "held_gone" | "held_busy" => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
+/// `POST /api/v1/tabs/{id}/held` — the phone's composer sent `message` while
+/// the agent was at work: the desktop holds it and delivers it at the tab's
+/// next safe idle point (`DesktopRequest::HoldPrompt`), so it stays editable
+/// until then. Answered with the id to edit it by. A refusal costs nothing:
+/// the phone then types the words itself, as it does for an idle agent.
+async fn hold_prompt(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let message = match held_message(&body) {
+        Ok(message) => message,
+        Err(error) => return error,
+    };
+    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    let (status, body) = held_call(
+        &state,
+        DesktopRequest::HoldPrompt {
+            request_id,
+            project_id,
+            tmux_session,
+            message,
+        },
+    )
+    .await;
+    (if status == StatusCode::OK { StatusCode::CREATED } else { status }, body)
+}
+
+/// `PUT /api/v1/tabs/{id}/held/{held_id}` — new words for a prompt the desktop
+/// still holds. `409 held_gone` once the agent has it, `409 held_busy` while
+/// it is being typed (`DesktopRequest::EditHeldPrompt`).
+async fn edit_held_prompt(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((tab_id, held_id)): Path<(String, String)>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    if !valid_held_id(&held_id) {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let message = match held_message(&body) {
+        Ok(message) => message,
+        Err(error) => return error,
+    };
+    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    held_call(
+        &state,
+        DesktopRequest::EditHeldPrompt {
+            request_id,
+            project_id,
+            tmux_session,
+            held_id,
+            message,
+        },
+    )
+    .await
+}
+
 /// `POST /api/v1/tabs/{id}/sign-in-callback` — the address the phone's browser
 /// ended on after an agent CLI's sign-in redirected it to `localhost`, handed
 /// to the listener that CLI is waiting on here (`sign_in`). The tab only
@@ -4155,6 +4275,8 @@ fn router(state: HostState) -> Router {
         .route("/api/v1/tabs/{tab_id}/color", put(color_tab))
         .route("/api/v1/tabs/{tab_id}/order", put(order_tab))
         .route("/api/v1/tabs/{tab_id}/prompt", post(sent_prompt))
+        .route("/api/v1/tabs/{tab_id}/held", post(hold_prompt))
+        .route("/api/v1/tabs/{tab_id}/held/{held_id}", put(edit_held_prompt))
         .route("/api/v1/tabs/{tab_id}/undo-clear", post(undo_clear))
         .route("/api/v1/tabs/{tab_id}/sign-in", post(sign_in_tab))
         .route("/api/v1/tabs/{tab_id}/sign-in-callback", post(sign_in_callback))
@@ -4750,6 +4872,7 @@ mod tests {
             "/api/v1/inbox",
             "/api/v1/tabs/anything/desktop-images",
             "/api/v1/tabs/anything/prompt",
+            "/api/v1/tabs/anything/held",
             "/api/v1/tabs/anything/sign-in-callback",
             "/api/v1/tabs/anything/sign-in",
             "/api/v1/projects/anything/prompts",
@@ -4772,6 +4895,17 @@ mod tests {
             .expect("request");
         let (status, _, body) = host.send(put).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "answered: {body}");
+        let edit = Request::builder()
+            .method("PUT")
+            .uri("/api/v1/tabs/anything/held/anything")
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "message": "x" })).expect("body"),
+            ))
+            .expect("request");
+        let (status, _, body) = host.send(edit).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "held edit answered: {body}");
     }
 
     #[tokio::test]

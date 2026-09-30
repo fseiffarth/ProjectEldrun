@@ -316,7 +316,10 @@ one shim per registry CLI at the front of every tab's PATH
 `ELDRUN_SCOPE` — same scope home, same shared logins — and runs it as its
 child on the same terminal, draining the terminal's input queue once the
 CLI has exited and before the shell reads again (reevaluation item 3).
-Inside a fence the shim steps aside to the real CLI. There is no bypass flag;
+Inside a fence the shim steps aside to the real CLI, skipping its own
+directory only to *find* it: the CLI runs with PATH unchanged, so
+`eldrun-send` (same directory) stays reachable. Exporting the trimmed PATH
+hid it from every fenced tab from 2026-09-25 to 2026-09-29. There is no bypass flag;
 running the binary by absolute path is the user's own shell, real home, none
 of Eldrun's logins. `paths::resolve_executable` never returns a shim, so
 version probes and the fence's own install binding see the real CLI.

@@ -1,7 +1,8 @@
 /**
  * The region cursor of keyboard steering mode: one highlighted control inside a
  * surface that has no tab bar to step through — the side panel, the mail /
- * calendar / to-do overlays, a pane's + menu. ↑/↓ walk it, Enter presses it.
+ * calendar / to-do overlays, a pane's + menu, the settings dialog. ↑/↓ walk
+ * it, Enter presses it.
  *
  * It is deliberately NOT DOM focus. Focusing a control runs its focus handlers
  * (the header buttons open their menus on focus, a menu closes when focus
@@ -61,6 +62,10 @@ export function regionRoot(region: SteeringRegion): HTMLElement | null {
       return document.querySelector<HTMLElement>(".side-panel.open");
     case "addTab":
       return lastMatch(".tab-add-menu");
+    case "settings":
+      // The page, not the whole dialog: ←/→ step the left-hand list
+      // (`stepSettingsPage`), so ↑/↓ need not wade through it.
+      return settingsDialog()?.querySelector<HTMLElement>(".settings-panel-content") ?? null;
     default:
       // The three header overlays share the root console's frame; each adds
       // its own class. The last one mounted is the one on top.
@@ -69,6 +74,26 @@ export function regionRoot(region: SteeringRegion): HTMLElement | null {
         lastMatch(".app-overlay-backdrop .root-overlay")
       );
   }
+}
+
+/** The settings dialog, while it is open. */
+export function settingsDialog(): HTMLElement | null {
+  return lastMatch(".settings-dialog");
+}
+
+/** Open the previous / next page of the settings dialog's left-hand list
+ *  (the search narrows it, and so what this steps through). False when there
+ *  is no other page to go to. */
+export function stepSettingsPage(delta: 1 | -1): boolean {
+  const pages = Array.from(
+    settingsDialog()?.querySelectorAll<HTMLElement>(".settings-navigation-links button") ?? [],
+  );
+  if (pages.length === 0) return false;
+  const at = pages.findIndex((el) => el.matches('[aria-current]:not([aria-current="false"])'));
+  const next = at < 0 ? (delta > 0 ? 0 : pages.length - 1) : (at + delta + pages.length) % pages.length;
+  if (next === at) return false;
+  pages[next].click();
+  return true;
 }
 
 function shown(el: HTMLElement): boolean {
@@ -126,7 +151,9 @@ export function placeRegionCursor(root: HTMLElement): boolean {
   const selected = targets.find((el) =>
     el.matches('[aria-selected="true"], [aria-current]:not([aria-current="false"]), .selected'),
   );
-  setCursor(selected ?? targets[0]);
+  // Never land on a dialog's × first: Enter there would close what was just
+  // opened.
+  setCursor(selected ?? targets.find((el) => !el.matches(".dialog-close-btn")) ?? targets[0]);
   return true;
 }
 
@@ -178,6 +205,17 @@ export function focusRegionSearch(root: HTMLElement): boolean {
   return true;
 }
 
+/** Close a dropdown list open in `root` (Enter opened it), the cursor back on
+ *  its trigger — what Escape does before it leaves the surface. False when
+ *  none is open. */
+export function closeRegionDropdown(root: HTMLElement): boolean {
+  const trigger = root.querySelector<HTMLElement>('.dropdown-trigger[aria-expanded="true"]');
+  if (!trigger) return false;
+  trigger.click();
+  setCursor(trigger);
+  return true;
+}
+
 export function activateRegionCursor(): "type" | "press" | null {
   const el = regionCursor();
   if (!el) return null;
@@ -186,6 +224,13 @@ export function activateRegionCursor(): "type" | "press" | null {
     el.focus();
     return "type";
   }
+  // A dropdown option closes its list, taking the cursor with it: hand the
+  // cursor back to the dropdown, so the next ↑/↓ goes on from there.
+  const trigger =
+    el.getAttribute("role") === "option"
+      ? el.closest(".dropdown")?.querySelector<HTMLElement>(".dropdown-trigger")
+      : null;
   el.click();
+  if (trigger) setCursor(trigger);
   return "press";
 }

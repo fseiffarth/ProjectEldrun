@@ -11,12 +11,13 @@ import { useProjectsStore } from "./projects";
  *   tabs     — ←/→ step the focused subwindow's tabs
  *   region   — a keyboard cursor walking the controls of one surface that
  *              has no tab bar: the side panel, the mail / calendar / to-do
- *              overlays, or a pane's + menu (`SteeringRegion`)
+ *              overlays, a pane's + menu, or the settings dialog
+ *              (`SteeringRegion`)
  */
 export type SteeringLevel = "projects" | "panes" | "tabs" | "region";
 
 /** The surfaces the region cursor can walk (see `lib/shortcuts/steeringRegion`). */
-export type SteeringRegion = "side" | "mail" | "calendar" | "todo" | "addTab";
+export type SteeringRegion = "side" | "mail" | "calendar" | "todo" | "addTab" | "settings";
 
 /** Every level but the region — where a region returns to. */
 export type SteeringBaseLevel = Exclude<SteeringLevel, "region">;
@@ -29,8 +30,8 @@ export type SteeringBaseLevel = Exclude<SteeringLevel, "region">;
  * relaunch never starts steering. While `active`, `useKeyboard` swallows every
  * key in a capture-phase listener (nothing may leak to the terminal
  * underneath), `FocusFrameOverlay` shows the subwindow badges, the project
- * pills wear their station numbers, and the bottom legend renders the current
- * level's keys from `STEERING_KEYS`.
+ * pills wear their station numbers on the projects level, and the bottom legend
+ * renders the current level's keys from `STEERING_KEYS`.
  *
  * `useKeyboard` mutates this imperatively via `getState()`; the overlays
  * subscribe reactively.

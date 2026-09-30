@@ -1099,6 +1099,13 @@ export interface ScopeSwitchSnapshot {
   workspaceVersion: number | undefined;
 }
 
+/** Where `addTab` puts the tab. `seeded`: see `addTab`. `besideActive`: right
+ *  of the target group's active tab rather than at the group's end. */
+export interface AddTabOpts {
+  seeded?: boolean;
+  besideActive?: boolean;
+}
+
 interface TabsStore {
   scope: string;
 
@@ -1166,7 +1173,7 @@ interface TabsStore {
   // `seeded` marks a tab Eldrun opened by itself rather than one the user asked
   // for (the root scope's default 3D-blob tab). Such a tab must not be counted as
   // a tab the user opened — see `countTabOpen`.
-  addTab: (tab: Omit<TabEntry, "key">, opts?: { seeded?: boolean }) => TabEntry; // into focused group
+  addTab: (tab: Omit<TabEntry, "key">, opts?: AddTabOpts) => TabEntry; // into focused group
   // Add a tab into a SPECIFIC scope's focused group, regardless of which scope is
   // currently active. Used to surface remote SSH/OpenVPN connections in the root
   // scope without disturbing the active project. When `scope` is the current
@@ -1175,7 +1182,7 @@ interface TabsStore {
   addTabToScope: (
     scope: string,
     tab: Omit<TabEntry, "key">,
-    opts?: { seeded?: boolean },
+    opts?: AddTabOpts,
   ) => TabEntry;
   // Open a second tab like an existing one (the tab context menu's "Duplicate"),
   // landing directly to its RIGHT rather than at the end of the group — a copy
@@ -1187,6 +1194,7 @@ interface TabsStore {
   ensureTab: (
     tab: Omit<TabEntry, "key">,
     matches: (tab: TabEntry) => boolean,
+    opts?: AddTabOpts,
   ) => TabEntry;
   renameTab: (key: string, label: string) => void;
   // The same rename, aimed at a named scope instead of the active one. The
@@ -2589,11 +2597,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const target =
         (focusedGroupId && findGroup(layout, focusedGroupId)) ||
         allGroups(layout)[0];
-      const next = mapGroup(layout, target.id, (g) => ({
-        ...g,
-        tabKeys: [...g.tabKeys, key],
-        activeKey: key,
-      }));
+      const next = mapGroup(layout, target.id, (g) => {
+        const at = opts?.besideActive && g.activeKey ? g.tabKeys.indexOf(g.activeKey) : -1;
+        const tabKeys = [...g.tabKeys];
+        tabKeys.splice(at >= 0 ? at + 1 : tabKeys.length, 0, key);
+        return { ...g, tabKeys, activeKey: key };
+      });
       return writeScope(s, scope, nextTabs, next, target.id);
     });
     return entry;
@@ -2632,13 +2641,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     return entry;
   },
 
-  ensureTab: (tab, matches) => {
+  ensureTab: (tab, matches, opts) => {
     const existing = get().tabs.find(matches);
     if (existing) {
       get().setActive(existing.key);
       return existing;
     }
-    return get().addTab(tab);
+    return get().addTab(tab, opts);
   },
 
   renameTab: (key, label) => {

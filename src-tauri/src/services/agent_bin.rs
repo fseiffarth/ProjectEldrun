@@ -35,21 +35,29 @@ fn install_in(dir: &Path, exe: Option<&Path>, clis: &[&str]) -> io::Result<()> {
 
 /// The shim for `cli`: exec the fence through `exe`, or — already inside a
 /// fence, or in the root console's Host session, which is unfenced by the
-/// user's explicit choice — the real CLI from PATH minus this directory.
+/// user's explicit choice — the real CLI found on PATH minus this directory.
 /// POSIX `sh`; no bypass flag.
+///
+/// Only the *lookup* skips this directory; the CLI runs with PATH as it came,
+/// so `eldrun-send` (which lives here too) stays reachable from the agent and
+/// every shell it opens. Trimming the exported PATH lost it in every fenced
+/// tab (2026-09-29).
 pub(crate) fn shim_script(cli: &str, exe: &Path, dir: &Path) -> String {
     let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     format!(
         "#!/bin/sh\n\
          # Eldrun agent shim: runs {cli} fenced in this tab's scope (services::agent_shim).\n\
          if [ -n \"${{ELDRUN_AGENT_FENCE:-}}\" ] || [ -n \"${{ELDRUN_HOST_SESSION:-}}\" ]; then\n\
-         \x20   PATH=$(printf '%s' \"$PATH\" | tr ':' '\\n' | grep -vx -- {dir} | paste -sd: -)\n\
-         \x20   export PATH\n\
-         \x20   exec {cli_q} \"$@\"\n\
+         \x20   real=$(PATH=$(printf '%s' \"$PATH\" | tr ':' '\\n' | grep -vx -- {dir} | paste -sd: -); command -v {cli_q}) || {{\n\
+         \x20       echo {not_found} >&2\n\
+         \x20       exit 127\n\
+         \x20   }}\n\
+         \x20   exec \"$real\" \"$@\"\n\
          fi\n\
          exec {exe} --agent-shim {cli_q} \"$@\"\n",
         cli = cli,
         cli_q = quote(cli),
+        not_found = quote(&format!("{cli}: command not found")),
         dir = quote(&dir.to_string_lossy()),
         exe = quote(&exe.to_string_lossy()),
     )
@@ -98,5 +106,43 @@ mod tests {
         assert!(shim.contains(&format!("grep -vx -- '{}'", dir.path().to_string_lossy())));
         assert!(!shim.contains("--unfenced"));
         assert!(dir.path().join("claude").is_file());
+    }
+
+    /// Inside a fence the shim runs the real CLI, which still sees this
+    /// directory on PATH — `eldrun-send` must stay reachable from the agent.
+    #[cfg(unix)]
+    #[test]
+    fn a_fenced_shim_runs_the_real_cli_with_eldrun_send_still_on_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let shims = tempfile::tempdir().unwrap();
+        let real = tempfile::tempdir().unwrap();
+        install_in(shims.path(), Some(Path::new("/nonexistent/eldrun")), &["fakecli"]).unwrap();
+        let cli = real.path().join("fakecli");
+        fs::write(&cli, "#!/bin/sh\necho \"args=$*\"\ncommand -v eldrun-send\n").unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths([shims.path(), real.path(), Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+        let out = std::process::Command::new(shims.path().join("fakecli"))
+            .arg("hi")
+            .env("PATH", &path)
+            .env("ELDRUN_AGENT_FENCE", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{stdout} {}", String::from_utf8_lossy(&out.stderr));
+        assert!(stdout.contains("args=hi"), "the real CLI ran, not the shim again: {stdout}");
+        assert!(
+            stdout.contains(&shims.path().join("eldrun-send").to_string_lossy().into_owned()),
+            "eldrun-send is on the CLI's PATH: {stdout}"
+        );
+
+        // No real CLI anywhere but the shim: a clear error, never a loop.
+        let path = std::env::join_paths([shims.path(), Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+        let out = std::process::Command::new(shims.path().join("fakecli"))
+            .env("PATH", &path)
+            .env("ELDRUN_AGENT_FENCE", "1")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(127));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("fakecli: command not found"));
     }
 }

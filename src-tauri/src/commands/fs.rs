@@ -1809,9 +1809,54 @@ pub fn file_mtime_local(path: &str, scope_id: Option<&str>) -> Result<u64, Strin
 /// scope resolves to no project (e.g. first run), which makes every absolute-path
 /// command fail closed. See REVIEW.md Security #1.
 fn allowed_roots(scope_id: Option<&str>) -> Vec<PathBuf> {
-    let projects: ProjectsList = read_state_json("projects.json");
-    let boxes: BoxesList = read_state_json("boxes.json");
+    static PROJECTS: StateJsonCache<ProjectsList> = StateJsonCache::new();
+    static BOXES: StateJsonCache<BoxesList> = StateJsonCache::new();
+    let projects = PROJECTS.get("projects.json");
+    let boxes = BOXES.get("boxes.json");
     compute_allowed_roots(&projects, &boxes, scope_id, &storage::root_work_dir())
+}
+
+/// The last parse of one state file, reused while the file's bytes are unchanged.
+///
+/// Every confinement check (each `file_mtime` poll of every open viewer) used to
+/// parse all of `projects.json` — thousands of `serde_json::Value`s for the
+/// entries' flattened `extra` — making it the process's busiest allocator.
+/// Keyed on the bytes, not on mtime/len: the file is rewritten in place by many
+/// writers, and a project switch swaps two statuses without changing its length.
+struct StateJsonCache<T>(std::sync::Mutex<Option<(PathBuf, String, std::sync::Arc<T>)>>);
+
+impl<T> StateJsonCache<T>
+where
+    T: serde::de::DeserializeOwned + Default,
+{
+    const fn new() -> Self {
+        Self(std::sync::Mutex::new(None))
+    }
+
+    /// The state file `name`, parsed; `T::default()` when it is absent or
+    /// unparseable, so confinement degrades to fail-closed. Failures are not cached.
+    fn get(&self, name: &str) -> std::sync::Arc<T> {
+        self.load(storage::state_dir().join(name))
+    }
+
+    fn load(&self, path: PathBuf) -> std::sync::Arc<T> {
+        let Ok(content) = fs::read_to_string(&path) else {
+            return std::sync::Arc::new(T::default());
+        };
+        let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_path, cached, value)) = slot.as_ref() {
+            if *cached_path == path && *cached == content {
+                return value.clone();
+            }
+        }
+        let Ok(parsed) = serde_json::from_str::<T>(&content) else {
+            *slot = None;
+            return std::sync::Arc::new(T::default());
+        };
+        let value = std::sync::Arc::new(parsed);
+        *slot = Some((path, content, value.clone()));
+        value
+    }
 }
 
 /// Pure core of [`allowed_roots`], split out so the project/box scoping logic is
@@ -1923,19 +1968,6 @@ fn project_dir(entry: &ProjectEntry) -> Option<PathBuf> {
 fn mirror_override_dir(entry: &ProjectEntry) -> Option<PathBuf> {
     let raw = entry.extra.get("mirror").and_then(Value::as_str)?.trim();
     (!raw.is_empty()).then(|| PathBuf::from(raw))
-}
-
-/// Read a JSON state file under `state_dir()`, defaulting to `T::default()` when
-/// the file is absent or unparseable (so confinement degrades to fail-closed).
-fn read_state_json<T>(name: &str) -> T
-where
-    T: serde::de::DeserializeOwned + Default,
-{
-    let path = storage::state_dir().join(name);
-    if !path.exists() {
-        return T::default();
-    }
-    storage::read_json(&path).unwrap_or_default()
 }
 
 /// Resolve `p` to a canonical path for confinement checks. For existing paths
@@ -3022,6 +3054,34 @@ mod tests {
 
     /// The root terminal folder the tests thread through `compute_allowed_roots`.
     const ROOT_WORK: &str = "/home/u/eldrun/root";
+
+    #[test]
+    fn state_json_cache_follows_a_same_length_rewrite() {
+        // A project switch rewrites projects.json in place with two statuses
+        // swapped — same length, possibly the same mtime tick. The cache must
+        // still hand back the new current project.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("projects.json");
+        let write = |x: &str, y: &str| {
+            let list = vec![entry("x", x, "/home/u/code/projectx"), entry("y", y, "/home/u/code/projecty")];
+            fs::write(&path, serde_json::to_string(&list).unwrap()).unwrap();
+        };
+        let cache: StateJsonCache<ProjectsList> = StateJsonCache::new();
+        let current = |list: &ProjectsList| list.iter().find(|e| e.status == "current").unwrap().id.clone();
+
+        write("current", "stopped");
+        let first = cache.load(path.clone());
+        assert_eq!(current(&first), "x");
+        assert!(std::sync::Arc::ptr_eq(&first, &cache.load(path.clone())), "unchanged bytes reuse the parse");
+
+        write("stopped", "current");
+        assert_eq!(current(&cache.load(path.clone())), "y");
+
+        fs::write(&path, "{ not json").unwrap();
+        assert!(cache.load(path.clone()).is_empty(), "unparseable fails closed");
+        fs::remove_file(&path).unwrap();
+        assert!(cache.load(path).is_empty(), "absent fails closed");
+    }
 
     #[test]
     fn allowed_roots_scoped_to_named_project_not_current() {

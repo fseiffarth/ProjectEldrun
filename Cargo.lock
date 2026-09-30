@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "eldrun"
-version = "0.1.98"
+version = "0.1.99"
 dependencies = [
  "aes-gcm",
  "ammonia",
@@ -6415,8 +6415,6 @@ dependencies = [
 [[package]]
 name = "tauri-runtime-wry"
 version = "2.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe41e015bf8fc4d6477ff4926a0ef769dc64ff34c7b0038b6f7cacae892acb5c"
 dependencies = [
  "gtk",
  "http",
