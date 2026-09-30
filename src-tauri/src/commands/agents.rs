@@ -1715,25 +1715,44 @@ pub async fn agent_versions(
 /// relaunch restores at once), so it is the *next* Claude tab that benefits;
 /// until then this answers from what the store holds, or no.
 pub(crate) fn claude_takes_name_flag() -> bool {
-    use crate::services::agent_versions as versions;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
     static PROBING: AtomicBool = AtomicBool::new(false);
+    host_agent_version_says("claude", &PROBING, crate::services::agent_versions::claude_takes_name_flag)
+}
+
+/// Whether the host's `codex` takes `--no-daemon` at launch — read the same
+/// way as [`claude_takes_name_flag`], never waiting on a probe.
+pub(crate) fn codex_takes_no_daemon() -> bool {
+    use std::sync::atomic::AtomicBool;
+    static PROBING: AtomicBool = AtomicBool::new(false);
+    host_agent_version_says("codex", &PROBING, crate::services::agent_versions::codex_takes_no_daemon)
+}
+
+/// Answer `check` from the version store's entry for `agent`, refreshing a
+/// missing or day-old entry in the background (one probe per agent at a time).
+fn host_agent_version_says(
+    agent: &'static str,
+    probing: &'static std::sync::atomic::AtomicBool,
+    check: fn(Option<&crate::services::agent_versions::Seen>) -> bool,
+) -> bool {
+    use crate::services::agent_versions as versions;
+    use std::sync::atomic::Ordering;
 
     let store = versions::load();
-    let seen = store.get("claude");
+    let seen = store.get(agent);
     let stale = !seen.is_some_and(|seen| versions::fresh(seen, versions::PROBE_TTL));
-    if stale && !PROBING.swap(true, Ordering::SeqCst) {
-        if let Some(spec) = find_spec("claude").filter(|spec| spec_is_installed(spec)) {
+    if stale && !probing.swap(true, Ordering::SeqCst) {
+        if let Some(spec) = find_spec(agent).filter(|spec| spec_is_installed(spec)) {
             tauri::async_runtime::spawn(async move {
                 let result = probe_agent_version(spec).await;
                 versions::remember(spec.id, result);
-                PROBING.store(false, Ordering::SeqCst);
+                probing.store(false, Ordering::SeqCst);
             });
         } else {
-            PROBING.store(false, Ordering::SeqCst);
+            probing.store(false, Ordering::SeqCst);
         }
     }
-    versions::claude_takes_name_flag(seen)
+    check(seen)
 }
 
 /// Stop reminding the user that `agent`'s installed version has moved past what

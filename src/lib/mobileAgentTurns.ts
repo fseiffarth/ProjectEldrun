@@ -9,7 +9,7 @@
  * looking at it, and applies each phone's choices and the per-tab cooldown.
  */
 
-export type MobileAgentState = "working" | "question" | "done" | "idle";
+export type MobileAgentState = "working" | "question" | "interrupted" | "done" | "idle";
 
 export interface AgentTurnEdge {
   tmuxSession: string;

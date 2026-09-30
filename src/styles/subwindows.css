@@ -735,6 +735,125 @@
   border-radius: 3px;
 }
 
+/* The steering legend proper (SteeringLegend): no title — its accent frame
+   and the window's accent wash say the mode is on. The keys sit in one box per
+   `STEERING_GROUPS` entry; each box wears a `.tok-*` class from the code
+   viewer, so its `color` is the theme's editor token colour and the box, its
+   name and its key caps all tint from `currentColor`. */
+.steering-legend-grouped {
+  align-items: stretch;
+  gap: 6px;
+  padding: 6px;
+  max-width: min(94vw, 1240px);
+  background: var(--bg-panel);
+}
+.steering-legend-where {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--bg-main);
+  background: var(--accent);
+  border-radius: 999px;
+}
+.steering-legend-where:empty {
+  display: none;
+}
+.steering-legend-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 3px 8px 5px;
+  font-style: normal; /* .tok-comment slants code comments, not this */
+  background: color-mix(in srgb, currentColor 10%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-top: 3px solid currentColor;
+  border-radius: var(--radius);
+}
+/* Outside the fancy (Helix) pair `.tok-tag` is `.tok-func`'s colour (accent /
+   blue), which would paint Open like Move; red keeps the boxes apart. */
+html:not([data-theme^="fancy_"]) .steering-legend-group.tok-tag {
+  color: var(--danger);
+}
+.steering-legend-group-name {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.steering-legend-group-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 12px;
+}
+.steering-legend-group .steering-legend-item {
+  color: inherit;
+}
+.steering-legend-group .steering-legend-label {
+  color: var(--text-primary);
+}
+.steering-legend-group .steering-legend-item kbd {
+  color: inherit;
+  background: color-mix(in srgb, currentColor 20%, var(--bg-panel));
+  border-color: color-mix(in srgb, currentColor 60%, transparent);
+}
+.steering-legend-group .steering-legend-count {
+  color: var(--bg-panel);
+  background: color-mix(in srgb, currentColor 85%, var(--text-primary));
+}
+
+/* Steering on with the legend folded (steering's H): a round accent badge in
+   the bottom-right corner, the key that unfolds it on its rim. The wrapper is
+   click-through; only the badge takes a click. Static shadow token only. */
+.steering-legend-fab {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+.steering-legend-fab-button {
+  pointer-events: auto;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  color: var(--bg-main);
+  background: var(--accent);
+  border: none;
+  border-radius: 50%;
+  box-shadow: var(--shadow-2);
+  cursor: var(--cur-pointer, pointer);
+}
+.steering-legend-fab-button:hover {
+  background: var(--accent-hover);
+}
+.steering-legend-fab-button kbd {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  min-width: 18px;
+  padding: 0 4px;
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+}
+
 /* Keyboard select's legend (TerminalView, Ctrl+Shift+X): the steering legend,
    pinned to the bottom of its own pane instead of the window. */
 .steering-legend.terminal-key-select {
@@ -820,7 +939,15 @@ html[data-steer="panes"] .focus-frame {
   outline-width: 4px;
   outline-offset: -4px;
 }
+/* Inside the terminal (the scroll level): the pane's body is the object. */
+html[data-steer="scroll"] .subwindow.focused .subwindow-body {
+  outline: 2px solid var(--tab-accent, var(--accent));
+  outline-offset: -2px;
+}
 html[data-steer-region="side"] .side-panel.open,
+html[data-steer-region="header"] .app-header,
+html[data-steer-region="overlay"] .steer-layer,
+html[data-steer-region="card"] .subwindow.focused .terminal-sign-in,
 html[data-steer-region="addTab"] .tab-add-menu,
 html[data-steer-region="settings"] .settings-dialog,
 html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-region="todo"])
@@ -1433,4 +1560,547 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
 .root-review-btn:disabled {
   opacity: 0.45;
   cursor: var(--cur-default, default);
+}
+
+/* ── Agent prompt strip (components/terminal/TerminalPromptStrip) ─────────────
+   The agent pane's top row, between the tab bar and the terminal: the tab's
+   last prompt on one line. Its ground and ink are the terminal's own (set
+   inline), so it reads as part of the pane, not a toolbar over it. A fixed
+   height — it never refits the terminal; the drop-down floats over the
+   terminal's top, sized against `.center-pane` (its containing block). */
+.prompt-strip {
+  /* Second in the DOM (the terminal host stays the pane's first child),
+     first on screen. */
+  order: -1;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 6px 0 10px;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  min-width: 0;
+}
+.prompt-strip-label {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.prompt-strip-text {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+}
+.prompt-strip-text:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+.prompt-strip-text:disabled {
+  cursor: var(--cur-default, default);
+  opacity: 0.55;
+}
+.prompt-strip-typed,
+.prompt-strip-time,
+.prompt-strip-count {
+  flex: none;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.prompt-strip-typed {
+  cursor: var(--cur-help, help);
+}
+.prompt-strip-nav {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.prompt-strip-btn {
+  flex: none;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  font: inherit;
+  line-height: 1;
+  color: inherit;
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+  opacity: 0.75;
+}
+.prompt-strip-btn:hover:not(:disabled) {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.prompt-strip-btn:disabled {
+  opacity: 0.25;
+  cursor: var(--cur-default, default);
+}
+.prompt-strip-panel {
+  position: absolute;
+  top: 30px;
+  left: 8px;
+  right: 8px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100% - 42px);
+  /* Explicit ink: the panel is an app surface, not the terminal's. */
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  outline: none;
+  overflow: hidden;
+}
+.prompt-strip-full {
+  flex: 0 1 auto;
+  min-height: 2.5em;
+  max-height: 60%;
+  padding: 10px 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-md);
+  line-height: 1.45;
+  user-select: text;
+}
+.prompt-strip-list {
+  position: relative; /* rows' offsetTop is measured against the list */
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  overflow: auto;
+  border-top: 1px solid var(--border-subtle);
+}
+.prompt-strip-row {
+  display: flex;
+  gap: 10px;
+  padding: 3px 12px;
+  cursor: var(--cur-pointer, pointer);
+  color: var(--text-secondary);
+}
+.prompt-strip-row:hover {
+  background: var(--bg-hover);
+}
+.prompt-strip-row[aria-selected="true"] {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.prompt-strip-row-time {
+  flex: none;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.prompt-strip-row-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-strip-keys {
+  flex: none;
+  padding: 4px 12px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  border-top: 1px solid var(--border-subtle);
+}
+.prompt-strip-reader {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: inherit;
+  background: none;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: var(--radius-full);
+  cursor: var(--cur-pointer, pointer);
+  opacity: 0.8;
+}
+.prompt-strip-reader:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+.prompt-strip-reader.active {
+  opacity: 1;
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ── Agent Reader (components/terminal/TerminalReaderView) ────────────────────
+   The phone's Focus Reader on the desktop: the stored conversation as a chat,
+   portaled over the pane's terminal (which keeps running underneath). Below
+   the pane's hint cards (z-index 5), so an Undo-clear or sign-in card still
+   shows over it. App surface, explicit ink. */
+.terminal-reader {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  color: var(--text-primary);
+  background: var(--bg-main);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+}
+.terminal-reader-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 18px;
+  overflow-y: auto;
+  user-select: text;
+}
+.terminal-reader-turn {
+  position: relative;
+  max-width: min(760px, 82%);
+  padding: 8px 12px 18px;
+  border-radius: var(--radius-lg);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.terminal-reader-turn > p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.terminal-reader-turn.user {
+  align-self: flex-end;
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.terminal-reader-turn.user.pending {
+  opacity: 0.65;
+}
+.terminal-reader-turn.agent {
+  align-self: flex-start;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+.terminal-reader-turn.agent.plan {
+  border-color: #8b5cf6;
+}
+.terminal-reader-plan-head {
+  display: block;
+  margin-bottom: 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8b5cf6;
+}
+.terminal-reader-md > :first-child { margin-top: 0; }
+.terminal-reader-md > :last-child { margin-bottom: 0; }
+.terminal-reader-md pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.terminal-reader-time {
+  position: absolute;
+  right: 10px;
+  bottom: 3px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.terminal-reader-cut {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  font-style: italic;
+  color: var(--text-muted);
+}
+.terminal-reader-command,
+.terminal-reader-day {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.terminal-reader-command::before,
+.terminal-reader-command::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border-subtle);
+}
+.terminal-reader-command span {
+  font-family: var(--font-mono);
+}
+.terminal-reader-day {
+  justify-content: center;
+}
+.terminal-reader-day span {
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  background: var(--bg-subtle);
+}
+.terminal-reader-subagent {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: min(640px, 76%);
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  font-size: var(--text-sm);
+}
+.terminal-reader-subagent small {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.terminal-reader-empty {
+  margin: auto;
+  max-width: 420px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.terminal-reader-earlier {
+  align-self: center;
+  padding: 3px 12px;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-earlier:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.terminal-reader-composer {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+.terminal-reader-composer textarea {
+  flex: 1;
+  min-height: 2.6em;
+  max-height: 12em;
+  padding: 6px 10px;
+  resize: vertical;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+}
+.terminal-reader-composer textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.terminal-reader-send {
+  flex: none;
+  padding: 6px 14px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-send:disabled {
+  opacity: 0.45;
+  cursor: var(--cur-default, default);
+}
+.terminal-reader-error {
+  flex: none;
+  padding: 0 14px 8px;
+  font-size: var(--text-sm);
+  color: var(--danger, #d9534f);
+  background: var(--bg-panel);
+}
+/* The live screen's rows under the chat (`lib/agents/readerLive`): the
+   choice the session waits on, as buttons, and the agent at work. */
+.terminal-reader-question {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 820px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+}
+.terminal-reader-question-head {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.terminal-reader-question-context {
+  margin: 0;
+  max-height: 16em;
+  padding: 8px 10px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre;
+  color: var(--text-secondary);
+  background: var(--bg-inset);
+  border-radius: var(--radius);
+}
+.terminal-reader-question-ask {
+  margin: 0;
+  font-weight: 600;
+  white-space: pre-wrap;
+}
+/* An agent question's headers (Claude Code's tab row), answered ones ticked. */
+.terminal-reader-question-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-weight: 600;
+}
+.terminal-reader-question-tabs .answered {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.terminal-reader-recommended {
+  margin-left: 6px;
+  font-size: var(--text-xs);
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.terminal-reader-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.terminal-reader-option {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  font: inherit;
+  text-align: left;
+  color: var(--text-primary);
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-option:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.terminal-reader-option.current {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-color));
+}
+.terminal-reader-option:disabled {
+  opacity: 0.55;
+  cursor: var(--cur-default, default);
+}
+.terminal-reader-option-number {
+  flex: none;
+  min-width: 1.4em;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.terminal-reader-option-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.terminal-reader-option-label small,
+.terminal-reader-question-more {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.terminal-reader-working {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-full);
+}
+.terminal-reader-working small {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.terminal-reader-working-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+.terminal-reader-working-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: terminal-reader-dot 1.2s ease-in-out infinite;
+}
+.terminal-reader-working-dots i:nth-child(2) { animation-delay: 0.2s; }
+.terminal-reader-working-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes terminal-reader-dot {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
+}
+.terminal-reader-stop {
+  padding: 2px 10px;
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--danger);
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  border-radius: var(--radius-full);
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-stop:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .terminal-reader-working-dots i { animation: none; opacity: 0.7; }
 }

@@ -580,6 +580,17 @@ pub async fn prepare(
         && crate::commands::agents::claude_takes_name_flag()
         && append_claude_name(&mut opts.args, session_name.as_deref());
 
+    // A compatible host Codex TUI stays in-process: its detached app-server
+    // daemon would put a socket in this tab's private fence /tmp, which a
+    // sibling tab cannot reach. Older releases do not accept this flag.
+    if opts.cmd == "codex"
+        && crate::services::agent_versions::codex_runs_tui(&opts.args)
+        && !opts.args.iter().any(|a| a == "--no-daemon")
+        && crate::commands::agents::codex_takes_no_daemon()
+    {
+        opts.args.push("--no-daemon".to_string());
+    }
+
     // Apply the outer fence boundary (bubblewrap on Linux, sandbox-exec on
     // macOS) after docker/ssh selection but before local tmux.  This keeps the
     // tmux server on the host while the command *inside* its session is

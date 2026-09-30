@@ -32,11 +32,13 @@ export interface TranscriptTurn {
   plan?: boolean;
   /** A prompt sent from this phone the session has not recorded yet, by its
    * id; `failed` once the link lost it, `retrying` while a resend waits;
-   * `held` while the desktop still holds it and its words can change. */
+   * `held` while the desktop still holds it and its words can change;
+   * `queued` until the desktop types it (the agent's work draws above it). */
   pending?: number;
   failed?: boolean;
   retrying?: boolean;
   held?: boolean;
+  queued?: boolean;
 }
 
 /** A slash command split into its name and what follows it. */
@@ -81,7 +83,7 @@ export function transcriptTurns(entries: readonly TranscriptEntry[]): Transcript
       command: entry.kind === "prompt" ? slashCommand(entry.text) : null,
       ...(entry.kind === "agent" ? { subagent: entry.subagent, role: entry.role } : {}),
       ...(entry.kind === "answer" && entry.plan === true ? { plan: true } : {}),
-      ...(entry.pending !== undefined ? { pending: entry.pending, failed: entry.failed === true, retrying: entry.retrying === true, ...(entry.held ? { held: true } : {}) } : {}),
+      ...(entry.pending !== undefined ? { pending: entry.pending, failed: entry.failed === true, retrying: entry.retrying === true, ...(entry.held ? { held: true } : {}), ...(entry.queued ? { queued: true } : {}) } : {}),
     };
   });
 }

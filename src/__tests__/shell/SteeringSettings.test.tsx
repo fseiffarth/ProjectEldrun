@@ -241,17 +241,20 @@ describe("steering through settings", () => {
     expect(steering()).toMatchObject({ active: true, level: "region", region: "settings" });
   });
 
-  it("app chords stay off behind settings, and settings opened by the pointer ends steering elsewhere", async () => {
+  it("a plain key over settings is the dialog's; steering left elsewhere joins settings opened by the pointer", async () => {
     render(<Harness />);
     act(() => void window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "main" })));
     // Not steering: a plain key over settings is left to the dialog.
     press({ key: "d" });
     expect(steering().active).toBe(false);
 
-    // Steering on some other level while settings is on top gives way.
+    // Steering on some other level while settings is on top walks settings
+    // (the key acts there, never behind the dialog).
     act(() => useKeyboardSteeringStore.getState().enter());
     press({ key: "d" });
-    expect(steering().active).toBe(false);
+    expect(steering()).toMatchObject({ active: true, level: "region", region: "settings", regionReturn: "tabs" });
+    await settle();
+    expect(regionCursor()?.id).toMatch(/^g[12]$/);
   });
 
   it("the legend lists the page switch only in the settings region", () => {

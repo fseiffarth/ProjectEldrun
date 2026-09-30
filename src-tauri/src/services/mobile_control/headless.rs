@@ -432,6 +432,8 @@ pub fn turn_readings(state_dir: &Path, project_id: &str, tabs: &[ResolvedTab]) -
                     tmux_session: tab.tmux_name.clone(),
                     status: status.to_string(),
                     model: model.clone(),
+                    plan: false,
+                    goal: false,
                     working_at: ms(at),
                     done_at: None,
                 });
@@ -442,6 +444,8 @@ pub fn turn_readings(state_dir: &Path, project_id: &str, tabs: &[ResolvedTab]) -
                 readings.timings.push(AgentTabTiming {
                     tmux_session: tab.tmux_name.clone(),
                     model: model.clone(),
+                    plan: false,
+                    goal: false,
                     working_at: None,
                     done_at: ms(at),
                 });
@@ -450,6 +454,8 @@ pub fn turn_readings(state_dir: &Path, project_id: &str, tabs: &[ResolvedTab]) -
                 tmux_session: tab.tmux_name.clone(),
                 status: "done".to_string(),
                 model: model.clone(),
+                plan: false,
+                goal: false,
                 working_at: None,
                 done_at: ms(at),
             }),
@@ -458,6 +464,8 @@ pub fn turn_readings(state_dir: &Path, project_id: &str, tabs: &[ResolvedTab]) -
                     readings.timings.push(AgentTabTiming {
                         tmux_session: tab.tmux_name.clone(),
                         model: model.clone(),
+                        plan: false,
+                        goal: false,
                         working_at: None,
                         done_at: None,
                     });
@@ -1408,6 +1416,8 @@ mod tests {
                 agent_label: None,
                 agent_status: None,
                 agent_model: None,
+                agent_plan: false,
+                agent_goal: false,
                 working_at: None,
                 done_at: None,
                 schedules: None,
@@ -1416,6 +1426,7 @@ mod tests {
                 viewer_busy: false,
                 last_activity: None,
                 color: None,
+                sign_in: false,
             },
             tmux_name: "eldrun-x".into(),
             session_id: session_id.map(str::to_string),

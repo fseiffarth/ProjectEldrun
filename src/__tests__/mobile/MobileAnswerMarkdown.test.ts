@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { answerHtml } from "../../../mobile-web/src/terminal/answerMarkdown";
 import { pendingPrompt, withPending } from "../../../mobile-web/src/terminal/pendingPrompts";
+import { transcriptTurns } from "../../../mobile-web/src/terminal/transcriptTurns";
+import { outboxPosts } from "../../../mobile-web/src/terminal/outboxPosts";
+import type { OutboxFile } from "../../../mobile-web/src/api";
 
 function dom(html: string): HTMLElement {
   const host = document.createElement("div");
@@ -131,5 +134,38 @@ describe("Eldrun Mobile Focus holds a sent prompt in its place", () => {
     const first = pendingPrompt(1, "one", before);
     const second = pendingPrompt(2, "two", before);
     expect(shape(withPending(before, [first, second]))).toEqual(["answer:Ready.", "prompt:one", "prompt:two"]);
+  });
+
+  it("waits below the agent's work while the desktop holds it, then stands where it was typed", () => {
+    const before = [prompt("fix it", "2026-09-18T10:00:00Z"), answer("Checking.", "2026-09-18T10:01:00Z")];
+    const sent = { ...pendingPrompt(1, "also the tests", before), held: "h1" };
+    const queued = withPending(before, [sent]);
+    expect(shape(queued)).toEqual(["prompt:fix it", "answer:Checking.", "prompt:also the tests"]);
+    expect(queued[2]).toMatchObject({ pending: 1, held: true, queued: true });
+    // The agent keeps talking: its answers go above the waiting prompt.
+    const working = [...before, answer("Found it.", "2026-09-18T10:02:00Z")];
+    expect(shape(withPending(working, [sent]))).toEqual(["prompt:fix it", "answer:Checking.", "answer:Found it.", "prompt:also the tests"]);
+    // Typed at the idle point: the bubble is where its record is, no longer queued, same key.
+    const typed = [...working, prompt("also  the tests", "2026-09-18T10:03:00Z"), answer("Both fixed.", "2026-09-18T10:04:00Z")];
+    const shown = withPending(typed, [sent]);
+    expect(shape(shown)).toEqual(["prompt:fix it", "answer:Checking.", "answer:Found it.", "prompt:also the tests", "answer:Both fixed."]);
+    expect(shown[3].queued).toBeUndefined();
+    expect(shown[3].held).toBeUndefined();
+    expect(transcriptTurns(shown)[3].key).toBe(transcriptTurns(withPending(working, [sent]))[3].key);
+  });
+
+  it("counts a held prompt as waiting before the desktop named it", () => {
+    const before = [answer("Working.", "2026-09-18T10:00:00Z")];
+    const sent = { ...pendingPrompt(1, "next", before), held: "" };
+    const shown = withPending([...before, answer("More.", "2026-09-18T10:01:00Z")], [sent]);
+    expect(shown[shown.length - 1]).toMatchObject({ text: "next", queued: true });
+  });
+
+  it("puts none of the agent's files below a waiting prompt", () => {
+    const before = [answer("Working.", "2026-09-18T10:00:00Z")];
+    const sent = { ...pendingPrompt(1, "next", before), held: "h1" };
+    const entries = withPending([...before, answer("Plot sent.", "2026-09-18T10:02:00Z")], [sent]);
+    const file: OutboxFile = { name: "plot.png", kind: "image", size: 1, modified: Date.parse("2026-09-18T10:03:00Z") / 1000 };
+    expect([...outboxPosts(entries, [file]).keys()]).toEqual([1]);
   });
 });

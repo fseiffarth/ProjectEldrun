@@ -76,10 +76,9 @@ describe("MobileIndicator reconnect", () => {
     expect(restartStatusChecks).toBe(2);
   });
 
-  it("publishes the current Mobile version only while a paired phone is connected", async () => {
+  it("offers no Refresh and no Update while the host is current", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "mobile_host_status") return Promise.resolve(connected);
-      if (command === "mobile_admin") return Promise.resolve({ status: "devices", devices: [{ id: "phone-1" }] });
       return Promise.resolve(null);
     });
     const user = userEvent.setup();
@@ -87,11 +86,35 @@ describe("MobileIndicator reconnect", () => {
 
     await screen.findByLabelText("Eldrun Mobile connected");
     await user.click(screen.getByLabelText("Eldrun Mobile connected"));
-    await user.click(screen.getByRole("button", { name: "Upload mobile version" }));
+
+    expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
+  });
+
+  it("updates the host only while it is behind this window", async () => {
+    let applied = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "mobile_host_apply") {
+        applied = true;
+        return Promise.resolve();
+      }
+      if (command === "mobile_host_status") {
+        return Promise.resolve(applied ? connected : { ...connected, update_available: true });
+      }
+      return Promise.resolve(null);
+    });
+    const user = userEvent.setup();
+    render(<MobileIndicator />);
+
+    await screen.findByLabelText("Eldrun Mobile connected");
+    await user.click(screen.getByLabelText("Eldrun Mobile connected"));
+    await user.click(await screen.findByRole("button", { name: "Update" }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("mobile_host_apply", { enabled: true });
     });
-    expect(await screen.findByText(/current Eldrun Mobile version is ready/i)).toBeTruthy();
+    expect(await screen.findByText(/Mobile host is up to date/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
   });
 });

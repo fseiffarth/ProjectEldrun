@@ -196,7 +196,7 @@ describe("Eldrun Mobile terminal dictation", () => {
     expect((FakeRecognition.instances[0] as LocalRecognition).processLocally).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
+    fireEvent.click(screen.getByRole("button", { name: "Chat" }));
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /phone's speech service/ }));
     expect(localStorage.getItem("eldrun.mobile.voiceRemote")).toBe("1");
     available.mockClear();
@@ -216,7 +216,7 @@ describe("Eldrun Mobile terminal dictation", () => {
     Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: RemoteOnlyRecognition });
     render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});
-    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
+    fireEvent.click(screen.getByRole("button", { name: "Chat" }));
     const choice = screen.getByRole("menuitemcheckbox", { name: /phone's speech service/ });
     expect(choice.getAttribute("aria-disabled")).toBe("true");
     expect(choice.textContent).toContain("always dictates with the phone's speech service");

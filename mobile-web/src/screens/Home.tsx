@@ -7,21 +7,15 @@ import { useRowDrag } from "../rowDrag";
 import { placeBeside } from "../tabReorder";
 import { Activity } from "./Activity";
 import { SECTION_GLYPH } from "../glyphs";
-import { formatBuildStamp } from "../buildInfo";
-// Kept in lockstep with the desktop and mobile-host package versions by the
-// release bump, so the phone always reports the build it is running.
-import { version as APP_VERSION } from "../../../package.json";
+import { BUNDLE_VERSION } from "../buildInfo";
 import { isUntested } from "../../../src/lib/untested";
 import { useT } from "../../../src/lib/i18n";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
 import { SendToDesktop } from "../components/SendToDesktop";
-import { GitMark } from "../components/GitMark";
 import { readSpeechLang, type SpeechLang } from "../speechLang";
 import { NotificationsSheet, pushSummary } from "../components/NotificationsSheet";
 import { getPushState, pushSupport, type HostPushState } from "../push";
 import { EldrunMark } from "../EldrunMark";
-
-const BUILD_STAMP = formatBuildStamp();
 
 const ALERT_ICON: Record<MobileAlertItem["kind"], string> = {
   mail: SECTION_GLYPH.mail,
@@ -258,7 +252,7 @@ export function Home({ open, openTab, todo, mail }: {
     <header className="home-header">
       <div className="home-brand" aria-label="Eldrun">
         <span className="home-logo-frame" aria-hidden="true"><EldrunMark className="home-logo" /></span>
-        <span className="home-brand-copy"><strong>Eldrun</strong><small>v{APP_VERSION}{BUILD_STAMP && ` · ${BUILD_STAMP}`}</small></span>
+        <span className="home-brand-copy"><strong>Eldrun</strong><small>{BUNDLE_VERSION}{isUntested("mobile.version.commit") && <span className="untested">Untested</span>}</small></span>
       </div>
       {/* The global views used to live here as a header rail; they are tabs of
           their own now, so the bar at the bottom of every screen carries them. */}
@@ -301,7 +295,7 @@ export function Home({ open, openTab, todo, mail }: {
         ref={drag.rowRef(project.id)}
       >
         <div className="tab-card-head">
-          <button className="card" onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{scopeCaption(project)}{project.git && <GitMark state={project.git} />}</small></span><span className="count">{project.live_sessions}</span></button>
+          <button className="card" onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{scopeCaption(project)}</small></span><span className="count">{project.live_sessions}</span></button>
           {canReorder && <button
             className="tab-card-grip"
             aria-label={`Move ${project.label}`}

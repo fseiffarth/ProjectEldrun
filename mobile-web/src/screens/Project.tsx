@@ -13,6 +13,7 @@ import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
 import { AgentStatusMark } from "../components/AgentStatusPill";
+import { AgentModeMarks, agentModeClass } from "../components/AgentModeMarks";
 import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
 import { ProjectFiles } from "../components/ProjectFiles";
@@ -156,11 +157,13 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   const [fileOpen, setFileOpen] = useState<OutboxFile | null>(null);
   /** The read-only file browser, a drawer a left→right swipe over the screen
    * slides in from the left, there when the desktop's "Project files on the
-   * phone" switch is on (`detail.files`). Swipe-only: the header's controls
-   * are this list's own. */
+   * phone" switch is on (`detail.files`); the name's dropdown opens it too. */
   const [filesOpen, setFilesOpen] = useState(false);
+  /** The dropdown under the project's name (the gallery, the file drawer). */
+  const [projectMenu, setProjectMenu] = useState(false);
   const screenRef = useRef<HTMLElement | null>(null);
   const filesOffered = !!detail?.files;
+  const projectMenuOffered = outbox.length > 0 || filesOffered;
   useEffect(() => {
     const host = screenRef.current;
     if (!filesOffered || filesOpen || !host) return;
@@ -400,29 +403,29 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     } catch (reason) { setError(describeFailure(reason)); void load(); } finally { setActivating(false); }
   };
   return <main className="screen project-screen" ref={screenRef}>
-    {/* Two rows: the chevron and the name on the first, so a long name keeps the
-        whole width; this list's own controls on the second. On one line the
-        gallery, the sort and ＋ squeezed the name down to a letter or two.
+    {/* One dense row, shaped like an agent tab's header: chevron, the name
+        (ellipsized), then this list's own controls kept compact — the order
+        select at view-switch size and a small ＋ — so the name keeps the rest.
 
         The same three orders the desktop Agents view offers, remembered per
         phone. "Manual" is this screen's name for the arrival order, because here
         that order is the desktop's own tab order — the one a drag writes into. */}
     <header className="project-header">
       <button className="back" onClick={back}>‹</button>
-      <div className="terminal-title"><h1>{detail?.project.label ?? "Project"}</h1></div>
+      {/* The name opens what this project has besides its tabs — the agent's
+          files (the 🖼 the Focus screen carries) and the file drawer a swipe
+          also opens — so the row keeps only the order and ＋. Plain text while
+          there is nothing to offer. */}
+      <div className="terminal-title"><h1>{projectMenuOffered
+        ? <button
+          className="project-title"
+          onClick={() => setProjectMenu((open) => !open)}
+          aria-haspopup="menu"
+          aria-expanded={projectMenu}
+          title={t("mobile.project.menu")}
+        ><span>{detail?.project.label ?? "Project"}</span><span className="view-caret" aria-hidden="true" /></button>
+        : detail?.project.label ?? "Project"}</h1></div>
       <div className="project-header-tools">
-        {/* The same 🖼 the Focus screen carries, in the same place and the same
-            class, and the project screen's only way to the outbox: a shelf under
-            the tab cards was past the end of the scroll on a project with a
-            screenful of them, and showed the same files a second time. */}
-        {outbox.length > 0 && <button
-          className="terminal-gallery"
-          onClick={() => setGalleryOpen(true)}
-          aria-haspopup="dialog"
-          aria-expanded={galleryOpen}
-          aria-label={t("mobile.outbox.galleryOpen", { count: outbox.length })}
-          title={t("mobile.outbox.region")}
-        ><span aria-hidden="true">🖼</span><small>{outbox.length}</small></button>}
         {tabs.length > 1 && <label className="activity-sort in-header">
           <span>Sort</span>
           <select aria-label="Sort tabs" value={sort} onChange={(event) => { if (isAgentSort(event.target.value)) chooseSort(event.target.value); }}>
@@ -445,6 +448,20 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         ><span aria-hidden="true">＋</span></button>
       </div>
     </header>
+    {projectMenu && projectMenuOffered && <div className="focus-menu-backdrop" role="presentation" onClick={() => setProjectMenu(false)}>
+      <div className="focus-menu project-menu" role="menu" aria-label={t("mobile.project.menu")} onClick={(event) => event.stopPropagation()}>
+        {outbox.length > 0 && <button
+          role="menuitem"
+          aria-label={t("mobile.outbox.galleryOpen", { count: outbox.length })}
+          onClick={() => { setProjectMenu(false); setGalleryOpen(true); }}
+        ><span aria-hidden="true" className="project-menu-icon">🖼</span><span><strong>{t("mobile.outbox.region")}</strong></span><small className="project-menu-count">{outbox.length}</small></button>}
+        {filesOffered && <button
+          role="menuitem"
+          onClick={() => { setProjectMenu(false); setFilesOpen(true); }}
+        ><span aria-hidden="true" className="project-menu-icon">📁</span><span><strong>{t("mobile.project.files")}</strong></span></button>}
+        {isUntested("mobile.project.nameMenu") && <p className="project-menu-note"><span className="untested">{t("mobile.newTab.untested")}</span></p>}
+      </div>
+    </div>}
     {/* Only once the host has answered: `!detail?.desktop_available` was also
         true while the first load was in flight, so every project opened on a
         "Desktop unavailable" notice that vanished a moment later. */}
@@ -456,7 +473,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {projectInbox.view}
     {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the Eldrun window follows. {isUntested("mobile.project.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
     <section className="cards">{tabs.map((tab) => <div
-      className={`tab-card${tabColorCss(tab.color) ? " has-tab-color" : ""}${drag.rowClass(tab.id)}`}
+      className={`tab-card${tabColorCss(tab.color) ? " has-tab-color" : ""}${agentModeClass(tab)}${drag.rowClass(tab.id)}`}
       key={tab.id}
       ref={drag.rowRef(tab.id)}
       // The desktop marks a coloured tab with its bottom rule; a phone card has
@@ -489,6 +506,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
                 here rather than open-then-find-the-chip. */}
             {tab.agent_model && <button className="tab-card-model" disabled={!tab.available} onClick={() => terminal(tab, { pickModel: true })} aria-haspopup="dialog" aria-label={`Change the model of ${tab.label}`} title="Change the model">{tab.agent_model}</button>}
             {tab.agent_model && isUntested("mobile.project.modelTap") && <span className="untested">{t("mobile.newTab.untested")}</span>}
+            <AgentModeMarks tab={tab} />
             {/* Scheduling lives out here beside the tab, not inside the
                 session: reaching a schedule must not mean attaching a
                 terminal. The ◷ rides right of the model; agent tabs only. */}

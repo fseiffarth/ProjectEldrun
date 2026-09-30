@@ -38,6 +38,7 @@ export type SteeringSlotAction = (typeof STEERING_SLOT_ACTIONS)[number];
 export type SteeringAction =
   | "help"
   | "exit"
+  | "legend"
   | "up"
   | "down"
   | "left"
@@ -66,6 +67,8 @@ export type SteeringAction =
   | "panels"
   | "settings"
   | "jumpProject"
+  | "menu"
+  | "tabCard"
   | SteeringSlotAction;
 
 /** Where an action acts. `mode` is every level; `panes` covers the subwindow
@@ -100,6 +103,7 @@ const TAB_BAR: readonly SteeringScope[] = ["projects", "panes"];
 export const STEERING_BINDINGS: SteeringBindingDef[] = [
   { action: "help", labelKey: "steering.help.label", scopes: ["mode"], defaults: ["?"] },
   { action: "exit", labelKey: "steering.exit.label", scopes: ["mode"], defaults: [" "] },
+  { action: "legend", labelKey: "steering.legend.label", scopes: ["mode"], defaults: ["h"] },
   { action: "up", labelKey: "steeringKeys.up", scopes: ["mode"], defaults: ["e", "ArrowUp"] },
   { action: "down", labelKey: "steeringKeys.down", scopes: ["mode"], defaults: ["d", "ArrowDown"] },
   { action: "left", labelKey: "steeringKeys.left", scopes: ["mode"], defaults: ["s", "ArrowLeft"] },
@@ -114,6 +118,7 @@ export const STEERING_BINDINGS: SteeringBindingDef[] = [
   { action: "newTabMenu", labelKey: "steering.newTabMenu.label", scopes: ["panes"], defaults: ["+", "="] },
   { action: "files", labelKey: "steering.files.label", scopes: ["panes"], defaults: ["v"] },
   { action: "closeTab", labelKey: "steering.closeTab.label", scopes: ["panes"], defaults: ["w"] },
+  { action: "tabCard", labelKey: "steering.tabCard.label", scopes: ["panes"], defaults: ["a"] },
   { action: "agentClear", labelKey: "steering.agentClear.label", scopes: ["panes"], defaults: ["k"] },
   { action: "agentPlan", labelKey: "steering.agentPlan.label", scopes: ["panes"], defaults: ["l"] },
   { action: "agentGoal", labelKey: "steering.agentGoal.label", scopes: ["panes"], defaults: ["g"] },
@@ -136,6 +141,9 @@ export const STEERING_BINDINGS: SteeringBindingDef[] = [
   { action: "back", labelKey: "steering.back.label", scopes: ["region"], defaults: ["Escape"] },
   { action: "press", labelKey: "steering.press.label", scopes: ["region"], defaults: ["Enter"] },
   { action: "search", labelKey: "steering.search.label", scopes: ["region"], defaults: ["/"] },
+  // The right-click menu of what steering points at: the active project, the
+  // active tab, the control under the region cursor.
+  { action: "menu", labelKey: "steering.menu.label", scopes: ["mode"], defaults: [".", "ContextMenu"] },
 ];
 
 /** The stored overrides (action id → its whole key list). Mirrors
@@ -239,6 +247,7 @@ export function steeringKeyLabel(key: string): string {
     ArrowDown: "↓",
     " ": "Space",
     Escape: "Esc",
+    ContextMenu: "Menu",
   };
   if (map[key]) return map[key];
   return key.length === 1 ? key.toUpperCase() : key;

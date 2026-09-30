@@ -7,19 +7,23 @@
  *    (`submitScheduledAgentCommand`), and offers "Undo clear" as a typed one
  *    does (`noteTypedClear`). Every agent CLI Eldrun launches reads `/clear` as
  *    a new conversation (see the phone's `NEW_CONVERSATION_COMMAND`).
- *  - Plan / Goal only lead the tab's prompt with the command — the user writes
- *    the rest and submits it themselves, as with the chips. They are typed
- *    through the xterm (`Terminal.input`), so the pane's own input bookkeeping
- *    sees them like any keystroke; Ctrl-A first puts them at the start of a
- *    draft already there. Offered only to the CLIs that document them
+ *  - Plan / Goal open steering's prompt box led with the command — the user
+ *    writes the rest and sends it themselves, as with the chips, and steering
+ *    comes back after. Offered only to the CLIs that document them
  *    (`agentDraftPrefixes`).
+ *
+ * None of them leaves the mode: the keyboard stays with steering, or comes
+ * back to it once the box is done.
  *
  * Eldrun chooses nothing here: each key types what the user could have typed
  * into the agent's own CLI (AGENTS.md, agent authority).
  */
 import { agentDraftPrefixes, agentFamily } from "../../../shared/agentComposer";
-import { submitScheduledAgentCommand, submitScheduledAgentMessage } from "../agents/scheduledAgentInput";
-import { terminalFor } from "../terminal/terminalRegistry";
+import {
+  scheduledAgentInput,
+  submitScheduledAgentCommand,
+  submitScheduledAgentMessage,
+} from "../agents/scheduledAgentInput";
 import { useActivityStore } from "../../stores/activity";
 import { agentTabLabel } from "../../stores/agents/agentModels";
 import { noteTypedClear } from "../../stores/agents/agentClearUndo";
@@ -28,8 +32,6 @@ import type { SteeringBaseLevel } from "../../stores/keyboardSteering";
 
 /** What the Clear key types. */
 const NEW_CONVERSATION_COMMAND = "/clear";
-/** Ctrl-A: the start of the agent's input line. */
-const LINE_START = "\u0001";
 
 export type SteeringAgentCommand = "/plan" | "/goal";
 
@@ -78,48 +80,67 @@ export async function clearAgentTab(scope: string, tab: TabEntry): Promise<boole
   return true;
 }
 
-/**
- * Lead the tab's prompt with `/plan ` or `/goal ` and give its terminal the
- * keyboard. False when the tab's CLI does not take the command or its terminal
- * is not in this window.
- */
-export function leadAgentPrompt(scope: string, tab: TabEntry, command: SteeringAgentCommand): boolean {
+/** Whether the tab's CLI takes `command`. */
+export function takesAgentCommand(tab: TabEntry | null | undefined, command: SteeringAgentCommand): boolean {
   const offer = steeringAgentOffer(tab);
-  if (!(command === "/plan" ? offer.plan : offer.goal)) return false;
-  const term = terminalFor(`${scope}:${tab.key}`);
-  if (!term) return false;
-  term.focus();
-  term.input(`${LINE_START}${command} `, true);
-  return true;
+  return command === "/plan" ? offer.plan : offer.goal;
 }
 
 /** What `requestSteeringPrompt` sends: the tab the text goes to, the steering
- *  level to come back to, and whether a prompt box answered. */
+ *  level to come back to, the command the text starts with (Plan / Goal), and
+ *  whether a prompt box answered. */
 export interface SteeringPromptDetail {
   scope: string;
   tab: TabEntry;
   level: SteeringBaseLevel;
+  lead?: SteeringAgentCommand;
   handled: boolean;
+}
+
+/** The prompt box's opening text: a kept draft led with `lead`, a Plan / Goal
+ *  lead it already had swapped for the new one (never `/goal /plan …`). */
+export function ledDraft(draft: string, lead: SteeringAgentCommand | undefined): string {
+  if (!lead) return draft;
+  return `${lead} ${draft.replace(/^\/(?:plan|goal)(?:\s+|$)/u, "")}`;
 }
 
 /** Window event the `SteeringPromptOverlay` answers by opening its text box. */
 export const STEERING_PROMPT_EVENT = "eldrun:steering-prompt";
 
-/** Ask the prompt box to open for `tab`; false when the tab is not an agent or
- *  no box is mounted. */
-export function requestSteeringPrompt(scope: string, tab: TabEntry, level: SteeringBaseLevel): boolean {
-  if (!steeringAgentOffer(tab).prompt) return false;
-  const detail: SteeringPromptDetail = { scope, tab, level, handled: false };
+/** Ask the prompt box to open for `tab`, its text led with `lead`; false when
+ *  the tab is not an agent, its CLI does not take `lead`, or no box is
+ *  mounted. */
+export function requestSteeringPrompt(
+  scope: string,
+  tab: TabEntry,
+  level: SteeringBaseLevel,
+  lead?: SteeringAgentCommand,
+): boolean {
+  if (!steeringAgentOffer(tab).prompt || (lead && !takesAgentCommand(tab, lead))) return false;
+  const detail: SteeringPromptDetail = { scope, tab, level, lead, handled: false };
   window.dispatchEvent(new CustomEvent<SteeringPromptDetail>(STEERING_PROMPT_EVENT, { detail }));
   return detail.handled;
 }
 
+/** How long a prompt waits for an agent pane that is still coming up. */
+const START_WAIT_MS = 15_000;
+const START_POLL_MS = 200;
+
 /**
- * Submit `text` into the agent tab as one prompt. Throws when it did not go in
- * (no schedule binding, the pane not ready for input, nothing left after
- * sanitizing) — the box keeps the text and shows why.
+ * Submit `text` into the agent tab as one prompt — also while the agent works,
+ * as a prompt typed into its CLI then would be (the CLI queues it), and once
+ * the pane is up when it is still starting. Throws when it did not go in (no
+ * schedule binding, no pane in this window, a pane that never came up, nothing
+ * left after sanitizing) — the box keeps the text and shows why.
  */
 export async function sendSteeringPrompt(tab: TabEntry, text: string): Promise<void> {
   if (!steeringAgentOffer(tab).prompt || !tab.scheduleTargetId) throw new Error("not an agent tab");
-  await submitScheduledAgentMessage(tab.scheduleTargetId, text);
+  const target = tab.scheduleTargetId;
+  const deadline = Date.now() + START_WAIT_MS;
+  for (;;) {
+    const input = scheduledAgentInput(target);
+    if (!input || (input.started ?? input.ready)() || Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, START_POLL_MS));
+  }
+  await submitScheduledAgentMessage(target, text, { whileBusy: true });
 }

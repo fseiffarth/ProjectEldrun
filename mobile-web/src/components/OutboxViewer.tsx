@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { useT } from "../../../src/lib/i18n";
-import { openOutside, viewerFileUrl, type OutboxFile, type ViewerScope } from "../api";
+import { openOutside, sentName, viewerFileUrl, type OutboxFile, type ViewerScope } from "../api";
 import { shareAs, useOutboxShare } from "../outboxShare";
 import { sizeLabel } from "../terminal/fileLabels";
 import { isUntested } from "../../../src/lib/untested";
@@ -243,18 +243,18 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
   };
   const zoomed = view.scale > 1;
   const stepping = index >= 0 && steps.length > 1;
-  return <div className={`outbox-viewer${isText ? " outbox-text-sheet" : ""}`} role="dialog" aria-modal="true" aria-label={file.name}>
+  return <div className={`outbox-viewer${isText ? " outbox-text-sheet" : ""}`} role="dialog" aria-modal="true" aria-label={sentName(file)}>
     <div className="outbox-viewer-head">
       <button className="sheet-close" onClick={onClose} aria-label={t("mobile.outbox.close")}>✕</button>
       <div className="outbox-viewer-title">
-        <h2>{file.name}</h2>
+        <h2>{sentName(file)}</h2>
         <small>
           {stepping && `${t("mobile.outbox.position", { index: index + 1, count: steps.length })} · `}{sizeLabel(file.size)}
           {((stepping && isUntested("mobile.outbox.step")) || (isImage && isUntested("mobile.outbox.zoom")))
             && <span className="untested">{t("mobile.outbox.untested")}</span>}
         </small>
       </div>
-      <a href={viewerFileUrl(scope, file, true)} download={file.name}>{t("mobile.outbox.save")}</a>
+      <a href={viewerFileUrl(scope, file, true)} download={sentName(file)}>{t("mobile.outbox.save")}</a>
       {shareable && <button disabled={sharing.busy === file.name} onClick={() => void sharing.share(file)}>
         {t(sharing.ready === file.name ? "mobile.outbox.shareReady" : "mobile.outbox.share")}
       </button>}
@@ -266,11 +266,11 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
       {file.size > INLINE_LIMIT && <button className="outbox-open" onClick={() => void openOutside(url)}>{t("mobile.outbox.whole")}</button>}
     </div> : isImage ? <div ref={stage} className={`outbox-viewer-stage${zoomed ? " zoomed" : ""}`}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
-      <img ref={image} src={url} alt={file.name} draggable={false}
+      <img ref={image} src={url} alt={sentName(file)} draggable={false}
         style={zoomed ? { transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` } : undefined} />
       {previous && <button className="outbox-step outbox-step-previous" onClick={() => onStep?.(previous)} aria-label={t("mobile.outbox.previous")}><span aria-hidden="true">‹</span></button>}
       {next && <button className="outbox-step outbox-step-next" onClick={() => onStep?.(next)} aria-label={t("mobile.outbox.next")}><span aria-hidden="true">›</span></button>}
     </div>
-      : file.kind === "application/pdf" ? <button className="outbox-open" onClick={() => void openOutside(url)}>{t("mobile.outbox.open", { name: file.name })}</button> : null}
+      : file.kind === "application/pdf" ? <button className="outbox-open" onClick={() => void openOutside(url)}>{t("mobile.outbox.open", { name: sentName(file) })}</button> : null}
   </div>;
 }

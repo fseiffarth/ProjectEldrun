@@ -1,23 +1,31 @@
 /**
  * Steering's agent keys (`lib/shortcuts/steeringAgent`): which agent tabs take
- * Clear / Plan / Goal, and that Plan / Goal lead the prompt through the
- * terminal's own input path without submitting it.
+ * Clear / Plan / Goal, and that Plan / Goal open the prompt box led with their
+ * command.
  */
-import type { Terminal } from "@xterm/xterm";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { leadAgentPrompt, steeringAgentOffer } from "../../lib/shortcuts/steeringAgent";
-import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  ledDraft,
+  requestSteeringPrompt,
+  STEERING_PROMPT_EVENT,
+  steeringAgentOffer,
+  type SteeringPromptDetail,
+} from "../../lib/shortcuts/steeringAgent";
 import type { TabEntry } from "../../stores/tabs";
 
 const tab = (cmd: string, kind: TabEntry["kind"] = "agent"): TabEntry =>
   ({ key: `t-${cmd}`, label: cmd, cmd, kind }) as TabEntry;
 
 describe("steering agent keys", () => {
-  const fake = { focus: vi.fn(), input: vi.fn() };
+  const seen: SteeringPromptDetail[] = [];
+  const box = (e: Event) => {
+    const detail = (e as CustomEvent<SteeringPromptDetail>).detail;
+    detail.handled = true;
+    seen.push(detail);
+  };
   afterEach(() => {
-    unregisterTerminal("p:t-claude", fake as unknown as Terminal);
-    unregisterTerminal("p:t-aider", fake as unknown as Terminal);
-    vi.clearAllMocks();
+    window.removeEventListener(STEERING_PROMPT_EVENT, box);
+    seen.length = 0;
   });
 
   it("offers each key only to the CLIs that take it", () => {
@@ -28,17 +36,27 @@ describe("steering agent keys", () => {
     expect(steeringAgentOffer(null)).toEqual({ clear: false, plan: false, goal: false, prompt: false });
   });
 
-  it("types the command at the start of the prompt, unsubmitted", () => {
-    registerTerminal("p:t-claude", fake as unknown as Terminal);
-    expect(leadAgentPrompt("p", tab("claude"), "/goal")).toBe(true);
-    expect(fake.focus).toHaveBeenCalled();
-    expect(fake.input).toHaveBeenCalledWith("\u0001/goal ", true);
+  it("opens the prompt box led with the command", () => {
+    window.addEventListener(STEERING_PROMPT_EVENT, box);
+    expect(requestSteeringPrompt("p", tab("claude"), "panes", "/goal")).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ scope: "p", level: "panes", lead: "/goal" });
   });
 
-  it("leaves a CLI without the command, or a tab without a terminal, alone", () => {
-    registerTerminal("p:t-aider", fake as unknown as Terminal);
-    expect(leadAgentPrompt("p", tab("aider"), "/plan")).toBe(false);
-    expect(leadAgentPrompt("p", tab("claude"), "/plan")).toBe(false);
-    expect(fake.input).not.toHaveBeenCalled();
+  it("leaves a CLI without the command, or no box mounted, alone", () => {
+    expect(requestSteeringPrompt("p", tab("claude"), "tabs", "/plan")).toBe(false);
+    window.addEventListener(STEERING_PROMPT_EVENT, box);
+    expect(requestSteeringPrompt("p", tab("aider"), "tabs", "/plan")).toBe(false);
+    expect(requestSteeringPrompt("p", tab("gemini"), "tabs", "/goal")).toBe(false);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("leads a kept draft, swapping a lead it already had", () => {
+    expect(ledDraft("", "/plan")).toBe("/plan ");
+    expect(ledDraft("fix the tests", "/plan")).toBe("/plan fix the tests");
+    expect(ledDraft("/plan fix the tests", "/goal")).toBe("/goal fix the tests");
+    expect(ledDraft("/plan", "/goal")).toBe("/goal ");
+    expect(ledDraft("/planner stays", "/goal")).toBe("/goal /planner stays");
+    expect(ledDraft("as it was", undefined)).toBe("as it was");
   });
 });

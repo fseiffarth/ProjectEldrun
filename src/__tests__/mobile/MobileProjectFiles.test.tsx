@@ -98,8 +98,6 @@ describe("Mobile project — read-only file browser", () => {
     render(<Project id="p1" back={() => {}} terminal={() => {}} />);
 
     const heading = await screen.findByRole("heading", { name: "Alpha" });
-    // The header has no button for it: the drawer is the swipe's alone.
-    expect(screen.queryByRole("button", { name: "Project files" })).toBeNull();
     await waitFor(() => {
       swipe(heading, 100, 300);
       expect(screen.getByRole("dialog", { name: "Files" })).toBeTruthy();
@@ -124,13 +122,21 @@ describe("Mobile project — read-only file browser", () => {
     fireEvent.click(within(trail).getByRole("button", { name: "Alpha" }));
     await within(sheet).findByRole("button", { name: "Open README.md" });
 
-    // A PDF goes to the browser's viewer by its token, with a ticket: that tab
-    // is outside the app, where the strict session cookie does not follow.
+    // A PDF opens in the viewer first, for its Save and Share (the browser's
+    // own PDF viewer has neither), then goes on to the browser by its token,
+    // with a ticket: that tab is outside the app, where the strict session
+    // cookie does not follow.
     fireEvent.click(within(sheet).getByRole("button", { name: "Open paper.pdf" }));
+    const pdf = screen.getByRole("dialog", { name: "paper.pdf" });
+    expect(within(pdf).getByRole("link", { name: "Save" }).getAttribute("href"))
+      .toBe("/api/v1/projects/p1/files/raw?f=tok-paper&download=1");
+    expect(open).not.toHaveBeenCalled();
+    fireEvent.click(within(pdf).getByRole("button", { name: "Open paper.pdf" }));
     await waitFor(() => expect(open).toHaveBeenCalledWith("/api/v1/projects/p1/files/raw?f=tok-paper&ticket=t1", "_blank", "noopener"));
+    fireEvent.click(within(pdf).getByRole("button", { name: "Close" }));
 
     // A picture opens full screen, loaded by its token, with Save beside it.
-    fireEvent.click(within(sheet).getByRole("button", { name: "Open plot.png" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open plot.png" }));
     const viewer = screen.getByRole("dialog", { name: "plot.png" });
     expect(viewer.querySelector("img")?.getAttribute("src")).toBe("/api/v1/projects/p1/files/raw?f=tok-plot");
     expect(within(viewer).getByRole("link", { name: "Save" }).getAttribute("href"))
@@ -141,6 +147,41 @@ describe("Mobile project — read-only file browser", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open README.md" }));
     const text = screen.getByRole("dialog", { name: "README.md" });
     await waitFor(() => expect(text.querySelector("pre")?.textContent).toBe("# Hello\n"));
+  });
+
+  it("shares a file straight from its row, without opening it", async () => {
+    const files = hostWith(true);
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) =>
+      String(input) === "/api/v1/projects/p1/files/raw?f=tok-plot" ? new Response(new Uint8Array([1, 2, 3, 4])) : files(input, init));
+    vi.stubGlobal("fetch", fetch);
+    const share = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "canShare", { configurable: true, value: () => true });
+    Object.defineProperty(navigator, "share", { configurable: true, value: share });
+    try {
+      render(<Project id="p1" back={() => {}} terminal={() => {}} />);
+      const heading = await screen.findByRole("heading", { name: "Alpha" });
+      await waitFor(() => {
+        swipe(heading, 100, 300);
+        expect(screen.getByRole("dialog", { name: "Files" })).toBeTruthy();
+      });
+      const sheet = screen.getByRole("dialog", { name: "Files" });
+      await within(sheet).findByRole("button", { name: "Share plot.png" });
+      // Every file gets one; a folder has nothing to share.
+      expect(within(sheet).getAllByRole("button", { name: /^Share / }).map((button) => button.getAttribute("aria-label")))
+        .toEqual(["Share README.md", "Share plot.png", "Share paper.pdf"]);
+
+      fireEvent.click(within(sheet).getByRole("button", { name: "Share plot.png" }));
+      await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(within(sheet).getByRole("button", { name: "Share plot.png" }).hasAttribute("disabled")).toBe(false));
+      const sent = (share.mock.calls[0] as unknown as [{ files: File[] }])[0].files[0];
+      expect([sent.name, sent.type, sent.size]).toEqual(["plot.png", "image/png", 4]);
+      // The bytes came by the file's token, and no viewer opened over the list.
+      expect(fetch).toHaveBeenCalledWith("/api/v1/projects/p1/files/raw?f=tok-plot");
+      expect(screen.queryByRole("dialog", { name: "plot.png" })).toBeNull();
+    } finally {
+      Reflect.deleteProperty(navigator, "canShare");
+      Reflect.deleteProperty(navigator, "share");
+    }
   });
 
   it("says the mobile host is outdated instead of opening a PDF it cannot ticket", async () => {
@@ -155,6 +196,7 @@ describe("Mobile project — read-only file browser", () => {
     });
     const sheet = screen.getByRole("dialog", { name: "Files" });
     fireEvent.click(await within(sheet).findByRole("button", { name: "Open paper.pdf" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "paper.pdf" })).getByRole("button", { name: "Open paper.pdf" }));
     await waitFor(() => expect(alert).toHaveBeenCalledWith(expect.stringContaining("Reconnect")));
     expect(open).not.toHaveBeenCalled();
   });
@@ -167,6 +209,15 @@ describe("Mobile project — read-only file browser", () => {
       swipe(heading, 4, 200);
       expect(screen.getByRole("dialog", { name: "Files" })).toBeTruthy();
     });
+  });
+
+  it("opens from the dropdown under the project's name too", async () => {
+    vi.stubGlobal("fetch", hostWith(true));
+    render(<Project id="p1" back={() => {}} terminal={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
+    fireEvent.click(within(screen.getByRole("menu", { name: "Project menu" })).getByRole("menuitem", { name: "Project files" }));
+    expect(screen.getByRole("dialog", { name: "Files" })).toBeTruthy();
+    expect(screen.queryByRole("menu", { name: "Project menu" })).toBeNull();
   });
 
   it("puts the drawer away on a right-to-left swipe over it", async () => {

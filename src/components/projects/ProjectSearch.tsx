@@ -105,6 +105,9 @@ export function ProjectSearch({
         setQuery("");
         setSelected(0);
         setJumpBack(null);
+        // Clicked away from a jump: steering no longer waits for it.
+        const steering = useKeyboardSteeringStore.getState();
+        if (steering.handedTo === "jump") steering.dropHandoff();
       }
     };
     window.addEventListener("pointerdown", onPointerDown);

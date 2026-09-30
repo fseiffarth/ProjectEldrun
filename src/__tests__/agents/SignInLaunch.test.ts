@@ -48,6 +48,7 @@ describe("sign-in launches", () => {
     expect(spec.sessionId).toBeUndefined();
     expect(spec.env).not.toHaveProperty("ELDRUN_TAB_UID");
     expect(isRestorableTab(spec)).toBe(false);
+    expect(spec.signIn).toBe(true);
     const gemini = buildSignInTabSpec(item("gemini"), signInLaunch("gemini"), "/p", t);
     expect(gemini).toMatchObject({ args: [], env: { NO_BROWSER: "true" } });
     expect(gemini.label).not.toContain("signInTabLabel");

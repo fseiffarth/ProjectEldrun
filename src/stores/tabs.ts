@@ -8,6 +8,7 @@ import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
 import { forgetPty } from "../lib/agents/promptCount";
+import { forgetPromptTrail } from "./agents/promptTrail";
 import { BOX_SCOPE_PREFIX, splitPtyId } from "../lib/terminal/ptyId";
 import { METRIC, agentMetricLeaf, sub } from "../lib/usageMetrics";
 import { useLinkRoutingStore } from "./linkRouting";
@@ -743,6 +744,14 @@ export interface TabEntry {
   // inside the grace window. Named for its first caller; read only by
   // `hydrateThenCreateInScope`, which is what both go through.
   mobileRequestHash?: string;
+  // A sign-in tab (`lib/agents/signInLaunch`): the CLI's login command, with no
+  // conversation to resume. Saved while it runs so the Mobile catalog lists it
+  // and the phone that asked for it can attach (`isSavedWhileLive`); never
+  // restored.
+  signIn?: boolean;
+  // A vendor cloud session (`lib/agents/cloudSessions`): no session id either,
+  // and a restore would start a second one. Saved while it runs, like `signIn`.
+  cloud?: boolean;
   // A local-model tab driven through another agent CLI (`ollama launch claude
   // --model m`, `codex --oss -m m`, …): the driver, the model and the resolved
   // argv, so the tab restores by relaunching that line (`isRelaunchableLocalTab`).
@@ -979,6 +988,10 @@ export interface SavedTabEntry {
   // Persisted to-do card link (see TabEntry.todoId).
   todoId?: string;
   mobileRequestHash?: string;
+  // Sign-in tab marker (see TabEntry.signIn); load drops such a tab.
+  signIn?: boolean;
+  // Cloud-session marker (see TabEntry.cloud); load drops such a tab.
+  cloud?: boolean;
   // Persisted Host session marker (see TabEntry.hostSession).
   hostSession?: boolean;
   // Persisted local-model launch line (see TabEntry.localLaunch).
@@ -1040,6 +1053,8 @@ export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
     todoId: t.todoId,
     hostSession: t.hostSession || undefined,
     localLaunch: t.localLaunch,
+    signIn: t.signIn || undefined,
+    cloud: t.cloud || undefined,
   };
 }
 
@@ -2951,6 +2966,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // The PTY is gone; drop its half-typed-prompt state so a recycled id can
     // never inherit it.
     forgetPty(`${get().scope}:${key}`);
+    forgetPromptTrail(`${get().scope}:${key}`);
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const nextTabs = tabs.filter((t) => t.key !== key);
@@ -2996,6 +3012,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     useLinkRoutingStore.getState().purgeForTab(key);
     bumpUsage(scope, METRIC.TAB_CLOSED);
     forgetPty(`${scope}:${key}`);
+    forgetPromptTrail(`${scope}:${key}`);
     const emptiesPopout =
       !!detached && orderedTabKeys(detached.subtree).length === 1;
     set((s) => {
@@ -3086,6 +3103,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     for (const t of tabs) {
       purge(t.key);
       forgetPty(`${target}:${t.key}`);
+      forgetPromptTrail(`${target}:${t.key}`);
     }
     set((s) => {
       // Empty the scope entirely: no tabs, no layout, no detached/hidden records
@@ -3118,6 +3136,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     for (const tab of tabs) {
       purge(tab.key);
       forgetPty(`${scope}:${tab.key}`);
+      forgetPromptTrail(`${scope}:${tab.key}`);
     }
 
     set((s) => {
@@ -4733,7 +4752,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const activeKey = focusedGroup?.activeKey ?? groups[0]?.activeKey ?? null;
     // #55 + restorable filter: keep only scope-owned, restorable tabs.
     const tabs = (s.tabsByScope[scope] ?? []).filter(
-      (t) => (t.scope == null || t.scope === scope) && isRestorableTab(t),
+      (t) => (t.scope == null || t.scope === scope) && (isRestorableTab(t) || isSavedWhileLive(t)),
     );
     const keepKeys = new Set(tabs.map((t) => t.key));
     const activeTabIndex = Math.max(
@@ -4776,6 +4795,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       for (const key of keys) {
         useLinkRoutingStore.getState().purgeForTab(key);
         forgetPty(`${scope}:${key}`);
+        forgetPromptTrail(`${scope}:${key}`);
       }
     }
     set((s) => {
@@ -4996,7 +5016,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // owned by this scope so a foreign tab can never be written into this
     // project's file — `localFile` belongs to `scope`'s project.
     const restorable = ordered.filter(
-      (t) => (t.scope == null || t.scope === scope) && isRestorableTab(t),
+      (t) => (t.scope == null || t.scope === scope) && (isRestorableTab(t) || isSavedWhileLive(t)),
     );
     const keep = new Set(restorable.map((t) => t.key));
     // Persist the session UUIDs of every open tab that has one (currently
@@ -5729,6 +5749,20 @@ export function isResumableAgentTab(
     // supplied a "continue last session" flag (carried on the tab as resumeArgs).
     (tab.cmd in RESUMABLE_AGENTS || !!tab.resumeArgs?.length)
   );
+}
+
+/**
+ * A tab the session file carries, in its own tmux session, only while it
+ * runs: a sign-in tab or a cloud session. The Mobile sidecar lists a scope's
+ * tabs from that file and attaches through tmux, so a phone-opened one
+ * without either was never attachable — the create timed out as
+ * `launch_pending`. Neither is restorable, and every load path keeps
+ * restorable tabs only, so it drops out on the next launch.
+ */
+export function isSavedWhileLive(
+  tab: { kind: TabKind; signIn?: boolean; cloud?: boolean; tmuxSession?: string },
+): boolean {
+  return tab.kind === "agent" && (!!tab.signIn || !!tab.cloud) && !!tab.tmuxSession;
 }
 
 /**

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api } from "../../../mobile-web/src/api";
+import { translate } from "../../lib/i18n";
 import {
   classifyUnavailable,
   describeFailure,
@@ -8,6 +9,7 @@ import {
   localFailureText,
   suspectsTunnel,
   tailscaleAppLink,
+  TUNNEL_STEPS,
   unavailableDetail,
   type UnavailableReason,
 } from "../../../mobile-web/src/connection";
@@ -195,10 +197,13 @@ describe("a stuck tunnel", () => {
     }
   });
 
-  it("tells the reader to force-stop a connected Tailscale, not toggle it", () => {
-    for (const reason of ["unreachable", "timeout"] as UnavailableReason[]) {
-      expect(describeUnavailable(reason).hint, reason).toMatch(/force-stop it/);
-    }
+  it("lists the way out of a stuck tunnel in order: force stop before airplane mode, desktop last", () => {
+    const steps = TUNNEL_STEPS.map((key) => translate("en", key));
+    expect(steps[0]).toContain("Tailscale");
+    expect(steps[1]).toContain("Force stop");
+    expect(steps[1]).toContain("off and on does not fix");
+    expect(steps[2]).toContain("airplane mode");
+    expect(steps[steps.length - 1]).toContain("asleep");
   });
 
   it("links to the Tailscale app on Android only", () => {

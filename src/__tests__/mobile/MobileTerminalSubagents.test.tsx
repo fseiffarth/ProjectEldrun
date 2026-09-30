@@ -168,6 +168,27 @@ describe("Eldrun Mobile Reader opens the subagents an agent spawned", () => {
     expect(screen.queryByRole("navigation", { name: "Subagent" })).toBeNull();
   });
 
+  it("hides the main conversation's pinned prompt while reading a subagent", async () => {
+    vi.stubGlobal("fetch", subagentFetch());
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("readable-output")) return new DOMRect(0, 100, 400, 600);
+      return new DOMRect(0, this.dataset.prompt === "look around" ? 20 : 200, 300, 40);
+    });
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    const label = "Your prompt for this answer — show it";
+    expect(screen.getByRole("button", { name: label }).textContent).toContain("look around");
+
+    fireEvent.click(screen.getByRole("button", { name: "Subagent: Explore · Map the backend" }));
+    await settle();
+    screen.getByTestId("subagent-transcript");
+    expect(screen.queryByRole("button", { name: label })).toBeNull();
+
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Subagent" })).getByRole("button", { name: "Back to the main conversation" }));
+    await settle();
+    expect(screen.getByRole("button", { name: label }).textContent).toContain("look around");
+  });
+
   it("keeps the session's subagents reachable from the chat header", async () => {
     vi.stubGlobal("fetch", subagentFetch());
     render(<Terminal tab={TAB} back={() => {}} />);

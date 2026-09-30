@@ -6,7 +6,7 @@ import { translate, useI18nStore } from "../../src/lib/i18n";
 /** A project's pending git state, the desktop pill's dot: changes not yet added ▸ staged, not committed ▸ committed, not pushed ▸ `.git` missing. Absent when clean. */
 export type GitDot = "dirty" | "staged" | "unpushed" | "broken";
 export interface ProjectRow { id: string; label: string; status: string; kind?: "project" | "box" | "root"; live_sessions: number; last_activity?: number; /** Root only: staged root-agent proposals awaiting a decision — which is made at the desk, never here. */ pending_reviews?: number; git?: GitDot }
-export type AgentStatus = "working" | "question" | "done";
+export type AgentStatus = "working" | "question" | "interrupted" | "done";
 /** The desktop's own one-line summary of a tab's scheduled prompts: what the
  * Agents view prints under an agent tab, so the project overview says the same
  * thing without opening the sheet. `next` is desktop-local wall clock, and so
@@ -27,7 +27,7 @@ export interface TabSchedules { total: number; enabled: number; next?: string; u
  * formats in its own zone; a record that carried none arrives without one, and
  * so does the one line a transcript-less agent leaves on its own screen. */
 export interface TabPrompt { text: string; at?: string }
-export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; prompts?: TabPrompt[]; available: boolean; viewer_busy: boolean; last_activity?: number; /** The tab's colour as a palette id (see `tabColors.ts`); absent when it has none. */ color?: string }
+export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; /** The session is in plan mode / running a `/goal`, as the desktop's PLAN and GOAL tab pills read its status line; absent while off or unknown. */ agent_plan?: boolean; agent_goal?: boolean; working_at?: number; done_at?: number; schedules?: TabSchedules; prompts?: TabPrompt[]; available: boolean; viewer_busy: boolean; last_activity?: number; /** The tab's colour as a palette id (see `tabColors.ts`); absent when it has none. */ color?: string; /** A sign-in tab (`src/lib/agents/signInLaunch.ts`): it opens on its sign-in sheet. */ sign_in?: boolean }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
 /** A place the ＋ can start an agent: a linked worktree by opaque id. The
  * main one has an empty label — it is the project folder. */
@@ -539,7 +539,7 @@ export interface AgentUsagePanel { label: string; supported: boolean; raw?: stri
  * agent tab in it — which is what the sheet's wording says. */
 export interface AgentTally { prompts: number; worked_s: number; decisions: number; done: number }
 export interface AgentStatusReport {
-  state: "working" | "question" | "done" | "idle";
+  state: AgentStatus | "idle";
   label: string;
   agent?: string;
   project: string;
@@ -590,6 +590,9 @@ export interface TranscriptEntry {
   /** Phone-only: a pending prompt the desktop still holds for the agent's
    * next idle point, which the reader can still edit. */
   held?: boolean;
+  /** Phone-only: a pending prompt the desktop holds and has not typed yet —
+   * it waits at the chat's end, below the agent at work. */
+  queued?: boolean;
   /** Phone-only: when a pending prompt left this phone (its bubble's time;
    * `at` on it is only its place). */
   sentAt?: string;
@@ -721,12 +724,22 @@ export async function attachDesktopImage(tabId: string, imageId: string): Promis
  * bytes say, not the extension; `modified` is unix seconds. */
 export interface OutboxFile {
   name: string; kind: string; size: number; modified: number;
+  /** `name` without the `YYYYMMDD-HHMMSS-` stamps each send put in front —
+   * what it was called when it was sent. Project files have none. */
+  original?: string;
   /** Sent by `eldrun-send` from the tab this listing was read through — the
    * one chat that shows it. Absent otherwise; the gallery lists every file. */
   from_tab?: boolean;
   /** What the file is fetched by when that is not its name: a project file's
    * sealed token (`ProjectFileEntry.token`). Outbox files have none. */
   ref?: string;
+}
+
+/** The name a file is shown, saved and shared as: an outbox leaf without the
+ * send stamps the desktop put in front (`outbox::sent_name`), else its name.
+ * `name` stays what the phone asks for it by. */
+export function sentName(file: OutboxFile): string {
+  return file.original || file.name;
 }
 
 /** Which door onto one project's outbox a read goes through: the session the

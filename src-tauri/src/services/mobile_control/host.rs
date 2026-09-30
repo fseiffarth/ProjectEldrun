@@ -680,8 +680,8 @@ struct ActivityRow {
 }
 
 /// Where a status sorts in the activity list. A session waiting on a decision is
-/// blocked on the reader and comes first; a finished one is the least urgent of
-/// the three. Anything else never reaches this list.
+/// blocked on the reader and comes first; a finished or interrupted one is the
+/// least urgent. Anything else never reaches this list.
 fn activity_rank(status: &str) -> u8 {
     match status {
         "question" => 0,
@@ -737,6 +737,8 @@ async fn activity(State(state): State<HostState>, headers: HeaderMap) -> impl In
             let mut tab = resolved.public.clone();
             tab.agent_status = Some(status.status.clone());
             tab.agent_model = status.model.clone();
+            tab.agent_plan = status.plan;
+            tab.agent_goal = status.goal;
             tab.working_at = status.working_at;
             tab.done_at = status.done_at;
             tab.viewer_busy = state.terminal_registry.is_busy(&resolved.tmux_name);
@@ -870,12 +872,16 @@ async fn project(
             if let Some(status) = statuses.get(&resolved.tmux_name) {
                 tab.agent_status = Some(status.status.clone());
                 tab.agent_model = status.model.clone();
+                tab.agent_plan = status.plan;
+                tab.agent_goal = status.goal;
                 tab.working_at = status.working_at;
                 tab.done_at = status.done_at;
             } else if let Some(timing) = timings.remove(&resolved.tmux_name) {
                 // A read turn has no status, but it still sorts by when it ran
                 // and still names its model.
                 tab.agent_model = timing.model;
+                tab.agent_plan = timing.plan;
+                tab.agent_goal = timing.goal;
                 tab.working_at = timing.working_at;
                 tab.done_at = timing.done_at;
             }
@@ -3992,7 +3998,8 @@ async fn outbox_bytes(root: PathBuf, name: String, download: bool) -> Response<B
     if !outbox::valid_name(&name) {
         return api_error(StatusCode::NOT_FOUND, "file_not_found").into_response();
     }
-    let filename = name.clone();
+    // Saved under the name it was sent as, not the stamped leaf.
+    let filename = outbox::sent_name(&name).to_string();
     let read = tokio::task::spawn_blocking(move || outbox::read(&root, &name))
         .await
         .unwrap_or_else(|error| Err(outbox::OutboxError::Io(error.to_string())));
@@ -6892,10 +6899,12 @@ mod tests {
         assert!(body.ends_with("IHDR-body"), "{body:?}");
 
         std::fs::write(dir.join("archive.zip"), b"PK\0\x01").unwrap();
+        std::fs::write(dir.join("20260930-101530-20260930-101010-deck.zip"), b"PK\0\x01").unwrap();
         for (name, kind, disposition) in [
             ("notes.png", "text/plain; charset=utf-8", "inline"),
             ("plot.png?download=1", "image/png", "attachment; filename=\"plot.png\""),
             ("archive.zip", "application/octet-stream", "attachment; filename=\"archive.zip\""),
+            ("20260930-101530-20260930-101010-deck.zip", "application/octet-stream", "attachment; filename=\"deck.zip\""),
         ] {
             let (status, headers, _) = host.send(get_as(&format!("{list}/{name}"), &cookie)).await;
             assert_eq!(status, StatusCode::OK);

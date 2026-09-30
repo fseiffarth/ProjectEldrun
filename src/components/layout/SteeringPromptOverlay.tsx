@@ -5,12 +5,16 @@ import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 import {
   STEERING_PROMPT_EVENT,
+  ledDraft,
   sendSteeringPrompt,
   type SteeringPromptDetail,
 } from "../../lib/shortcuts/steeringAgent";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 
 type Open = Omit<SteeringPromptDetail, "handled">;
+
+/** Unsent text per agent tab (`scope:key`), for the window's lifetime. */
+const drafts = new Map<string, string>();
 
 /**
  * Steering's prompt box (the Prompt key, I by default): a text box in the
@@ -19,6 +23,8 @@ type Open = Omit<SteeringPromptDetail, "handled">;
  * (`sendSteeringPrompt`), Shift+Enter breaks the line; Enter or Escape hands
  * the keyboard back to steering on the level the key was pressed on, as the
  * project jump does. A send that fails keeps the box and the text, with why.
+ * Text left unsent (Escape, Cancel) waits in the box for that tab's next open.
+ * Plan / Goal open it led with `/plan ` / `/goal ` (`ledDraft`).
  *
  * Mounted once in `AppShell`; opened by `STEERING_PROMPT_EVENT`. A modal
  * (`DialogShell`), so steering's key handler stands aside while it is up.
@@ -30,7 +36,7 @@ export function SteeringPromptOverlay() {
     const onRequest = (e: Event) => {
       const detail = (e as CustomEvent<SteeringPromptDetail>).detail;
       detail.handled = true;
-      setOpen({ scope: detail.scope, tab: detail.tab, level: detail.level });
+      setOpen({ scope: detail.scope, tab: detail.tab, level: detail.level, lead: detail.lead });
     };
     window.addEventListener(STEERING_PROMPT_EVENT, onRequest);
     return () => window.removeEventListener(STEERING_PROMPT_EVENT, onRequest);
@@ -43,13 +49,14 @@ export function SteeringPromptOverlay() {
     steering.enter();
     if (open.level !== "tabs") steering.setLevel(open.level);
   };
-  // Keyed by the tab, so a box reopened for another tab starts empty.
-  return <PromptBox key={`${open.scope}:${open.tab.key}`} target={open} onClose={close} />;
+  // Keyed by the tab, so a box reopened for another tab takes that tab's draft.
+  const id = `${open.scope}:${open.tab.key}`;
+  return <PromptBox key={id} draftKey={id} target={open} onClose={close} />;
 }
 
-function PromptBox({ target, onClose }: { target: Open; onClose: () => void }) {
+function PromptBox({ draftKey, target, onClose }: { draftKey: string; target: Open; onClose: () => void }) {
   const t = useT();
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(() => ledDraft(drafts.get(draftKey) ?? "", target.lead));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const errorId = useId();
@@ -61,6 +68,7 @@ function PromptBox({ target, onClose }: { target: Open; onClose: () => void }) {
     setError(null);
     try {
       await sendSteeringPrompt(target.tab, value);
+      drafts.delete(draftKey);
       onClose();
     } catch (e) {
       setError(String(e));
@@ -84,8 +92,15 @@ function PromptBox({ target, onClose }: { target: Open; onClose: () => void }) {
         aria-describedby={error ? errorId : undefined}
         value={value}
         disabled={busy}
+        // A kept draft: the caret goes after it, not before.
+        onFocus={(e) => {
+          const end = e.currentTarget.value.length;
+          e.currentTarget.setSelectionRange(end, end);
+        }}
         onChange={(e) => {
           setValue(e.target.value);
+          if (e.target.value) drafts.set(draftKey, e.target.value);
+          else drafts.delete(draftKey);
           setError(null);
         }}
         onKeyDown={(e) => {

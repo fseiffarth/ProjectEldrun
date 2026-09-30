@@ -3,12 +3,13 @@ import type { ReactNode } from "react";
 import { EldrunMark } from "./EldrunMark";
 import { hasPairedDevice, logoutAuth, resumeAuth } from "./auth";
 import { connectTrace, primeConnection, setUnauthorizedHandler, traceConnect, type TabRow } from "./api";
-import { classifyUnavailable, describeUnavailable, suspectsTunnel, tailscaleAppLink, unavailableDetail, type UnavailableReason } from "./connection";
+import { classifyUnavailable, describeUnavailable, suspectsTunnel, tailscaleAppLink, TUNNEL_STEPS, unavailableDetail, type UnavailableReason } from "./connection";
 import { forgetLastPlace, parsePlace, rememberLastPlace, resolvePlace, restoreLastPlace, type LastPlace, type MobileSection, type RestoredPlace } from "./lastPlace";
 import { refreshPush } from "./push";
 import { hasLocalUnlock } from "./localLock";
 import { noteUnlockedLeave, takeReloadGrace } from "./reloadGrace";
 import { isUntested } from "../../src/lib/untested";
+import { useT } from "../../src/lib/i18n";
 import { Pair } from "./screens/Pair";
 import { LocalUnlock } from "./screens/LocalUnlock";
 import { LockedHomeShell } from "./screens/LockedHomeShell";
@@ -129,6 +130,7 @@ function Splash({ message, progress, tone, children }: { message: string; progre
 const SLOW_CONNECT_MS = 4000;
 
 function SlowConnectHint() {
+  const t = useT();
   const [slow, setSlow] = useState(false);
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -143,23 +145,33 @@ function SlowConnectHint() {
   if (!slow) return null;
   return <>
     <p className="splash-hint">
-      Taking a while. Check Tailscale is connected on this phone — if it already is, force-stop the Tailscale app and open it again.
+      {t("mobile.tunnel.slow")}
       {isUntested("mobile.link.slowConnectHint") && <> <span className="untested">Untested</span></>}
     </p>
-    <OpenTailscale />
+    <TunnelSteps />
     <ConnectTrace />
   </>;
 }
 
-/** One tap back into the Tailscale app after force-stopping it
- * (`suspectsTunnel`). Android only; nothing is drawn where it cannot open. */
-function OpenTailscale() {
+/** The numbered way out of a stuck tunnel (`suspectsTunnel`), then how to make
+ * it rarer. Step one carries Open Tailscale on Android, where the link can
+ * open the app; a web page cannot force-stop it, so that step stays a path. */
+function TunnelSteps() {
+  const t = useT();
   const link = tailscaleAppLink();
-  if (!link) return null;
-  return <p className="splash-hint">
-    <a className="splash-link" href={link}>Open Tailscale</a>
-    {isUntested("mobile.link.openTailscale") && <> <span className="untested">Untested</span></>}
-  </p>;
+  return <div className="splash-steps">
+    <p className="splash-steps-title">
+      {t("mobile.tunnel.try")}
+      {isUntested("mobile.link.tunnelSteps") && <> <span className="untested">Untested</span></>}
+    </p>
+    <ol>
+      {TUNNEL_STEPS.map((key, index) => <li key={key}>
+        {t(key)}
+        {index === 0 && link && <> <a className="splash-link" href={link}>{t("mobile.tunnel.openApp")}</a></>}
+      </li>)}
+    </ol>
+    <p className="splash-steps-prevent">{t("mobile.tunnel.prevent")}</p>
+  </div>;
 }
 
 /** The way in so far (`traceConnect`), for a slow or failed sign-in. */
@@ -452,7 +464,7 @@ export function App() {
     return (
       <Splash message={title} tone="error">
         <p className="splash-hint">{hint}</p>
-        {suspectsTunnel(unavailable.reason) && <OpenTailscale />}
+        {suspectsTunnel(unavailable.reason) && <TunnelSteps />}
         {unavailable.reason === "host_down" && isUntested("mobile.link.offlineShell") && <p className="splash-hint muted"><span className="untested">Untested</span></p>}
         <p className="splash-hint muted">No project or terminal data is loaded from cache.</p>
         {unavailable.detail && <p className="splash-detail">{unavailable.detail}</p>}

@@ -84,6 +84,15 @@ struct SavedTab {
     /// filed under. Read here so the sidecar can list them with no window.
     #[serde(default)]
     schedule_target_id: Option<String>,
+    /// A sign-in tab (`src/lib/agents/signInLaunch.ts`): the CLI's login
+    /// command, with no session to resume. The desktop saves it only while it
+    /// runs (`isSavedWhileLive`), so it is listed like a resumable agent tab.
+    #[serde(default)]
+    sign_in: bool,
+    /// A vendor cloud session (`src/lib/agents/cloudSessions.ts`), saved while
+    /// it runs for the same reason.
+    #[serde(default)]
+    cloud: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +176,13 @@ pub struct PublicTab {
     /// answered with, shortened from the transcript's id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_model: Option<String>,
+    /// The agent tab's session is in plan mode / running a `/goal`, as its
+    /// own status line says — the desktop's PLAN and GOAL tab pills, which
+    /// the phone's cards wear too. Omitted while off or unknown.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub agent_plan: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub agent_goal: bool,
     /// Desktop wall clock (ms) of the tab's last working output and of its last
     /// finished turn — the two keys the phone's Agents list can sort by. The
     /// desktop's numbers travel untouched: they are compared with each other,
@@ -195,6 +211,12 @@ pub struct PublicTab {
     /// dropped here rather than published for the phone to guess at.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// The tab is a sign-in tab (`SavedTab::sign_in`), so the phone opens it
+    /// with its sign-in sheet however it got there — from the tab list, or
+    /// after the PWA reloaded on the way back from the sign-in page. Only the
+    /// flag crosses; never the login command.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub sign_in: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -675,7 +697,7 @@ fn resolve_scope(
         let local_agent = tab.kind == "local_agent";
         let agent = tab.kind == "agent" || local_agent;
         let eligible_kind = tab.kind == "shell"
-            || (agent && resumable(&tab))
+            || (agent && (resumable(&tab) || tab.sign_in || tab.cloud))
             || (local_agent
                 && tab.local_launch.as_ref().is_some_and(|launch| {
                     crate::services::terminal_service::local_launch_ok(launch, &tab.cmd)
@@ -706,6 +728,8 @@ fn resolve_scope(
             agent_label: agent.then(|| agent_label_of(&tab)),
             agent_status: None,
             agent_model: None,
+            agent_plan: false,
+            agent_goal: false,
             working_at: None,
             done_at: None,
             schedules: None,
@@ -718,6 +742,7 @@ fn resolve_scope(
                 .as_deref()
                 .filter(|id| TAB_COLORS.contains(id))
                 .map(str::to_string),
+            sign_in: agent && tab.sign_in,
         };
         tabs.push(ResolvedTab {
             public,
@@ -1068,6 +1093,8 @@ mod tests {
             color: None,
             local_launch: None,
             schedule_target_id: None,
+            sign_in: false,
+            cloud: false,
         };
         assert_eq!(agent_label_of(&tab("release review", "claude")), "Claude");
         assert_eq!(agent_label_of(&tab("Codex", "codex")), "Codex");
@@ -1146,6 +1173,64 @@ mod tests {
             listed,
             vec![("Local 1", "agent", Some("Mistral")), ("Local 2", "agent", Some("Claude"))]
         );
+    }
+
+    /// A sign-in tab and a cloud session have no session to resume, yet the
+    /// phone that asked for one has to attach: the desktop saves it (flagged
+    /// `signIn` / `cloud`) while it runs, and the catalog lists it. Only the
+    /// sign-in flag reaches the phone, which opens that tab on its sign-in
+    /// sheet. An agent tab with neither stays unlisted.
+    #[test]
+    fn sign_in_and_cloud_tabs_are_listed_without_a_session() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let root = state.join("p");
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "p-1",
+                "name": "P",
+                "status": "active",
+                "directory": root.to_string_lossy(),
+                "eldrun_mobile_access": true,
+            }]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        let sessions = state.join("sessions").join("p-1");
+        fs::create_dir_all(&sessions).expect("session dir");
+        let tab = |n: &str, marker: serde_json::Value| {
+            let mut row = serde_json::json!({
+                "label": format!("Tab {n}"),
+                "cmd": "claude",
+                "cwd": root.to_string_lossy(),
+                "kind": "agent",
+                "tmuxSession": format!("eldrun-p-1--agent-10000000{n}"),
+            });
+            row.as_object_mut().unwrap().extend(marker.as_object().unwrap().clone());
+            row
+        };
+        fs::write(
+            sessions.join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({ "tabLayout": [
+                tab("1", serde_json::json!({ "signIn": true })),
+                tab("2", serde_json::json!({ "cloud": true })),
+                tab("3", serde_json::json!({ "signIn": false })),
+            ] }))
+            .expect("session"),
+        )
+        .expect("write session");
+
+        let catalog = Catalog::load(state, &[7; 32]).expect("catalog");
+        let tabs = &catalog.projects.first().expect("project").tabs;
+        let listed: Vec<(&str, Option<&str>, bool)> = tabs
+            .iter()
+            .map(|t| (t.public.label.as_str(), t.public.agent_label.as_deref(), t.public.sign_in))
+            .collect();
+        assert_eq!(listed, vec![("Tab 1", Some("Claude"), true), ("Tab 2", Some("Claude"), false)]);
+        let json = serde_json::to_value(&tabs[1].public).expect("public tab");
+        assert!(json.get("sign_in").is_none(), "an unset flag is left out");
     }
 
     /// A mobile-enabled box is a scope of its own (#31aa): listed as `kind:

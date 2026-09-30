@@ -93,6 +93,26 @@ case is described under the sandbox below.
   itself (e.g. filling scaffold files).
 - Root console: agents are off there until you turn on their **Root** chip.
 
+## Talk to an agent as a chat
+
+Claude, Codex and OpenCode tabs can be used as a chat instead of the
+terminal — the same chat view the phone's Focus uses. Click **Chat** at the
+right end of the prompt row above the terminal:
+your prompts show on the right, the agent's answers on the left as
+formatted text, and slash commands as thin rules. Type into the box at the
+bottom and press Enter to send (Shift+Enter for a new line); a prompt sent
+while the agent works waits in its queue as a typed one would. When the
+agent asks something — a permission prompt ("Do you want to make this
+edit?") or a question with choices — the choices show as buttons under the
+chat; click one to answer. While the agent works, a **working** row shows
+how long it has been busy, and its **Stop** button interrupts it. Press Esc in
+that box, or click **Terminal**, to go back. The terminal keeps running
+underneath, so nothing is lost by switching. The chat is optional: tabs
+open on their terminal until you pick Chat. The choice is one for all agent
+tabs and is remembered: picking Chat (or Terminal) in one tab switches every
+open agent tab that has the chat, and new tabs open the same way. Agents
+without a chat view keep their terminal.
+
 ## Resume after a restart
 
 Claude, Codex and Mistral tabs reopen their exact conversation. Gemini, Qwen,

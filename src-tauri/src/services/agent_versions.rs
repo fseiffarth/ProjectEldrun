@@ -114,7 +114,7 @@ pub struct Verified {
 const VERIFIED: &[Verified] = &[
     Verified {
         agent: "claude",
-        version: "2.1.284",
+        version: "2.1.285",
         surface: "§1.1 — SessionStart/Stop hook payload, --resume, /usage envelope",
     },
     Verified {
@@ -124,12 +124,12 @@ const VERIFIED: &[Verified] = &[
     },
     Verified {
         agent: "codex",
-        version: "0.157.0",
+        version: "0.159.2",
         surface: "§1.2 — decision lamp: title repaints, numbered approval rows",
     },
     Verified {
         agent: "codex",
-        version: "0.157.0",
+        version: "0.159.2",
         surface: "§1.2 — the two-step /model sheet read off the screen",
     },
     Verified {
@@ -139,8 +139,13 @@ const VERIFIED: &[Verified] = &[
     },
     Verified {
         agent: "antigravity",
-        version: "1.2.9",
+        version: "1.2.14",
         surface: "§1.5 — footer model/effort and the /model dialog (antigravity.ts)",
+    },
+    Verified {
+        agent: "copilot",
+        version: "1.0.89",
+        surface: "§1.5 — --continue/-p, session-state store, authTokens login layout",
     },
 ];
 
@@ -567,9 +572,55 @@ pub fn claude_takes_name_flag(seen: Option<&Seen>) -> bool {
         .is_some_and(|v| version_cmp(v, CLAUDE_NAME_FLAG_SINCE) != std::cmp::Ordering::Less)
 }
 
+/// First Codex release with `--no-daemon`, which is also the first whose TUI
+/// may hand its threads to a detached, shared `app-server --managed-daemon`
+/// (`daemon_auto_start`, on by default). 0.155.x has neither and exits on the
+/// unknown option. Checked against the npm linux-x64 builds of 0.155.1 and
+/// 0.156.0.
+pub const CODEX_NO_DAEMON_SINCE: &str = "0.156.0";
+
+/// Whether the Codex a probe last read accepts `--no-daemon` at launch — the
+/// same rule as [`claude_takes_name_flag`]: only a known version says yes.
+pub fn codex_takes_no_daemon(seen: Option<&Seen>) -> bool {
+    seen.and_then(|seen| seen.version.as_deref())
+        .is_some_and(|v| version_cmp(v, CODEX_NO_DAEMON_SINCE) != std::cmp::Ordering::Less)
+}
+
+/// Whether `args` start Codex's interactive TUI — nothing, an option, or its
+/// `resume`/`fork` subcommands — rather than a subcommand of its own (`login`,
+/// `exec`, `mcp`, …) that has no background server to opt out of.
+pub fn codex_runs_tui(args: &[String]) -> bool {
+    args.first()
+        .is_none_or(|arg| arg.starts_with('-') || arg == "resume" || arg == "fork")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_takes_no_daemon_from_0_156_0_on() {
+        let seen = |v: Option<&str>| Seen {
+            version: v.map(str::to_string),
+            ..Seen::default()
+        };
+        assert!(codex_takes_no_daemon(Some(&seen(Some("0.156.0")))));
+        assert!(codex_takes_no_daemon(Some(&seen(Some("0.159.2")))));
+        assert!(!codex_takes_no_daemon(Some(&seen(Some("0.155.1")))));
+        assert!(!codex_takes_no_daemon(Some(&seen(None))));
+        assert!(!codex_takes_no_daemon(None));
+    }
+
+    #[test]
+    fn only_the_codex_tui_gets_tui_flags() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(codex_runs_tui(&args(&[])));
+        assert!(codex_runs_tui(&args(&["resume", "01a0f263-e07f-77a2-9ef3-d1e1b921d724"])));
+        assert!(codex_runs_tui(&args(&["resume"])));
+        assert!(codex_runs_tui(&args(&["--oss", "-m", "qwen3"])));
+        assert!(!codex_runs_tui(&args(&["login", "--device-auth"])));
+        assert!(!codex_runs_tui(&args(&["exec", "--skip-git-repo-check", "hi"])));
+    }
 
     #[test]
     fn claude_takes_name_from_2_1_76_on() {
@@ -680,12 +731,16 @@ mod tests {
     #[test]
     fn an_install_older_than_every_codex_check_names_them_all() {
         // Today's table: an install older than all four Codex checks names
-        // all four, a matching install none.
+        // all four; the newest checked release names only the two surfaces
+        // last checked on an older one.
         let (state, stale) = drift("codex", Some("0.153.4"));
         assert_eq!(state, DriftState::Moved);
         assert_eq!(stale.len(), 4);
         assert!(stale.iter().all(|note| note.direction == Direction::Older));
-        assert_eq!(drift("codex", Some("0.157.0")).0, DriftState::Match);
+        let (state, stale) = drift("codex", Some("0.159.2"));
+        assert_eq!(state, DriftState::Moved);
+        assert_eq!(stale.len(), 2);
+        assert!(stale.iter().all(|note| note.version == "0.157.0" && note.direction == Direction::Newer));
     }
 
     #[test]
@@ -697,10 +752,10 @@ mod tests {
 
     #[test]
     fn matching_every_note_is_a_match_and_no_notes_is_unverified() {
-        assert_eq!(drift("claude", Some("2.1.284")).0, DriftState::Match);
-        // `copilot` has a recipe but no recorded check — the honest answer is
+        assert_eq!(drift("claude", Some("2.1.285")).0, DriftState::Match);
+        // `muse` has a recipe but no recorded check — the honest answer is
         // "nobody has verified this", not a tick.
-        assert_eq!(drift("copilot", Some("1.0.88")).0, DriftState::Unverified);
+        assert_eq!(drift("muse", Some("1.3.0")).0, DriftState::Unverified);
         assert_eq!(drift("claude", None).0, DriftState::Unknown);
     }
 

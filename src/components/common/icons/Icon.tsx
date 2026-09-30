@@ -628,3 +628,14 @@ export function TerminalIcon(p: IconProps) {
     </Frame>
   );
 }
+
+/** A keyboard — keyboard steering is on. */
+export function KeyboardIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <rect x="2.5" y="6" width="19" height="12" rx="2" />
+      <path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M6.5 13.5h.01M17.5 13.5h.01" />
+      <path d="M9.5 14h5" />
+    </Frame>
+  );
+}

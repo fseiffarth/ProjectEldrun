@@ -1,10 +1,5 @@
-import { formatBuildStamp } from "../buildInfo";
-// Kept in lockstep with Home's own build line (`Home.tsx`); the same reason
-// applies here too.
-import { version as APP_VERSION } from "../../../package.json";
+import { BUNDLE_VERSION } from "../buildInfo";
 import { EldrunMark } from "../EldrunMark";
-
-const BUILD_STAMP = formatBuildStamp();
 
 /**
  * Home's own header, drawn behind the lock sheet while the app is locked.
@@ -17,7 +12,7 @@ export function LockedHomeShell() {
     <header className="home-header">
       <div className="home-brand" aria-label="Eldrun">
         <span className="home-logo-frame" aria-hidden="true"><EldrunMark className="home-logo" /></span>
-        <span className="home-brand-copy"><strong>Eldrun</strong><small>v{APP_VERSION}{BUILD_STAMP && ` · ${BUILD_STAMP}`}</small></span>
+        <span className="home-brand-copy"><strong>Eldrun</strong><small>{BUNDLE_VERSION}</small></span>
       </div>
     </header>
     <div className="projects-row"><h1>Projects</h1></div>
