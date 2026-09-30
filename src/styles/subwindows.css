@@ -1812,7 +1812,7 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   display: flex;
   flex-direction: column;
   color: var(--text-primary);
-  background: var(--bg-main);
+  background: color-mix(in srgb, var(--text-primary) 4%, var(--bg-main));
   font-family: var(--font-sans);
   font-size: var(--text-md);
 }
@@ -1821,16 +1821,23 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   padding: 14px 18px;
   overflow-y: auto;
   user-select: text;
 }
+/* Bubbles tint from the theme's ink and accent rather than `--bg-elevated`
+   and `--border-subtle`: dark and light give those the page's own colour, so
+   an answer sank into the chat. The chat sits a shade off the page, each
+   bubble a shade further with a visible rim; the mobile Focus chat's tail
+   corners say whose it is, and a prompt opens its exchange with more air
+   above it than the bubbles inside one. Static shadow token only. */
 .terminal-reader-turn {
   position: relative;
   max-width: min(760px, 82%);
   padding: 8px 12px 18px;
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -1840,16 +1847,30 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
 }
 .terminal-reader-turn.user {
   align-self: flex-end;
-  background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-bottom-right-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 24%, var(--bg-main));
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.terminal-reader-list > .terminal-reader-turn.user:not(:first-child) {
+  margin-top: 14px;
+}
+.terminal-reader-list > .terminal-reader-turn.user + .terminal-reader-turn.user {
+  margin-top: 0;
+}
+.terminal-reader-list > .terminal-reader-command + .terminal-reader-turn.user {
+  margin-top: 0;
+}
+.terminal-reader-turn.user .terminal-reader-time {
+  color: color-mix(in srgb, var(--accent) 45%, var(--text-secondary));
 }
 .terminal-reader-turn.user.pending {
   opacity: 0.65;
 }
 .terminal-reader-turn.agent {
   align-self: flex-start;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
+  border-bottom-left-radius: 4px;
+  background: color-mix(in srgb, var(--text-primary) 9%, var(--bg-main));
+  border: 1px solid color-mix(in srgb, var(--text-primary) 18%, transparent);
 }
 .terminal-reader-turn.agent.plan {
   border-color: #8b5cf6;
@@ -1896,7 +1917,7 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
 .terminal-reader-command::after {
   content: "";
   flex: 1;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid color-mix(in srgb, var(--text-primary) 18%, transparent);
 }
 .terminal-reader-command span {
   font-family: var(--font-mono);
@@ -1909,22 +1930,151 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   border-radius: var(--radius-full);
   background: var(--bg-subtle);
 }
+/* A subagent's card opens its conversation (the phone's `SubagentCard`); one
+   not openable yet stays a plain card. */
 .terminal-reader-subagent {
   align-self: flex-start;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 10px;
   max-width: min(640px, 76%);
   padding: 6px 10px;
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  color: inherit;
+  border: none;
   border-left: 3px solid var(--accent);
   border-radius: var(--radius);
   background: var(--bg-subtle);
-  font-size: var(--text-sm);
+  cursor: var(--cur-pointer, pointer);
 }
-.terminal-reader-subagent small {
+.terminal-reader-subagent:hover:not(:disabled) { background: var(--bg-hover); }
+.terminal-reader-subagent:disabled { cursor: var(--cur-default, default); }
+.terminal-reader-subagent-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.terminal-reader-subagent small,
+.terminal-reader-subagent-title small,
+.terminal-reader-subagent-list small {
   font-size: var(--text-xs);
   font-weight: 600;
   color: var(--text-secondary);
+}
+.terminal-reader-subagent-chevron {
+  flex: none;
+  font-size: var(--text-lg, 1.1rem);
+  color: var(--text-muted);
+}
+/* Over the chat, outside its scroll: a subagent's bar (back up, its task,
+   ‹ n of m ›), or the session's Subagents list. */
+.terminal-reader-subagent-bar,
+.terminal-reader-subagent-index {
+  flex: none;
+  padding: 6px 14px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.terminal-reader-subagent-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.terminal-reader-subagent-nav {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font: inherit;
+  font-size: var(--text-lg, 1.1rem);
+  line-height: 1;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-subagent-nav:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.terminal-reader-subagent-nav:disabled {
+  opacity: 0.4;
+  cursor: var(--cur-default, default);
+}
+.terminal-reader-subagent-title {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.terminal-reader-subagent-title strong {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.terminal-reader-subagent-steps {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+.terminal-reader-subagent-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-subagent-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.terminal-reader-subagent-caret.open { transform: rotate(180deg); }
+.terminal-reader-subagent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: min(40vh, 320px);
+  margin-top: 6px;
+  overflow-y: auto;
+}
+.terminal-reader-subagent-list button {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  color: inherit;
+  background: var(--bg-subtle);
+  border: none;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-subagent-list button:hover:not(:disabled) { background: var(--bg-hover); }
+.terminal-reader-subagent-list button:disabled { cursor: var(--cur-default, default); opacity: 0.7; }
+.terminal-reader-subagent-list button.terminal-reader-subagent-earlier {
+  align-items: center;
+  color: var(--text-secondary);
+  border-left: none;
 }
 .terminal-reader-empty {
   margin: auto;
@@ -1994,6 +2144,88 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   color: var(--danger, #d9534f);
   background: var(--bg-panel);
 }
+/* The facts row over the composer (`TerminalReaderFacts`), the phone's
+   `.session-facts`: the model as a button, then plain facts. The model list
+   opens upward over the chat, anchored to the row. */
+.terminal-reader-facts-wrap {
+  position: relative;
+  flex: none;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border-subtle);
+}
+.terminal-reader-facts {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 14px 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.terminal-reader-fact { flex: none; }
+.terminal-reader-fact.high { color: var(--warning, #f0a35e); }
+.terminal-reader-fact-model {
+  flex: none;
+  max-width: 18em;
+  margin: 0 -4px;
+  padding: 2px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: inherit;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  text-decoration: underline dotted color-mix(in srgb, currentColor 45%, transparent);
+  text-underline-offset: 3px;
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-fact-model:hover:not(:disabled),
+.terminal-reader-fact-model[aria-expanded="true"] {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.terminal-reader-fact-model:disabled {
+  opacity: 0.6;
+  cursor: var(--cur-default, default);
+}
+/* The composer's own top rule is the facts row's now. */
+.terminal-reader-facts-wrap + .terminal-reader-composer { border-top: none; }
+.terminal-reader-picker {
+  position: absolute;
+  left: 14px;
+  bottom: calc(100% + 6px);
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(420px, calc(100% - 28px));
+  max-height: min(60vh, 460px);
+  padding: 10px 12px;
+  overflow-y: auto;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+}
+.terminal-reader-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.terminal-reader-picker-close {
+  padding: 0 6px;
+  font: inherit;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-picker-close:hover { color: var(--text-primary); }
 /* The live screen's rows under the chat (`lib/agents/readerLive`): the
    choice the session waits on, as buttons, and the agent at work. */
 .terminal-reader-question {

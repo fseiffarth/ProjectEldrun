@@ -10,7 +10,8 @@ import {
   type SelectOption,
   type SelectPrompt,
 } from "../../../mobile-web/src/terminal/selectPrompt";
-import { inputFrameStart } from "../../../mobile-web/src/terminal/statusLine";
+import { isOpenCodeTab, openCodePickKeys, readOpenCodePicker } from "../../../mobile-web/src/terminal/openCodeMini";
+import { inputFrameStart, sessionStatus, type SessionStatus } from "../../../mobile-web/src/terminal/statusLine";
 
 /**
  * What the desktop Reader (`TerminalReaderView`) reads off the pane's live
@@ -37,13 +38,18 @@ export interface ReaderLive {
   signature: string;
   /** The busy row's facts while the agent works; null when idle or asking. */
   working: WorkFacts | null;
+  /** The facts the session prints under its input box (model, branch,
+   * context, mode) — the phone's facts row reads the same `sessionStatus`.
+   * Null while the bottom of the screen is not the input frame. */
+  status: SessionStatus | null;
 }
 
-export const NO_LIVE: ReaderLive = { question: null, ask: [], context: [], tabs: [], signature: "", working: null };
+export const NO_LIVE: ReaderLive = { question: null, ask: [], context: [], tabs: [], signature: "", working: null, status: null };
 
 /** Reads `buffer` (the pane's active xterm buffer) for `agentLabel`'s TUI. */
 export function readReaderLive(buffer: ReadableBufferLike, agentLabel: string): ReaderLive {
   const { lines } = readableScreen(buffer);
+  const status = sessionStatus(lines, agentLabel);
   // The input box and the rows under it are the TUI's frame, not output; the
   // tail after the last echoed prompt is what the session draws now.
   const screen = lines.slice(0, inputFrameStart(lines, agentLabel));
@@ -60,9 +66,10 @@ export function readReaderLive(buffer: ReadableBufferLike, agentLabel: string): 
       tabs: parts.tabs,
       signature: selectSignature(question),
       working: null,
+      status,
     };
   }
-  return { ...NO_LIVE, working: agentWork(lines) };
+  return { ...NO_LIVE, working: agentWork(lines), status };
 }
 
 function tabsKey(tabs: readonly QuestionTab[]): string {
@@ -77,7 +84,31 @@ export function sameReaderLive(a: ReaderLive, b: ReaderLive): boolean {
     && tabsKey(a.tabs) === tabsKey(b.tabs)
     && (a.working === null) === (b.working === null)
     && a.working?.elapsed === b.working?.elapsed
-    && a.working?.tokens === b.working?.tokens;
+    && a.working?.tokens === b.working?.tokens
+    && sameStatus(a.status, b.status);
+}
+
+function sameStatus(a: SessionStatus | null, b: SessionStatus | null): boolean {
+  if (!a || !b) return a === b;
+  return a.model === b.model && a.effort === b.effort && a.branch === b.branch
+    && a.context === b.context && a.mode === b.mode;
+}
+
+/**
+ * The model picker the Reader's model chip opened (`/model`, or OpenCode's
+ * palette), read off the whole screen: the picker replaces the input box, so
+ * it is not in the part `readReaderLive` reads. The phone's model sheet reads
+ * it the same way — the session's own rows, not a list Eldrun believes in.
+ */
+export function readModelPicker(buffer: ReadableBufferLike, agentLabel: string): SelectPrompt | null {
+  const { lines } = readableScreen(buffer);
+  return isOpenCodeTab(agentLabel) ? readOpenCodePicker(lines) : readSelectPrompt(lines, agentLabel);
+}
+
+/** The keys that answer the picker with `option`: OpenCode's is answered by
+ * typing into its search field, every other one by walking its highlight. */
+export function modelPickKeys(picker: SelectPrompt, option: SelectOption, agentLabel: string): string[] {
+  return isOpenCodeTab(agentLabel) ? openCodePickKeys(option.label) : selectKeys(picker.current, option.index);
 }
 
 /** The keystrokes that answer `question` with `option`: arrows from the

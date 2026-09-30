@@ -30,13 +30,15 @@ export const READER_STEP = 60;
  * bridge's resolution: OpenCode's session is the newest one of the folder the
  * tab runs in, begun since it launched unless it was restored with
  * `--continue`. Null for a tab with no session id yet (the agent's hook has
- * not recorded one): there is no transcript to name. */
+ * not recorded one): there is no transcript to name. `subagent` is the handle
+ * on one of its `agent` entries, whose own conversation is read instead. */
 export function readerRequest(
   scope: string,
   tab: Pick<TabEntry, "cmd" | "sessionId" | "launchedAt" | "args" | "cwd">,
   cwd: string | undefined,
   version: string | undefined,
   limit: number,
+  subagent?: string,
 ): Record<string, unknown> | null {
   if (!tab.sessionId) return null;
   return {
@@ -45,7 +47,7 @@ export function readerRequest(
     tabDir: tab.cwd || cwd || null,
     since: tab.launchedAt && !tab.args?.includes("--continue") ? tab.launchedAt : null,
     sessionId: tab.sessionId,
-    subagent: null,
+    subagent: subagent ?? null,
     version: version ?? null,
     limit,
   };
