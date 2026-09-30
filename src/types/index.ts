@@ -527,6 +527,8 @@ export interface Settings {
    *  no Rust field needed. */
   python_main_scripts?: Record<string, PyMainVerdict>;
   run_scripts_in_background?: boolean;
+  /** Show the untested pills throughout the desktop UI. Defaults to off. */
+  show_untested_tags?: boolean;
   /** Header resource-monitor row toggles. Each defaults ON (undefined → shown).
    *  Independent of `debug`; the pill is available in every build. */
   show_cpu_usage?: boolean;

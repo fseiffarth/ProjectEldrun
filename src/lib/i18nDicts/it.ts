@@ -543,6 +543,8 @@ export const dict: Dict = {
   "settings.language.help":
     "Imposta la lingua dell'interfaccia di Eldrun. Ha effetto immediato — nessun riavvio.",
   "settings.runScriptsBg": "Esegui script in background",
+  "settings.showUntestedTags": "Mostra etichette delle funzioni non testate",
+  "settings.showUntestedTags.help": "Mostra le etichette delle funzioni non ancora verificate nell’app in esecuzione.",
   "settings.claudeRemote": "Controllo remoto di Claude",
   "mcpSecurity.title": "Accesso delle sessioni MCP",
   "mcpSecurity.help": "I permessi valgono solo per questa sessione in corso. Le nuove sessioni root mantengono i valori predefiniti; i lettori di posta iniziano solo con la posta. Disattivare la scrittura dà accesso in sola lettura. I dati condivisi con un agente con accesso alla rete possono lasciare questo computer. Le scritture limitate di calendario e bacheca richiedono sempre una revisione. La revoca è definitiva per la scheda: il suo agente viene rifiutato da quel momento, e solo riaprire la scheda consegna un nuovo token.",

@@ -1102,7 +1102,7 @@ const SETTINGS_GROUPS: { key: "general" | "workspace" | "agents" | "remote" | "s
  *  so the search works in the UI language; a new control on a page adds its
  *  label key here, or the search will not find it. */
 const SEARCH_KEYS: Record<NavEntry, TranslationKey[]> = {
-  general: ["settings.theme", "settings.themeVars", "settings.language", "settings.runScriptsBg", "settings.persistLocal"],
+  general: ["settings.theme", "settings.themeVars", "settings.language", "settings.showUntestedTags", "settings.runScriptsBg", "settings.persistLocal"],
   layout: ["settings.windowZoom", "settings.minSubWidth", "settings.minSubHeight"],
   clock: ["settings.showClockSeconds", "settings.clock24"],
   hintsOnboarding: ["settings.showHints", "settings.howToStart", "settings.lessons", "lessons.tour.title", "lessons.tourRemote.title", "settings.resetHints"],
@@ -1304,6 +1304,13 @@ export function SettingsDialog({
                   options={LANGUAGES.map((l) => ({ value: l.value, label: l.label }))}
                 />
               }
+            />
+
+            <ToggleCard
+              label={<>{t("settings.showUntestedTags")} <UntestedTag id="settings.showUntestedTags" /></>}
+              help={t("settings.showUntestedTags.help")}
+              checked={settings?.show_untested_tags ?? false}
+              onChange={(e) => void updateSettings({ show_untested_tags: e.target.checked })}
             />
 
             <ToggleCard

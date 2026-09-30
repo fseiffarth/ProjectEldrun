@@ -544,6 +544,8 @@ export const dict: Dict = {
   "settings.language.help":
     "Legt die Sprache der Eldrun-Oberfläche fest. Wirkt sofort — kein Neustart nötig.",
   "settings.runScriptsBg": "Skripte im Hintergrund ausführen",
+  "settings.showUntestedTags": "Ungetestet-Markierungen anzeigen",
+  "settings.showUntestedTags.help": "Markierungen für Funktionen anzeigen, die in der laufenden App noch nicht geprüft wurden.",
   "settings.claudeRemote": "Claude-Fernsteuerung",
   "mcpSecurity.title": "MCP-Sitzungszugriff",
   "mcpSecurity.help": "Berechtigungen gelten nur für diese laufende Sitzung. Neue Root-Sitzungen behalten die bisherigen Standardrechte; Mail-Leser erhalten zunächst nur Mail-Zugriff. Ohne Schreibrechte ist der Zugriff schreibgeschützt. Daten für einen Agenten mit Netzwerkzugriff können diesen Computer verlassen. Eingeschränkte Kalender- und Board-Änderungen erfordern immer eine Prüfung. Ein Entzug ist für den Tab endgültig: sein Agent wird ab dann abgewiesen, und nur ein erneutes Öffnen des Tabs vergibt ein neues Token.",

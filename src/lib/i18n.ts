@@ -528,6 +528,8 @@ export const en = {
   "settings.language.help":
     "Sets the language of Eldrun's interface. Takes effect immediately — no restart needed.",
   "settings.runScriptsBg": "Run scripts in background",
+  "settings.showUntestedTags": "Show untested tags",
+  "settings.showUntestedTags.help": "Show labels on features that have not yet been checked in the running app.",
   "settings.claudeRemote": "Claude remote control",
   "settings.headlessRemote": "Headless remote connections",
   "settings.persistLocal": "Persistent local sessions (tmux)",

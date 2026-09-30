@@ -428,6 +428,9 @@ pub struct Settings {
     /// as a detached background process instead of opening a terminal tab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_scripts_in_background: Option<bool>,
+    /// Show the untested pills throughout the desktop UI. Defaults to off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_untested_tags: Option<bool>,
     /// When true (the default), `claude` agent tabs are spawned with
     /// `--remote-control` so the session can be monitored/steered from the Claude
     /// app/web. Only Claude supports the flag; other agents ignore it. Default ON.

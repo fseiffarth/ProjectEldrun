@@ -688,3 +688,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     });
   },
 }));
+
+// The print viewer builds its pills directly in the DOM, so one document-level
+// flag covers those as well as React's UntestedTag in every window. Store
+// changes include the initial load, optimistic writes and cross-window refresh.
+useSettingsStore.subscribe(({ settings }) => {
+  if (typeof document !== "undefined") {
+    document.documentElement.classList.toggle("show-untested-tags", settings?.show_untested_tags === true);
+  }
+});

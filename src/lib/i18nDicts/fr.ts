@@ -544,6 +544,8 @@ export const dict: Dict = {
   "settings.language.help":
     "Définit la langue de l'interface d'Eldrun. Effet immédiat — aucun redémarrage.",
   "settings.runScriptsBg": "Exécuter les scripts en arrière-plan",
+  "settings.showUntestedTags": "Afficher les étiquettes « non testé »",
+  "settings.showUntestedTags.help": "Affiche les étiquettes des fonctions qui n’ont pas encore été vérifiées dans l’application en cours d’exécution.",
   "settings.claudeRemote": "Contrôle à distance de Claude",
   "mcpSecurity.title": "Accès des sessions MCP",
   "mcpSecurity.help": "Les autorisations ne concernent que cette session en cours. Les nouvelles sessions racine gardent les valeurs par défaut ; les lecteurs de courrier commencent avec le courrier seulement. Désactiver l'écriture donne un accès en lecture seule. Les données partagées avec un agent ayant accès au réseau peuvent quitter cet ordinateur. Les écritures restreintes du calendrier et du tableau exigent toujours une revue. La révocation est définitive pour l'onglet : son agent est refusé dès lors, et seule la réouverture de l'onglet délivre un nouveau jeton.",

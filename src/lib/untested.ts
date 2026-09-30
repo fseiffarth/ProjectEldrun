@@ -42,6 +42,7 @@ export const UNTESTED = {
   "desktop.intro.localModels": { area: "shell", what: "How to start · Local models page: Ollama install/start, recommended pull, GPU load, use for tabs" },
   "desktop.intro.askEldrun": { area: "shell", what: "How to start · Ask Eldrun page: help-server status, on/off switch, help search box" },
   "settings.vmPrerequisites": { area: "settings", what: "VM page · install missing QEMU prerequisites in a root terminal tab" },
+  "settings.showUntestedTags": { area: "settings", what: "General page · show or hide every untested tag" },
 
   // --- agents — Agent sessions, schedules and the prompt chart ------
   "agentSchedule.title": { area: "agents", what: "AgentScheduleDialog · Scheduled prompts · {tab}" },
