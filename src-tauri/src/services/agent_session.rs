@@ -135,8 +135,9 @@ fn vibe_session_exists(home: &std::path::Path, id: &str) -> bool {
 /// launch, or the hook not trusted), we leave the args untouched → a fresh Codex
 /// session.
 fn resolve_codex_session(opts: PtyOptions) -> PtyOptions {
-    let sessions = paths::home_dir().join(".codex").join("sessions");
     let project_id = opts.project_id.clone();
+    // The scope's agent home, where the tab's Codex writes — not the user's.
+    let sessions = codex_sessions_root(project_id.as_deref());
     let stores = crate::services::codex_store::state_dbs(Some(
         project_id.as_deref().unwrap_or("root"),
     ));
