@@ -42,7 +42,7 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [message, setMessage] = useState(initialMessage ?? "");
-  const [kind, setKind] = useState<ScheduleRule["type"]>("daily");
+  const [kind, setKind] = useState<ScheduleRule["type"]>("once");
   const [time, setTime] = useState("09:00");
   const [once, setOnce] = useState(mobileLocalDateTime);
   const [weekdays, setWeekdays] = useState([1, 2, 3, 4, 5]);
@@ -83,7 +83,7 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
   const reset = () => {
     setEditing(null);
     setMessage("");
-    setKind("daily");
+    setKind("once");
     setTime("09:00");
     setOnce(mobileLocalDateTime());
     setWeekdays([1, 2, 3, 4, 5]);
