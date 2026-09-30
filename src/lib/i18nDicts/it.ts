@@ -3461,6 +3461,13 @@ export const dict: Dict = {
   "devBuild.relaunchNowHint": "Chiudi questa finestra e riapri Eldrun (dev) con la versione più recente. Le schede vengono ripristinate come dopo ogni riavvio.",
   "devBuild.relaunching": "Riavvio…",
   "devBuild.openLog": "Segui il log",
+  "devBuild.paused": "Build automatiche in pausa",
+  "devBuild.pausedDetail": "I commit non ricompilano Eldrun (dev) finché non riprendi.",
+  "devBuild.chipPaused": "in pausa",
+  "devBuild.pause": "Sospendi build automatiche",
+  "devBuild.pauseHint": "Non ricompilare più Eldrun (dev) a ogni commit e annulla la compilazione in corso, per liberare la macchina. Resta in pausa finché non riprendi.",
+  "devBuild.resume": "Riprendi build automatiche",
+  "devBuild.resumeHint": "Ricompila di nuovo a ogni commit, partendo da HEAD se lo snapshot installato è indietro.",
   "devBuild.logTab": "Log del build",
   "statusCluster.settingLabel": "Comprimi gli indicatori di stato nell'intestazione",
   "statusCluster.settingHelp":

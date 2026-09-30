@@ -39,6 +39,9 @@
 #
 # Off switch, in order of scope:
 #   git config eldrun.autoDevBuild false   # this clone, permanently
+#   package-dev-auto.sh --pause            # until --resume (the dev-build chip's
+#                                          # "Pause auto-builds"); also cancels a
+#                                          # running compile to free the machine
 #   ELDRUN_NO_AUTO_DEV_BUILD=1 git commit  # one commit
 # Log: ~/.local/share/eldrun/package-dev-auto.log (the last build's output).
 set -uo pipefail
@@ -74,6 +77,10 @@ LOG_MAX_BYTES=$((4 * 1024 * 1024))
 # Touched by package-dev.sh once the compile is finished: past it, a pass is
 # no longer cancelled for a newer commit.
 INSTALLING="$APP_DIR/package-dev-auto.installing"
+# Present while auto-builds are paused (`--pause`, the dev-build chip's
+# button): the machine's cores are wanted for something else. Nothing queues,
+# and a running pass is cancelled like one superseded by a newer commit.
+PAUSED="$APP_DIR/package-dev-auto.paused"
 FREEZE_TREE="$ROOT/target/freeze-tree"
 # The status build_once returns for a pass it cancelled (128 + SIGTERM).
 CANCELLED=143
@@ -90,6 +97,7 @@ notify() { # urgency, title, body
 declined() {
   [ "${ELDRUN_NO_AUTO_DEV_BUILD:-}" = "1" ] && { echo "disabled for this commit"; return 0; }
   [ -n "${CI:-}" ] && { echo "running in CI"; return 0; }
+  [ -f "$PAUSED" ] && { echo "paused (resume from the dev-build menu, or --resume)"; return 0; }
   # An agent tab's commit runs this hook inside the agent fence, whose $HOME is
   # the agent's own: the lock, stamp and install would all land in a throwaway
   # copy while the real snapshot never moves (2026-09-25: 27 commits behind).
@@ -154,6 +162,11 @@ build_once() {
     setsid "${low[@]}" npm --prefix "$ROOT" run package:dev -- --head &
   local build=$!
   while kill -0 "$build" 2>/dev/null; do
+    if [ -f "$PAUSED" ] && [ ! -f "$INSTALLING" ]; then
+      note "auto-builds paused — cancelling this build"
+      cancel_build "$build"
+      return "$CANCELLED"
+    fi
     if [ -f "$PENDING" ] && [ ! -f "$INSTALLING" ]; then
       note "a newer commit landed — cancelling this build"
       cancel_build "$build"
@@ -224,6 +237,10 @@ run() {
       sleep $(( SETTLE_SECONDS - age ))
     done
     [ -f "$PENDING" ] || break
+    if [ -f "$PAUSED" ]; then
+      rm -f "$PENDING"
+      break
+    fi
     # Cleared BEFORE the build: a commit landing mid-build re-creates it and
     # earns the next pass, rather than being swallowed by this one.
     rm -f "$PENDING"
@@ -236,6 +253,12 @@ run() {
       # longer the newest. The FAILED record keeps whatever it said.
       note "pass $passes ($built) cancelled for a newer commit, finished with status $status"
       continue
+    fi
+    if [ "$status" -eq "$CANCELLED" ] && [ -f "$PAUSED" ]; then
+      # Not a failure either: the user wanted the machine back.
+      note "pass $passes ($built) cancelled — auto-builds paused"
+      rm -f "$PENDING"
+      return 0
     fi
     note "pass $passes ($built) finished with status $status"
     if [ "$status" -eq 0 ]; then
@@ -250,6 +273,9 @@ run() {
     fi
   done
 
+  # Paused while settling: nothing was built, nothing to announce.
+  [ "$passes" -eq 0 ] && [ -f "$PAUSED" ] && return 0
+
   local version commit
   version="$(node -p "require('$ROOT/package.json').version" 2>/dev/null || echo '?')"
   commit="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')"
@@ -261,9 +287,32 @@ run() {
   return "$status"
 }
 
+# Stop auto-building until resume(): drop what is queued, and let a running
+# pass cancel itself (build_once watches for the mark, and leaves an install
+# already under way to finish).
+pause() {
+  mkdir -p "$APP_DIR" || return 1
+  : >"$PAUSED"
+  rm -f "$PENDING"
+  echo "Eldrun (dev): auto-builds paused"
+}
+
+# Undo pause() and catch up: queue HEAD when the installed snapshot is behind
+# it, since the commits made while paused queued nothing.
+resume() {
+  rm -f "$PAUSED"
+  echo "Eldrun (dev): auto-builds resumed"
+  local head
+  head="$(tree_signature)" || return 0
+  [ -f "$STAMP" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$head" ] && return 0
+  queue
+}
+
 case "${1:---queue}" in
   --queue) queue ;;
   --run) run ;;
+  --pause) pause ;;
+  --resume) resume ;;
   --status)
     if [ -d "$LOCK_DIR" ]; then echo "building (pid $(cat "$LOCK_DIR/pid" 2>/dev/null || echo '?'))"; else echo "idle"; fi
     [ -f "$PENDING" ] && echo "a rebuild is queued"
@@ -278,6 +327,6 @@ case "${1:---queue}" in
     fi
     if reason="$(declined)"; then echo "auto-build declined: $reason"; else echo "auto-build enabled"; fi
     ;;
-  *) echo "usage: $(basename "$0") [--queue|--run|--status]" >&2; exit 2 ;;
+  *) echo "usage: $(basename "$0") [--queue|--run|--status|--pause|--resume]" >&2; exit 2 ;;
 esac
 exit 0

@@ -27,6 +27,7 @@ const idle = {
   relaunch: false,
   adoptable: null,
   canRelaunch: false,
+  paused: false,
   logPath: "/h/.local/share/eldrun/package-dev-auto.log",
 };
 
@@ -126,5 +127,23 @@ describe("DevBuildIndicator", () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("dev_build_relaunch"));
     expect(await screen.findByText("this window is not the frozen Eldrun (dev) binary")).toBeTruthy();
     expect(screen.getByText("Relaunch now")).toBeTruthy();
+  });
+
+  it("pauses auto-builds from the menu", async () => {
+    answer(idle);
+    render(<DevBuildIndicator />);
+    fireEvent.click(await screen.findByLabelText("Dev build: Up to date (99e2c74)", undefined, { timeout: 5000 }));
+    fireEvent.click(await screen.findByText("Pause auto-builds"));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("dev_build_set_paused", { paused: true }));
+  });
+
+  it("shows a paused build as a quiet member and resumes it", async () => {
+    answer({ ...idle, paused: true, behind: 3 });
+    render(<DevBuildIndicator />);
+    expect(await screen.findByText("paused", undefined, { timeout: 5000 })).toBeTruthy();
+    await waitFor(() => expect(useHeaderStatusStore.getState().reports.devBuild?.tone).toBe("ok"));
+    fireEvent.click(screen.getByLabelText("Dev build: Auto-builds paused"));
+    fireEvent.click(await screen.findByText("Resume auto-builds"));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("dev_build_set_paused", { paused: false }));
   });
 });

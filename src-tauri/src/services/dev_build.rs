@@ -2,9 +2,10 @@
 //! dev-build chip (`header/DevBuildIndicator.tsx`).
 //!
 //! The build is `scripts/package-dev-auto.sh`'s, queued by the `post-commit`
-//! hook (see `docs/context/dev_builds.md`). This module never starts or stops
-//! one; the only thing it ever asks of the script is `--queue`, and only for a
-//! commit the hook could not queue itself (`queue_if_behind`). Otherwise it
+//! hook (see `docs/context/dev_builds.md`). This module never starts one
+//! itself; it asks the script to `--queue` a commit the hook could not queue
+//! itself (`queue_if_behind`), and to `--pause`/`--resume` when the user
+//! clicks the chip's switch (`set_paused`). Otherwise it
 //! reads the files that script already keeps for `--status`:
 //! the lock directory and its pid, the pending marker, the installed-commit
 //! stamp, the last failure, and the tail of the log, whose own lines say which
@@ -97,6 +98,9 @@ pub struct DevBuildStatus {
     /// This process is the frozen binary and a relaunch would open something
     /// newer (`relaunch` or `adoptable`): the menu offers to do it.
     pub can_relaunch: bool,
+    /// Auto-builds are paused (`package-dev-auto.sh --pause`): nothing queues
+    /// until the user resumes.
+    pub paused: bool,
     pub log_path: String,
 }
 
@@ -326,9 +330,13 @@ pub fn status() -> Option<DevBuildStatus> {
         relaunch: replaced,
         can_relaunch: frozen && (replaced || adoptable.is_some()),
         adoptable,
+        paused: dir.join(PAUSED_FILE).exists(),
         log_path: log_path.to_string_lossy().into_owned(),
     })
 }
+
+/// The script's pause mark (`package-dev-auto.sh --pause`).
+const PAUSED_FILE: &str = "package-dev-auto.paused";
 
 /// The HEAD this process last asked the script to freeze, so a HEAD the script
 /// declined (`eldrun.autoDevBuild false`) or already failed is asked for once,
@@ -364,6 +372,11 @@ pub fn queue_if_behind() {
     let Some(root) = SOURCE_ROOT else { return };
     let Some(head) = head_sha(root) else { return };
     let dir = app_dir();
+    // Checked before the memo below: a HEAD skipped while paused must still be
+    // askable after a resume.
+    if dir.join(PAUSED_FILE).exists() {
+        return;
+    }
     let stamp = read_trimmed(&dir.join("package-dev-auto.stamp"));
     let failed = read_trimmed(&dir.join("package-dev-auto.failed"))
         .and_then(|line| line.split(' ').next().map(str::to_string));
@@ -386,6 +399,34 @@ pub fn queue_if_behind() {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
+}
+
+/// Pause or resume auto-builds, from the chip's switch. Pausing also cancels a
+/// running compile (the script's own loop sees the mark), since the point is
+/// to hand the machine back; resuming queues HEAD if the snapshot is behind.
+/// User-clicked only.
+pub fn set_paused(paused: bool) -> Result<(), String> {
+    let root = SOURCE_ROOT.ok_or("not a dev build")?;
+    let script = Path::new(root).join("scripts/package-dev-auto.sh");
+    if !script.is_file() {
+        return Err(format!("{} is missing", script.display()));
+    }
+    let out = crate::paths::command_no_window(&script)
+        .arg(if paused { "--pause" } else { "--resume" })
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("{}: {e}", script.display()))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("{} exited with {}: {}", script.display(), out.status, err.trim()));
+    }
+    if !paused {
+        // The script queued what the pause skipped; forget any HEAD this
+        // process asked for meanwhile so a later poll may ask again.
+        *LAST_QUEUED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+    Ok(())
 }
 
 fn head_sha(root: &str) -> Option<String> {

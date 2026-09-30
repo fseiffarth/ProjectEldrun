@@ -3463,6 +3463,13 @@ export const dict: Dict = {
   "devBuild.relaunchNowHint": "Fermer cette fenêtre et rouvrir Eldrun (dev) sur la version plus récente. Les onglets sont restaurés comme après toute relance.",
   "devBuild.relaunching": "Relance…",
   "devBuild.openLog": "Suivre le journal",
+  "devBuild.paused": "Builds automatiques en pause",
+  "devBuild.pausedDetail": "Les commits ne recompilent plus Eldrun (dev) jusqu'à la reprise.",
+  "devBuild.chipPaused": "en pause",
+  "devBuild.pause": "Suspendre les builds automatiques",
+  "devBuild.pauseHint": "Ne plus recompiler Eldrun (dev) à chaque commit et annuler la compilation en cours, pour libérer la machine. Reste en pause jusqu'à la reprise.",
+  "devBuild.resume": "Reprendre les builds automatiques",
+  "devBuild.resumeHint": "Recompiler à nouveau à chaque commit, en commençant par HEAD si l'instantané installé est en retard.",
   "devBuild.logTab": "Journal du build",
   "statusCluster.settingLabel": "Replier les indicateurs d'état de l'en-tête",
   "statusCluster.settingHelp":

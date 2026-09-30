@@ -3546,6 +3546,13 @@ export const en = {
   "devBuild.relaunchNowHint": "Close this window and reopen Eldrun (dev) on the newer snapshot. Tabs restore as after any relaunch.",
   "devBuild.relaunching": "Relaunching…",
   "devBuild.openLog": "Follow build log",
+  "devBuild.paused": "Auto-builds paused",
+  "devBuild.pausedDetail": "Commits don't rebuild Eldrun (dev) until you resume.",
+  "devBuild.chipPaused": "paused",
+  "devBuild.pause": "Pause auto-builds",
+  "devBuild.pauseHint": "Stop rebuilding Eldrun (dev) on every commit and cancel a running compile, to free the machine. Stays paused until you resume.",
+  "devBuild.resume": "Resume auto-builds",
+  "devBuild.resumeHint": "Rebuild on commits again, starting with HEAD if the installed snapshot is behind it.",
   "devBuild.logTab": "Dev build log",
   "statusCluster.settingLabel": "Collapse header status indicators",
   "statusCluster.settingHelp":

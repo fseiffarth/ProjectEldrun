@@ -3461,6 +3461,13 @@ export const dict: Dict = {
   "devBuild.relaunchNowHint": "Cerrar esta ventana y volver a abrir Eldrun (dev) con la versión más reciente. Las pestañas se restauran como tras cualquier reinicio.",
   "devBuild.relaunching": "Reiniciando…",
   "devBuild.openLog": "Seguir el registro",
+  "devBuild.paused": "Compilaciones automáticas en pausa",
+  "devBuild.pausedDetail": "Los commits no recompilan Eldrun (dev) hasta que reanudes.",
+  "devBuild.chipPaused": "en pausa",
+  "devBuild.pause": "Pausar compilaciones automáticas",
+  "devBuild.pauseHint": "Deja de recompilar Eldrun (dev) en cada commit y cancela la compilación en curso para liberar el equipo. Sigue en pausa hasta que reanudes.",
+  "devBuild.resume": "Reanudar compilaciones automáticas",
+  "devBuild.resumeHint": "Vuelve a compilar con cada commit, empezando por HEAD si la versión instalada va por detrás.",
   "devBuild.logTab": "Registro del build",
   "statusCluster.settingLabel": "Plegar los indicadores de estado de la cabecera",
   "statusCluster.settingHelp":

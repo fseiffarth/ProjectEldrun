@@ -69,6 +69,15 @@ pub async fn dev_build_status() -> Option<crate::services::dev_build::DevBuildSt
         .flatten()
 }
 
+/// Pause (cancelling a running compile) or resume the background "Eldrun
+/// (dev)" auto-builds, from the dev-build chip's switch. User-clicked only.
+#[tauri::command]
+pub async fn dev_build_set_paused(paused: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::services::dev_build::set_paused(paused))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Close this frozen "Eldrun (dev)" window and reopen it on the newest
 /// snapshot: a detached helper waits for the exit and runs the launcher, which
 /// adopts the snapshot. The close goes through the main window, so the quit is

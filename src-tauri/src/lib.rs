@@ -1993,6 +1993,7 @@ pub fn run() {
             commands::debug::app_build_commit,
             commands::debug::dev_build_status,
             commands::debug::dev_build_relaunch,
+            commands::debug::dev_build_set_paused,
             commands::debug::dev_todo_groups,
             commands::debug::dev_todo_read,
             commands::debug::dev_todo_write,

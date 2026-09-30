@@ -17,9 +17,12 @@ import { ErrorNote } from "../common/ErrorNote";
  * (the last successful build's duration is the estimate — nothing better is
  * knowable from a release `cargo build`).
  *
- * Read-only towards the build: `dev_build_status` reads the script's own state
- * files, one action opens a root-console tab tailing its log, and it never
- * queues, starts or stops a build. The other action is the user's own relaunch:
+ * `dev_build_status` reads the script's own state files, and one action opens
+ * a root-console tab tailing its log. The only build control is the user's
+ * pause switch (`dev_build_set_paused`): pausing hands the machine back —
+ * nothing queues and a running compile is cancelled — and resuming queues
+ * HEAD if the snapshot fell behind meanwhile. The other action is the user's
+ * own relaunch:
  * in the frozen window, once a newer snapshot is installed or built, "Relaunch
  * now" quits through the ordinary close and reopens via the launcher
  * (`dev_build_relaunch`).
@@ -49,6 +52,7 @@ interface DevBuildStatus {
   relaunch: boolean;
   adoptable: string | null;
   canRelaunch: boolean;
+  paused: boolean;
   logPath: string;
 }
 
@@ -109,6 +113,10 @@ export function DevBuildIndicator() {
   const [now, setNow] = useState(() => Date.now());
   const [relaunching, setRelaunching] = useState(false);
   const [relaunchError, setRelaunchError] = useState<string | null>(null);
+  const [pausing, setPausing] = useState(false);
+  const [pauseError, setPauseError] = useState<string | null>(null);
+  // Bumped after a pause/resume so the poll re-reads at once.
+  const [refresh, setRefresh] = useState(0);
   const closeTimer = useRef<number | undefined>(undefined);
 
   const active = status?.state === "building" || status?.state === "waiting";
@@ -131,7 +139,7 @@ export function DevBuildIndicator() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [active, quiesce]);
+  }, [active, quiesce, refresh]);
 
   // The elapsed clock ticks locally between polls.
   const building = status?.state === "building";
@@ -158,6 +166,9 @@ export function DevBuildIndicator() {
     } else if (status.state === "waiting") {
       headline = t("devBuild.waiting");
       chipText = t("devBuild.chipQueued");
+    } else if (status.paused) {
+      headline = t("devBuild.paused");
+      chipText = t("devBuild.chipPaused");
     } else if (failed) {
       headline = t("devBuild.failed", { commit: failed.commit, status: failed.status });
       chipText = t("devBuild.chipFailed");
@@ -208,6 +219,18 @@ export function DevBuildIndicator() {
     });
   };
 
+  const setPaused = (paused: boolean) => {
+    setPausing(true);
+    setPauseError(null);
+    invoke("dev_build_set_paused", { paused })
+      .then(() => setStatus((s) => (s ? { ...s, paused } : s)))
+      .catch((e: unknown) => setPauseError(String(e)))
+      .finally(() => {
+        setPausing(false);
+        setRefresh((n) => n + 1);
+      });
+  };
+
   let detail: string | null = null;
   if (building && elapsed !== null) {
     const est = status.estimateSecs;
@@ -219,6 +242,8 @@ export function DevBuildIndicator() {
           : t("devBuild.elapsed", { elapsed: formatDuration(elapsed) });
   } else if (status.state === "waiting") {
     detail = t("devBuild.waitingDetail");
+  } else if (status.paused) {
+    detail = t("devBuild.pausedDetail");
   }
 
   return (
@@ -293,6 +318,7 @@ export function DevBuildIndicator() {
               )
             )}
             {relaunchError && <ErrorNote className="mobile-indicator-error" error={relaunchError} />}
+            {pauseError && <ErrorNote className="mobile-indicator-error" error={pauseError} />}
             <div className="mobile-indicator-actions">
               {status.canRelaunch && (
                 <button
@@ -306,6 +332,16 @@ export function DevBuildIndicator() {
                   <UntestedTag id="devBuild.relaunchNow" />
                 </button>
               )}
+              <button
+                type="button"
+                className="vpn-indicator-connect"
+                disabled={pausing}
+                aria-pressed={status.paused}
+                title={t(status.paused ? "devBuild.resumeHint" : "devBuild.pauseHint")}
+                onClick={() => setPaused(!status.paused)}
+              >
+                {t(status.paused ? "devBuild.resume" : "devBuild.pause")} <UntestedTag id="devBuild.pause" />
+              </button>
               <button type="button" className="vpn-indicator-connect" onClick={followLog}>
                 {t("devBuild.openLog")}
               </button>

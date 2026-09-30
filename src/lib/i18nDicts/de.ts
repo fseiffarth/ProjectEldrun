@@ -3470,6 +3470,13 @@ export const dict: Dict = {
   "devBuild.relaunchNowHint": "Dieses Fenster schließen und Eldrun (dev) mit dem neueren Stand wieder öffnen. Tabs werden wie nach jedem Neustart wiederhergestellt.",
   "devBuild.relaunching": "Wird neu gestartet…",
   "devBuild.openLog": "Build-Log verfolgen",
+  "devBuild.paused": "Auto-Builds pausiert",
+  "devBuild.pausedDetail": "Commits bauen Eldrun (dev) erst nach dem Fortsetzen neu.",
+  "devBuild.chipPaused": "pausiert",
+  "devBuild.pause": "Auto-Builds pausieren",
+  "devBuild.pauseHint": "Eldrun (dev) nicht mehr bei jedem Commit neu bauen und einen laufenden Build abbrechen, um den Rechner zu entlasten. Bleibt pausiert, bis du fortsetzt.",
+  "devBuild.resume": "Auto-Builds fortsetzen",
+  "devBuild.resumeHint": "Bei Commits wieder neu bauen, beginnend mit HEAD, falls der installierte Stand zurückliegt.",
   "devBuild.logTab": "Dev-Build-Log",
   "statusCluster.settingLabel": "Statusanzeigen in der Kopfleiste einklappen",
   "statusCluster.settingHelp":
