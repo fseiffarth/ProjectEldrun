@@ -17,7 +17,6 @@ import { AgentModeMarks, agentModeClass } from "../components/AgentModeMarks";
 import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
 import { ProjectFiles } from "../components/ProjectFiles";
-import { GitMark } from "../components/GitMark";
 import { tabColorCss } from "../tabColors";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
@@ -465,9 +464,6 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {/* Only once the host has answered: `!detail?.desktop_available` was also
         true while the first load was in flight, so every project opened on a
         "Desktop unavailable" notice that vanished a moment later. */}
-    {/* The desktop pill's git dot, in words: what is left to add, commit or
-        push. Nothing while clean or while the desktop is away. */}
-    {detail?.project.git && <p className="project-git"><GitMark state={detail.project.git} long /></p>}
     {detail && !detail.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
     {error && <p className="error">{error}</p>}
     {projectInbox.view}
