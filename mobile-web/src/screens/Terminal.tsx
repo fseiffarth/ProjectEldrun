@@ -580,7 +580,7 @@ function QuestionList({ prompt, tabs, question, sent, sendingLabel, onPick }: {
 
 /** `pickModel`: the tab card's model was tapped, so the session opens with its
  * model picker already up — once, as soon as the session has drawn. */
-export function Terminal({ tab, project, back, pickModel = false, signInTab = false, openTab }: {
+export function Terminal({ tab, project, back, pickModel = false, signInTab: openedToSignIn = false, openTab }: {
   tab: TabRow;
   /** The project the tab belongs to, for the files drawer a swipe from the
    * left of the output opens (`ProjectFiles`). */
@@ -588,11 +588,16 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   back: () => void;
   pickModel?: boolean;
   /** The tab exists only to sign its CLI in (`src/lib/agents/signInLaunch.ts`):
-   * the sign-in sheet is up from the start. */
+   * the sign-in sheet is up from the start. The row says so too
+   * (`TabRow.sign_in`), for a sign-in tab reached any other way. */
   signInTab?: boolean;
   /** Shows another tab of the same project in place of this one. */
   openTab?: (tab: TabRow, opts?: { signIn?: boolean }) => void;
 }) {
+  // From the tab list, or after the PWA reloaded on the way back from the
+  // sign-in page, only the row knows — and without it the sheet lost its
+  // retry, its other way in and the Done that closes the tab.
+  const signInTab = openedToSignIn || tab.sign_in === true;
   const t = useT();
   const host = useRef<HTMLDivElement>(null);
   const wideHint = useRef<HTMLDivElement>(null);

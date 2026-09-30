@@ -509,6 +509,7 @@ mod tests {
                 viewer_busy: false,
                 last_activity: None,
                 color: None,
+                sign_in: false,
             },
             tmux_name: "eldrun-x".into(),
             session_id: session_id.map(str::to_string),

@@ -3189,6 +3189,28 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     request (`like_tab` sidecar-only); `sign_in` rows in launch-options.
     Untested id `mobile.signIn.tab`. Needs the backend restarted (sidecar
     routes + protocol fields); the PWA is rebuilt.
+    - **Fix 2026-09-30 — the phone never reached the sign-in tab** (✅ code-complete,
+      automated tests passing — `TabPersistFilter.test.ts`,
+      `discovery::sign_in_and_cloud_tabs_are_listed_without_a_session`; ⚠️ not verified on a
+      phone). A sign-in tab has no session id, so it was neither tmux-wrapped nor
+      saved to `terminals.json`, and the sidecar's catalog lists only resumable
+      agent tabs: the create waited 5 s and answered `launch_pending`. Sign-in
+      tabs now carry `signIn`: tmux-wrapped and saved while they run
+      (`isSavedWhileLive`), listed by the catalog, dropped on the next load.
+      Needs the backend restarted (catalog field). Captured 2026-09-30, Claude
+      2.1.284 `auth login --claudeai` prints `If the browser didn't open, visit:
+      https://claude.com/cai/oauth/authorize?code=true…` then `Paste code here if
+      prompted >` (flow `code`). Phone-launched cloud tabs had the same gap
+      (confirmed from code: `buildCloudTabSpec` mints no session id) and now
+      carry `cloud` the same way (`CloudSessions.test.ts`, `discovery::
+      sign_in_and_cloud_tabs_are_listed_without_a_session`); a desktop cloud tab
+      in a Mobile-access project is now listed on the phone too.
+    - **Fix 2026-09-30 — the phone forgot a tab was a sign-in tab** (✅
+      code-complete, `MobileSignInTabRow.test.tsx`; ⚠️ not verified on a phone).
+      The catalog row now carries `sign_in` (a boolean, nothing else), so a
+      sign-in tab opened from the tab list or after a PWA reload keeps its sheet
+      with Start again / the other way in / Done-closes-the-tab. PWA rebuilt;
+      needs the backend restarted.
     - Unverified CLI shapes: Codex `--device-auth` (the ChatGPT account may
       need device-code sign-in allowed first — then use "Sign in through the
       browser instead"), Cursor/OpenCode/Amp login output, what Claude's

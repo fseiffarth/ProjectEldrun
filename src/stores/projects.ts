@@ -27,6 +27,7 @@ import {
   isRestorableTab,
   isRelaunchableLocalTab,
   isResumableAgentTab,
+  isSavedWhileLive,
   remoteHostIdOf,
   ROOT_SCOPE,
   toSavedTabEntry,
@@ -735,7 +736,7 @@ export function projectTmuxTargets(
           localRunning,
           localPersistenceEnabled,
           !!project.eldrun_mobile_access,
-          isResumableAgentTab(tab) || isRelaunchableLocalTab(tab),
+          isResumableAgentTab(tab) || isRelaunchableLocalTab(tab) || isSavedWhileLive(tab),
         ));
     const session = tab.tmuxAttach ?? (persistent ? tab.tmuxSession : undefined);
     if (!session) continue;

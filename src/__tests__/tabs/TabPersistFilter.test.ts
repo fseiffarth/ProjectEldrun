@@ -21,6 +21,8 @@ import {
   isRelaunchableLocalTab,
   isResumableAgentTab,
   isRestorableTab,
+  isSavedWhileLive,
+  hydrateScopeFromDisk,
   pruneSavedTree,
   useTabsStore,
   type SavedLayoutTree,
@@ -80,6 +82,75 @@ describe("a browser tab round-trips its URL and nothing else", () => {
     // Recovered from a bare persisted cmd, too — a layout written before the
     // `kind` field existed still comes back as a browser tab.
     expect(cmdToKind(BROWSER_TAB_CMD)).toBe("browser");
+  });
+});
+
+describe("a sign-in tab (31bk) or cloud session", () => {
+  it("is saved in its tmux session while it runs, so the phone can attach, and never restored", async () => {
+    // The Mobile sidecar lists a scope's tabs from the saved layout and attaches
+    // through tmux; a sign-in tab left out of either timed the phone's create
+    // out as `launch_pending`. It has no session id, so a load drops it again.
+    useTabsStore.setState({
+      scope: "p",
+      tabsByScope: {},
+      layoutByScope: {},
+      focusedGroupByScope: {},
+      detachedGroupsByScope: {},
+      hiddenGroupsByScope: {},
+    });
+    const tab = useTabsStore.getState().addTab({
+      label: "Claude sign-in",
+      cmd: "claude",
+      args: ["auth", "login", "--claudeai"],
+      cwd: "/tmp",
+      kind: "agent",
+      signIn: true,
+    });
+    expect(tab.tmuxSession).toMatch(/^eldrun-p--agent-/);
+    expect(isRestorableTab(tab)).toBe(false);
+    expect(isSavedWhileLive(tab)).toBe(true);
+    const saved = useTabsStore.getState().snapshotScopeForSwitch("p");
+    const savedTab = saved.tabs.find((t) => t.key === tab.key);
+    expect(savedTab).toMatchObject({ signIn: true, tmuxSession: tab.tmuxSession });
+
+    // The next launch: restore reads the saved layout and keeps restorable tabs only.
+    useTabsStore.setState({ tabsByScope: {}, layoutByScope: {} });
+    invokeMock.mockResolvedValueOnce({ tabLayout: saved.tabs, tabGroups: saved.tabGroups });
+    expect(await hydrateScopeFromDisk("p", "/tmp")).toBe(false);
+    expect(useTabsStore.getState().tabsByScope.p ?? []).toEqual([]);
+  });
+
+  it("covers a cloud session the same way — saved while it runs, never restored into a second one", async () => {
+    useTabsStore.setState({
+      scope: "p",
+      tabsByScope: {},
+      layoutByScope: {},
+      focusedGroupByScope: {},
+      detachedGroupsByScope: {},
+      hiddenGroupsByScope: {},
+    });
+    const tab = useTabsStore.getState().addTab({
+      label: "Claude cloud",
+      cmd: "claude",
+      args: ["--cloud", "fix it"],
+      cwd: "/tmp",
+      kind: "agent",
+      cloud: true,
+    });
+    expect(isSavedWhileLive(tab)).toBe(true);
+    const saved = useTabsStore.getState().snapshotScopeForSwitch("p");
+    expect(saved.tabs.find((t) => t.key === tab.key)).toMatchObject({ cloud: true, tmuxSession: tab.tmuxSession });
+    useTabsStore.setState({ tabsByScope: {}, layoutByScope: {} });
+    invokeMock.mockResolvedValueOnce({ tabLayout: saved.tabs, tabGroups: saved.tabGroups });
+    expect(await hydrateScopeFromDisk("p", "/tmp")).toBe(false);
+    expect(useTabsStore.getState().tabsByScope.p ?? []).toEqual([]);
+  });
+
+  it("is only a live agent tab with the marker", () => {
+    expect(isSavedWhileLive({ kind: "agent", signIn: true })).toBe(false);
+    expect(isSavedWhileLive({ kind: "agent", tmuxSession: "eldrun-p--agent-1" })).toBe(false);
+    expect(isSavedWhileLive({ kind: "shell", signIn: true, tmuxSession: "eldrun-p--shell-1" })).toBe(false);
+    expect(isSavedWhileLive({ kind: "local_agent", cloud: true, tmuxSession: "eldrun-p--agent-1" })).toBe(false);
   });
 });
 

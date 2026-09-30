@@ -46,6 +46,8 @@ describe("cloud launches", () => {
     expect(spec.initialInput).toBeUndefined();
     expect(spec.env).not.toHaveProperty("ELDRUN_TAB_UID");
     expect(isRestorableTab(spec)).toBe(false);
+    // …yet it is saved while it runs, so a phone that started it can attach.
+    expect(spec.cloud).toBe(true);
   });
 });
 

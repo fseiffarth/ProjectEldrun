@@ -172,7 +172,8 @@ export function buildStaticTabSpec(
  * `lib/agents/cloudSessions`). Unlike {@link buildStaticTabSpec} it mints no
  * session id, no `ELDRUN_TAB_UID` and no session-rename input: the session is
  * the vendor's, and a tab without an id is one restore drops rather than
- * relaunching into a second cloud session.
+ * relaunching into a second cloud session. `cloud` still has it saved and
+ * tmux-wrapped while it runs, so a phone can attach (`isSavedWhileLive`).
  */
 export function buildCloudTabSpec(
   item: StaticMenuItem,
@@ -188,6 +189,7 @@ export function buildCloudTabSpec(
     env: { ...(item.env ?? {}) },
     cwd: projectCwd,
     kind: item.kind,
+    cloud: true,
   };
 }
 
@@ -196,6 +198,8 @@ export function buildCloudTabSpec(
  * `lib/agents/signInLaunch`): the CLI's own login command, or a plain launch
  * for a CLI that signs in when it starts. Like {@link buildCloudTabSpec} it
  * mints no session id, so restore drops it rather than signing in again.
+ * `signIn` still has it saved and tmux-wrapped while it runs, so the phone
+ * that asked for it can attach (`isSavedWhileLive`).
  */
 export function buildSignInTabSpec(
   item: StaticMenuItem,
@@ -212,6 +216,7 @@ export function buildSignInTabSpec(
     env: { ...(item.env ?? {}), ...(launch.env ?? {}) },
     cwd: projectCwd,
     kind: item.kind,
+    signIn: true,
   };
 }
 
