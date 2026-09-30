@@ -252,6 +252,11 @@ export interface MobileMailFolder { id: string; name: string; kind: string; unre
 export interface MobileMailAccount { id: string; label: string; address: string; folders: MobileMailFolder[] }
 export interface MobileMailHeader { id: string; subject: string; sender: { name?: string; address: string }; date: string; seen: boolean; flagged?: boolean; answered?: boolean; has_attachments: boolean; preview: string }
 export interface MobileMailAttachment { filename: string; mime: string; size: number }
+
+/** The host reads this display preference from desktop settings on each probe. */
+export function getMobileStatus(): Promise<{ show_untested_tags?: boolean }> {
+  return api("/api/v1/status");
+}
 /** The only flag writes the phone may ask for. Delete and move do not exist here. */
 export type MailMarkAction = "seen" | "unseen" | "flag" | "unflag";
 /** What the connected desktop lets this phone *do* to mail, beyond reading.

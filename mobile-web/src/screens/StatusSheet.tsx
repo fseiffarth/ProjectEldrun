@@ -119,7 +119,7 @@ export function StatusSheet({ tab, live, onLimits, onClose, signIn }: {
       <span className="sheet-grip" aria-hidden="true" />
       <header>
         <button className="sheet-close" onClick={onClose} aria-label="Close">✕</button>
-        <h2>Status <small>Untested</small></h2>
+        <h2>Status {isUntested("mobile.sheet.status") && <small>{t("mobile.newTab.untested")}</small>}</h2>
         <div className="terminal-view-switch" aria-label="Status view">
           <button className={view === "formatted" ? "selected" : ""} aria-pressed={view === "formatted"} onClick={() => setView("formatted")}>Formatted</button>
           <button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => setView("terminal")}>Terminal</button>

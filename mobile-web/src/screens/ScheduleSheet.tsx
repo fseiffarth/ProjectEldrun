@@ -126,7 +126,7 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
   return <div className="sheet-backdrop" role="presentation" onClick={onClose}>
     <section className="option-sheet schedule-sheet" role="dialog" aria-modal="true" aria-label={label ? `Scheduled prompts for ${label}` : "Scheduled prompts"} onClick={(event) => event.stopPropagation()}>
       <span className="sheet-grip" aria-hidden="true" />
-      <header><button className="sheet-close" onClick={onClose} aria-label="Close">✕</button><h2>Scheduled prompts <small>Untested</small></h2><span className="sheet-close" aria-hidden="true" /></header>
+      <header><button className="sheet-close" onClick={onClose} aria-label="Close">✕</button><h2>Scheduled prompts {isUntested("mobile.sheet.schedules") && <small>{t("mobile.newTab.untested")}</small>}</h2><span className="sheet-close" aria-hidden="true" /></header>
       {label && <p className="sheet-note">Tab: {label}</p>}
       {timeZone && <p className="sheet-note">Desktop time zone: {timeZone}</p>}
       <p className="sheet-note">Due prompts wait up to one hour for an idle point. They replace any unsent composer draft, even when the tab is focused, and run only while desktop Eldrun is open.</p>

@@ -340,6 +340,11 @@ export const UNTESTED = {
   "mailPdfPreview.1": { area: "mail", what: "MailPdfPreview · PDF, {count} pages" },
 
   // --- mobile — The phone PWA ---------------------------------------
+  "mobile.sheet.color": { area: "mobile", what: "Color sheet · tab colour picker" },
+  "mobile.sheet.rename": { area: "mobile", what: "Rename sheet · tab label change" },
+  "mobile.sheet.schedules": { area: "mobile", what: "Schedule sheet · scheduled prompts" },
+  "mobile.sheet.prompts": { area: "mobile", what: "Prompts sheet · collected prompts" },
+  "mobile.sheet.status": { area: "mobile", what: "Status sheet · agent state and usage" },
   "mobile.boxAccess": { area: "mobile", what: "MobileSettings · Box access" },
   "mobile.signIn": { area: "mobile", what: "Terminal · Agent sign-in from the phone: notice + sheet for the CLI's login link (device code, paste-back code, localhost address relayed by the desktop), Status sheet Sign in button" },
   "mobile.signIn.tab": { area: "mobile", what: "Project ＋ → Sign in to an agent (each CLI's login state, Sign in / other way in) and an agent tab's \"needs you to sign in\" notice: a sign-in tab running the CLI's own login command (Claude auth login, Codex login --device-auth, Copilot login --device-code, Cursor login, …), a step-by-step sheet with copy-and-open, one-tap Paste, Signed in ✓ and Start again" },
@@ -513,6 +518,16 @@ export const UNTESTED = {
   "todo.overlayTitle": { area: "todo", what: "TodoOverlay · To-do board" },
 } as const satisfies Record<string, UntestedEntry>;
 
+// The phone shares this register but renders its tags in several shapes. Its
+// status request sets this once connected, and App re-renders when it changes.
+let tagsVisible = true;
+
+export function setUntestedTagsVisible(visible: boolean): boolean {
+  if (tagsVisible === visible) return false;
+  tagsVisible = visible;
+  return true;
+}
+
 /** Every id the register knows. A call site can only pass one of these. */
 export type UntestedId = keyof typeof UNTESTED;
 
@@ -524,7 +539,7 @@ export type UntestedId = keyof typeof UNTESTED;
  * was verified. The registry test catches the case either way.
  */
 export function isUntested(id: UntestedId | string | undefined | null | false): boolean {
-  if (!id) return false;
+  if (!id || !tagsVisible) return false;
   const entry = (UNTESTED as Record<string, UntestedEntry>)[id];
   return entry ? !entry.tested : true;
 }

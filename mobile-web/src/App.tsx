@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { EldrunMark } from "./EldrunMark";
 import { hasPairedDevice, logoutAuth, resumeAuth } from "./auth";
-import { connectTrace, primeConnection, setUnauthorizedHandler, traceConnect, type TabRow } from "./api";
+import { connectTrace, getMobileStatus, primeConnection, setUnauthorizedHandler, traceConnect, type TabRow } from "./api";
 import { classifyUnavailable, describeUnavailable, suspectsTunnel, tailscaleAppLink, TUNNEL_STEPS, unavailableDetail, type UnavailableReason } from "./connection";
 import { forgetLastPlace, parsePlace, rememberLastPlace, resolvePlace, restoreLastPlace, type LastPlace, type MobileSection, type RestoredPlace } from "./lastPlace";
 import { refreshPush } from "./push";
 import { hasLocalUnlock } from "./localLock";
 import { noteUnlockedLeave, takeReloadGrace } from "./reloadGrace";
-import { isUntested } from "../../src/lib/untested";
+import { isUntested, setUntestedTagsVisible } from "../../src/lib/untested";
 import { useT } from "../../src/lib/i18n";
 import { Pair } from "./screens/Pair";
 import { LocalUnlock } from "./screens/LocalUnlock";
@@ -89,6 +89,15 @@ function takeLaunchPlace(): LastPlace | null {
   }
 }
 const launchPlace = takeLaunchPlace();
+
+// Keep the last known desktop preference through the lock and connection
+// screens, before the authenticated status probe can refresh it.
+try {
+  setUntestedTagsVisible(localStorage.getItem("eldrun-show-untested-tags") === "true");
+} catch {
+  // Private browsing may refuse localStorage; default to hiding the tags.
+  setUntestedTagsVisible(false);
+}
 
 /** What counts as someone being there. Streamed terminal output does not. */
 const ACTIVITY_EVENTS = ["pointerdown", "keydown", "input", "touchstart", "touchmove", "wheel", "scroll"] as const;
@@ -197,6 +206,7 @@ function TabBar({ active, open }: { active: Tab; open: (tab: Tab) => void }) {
 
 export function App() {
   const [auth, setAuth] = useState<"loading" | "paired" | "unpaired" | "setup" | "locked" | "unavailable">("loading");
+  const [, refreshTags] = useState(0);
   const [tab, setTab] = useState<Tab>("projects");
   const [projectView, setProjectView] = useState<ProjectView>({ kind: "home" });
   const [terminal, setTerminal] = useState<{ project: string; tab: TabRow; pickModel?: boolean; signIn?: boolean } | null>(null);
@@ -307,6 +317,25 @@ export function App() {
     if (auth !== "paired") return;
     rememberLastPlace(currentPlace(tab, projectView, terminal));
   }, [auth, tab, projectView, terminal]);
+
+  useEffect(() => {
+    if (auth !== "paired") return;
+    const refresh = () => {
+      void getMobileStatus().then(({ show_untested_tags }) => {
+        const visible = show_untested_tags === true;
+        if (setUntestedTagsVisible(visible)) refreshTags((tick) => tick + 1);
+        try { localStorage.setItem("eldrun-show-untested-tags", String(visible)); } catch { /* unavailable */ }
+      }).catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [auth]);
 
   // A notification tapped while a window is already open: `sw.js` focuses it
   // and says where to go. Locked, it waits for the unlock like a cold open.
