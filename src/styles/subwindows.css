@@ -973,7 +973,7 @@ html[data-steer="projects"] .app-header {
   outline-offset: -2px;
 }
 html[data-steer="projects"] :is(.project-pill.active, .box-chip.active),
-html[data-steer="tabs"] .subwindow.focused .tab.active {
+html:is([data-steer="tabs"], [data-steer="scroll"]) .subwindow.focused .tab.active {
   outline: 2px solid var(--tab-accent, var(--accent));
   outline-offset: -2px;
   background-image: linear-gradient(
@@ -981,14 +981,12 @@ html[data-steer="tabs"] .subwindow.focused .tab.active {
     color-mix(in srgb, var(--tab-accent, var(--accent)) 26%, transparent)
   );
 }
-html[data-steer="panes"] .focus-frame {
+/* Inside the terminal (the scroll level) the tab stays marked (above) and the
+   frame thickens around it. On the focus frame, not `.subwindow-body`: the
+   pane layer (z-index 2) paints the terminal over anything in the body. */
+html:is([data-steer="panes"], [data-steer="scroll"]) .focus-frame {
   outline-width: 4px;
   outline-offset: -4px;
-}
-/* Inside the terminal (the scroll level): the pane's body is the object. */
-html[data-steer="scroll"] .subwindow.focused .subwindow-body {
-  outline: 2px solid var(--tab-accent, var(--accent));
-  outline-offset: -2px;
 }
 html[data-steer-region="side"] .side-panel.open,
 html[data-steer-region="header"] .app-header,

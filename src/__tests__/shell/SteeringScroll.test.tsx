@@ -129,6 +129,33 @@ describe("terminalScroll", () => {
     expect(term.scrollLines).not.toHaveBeenCalled();
     expect(scrollTerminal("p:missing", -0.5)).toBe(false);
   });
+
+  it("scrolls a Reader shown over the terminal instead, and leaves tmux alone", () => {
+    const { term, wheels } = fakeTerm({ tracking: true, buffer: "alternate", rows: 40 });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    host.appendChild(term.element);
+    const reader = document.createElement("div");
+    reader.className = "terminal-reader";
+    const list = document.createElement("div");
+    list.className = "terminal-reader-list";
+    reader.appendChild(list);
+    host.appendChild(reader);
+    // jsdom has no layout: a 500px-high list over 5000px of conversation.
+    Object.defineProperty(list, "clientHeight", { value: 500 });
+    Object.defineProperty(list, "scrollHeight", { value: 5000 });
+    list.scrollTop = 4500;
+    register("p:t", term);
+
+    expect(scrollTerminal("p:t", -0.5)).toBe(true);
+    expect(list.scrollTop).toBe(4275);
+    scrollTerminal("p:t", -1);
+    expect(list.scrollTop).toBe(3825);
+    scrollTerminalToLive("p:t");
+    expect(list.scrollTop).toBe(5000);
+    releaseTerminalScroll();
+    expect(wheels).toEqual([]);
+  });
 });
 
 describe("steering scroll level", () => {

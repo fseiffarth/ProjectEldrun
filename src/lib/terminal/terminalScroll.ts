@@ -20,6 +20,11 @@ import { terminalFor } from "./terminalRegistry";
  * instead of reaching the program. `releaseTerminalScroll` takes every notch
  * back when steering leaves the scroll level, so the pane is live again before
  * anyone types into it.
+ *
+ * An agent pane showing its Reader (chat mode, `TerminalReaderView`, drawn
+ * over the terminal in the same host) scrolls the Reader's conversation
+ * instead: the terminal is hidden beneath it, and wheel notches sent there
+ * would only move tmux into a copy mode nobody sees.
  */
 
 /** Lines one wheel notch moves tmux's copy mode (its default `-N 5`). */
@@ -48,6 +53,11 @@ function sendWheel(term: Terminal, notches: number): void {
   for (let i = 0; i < Math.abs(notches); i++) screen.dispatchEvent(new WheelEvent("wheel", init));
 }
 
+/** The conversation of a Reader shown over this terminal, if one is. */
+function readerList(term: Terminal): HTMLElement | null {
+  return term.element?.parentElement?.querySelector<HTMLElement>(":scope > .terminal-reader .terminal-reader-list") ?? null;
+}
+
 /**
  * Scroll the pane `pages` screens (negative = back, into the history). False
  * when there is no terminal, or nothing a keyboard scroll can move.
@@ -55,6 +65,12 @@ function sendWheel(term: Terminal, notches: number): void {
 export function scrollTerminal(ptyId: string, pages: number): boolean {
   const term = terminalFor(ptyId);
   if (!term || pages === 0) return false;
+  const reader = readerList(term);
+  if (reader) {
+    // A little under a whole screen, so a line read last stays in sight.
+    reader.scrollTop += Math.sign(pages) * Math.max(1, Math.round(reader.clientHeight * Math.abs(pages) * 0.9));
+    return true;
+  }
   const lines = Math.sign(pages) * Math.max(1, Math.round(term.rows * Math.abs(pages)));
   if (term.modes.mouseTrackingMode !== "none") {
     const notches = Math.sign(lines) * Math.max(1, Math.round(Math.abs(lines) / LINES_PER_NOTCH));
@@ -78,6 +94,8 @@ export function scrollTerminalToLive(ptyId: string): void {
   owed.delete(ptyId);
   moved.delete(ptyId);
   if (!term) return;
+  const reader = readerList(term);
+  if (reader) reader.scrollTop = reader.scrollHeight;
   if (up > 0 && term.modes.mouseTrackingMode !== "none") sendWheel(term, up);
   term.scrollToBottom();
 }
