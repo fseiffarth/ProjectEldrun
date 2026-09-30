@@ -61,7 +61,7 @@ const HANDOFF: Record<SteeringHandoff, { where: TranslationKey; keys: [string, T
 const HANDOFF_BACK_KEY = "Esc";
 
 /**
- * The compact bottom-center legend shown while keyboard steering mode is
+ * The slim legend docked along the window's bottom edge shown while keyboard steering mode is
  * active — the visible half of the mode's contract (every key is swallowed, so
  * the user must be able to see what the keys do and how to get out). It names
  * the level steering is on and lists only that level's keys, boxed by
@@ -76,7 +76,7 @@ const HANDOFF_BACK_KEY = "Esc";
  * Mounted once in `AppShell` (the FocusFrameOverlay/host pattern) and
  * portalled to `document.body` so no pane clips it; `pointer-events: none` —
  * steering is a keyboard mode, the legend is display only. Steering's H folds
- * it into a round corner badge (`legendHidden`, remembered per machine) that
+ * it into a round badge at the bottom centre (`legendHidden`, remembered per machine) that
  * keeps saying the mode is on; the badge alone takes a click, to unfold.
  *
  * While steering has lent the keyboard to a box — the project jump, the
@@ -165,10 +165,7 @@ export function SteeringLegend() {
     );
     return createPortal(
       <div className="steering-legend steering-legend-grouped" role="status" aria-label={t("steering.legendTitle")}>
-        <span className="steering-legend-where">
-          {t(box.where)}
-          <UntestedTag id="steering.handoffLegend" />
-        </span>
+        <span className="steering-legend-where">{t(box.where)}</span>
         {box.keys.length > 0 && (
           <div className="steering-legend-group tok-type">
             <span className="steering-legend-group-keys">{box.keys.map(keyItem)}</span>
@@ -184,7 +181,7 @@ export function SteeringLegend() {
   if (!active) return null;
   const legendKey = steeringRowKeys(["legend"], steerKeys);
   if (legendHidden) {
-    // Folded (H): a round badge in the corner still says steering is on; H
+    // Folded (H): a round badge at the bottom centre still says steering is on; H
     // again — or a click — unfolds the key list.
     return createPortal(
       <div className="steering-legend-fab" role="status" aria-label={t("steering.legendTitle")}>
@@ -249,27 +246,16 @@ export function SteeringLegend() {
   };
 
   // The keys in boxes by what they are for, each box in one editor token
-  // colour; the accent frame, not a title, says the mode is on.
+  // colour (the colour, not a printed name, tells the boxes apart, which keeps
+  // the strip slim); the accent frame, not a title, says the mode is on.
   return createPortal(
     <div className="steering-legend steering-legend-grouped" role="status" aria-label={t("steering.legendTitle")}>
-      <span className="steering-legend-where">
-        {where && t(where)}
-        <UntestedTag id="steering.levels" />
-        <UntestedTag id="steering.hidePointer" />
-        <UntestedTag id="steering.agentKeys" />
-        <UntestedTag id="steering.agentKeysStay" />
-        {region === "settings" && <UntestedTag id="steering.settings" />}
-        {(region === "header" || region === "overlay" || region === "card") && <UntestedTag id="steering.overlays" />}
-        <UntestedTag id="steering.agentPrompt" />
-        {level === "scroll" && <UntestedTag id="steering.scroll" />}
-        <UntestedTag id="steering.legendGroups" />
-      </span>
+      {where && <span className="steering-legend-where">{t(where)}</span>}
       {STEERING_GROUPS.map((g) => {
         const rows = keys.filter((k) => k.group === g.id);
         if (rows.length === 0) return null;
         return (
-          <div className={`steering-legend-group ${g.tok}`} key={g.id} data-group={g.id}>
-            <span className="steering-legend-group-name">{t(g.labelKey)}</span>
+          <div className={`steering-legend-group ${g.tok}`} key={g.id} data-group={g.id} aria-label={t(g.labelKey)}>
             <span className="steering-legend-group-keys">{rows.map(item)}</span>
           </div>
         );

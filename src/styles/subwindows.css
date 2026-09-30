@@ -735,24 +735,32 @@
   border-radius: 3px;
 }
 
-/* The steering legend proper (SteeringLegend): no title — its accent frame
-   and the window's accent wash say the mode is on. The keys sit in one box per
-   `STEERING_GROUPS` entry; each box wears a `.tok-*` class from the code
-   viewer, so its `color` is the theme's editor token colour and the box, its
-   name and its key caps all tint from `currentColor`. */
+/* Docked along the window's bottom edge like a status bar — full width, flush,
+   no card of its own — and seamed like the top frame (`.app-header`'s
+   `--top-frame-seam`), so the two bars read as one frame around the content.
+   Wide, so a level's keys fit in one or two rows. The groups carry no printed
+   name; each keeps its editor token colour. */
 .steering-legend-grouped {
-  align-items: stretch;
-  gap: 6px;
-  padding: 6px;
-  max-width: min(94vw, 1240px);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  transform: none;
+  max-width: none;
+  gap: 2px 3px;
+  padding: 2px 8px;
   background: var(--bg-panel);
+  border: 0;
+  border-radius: 0;
+  box-shadow: 0 -1px 0 var(--top-frame-seam);
+  font-size: var(--text-sm);
+  line-height: 1.2;
 }
 .steering-legend-where {
   align-self: center;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 10px;
+  padding: 0 7px;
   font-size: var(--text-sm);
   font-weight: 700;
   color: var(--bg-main);
@@ -763,14 +771,14 @@
   display: none;
 }
 .steering-legend-group {
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
+  align-items: center;
   gap: 3px;
-  padding: 3px 8px 5px;
+  padding: 0 4px;
   font-style: normal; /* .tok-comment slants code comments, not this */
   background: color-mix(in srgb, currentColor 10%, var(--bg-panel));
   border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
-  border-top: 3px solid currentColor;
+  border-left: 3px solid currentColor;
   border-radius: var(--radius);
 }
 /* Outside the fancy (Helix) pair `.tok-tag` is `.tok-func`'s colour (accent /
@@ -778,19 +786,18 @@
 html:not([data-theme^="fancy_"]) .steering-legend-group.tok-tag {
   color: var(--danger);
 }
-.steering-legend-group-name {
-  font-size: var(--text-xs);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
 .steering-legend-group-keys {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px 12px;
+  gap: 1px 6px;
 }
 .steering-legend-group .steering-legend-item {
+  gap: 3px;
   color: inherit;
+}
+.steering-legend-group .steering-legend-item kbd {
+  padding: 0 3px;
+  line-height: 1.2;
 }
 .steering-legend-group .steering-legend-label {
   color: var(--text-primary);
@@ -805,17 +812,19 @@ html:not([data-theme^="fancy_"]) .steering-legend-group.tok-tag {
   background: color-mix(in srgb, currentColor 85%, var(--text-primary));
 }
 
-/* Steering on with the legend folded (steering's H): a round accent badge in
-   the bottom-right corner, the key that unfolds it on its rim. The wrapper is
-   click-through; only the badge takes a click. Static shadow token only. */
+/* Steering on with the legend folded (steering's H): a round accent badge at
+   the bottom centre, where the legend strip sits, the key that unfolds it on
+   its rim. The wrapper is click-through; only the badge takes a click. Static
+   shadow token only. */
 .steering-legend-fab {
   position: fixed;
-  right: 18px;
+  left: 50%;
   bottom: 18px;
+  transform: translateX(-50%);
   z-index: 9998;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: center;
   gap: 6px;
   pointer-events: none;
 }
@@ -836,6 +845,43 @@ html:not([data-theme^="fancy_"]) .steering-legend-group.tok-tag {
 }
 .steering-legend-fab-button:hover {
   background: var(--accent-hover);
+}
+/* The folded badge pulses so "steering is still on" can't be missed: an accent
+   ring behind it grows and fades. A plain border animated by transform and
+   opacity — never an animated blurred box-shadow (WebKitGTK). */
+.steering-legend-fab-button::before,
+.steering-legend-fab-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: steering-fab-pulse 1.8s ease-out infinite;
+}
+.steering-legend-fab-button::after {
+  animation-delay: 0.9s;
+}
+@keyframes steering-fab-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .steering-legend-fab-button::before {
+    animation: none;
+    transform: scale(1.25);
+    opacity: 0.6;
+  }
+  .steering-legend-fab-button::after {
+    display: none;
+  }
 }
 .steering-legend-fab-button kbd {
   position: absolute;
