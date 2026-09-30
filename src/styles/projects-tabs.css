@@ -378,23 +378,25 @@
   white-space: nowrap;
 }
 
-/* The Eldrun logo — the same mark the drag grip wears at the bar's left edge —
-   standing for "all projects / the boxes" while the chip names no scope. */
+/* The Eldrun logo — the bar's one mark, at the full height the drag grip's
+   copy had before it was dropped — standing for "all projects / the boxes"
+   while the chip names no scope. */
 .box-chip-icon {
-  width: 18px;
-  height: 18px;
+  width: 25px;
+  height: 25px;
   flex-shrink: 0;
   color: var(--top-frame-text);
 }
 
 /* The mark the chip wears instead of the logo when it names the root scope: the
    app's own spark, the glyph its pinned pill carried before it folded in here,
-   at 18px and without the pill's one-per-launch intro flourish (the chip
-   re-mounts its star on every trip back to root, and a logo that replays its
-   entrance on each visit is a tic, not a flourish). */
+   at the logo's 25px (the two swap in one slot) and without the pill's
+   one-per-launch intro flourish (the chip re-mounts its star on every trip
+   back to root, and a logo that replays its entrance on each visit is a tic,
+   not a flourish). */
 .box-chip-star {
-  width: 18px;
-  height: 18px;
+  width: 25px;
+  height: 25px;
   flex-shrink: 0;
   color: inherit;
 }

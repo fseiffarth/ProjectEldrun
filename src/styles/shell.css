@@ -202,20 +202,6 @@ select option {
   color: var(--text-primary);
 }
 .app-drag-grip:active { cursor: var(--cur-grabbing, grabbing); }
-.app-drag-grip-mark {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 33px;
-  height: 30px;
-  flex: none;
-  color: var(--top-frame-text);
-}
-.app-drag-grip-mark svg {
-  position: relative;
-  width: 25px;
-  height: 25px;
-}
 .app-drag-grip-dots { font-size: 12px; opacity: .7; }
 .app-drag-grip:hover .app-drag-grip-dots { opacity: 1; }
 

@@ -12,7 +12,6 @@ import { SettingsMenu } from "../header/SettingsMenu";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { LocalModelMenu } from "./LocalModelMenu";
-import { LogoIcon } from "./LogoIcon";
 import { useT } from "../../lib/i18n";
 
 const NON_DRAG_SELECTOR = [
@@ -68,7 +67,6 @@ export function HeaderBar() {
           title={t("header.dragToMove")}
           aria-hidden="true"
         >
-          <span className="app-drag-grip-mark"><LogoIcon /></span>
           <span className="app-drag-grip-dots">⠿</span>
         </span>
         <Clock />

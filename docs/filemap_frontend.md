@@ -33,7 +33,7 @@ stores stay at the top. No `index.ts` barrels.
 | File | Purpose |
 |------|---------|
 | `AppShell.tsx` | Top-level layout: header, center, side-panel wiring. |
-| `HeaderBar.tsx` | Hexagon-framed Eldrun mark in the window drag handle + the top bar's three zones: centre = project strip only; right = global apps (✉ 🗓 ☑), global menus (🧠 ⚙), then `header/StatusCluster`. |
+| `HeaderBar.tsx` | Window drag handle (⠿; the Eldrun mark lives in `BoxScopeChip`) + the top bar's three zones: centre = project strip only; right = global apps (✉ 🗓 ☑), global menus (🧠 ⚙), then `header/StatusCluster`. |
 | `CenterPanel.tsx` | Tab/subwindow tiling host; keeps all panes mounted across scope switches. |
 | `DetachedCenterPanel.tsx` | Center-panel variant inside a detached OS window. Title-strip double-click = fit-to-this-screen (`snap_detached_window`); double-click counted from `pointerdown` because the WM grab eats `dblclick`. |
 | `DetachedApp.tsx` | Root component of a popped-out subwindow (#42). Holds the stray-fullscreen guard (a fullscreen popout can't be moved); the user's own F11 / button fullscreen is exempt. |
@@ -57,7 +57,7 @@ stores stay at the top. No `index.ts` barrels.
 | `RootMcpSecurity.tsx` | Visible-only Settings fold: per-session read/write and tool-family grants, calendar/project/account scopes, revoke action and bounded audit display; no credential reaches the renderer. |
 | `RootReviewStrip.tsx` + `stores/rootReview.ts` | Body of the proposals panel the console's ⚿ badge drops (store's `panel`), not a strip in the console body. Also lists agent-written mail drafts (`stores/mail` `agentDrafts`) as rows that open the composer, never an Approve, and `.ics` files an agent staged (`imports`; `IcsReportBody` + `stores/calendar/importIcs.ts`, the Import button's own importer, which marks the calendar `imported`). Root-agent proposals: literal before/after rows, invisible-control stripping, outbound effects, digest-bound ✓/✗ + bulk approval and conditional Undo; count feeds the console's own ✓ Approvals button (the only door — the project bar carries no copy), which drops the panel; the ⚿ chip beside it only reports the tools' state. |
 | `VpnPasswordPrompt.tsx` | Modal prompting for an OpenVPN password on activation. |
-| `LogoIcon.tsx` | Inline SVG logo (full ring/branches + spark), used by the hexagon-framed header drag grip. |
+| `LogoIcon.tsx` | Inline SVG logo (full ring/branches + spark), the header box chip's mark. |
 | `StarIcon.tsx` | The logo's gold spark. Only in the header's root button and a detached window's title strip — not per tab group. |
 
 **Projects, header widgets, tabs, terminal, files, embed, common**
