@@ -1124,6 +1124,7 @@ export const en = {
   "steering.legend.label": "Hide keys",
   "steering.legend.desc": "Fold this key list into a round badge at the bottom centre; Eldrun navigation stays on. The same key (or a click on the badge) brings the list back.",
   "steering.fab.title": "Eldrun navigation is on — {key} shows the keys",
+  "steering.hub.title": "Eldrun navigation is on — {key} hides the keys",
   "steering.group.move": "Move",
   "steering.group.new": "New",
   "steering.group.act": "Act",

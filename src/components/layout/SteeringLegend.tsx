@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useKeyboardSteeringStore, type SteeringHandoff } from "../../stores/keyboardSteering";
 import { allGroups, useTabsStore } from "../../stores/tabs";
@@ -19,6 +19,7 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { terminalFor } from "../../lib/terminal/terminalRegistry";
 import { KeyboardIcon } from "../common/icons/Icon";
+import { HUB_BOTTOM, HUB_R, orbitLayout, type Orbit } from "../../lib/shortcuts/steeringOrbit";
 
 const REGION_LABEL: Record<string, TranslationKey> = {
   side: "steering.region.side",
@@ -61,7 +62,7 @@ const HANDOFF: Record<SteeringHandoff, { where: TranslationKey; keys: [string, T
 const HANDOFF_BACK_KEY = "Esc";
 
 /**
- * The slim legend docked along the window's bottom edge shown while keyboard steering mode is
+ * The legend shown while keyboard steering mode is
  * active — the visible half of the mode's contract (every key is swallowed, so
  * the user must be able to see what the keys do and how to get out). It names
  * the level steering is on and lists only that level's keys, boxed by
@@ -73,11 +74,14 @@ const HANDOFF_BACK_KEY = "Esc";
  * names on hover. Every key shown is the user's steering binding
  * (`steeringRowLabel`, `steeringSlotKey`).
  *
+ * Laid out as a hub at the bottom centre — the round steering badge — with one
+ * circle per box fanned on an arc above it, each on its own spoke (`OrbitLegend`).
+ *
  * Mounted once in `AppShell` (the FocusFrameOverlay/host pattern) and
  * portalled to `document.body` so no pane clips it; `pointer-events: none` —
  * steering is a keyboard mode, the legend is display only. Steering's H folds
- * it into a round badge at the bottom centre (`legendHidden`, remembered per machine) that
- * keeps saying the mode is on; the badge alone takes a click, to unfold.
+ * the blobs away, leaving the hub alone (`legendHidden`, remembered per machine),
+ * which keeps saying the mode is on; the hub alone takes a click, to fold or unfold.
  *
  * While steering has lent the keyboard to a box — the project jump, the
  * prompt box, a surface's search field (`handedTo`) — the mode is off but the
@@ -163,18 +167,18 @@ export function SteeringLegend() {
         <span className="steering-legend-label">{t(label)}</span>
       </span>
     );
+    const blobs: OrbitBlob[] = [
+      ...(box.keys.length > 0 ? [{ id: "box", tok: "tok-type", items: box.keys.map(keyItem) }] : []),
+      { id: "back", tok: "tok-comment", items: [keyItem([HANDOFF_BACK_KEY, "steering.handoff.back"])] },
+    ];
+    // Steering is off while lent, so the hub is a plain badge, not the fold toggle.
+    const hub = (
+      <span className="steering-legend-hub">
+        <KeyboardIcon size={22} />
+      </span>
+    );
     return createPortal(
-      <div className="steering-legend steering-legend-grouped" role="status" aria-label={t("steering.legendTitle")}>
-        <span className="steering-legend-where">{t(box.where)}</span>
-        {box.keys.length > 0 && (
-          <div className="steering-legend-group tok-type">
-            <span className="steering-legend-group-keys">{box.keys.map(keyItem)}</span>
-          </div>
-        )}
-        <div className="steering-legend-group tok-comment">
-          <span className="steering-legend-group-keys">{keyItem([HANDOFF_BACK_KEY, "steering.handoff.back"])}</span>
-        </div>
-      </div>,
+      <OrbitLegend label={t("steering.legendTitle")} where={t(box.where)} hub={hub} blobs={blobs} />,
       document.body,
     );
   }
@@ -245,23 +249,118 @@ export function SteeringLegend() {
     );
   };
 
-  // The keys in boxes by what they are for, each box in one editor token
-  // colour (the colour, not a printed name, tells the boxes apart, which keeps
-  // the strip slim); the accent frame, not a title, says the mode is on.
+  // The keys in circles by what they are for, each circle in one editor token
+  // colour (the colour, not a printed name, tells them apart); the hub, not a
+  // title, says the mode is on.
+  const blobs = STEERING_GROUPS.flatMap((g): OrbitBlob[] => {
+    const rows = keys.filter((k) => k.group === g.id);
+    return rows.length === 0 ? [] : [{ id: g.id, tok: g.tok, label: t(g.labelKey), items: rows.map(item) }];
+  });
+  const hub = (
+    <button
+      type="button"
+      className="steering-legend-hub"
+      // The focus stays where steering left it (a terminal, usually).
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={toggleLegend}
+      title={t("steering.hub.title", { key: legendKey })}
+    >
+      <KeyboardIcon size={22} />
+      <kbd>{legendKey}</kbd>
+    </button>
+  );
   return createPortal(
-    <div className="steering-legend steering-legend-grouped" role="status" aria-label={t("steering.legendTitle")}>
-      {where && <span className="steering-legend-where">{t(where)}</span>}
-      {STEERING_GROUPS.map((g) => {
-        const rows = keys.filter((k) => k.group === g.id);
-        if (rows.length === 0) return null;
+    <OrbitLegend label={t("steering.legendTitle")} where={where ? t(where) : null} hub={hub} blobs={blobs} />,
+    document.body,
+  );
+}
+
+interface OrbitBlob {
+  id: string;
+  /** The editor token class that colours the circle and its spoke. */
+  tok: string;
+  label?: string;
+  items: ReactNode[];
+}
+
+/**
+ * The hub with one circle per key box on an arc above it, each on a spoke in
+ * its own colour. The circles are sized from their rendered key lists, so the
+ * first paint measures them hidden and the next places them.
+ */
+function OrbitLegend({ label, where, hub, blobs }: { label: string; where: string | null; hub: ReactNode; blobs: OrbitBlob[] }) {
+  const lists = useRef(new Map<string, HTMLElement>());
+  const [orbit, setOrbit] = useState<Orbit | null>(null);
+  const [, setViewport] = useState(0);
+
+  useEffect(() => {
+    const onResize = () => setViewport((n) => n + 1);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // `blobs` is fresh on every render — the legend redraws on each steering
+  // key, and a level change swaps the keys — so this measures every time.
+  // Only a changed layout sets state, so it settles.
+  useLayoutEffect(() => {
+    const sizes = blobs.map((b) => {
+      const el = lists.current.get(b.id);
+      // offset*, not the bounding box: the fan's own scale must not feed back.
+      return { w: el?.offsetWidth ?? 0, h: el?.offsetHeight ?? 0 };
+    });
+    const next = orbitLayout(sizes, window.innerWidth, window.innerHeight);
+    setOrbit((prev) => (prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+  }, [blobs]);
+
+  return (
+    <div
+      className="steering-legend steering-legend-orbit"
+      role="status"
+      aria-label={label}
+      style={{
+        bottom: orbit?.bottom ?? HUB_BOTTOM + HUB_R,
+        transform: `scale(${orbit?.scale ?? 1})`,
+      }}
+    >
+      {blobs.map((b, i) => {
+        const c = orbit?.circles.length === blobs.length ? orbit.circles[i] : null;
         return (
-          <div className={`steering-legend-group ${g.tok}`} key={g.id} data-group={g.id} aria-label={t(g.labelKey)}>
-            <span className="steering-legend-group-keys">{rows.map(item)}</span>
+          <span
+            key={`spoke-${b.id}`}
+            className={`steering-legend-spoke ${b.tok}`}
+            style={c ? { width: c.r, transform: `rotate(${-c.phi}rad)` } : { visibility: "hidden" }}
+          />
+        );
+      })}
+      {blobs.map((b, i) => {
+        const c = orbit?.circles.length === blobs.length ? orbit.circles[i] : null;
+        return (
+          <div
+            key={b.id}
+            className={`steering-legend-group ${b.tok}`}
+            data-group={b.id}
+            aria-label={b.label}
+            style={
+              c
+                ? { width: c.d, height: c.d, left: c.x - c.d / 2, top: -c.y - c.d / 2 }
+                : { visibility: "hidden" }
+            }
+          >
+            <span
+              className="steering-legend-group-keys"
+              ref={(el) => {
+                if (el) lists.current.set(b.id, el);
+                else lists.current.delete(b.id);
+              }}
+            >
+              {b.items}
+            </span>
           </div>
         );
       })}
-    </div>,
-    document.body,
+      {hub}
+      {where && <span className="steering-legend-where">{where}</span>}
+    </div>
   );
 }
 

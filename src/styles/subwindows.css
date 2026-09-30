@@ -735,69 +735,94 @@
   border-radius: 3px;
 }
 
-/* Docked along the window's bottom edge like a status bar — full width, flush,
-   no card of its own — and seamed like the top frame (`.app-header`'s
-   `--top-frame-seam`), so the two bars read as one frame around the content.
-   Wide, so a level's keys fit in one or two rows. The groups carry no printed
-   name; each keeps its editor token colour. */
-.steering-legend-grouped {
-  left: 0;
-  right: 0;
-  bottom: 0;
-  transform: none;
+/* One circle per key group round a hub (SteeringLegend's OrbitLegend): the
+   round steering badge at the bottom centre, the circles fanned on an arc
+   above it, each on a spoke in its own colour. The container is a zero-size
+   anchor at the hub's centre; OrbitLegend sets its `bottom` and `scale` and
+   every circle's box (lib/shortcuts/steeringOrbit). Only the circles and hub
+   are painted. Static shadow token only. */
+.steering-legend-orbit {
+  --steer-wire: 2px;
+  display: block;
+  width: 0;
+  height: 0;
   max-width: none;
-  gap: 2px 3px;
-  padding: 2px 8px;
-  background: var(--bg-panel);
+  padding: 0;
+  background: none;
   border: 0;
   border-radius: 0;
-  box-shadow: 0 -1px 0 var(--top-frame-seam);
-  font-size: var(--text-sm);
-  line-height: 1.2;
+  box-shadow: none;
+  transform-origin: 0 0;
+  font-size: var(--text-base);
+  line-height: 1.3;
 }
+.steering-legend-spoke {
+  position: absolute;
+  left: 0;
+  top: calc(var(--steer-wire) / -2);
+  height: var(--steer-wire);
+  background: currentColor;
+  transform-origin: 0 50%;
+}
+.steering-legend-orbit .steering-legend-hub {
+  position: absolute;
+  left: -24px;
+  top: -24px;
+}
+/* The level's name on the hub's upper rim, over the spokes. */
 .steering-legend-where {
-  align-self: center;
+  position: absolute;
+  left: 0;
+  bottom: 14px;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 7px;
-  font-size: var(--text-sm);
+  padding: 1px 9px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: var(--text-md);
   font-weight: 700;
   color: var(--bg-main);
   background: var(--accent);
+  border: 2px solid var(--bg-panel);
   border-radius: 999px;
 }
 .steering-legend-where:empty {
   display: none;
 }
 .steering-legend-group {
-  display: inline-flex;
+  position: absolute;
+  display: flex;
   align-items: center;
-  gap: 3px;
-  padding: 0 4px;
+  justify-content: center;
   font-style: normal; /* .tok-comment slants code comments, not this */
-  background: color-mix(in srgb, currentColor 10%, var(--bg-panel));
-  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
-  border-left: 3px solid currentColor;
-  border-radius: var(--radius);
+  background: color-mix(in srgb, currentColor 12%, var(--bg-panel));
+  border: 2px solid color-mix(in srgb, currentColor 70%, transparent);
+  border-radius: 50%;
+  box-shadow: var(--shadow-2);
 }
 /* Outside the fancy (Helix) pair `.tok-tag` is `.tok-func`'s colour (accent /
-   blue), which would paint Open like Move; red keeps the boxes apart. */
-html:not([data-theme^="fancy_"]) .steering-legend-group.tok-tag {
+   blue), which would paint Open like Move; red keeps the circles apart. */
+html:not([data-theme^="fancy_"]) .steering-legend-orbit .tok-tag {
   color: var(--danger);
 }
 .steering-legend-group-keys {
   display: flex;
-  flex-wrap: wrap;
-  gap: 1px 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 .steering-legend-group .steering-legend-item {
-  gap: 3px;
+  gap: 4px;
   color: inherit;
 }
 .steering-legend-group .steering-legend-item kbd {
-  padding: 0 3px;
-  line-height: 1.2;
+  padding: 0 4px;
+  font-size: var(--text-md);
+  line-height: 1.3;
+}
+.steering-legend-group .steering-legend-count {
+  font-size: var(--text-md);
 }
 .steering-legend-group .steering-legend-label {
   color: var(--text-primary);
@@ -812,10 +837,10 @@ html:not([data-theme^="fancy_"]) .steering-legend-group.tok-tag {
   background: color-mix(in srgb, currentColor 85%, var(--text-primary));
 }
 
-/* Steering on with the legend folded (steering's H): a round accent badge at
-   the bottom centre, where the legend strip sits, the key that unfolds it on
-   its rim. The wrapper is click-through; only the badge takes a click. Static
-   shadow token only. */
+/* Steering on with the legend folded (steering's H): the hub alone, a round
+   accent badge at the bottom centre, the key that unfolds it on its rim. The
+   wrapper is click-through; only the badge takes a click. Static shadow token
+   only. */
 .steering-legend-fab {
   position: fixed;
   left: 50%;
@@ -828,7 +853,8 @@ html:not([data-theme^="fancy_"]) .steering-legend-group.tok-tag {
   gap: 6px;
   pointer-events: none;
 }
-.steering-legend-fab-button {
+.steering-legend-fab-button,
+.steering-legend-hub {
   pointer-events: auto;
   position: relative;
   display: grid;
@@ -843,7 +869,8 @@ html:not([data-theme^="fancy_"]) .steering-legend-group.tok-tag {
   box-shadow: var(--shadow-2);
   cursor: var(--cur-pointer, pointer);
 }
-.steering-legend-fab-button:hover {
+.steering-legend-fab-button:hover,
+button.steering-legend-hub:hover {
   background: var(--accent-hover);
 }
 /* The folded badge pulses so "steering is still on" can't be missed: an accent
@@ -883,7 +910,8 @@ html:not([data-theme^="fancy_"]) .steering-legend-group.tok-tag {
     display: none;
   }
 }
-.steering-legend-fab-button kbd {
+.steering-legend-fab-button kbd,
+.steering-legend-hub kbd {
   position: absolute;
   right: -4px;
   bottom: -4px;

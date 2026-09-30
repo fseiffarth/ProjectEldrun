@@ -1168,6 +1168,7 @@ export const dict: Dict = {
   "steering.legend.label": "Masquer les touches",
   "steering.legend.desc": "Replie cette liste de touches en un bouton rond en bas au centre ; la navigation Eldrun reste active. La même touche (ou un clic sur le bouton) la fait revenir.",
   "steering.fab.title": "Navigation Eldrun active — {key} affiche les touches",
+  "steering.hub.title": "Navigation Eldrun active — {key} masque les touches",
   "steering.group.move": "Déplacer",
   "steering.group.new": "Nouveau",
   "steering.group.act": "Action",

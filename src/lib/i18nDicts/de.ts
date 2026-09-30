@@ -1169,6 +1169,7 @@ export const dict: Dict = {
   "steering.legend.label": "Tasten ausblenden",
   "steering.legend.desc": "Klappt diese Tastenliste zu einem runden Symbol unten in der Mitte zusammen; die Eldrun-Navigation bleibt an. Dieselbe Taste (oder ein Klick auf das Symbol) holt die Liste zurück.",
   "steering.fab.title": "Eldrun-Navigation ist an — {key} zeigt die Tasten",
+  "steering.hub.title": "Eldrun-Navigation ist an — {key} blendet die Tasten aus",
   "steering.group.move": "Bewegen",
   "steering.group.new": "Neu",
   "steering.group.act": "Aktion",
