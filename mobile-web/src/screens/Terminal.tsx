@@ -3068,7 +3068,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     }
   };
   // New turns push the prompt up as surely as a scroll does.
-  useLayoutEffect(checkPinnedPrompt, [checkPinnedPrompt, view, sessionShown, sessionEntries, screenStream]);
+  useLayoutEffect(checkPinnedPrompt, [checkPinnedPrompt, view, sessionShown, sessionEntries, screenStream, openStep]);
   const jumpToLatest = () => {
     const stream = readableHost.current;
     if (!stream) return;
@@ -3381,7 +3381,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
                   </>}
               </div>}
         </section>
-        {pinnedPrompt && <button className="readable-pinned-prompt" aria-label={t("mobile.focus.lastPrompt")}
+        {!openStep && pinnedPrompt && <button className="readable-pinned-prompt" aria-label={t("mobile.focus.lastPrompt")}
           onClick={() => pinnedPromptEl.current?.scrollIntoView({ block: "start", behavior: "smooth" })}>
           <span className="readable-pinned-prompt-text">{pinnedPrompt}</span>
           {isUntested("mobile.focus.pinnedPrompt") && <em>{t("mobile.focus.untested")}</em>}

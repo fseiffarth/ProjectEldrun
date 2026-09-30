@@ -149,7 +149,6 @@ nav button,.keys button { flex:1; }
 .reorder-hint { margin:-4px 0 12px; color:#9aa0b4; font-size:.84rem; }
 /* A project's pending git state (`GitMark`), in the desktop pill's colours. */
 .git-mark { display:inline-flex; align-items:center; gap:5px; font-style:normal; font-weight:600; }
-small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-weight:400; }
 .git-mark > i { width:8px; height:8px; border-radius:50%; background:currentColor; flex:0 0 auto; }
 .git-mark.git-dirty { color:#f85149; }
 .git-mark.git-staged { color:#d29922; }
