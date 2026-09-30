@@ -18,6 +18,7 @@ import {
   closeTab,
   deleteOutboxFile,
   getAgentStatus,
+  getSchedules,
   getTranscript,
   listDesktopImages,
   listOutbox,
@@ -97,6 +98,7 @@ import { openSubagent, siblingPosition, stepSibling, type SubagentStep } from ".
 import { MAX_PENDING, arrivedPending, pendingPrompt, reworded, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
 import { outboxPosts, type OutboxPost as ChatPost } from "../terminal/outboxPosts";
 import { afterClear, clearMark, type ClearMark } from "../terminal/clearedSession";
+import { onHeldPatched, patchHeld, readHeld, stillHeld, writeHeld } from "../terminal/heldPrompts";
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
 import { resetCountdown, resetText, StatusSheet } from "./StatusSheet";
 import { SignInSheet } from "./SignInSheet";
@@ -867,8 +869,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * the reader has not switched the view to the screen. */
   const [transcript, setTranscript] = useState<SessionTranscript | null>(null);
   /** Prompts the composer sent that the stored session does not hold yet,
-   * shown as the reader's bubbles at the end of the session chat. */
-  const [pending, setPending] = useState<PendingPrompt[]>([]);
+   * shown as the reader's bubbles at the end of the session chat. Those the
+   * desktop still holds come back with the tab (`heldPrompts.ts`). */
+  const [pending, setPending] = useState<PendingPrompt[]>(() => readHeld(tab.id));
   const pendingId = useRef(0);
   /** Where the stored session stood when this phone cleared it
    * (`clearedSession.ts`): until the new chat has a transcript of its own, what
@@ -992,7 +995,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     // message, which is nothing at all for most of them (`drafts.ts`).
     setDraft(readDraft(tab.id));
     setTranscript(null);
-    setPending([]);
+    // What the desktop still holds for this tab is still the reader's.
+    const held = readHeld(tab.id);
+    pendingId.current = held.reduce((last, prompt) => Math.max(last, prompt.id), pendingId.current);
+    setPending(held);
     setEditing(null);
     setEditNote("");
     setClearedAt(null);
@@ -2228,15 +2234,17 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     setPending((current) => [...current, { ...pendingPrompt(id, text, storedEntries), held: "" }].slice(-MAX_PENDING));
     setDraft("");
     endDictation();
+    // The answer may come after the reader left the tab, or came back to it:
+    // `patchHeld` hands it to the chat showing the tab then (`onHeldPatched`).
     holdPrompt(tab.id, text).then(
-      (held) => setPending((current) => current.map((entry) => entry.id === id ? { ...entry, held } : entry)),
+      (held) => patchHeld(tab.id, id, { held }),
       () => {
-        setPending((current) => current.map((entry) => entry.id === id ? { ...entry, held: undefined } : entry));
         setEditNote("");
         if (!sendAgentText(text, id)) {
-          setPending((current) => current.map((entry) => entry.id === id ? { ...entry, failed: true, retrying: false } : entry));
+          patchHeld(tab.id, id, { held: undefined, failed: true, retrying: false });
           return;
         }
+        patchHeld(tab.id, id, { held: undefined });
         void reportSentPrompt(tab.id, text).catch(() => {});
       },
     );
@@ -2291,6 +2299,36 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       })
       .finally(() => setEditSending(false));
   };
+  useEffect(() => onHeldPatched((tabId, id, patch) => {
+    if (tabId === tab.id) setPending((current) => current.map((entry) => entry.id === id ? { ...entry, ...patch } : entry));
+  }), [tab.id]);
+  // What the desktop holds outlives this view; what the session recorded is
+  // the record's.
+  useEffect(() => {
+    const arrived = arrivedPending(storedEntries, pending);
+    writeHeld(tab.id, pending.filter((entry) => !arrived.has(entry.id)));
+  }, [tab.id, storedEntries, pending]);
+  // Back on the tab: a prompt held when the reader left may have been
+  // delivered, or dropped on the desktop, meanwhile.
+  useEffect(() => {
+    // Only what was held before this view: a prompt held since may be newer
+    // than the list read.
+    const restored = new Set(readHeld(tab.id).map((entry) => entry.id));
+    if (!restored.size) return;
+    let live = true;
+    getSchedules(tab.id).then(({ schedules }) => {
+      if (!live || !Array.isArray(schedules)) return;
+      setPending((current) => {
+        const kept = stillHeld(current.filter((entry) => restored.has(entry.id) && entry.held !== undefined), schedules);
+        return current.flatMap((entry) => {
+          if (!restored.has(entry.id) || entry.held === undefined) return [entry];
+          const now = kept.find((prompt) => prompt.id === entry.id);
+          return now ? [now] : [];
+        });
+      });
+    }, () => {});
+    return () => { live = false; };
+  }, [tab.id]);
   /** Some prompt sent from here still waits on the desktop. */
   const heldWaiting = useMemo(() => {
     const arrived = arrivedPending(storedEntries, pending);

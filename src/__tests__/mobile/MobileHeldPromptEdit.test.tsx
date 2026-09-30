@@ -60,6 +60,10 @@ let entries: Entry[] = [];
 let heldAnswer: { status: number; body: unknown } = { status: 201, body: { id: "held-1" } };
 let editAnswer: { status: number; body: unknown } = { status: 200, body: { id: "held-1" } };
 let calls: { url: string; method: string; body?: string }[] = [];
+/** The desktop's rules for the tab, as `GET /schedules` answers. */
+let schedules: unknown[] = [];
+/** Holds the hold's answer back until released. */
+let holdGate: Promise<void> | null = null;
 
 function jsonResponse(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -83,6 +87,8 @@ describe("Eldrun Mobile held prompt edit", () => {
     heldAnswer = { status: 201, body: { id: "held-1" } };
     editAnswer = { status: 200, body: { id: "held-1" } };
     calls = [];
+    schedules = [];
+    holdGate = null;
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
       calls.push({ url, method: init?.method ?? "GET", body: typeof init?.body === "string" ? init.body : undefined });
@@ -90,7 +96,8 @@ describe("Eldrun Mobile held prompt edit", () => {
       if (url.includes("/transcript")) {
         return Promise.resolve(jsonResponse(200, { transcript: { available: true, version: `v${entries.length}`, truncated: false, entries } }));
       }
-      if (url.endsWith("/held")) return Promise.resolve(jsonResponse(heldAnswer.status, heldAnswer.body));
+      if (url.endsWith("/held")) return (holdGate ?? Promise.resolve()).then(() => jsonResponse(heldAnswer.status, heldAnswer.body));
+      if (url.endsWith("/schedules")) return Promise.resolve(jsonResponse(200, { schedules, time_zone: "UTC", next_runs: {} }));
       if (url.includes("/held/")) return Promise.resolve(jsonResponse(editAnswer.status, editAnswer.body));
       return Promise.resolve(jsonResponse(200, {}));
     }));
@@ -104,12 +111,23 @@ describe("Eldrun Mobile held prompt edit", () => {
   });
 
   async function sendWhileWorking(words = "also the tests") {
-    render(<Terminal tab={TAB} back={() => {}} />);
+    const view = render(<Terminal tab={TAB} back={() => {}} />);
     await tick(50);
     fireEvent.change(composer(), { target: { value: words } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await tick(600);
+    return view;
   }
+
+  /** Leave the tab and open it again. */
+  async function leaveAndReturn(view: ReturnType<typeof render>) {
+    view.unmount();
+    await tick(50);
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await tick(50);
+  }
+
+  const waitingRule = (id: string, message: string) => ({ id, enabled: true, message, rule: { type: "once", at: "2026-09-15T05:50:00.000Z" } });
 
   function openMenu(words: string) {
     fireEvent.contextMenu(bubble(words)!);
@@ -167,6 +185,39 @@ describe("Eldrun Mobile held prompt edit", () => {
     await tick(7_000);
     openMenu("also the tests");
     expect(screen.queryByRole("button", { name: /^Edit/ })).toBeNull();
+  });
+
+  it("keeps a prompt the desktop still holds when the reader leaves the tab and comes back", async () => {
+    const view = await sendWhileWorking();
+    schedules = [waitingRule("held-1", "also the tests")];
+    await leaveAndReturn(view);
+    expect(bubble("also the tests")).toBeTruthy();
+    openMenu("also the tests");
+    expect(screen.getByRole("button", { name: /^Edit/ })).toBeTruthy();
+  });
+
+  it("learns the held id when the reader left before the desktop answered", async () => {
+    let release = () => {};
+    holdGate = new Promise((resolve) => { release = resolve; });
+    const view = await sendWhileWorking();
+    view.unmount();
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await tick(50);
+    expect(bubble("also the tests")).toBeTruthy();
+    release();
+    await tick(10);
+    openMenu("also the tests");
+    expect(screen.getByRole("button", { name: /^Edit/ })).toBeTruthy();
+  });
+
+  it("drops a held prompt the desktop no longer holds, and shows its record instead", async () => {
+    const view = await sendWhileWorking();
+    schedules = [];
+    await leaveAndReturn(view);
+    expect(bubble("also the tests")).toBeUndefined();
+    entries = [...entries, { kind: "prompt", text: "also the tests", at: "2026-09-15T05:50:30.000Z" }];
+    await tick(7_000);
+    expect(screen.getAllByRole("group", { name: "Your prompt" }).filter((row) => row.textContent?.includes("also the tests"))).toHaveLength(1);
   });
 
   it("types the words itself when the desktop cannot hold them", async () => {

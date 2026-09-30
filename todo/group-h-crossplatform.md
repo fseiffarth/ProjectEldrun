@@ -3418,6 +3418,10 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     menu no longer offers Edit. Try Edit right as the turn ends → "already
     took this prompt", your words stay in the composer. Send while the agent
     is idle → typed at once as before (no Edit). Repeat once with Codex.
+    Leave the tab (back to the project) while the prompt still waits, open it
+    again → the bubble is still there, below the working row, and still
+    offers Edit (fix 2026-09-30: the phone keeps held prompts per tab in
+    `heldPrompts.ts` and re-checks them against the tab's schedules).
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
