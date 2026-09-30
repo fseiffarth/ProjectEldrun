@@ -70,7 +70,9 @@ interface ModeFamily {
  * cycle only where the account offers auto mode, and bypass is never on the
  * ordinary cycle; both are listed anyway: a session that has one shows it, and
  * one that does not says so when the switch fails to confirm. Default is
- * `silent` — Claude Code draws no mode line while in it. Auto is `labelled`:
+ * `silent`: older releases drew no mode line in it, and 2.1.284+ draws
+ * `⏸ manual mode on`, which no `statusLine` pattern names — both read as the
+ * silent default. Auto is `labelled`:
  * bare "auto" is Codex's and Qwen's word too, and an unlabelled tab showing it
  * has always gone to them. */
 const CLAUDE: ModeFamily = {

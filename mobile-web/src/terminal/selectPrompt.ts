@@ -71,7 +71,7 @@ export interface SelectStep {
   options: SelectOption[];
 }
 
-interface SelectLineLike { text: string }
+interface SelectLineLike { text: string; afterRule?: boolean }
 
 /** How far up from the bottom a dialog may sit. Below it the TUI still draws
  * its footer ("Esc to cancel") and, in Codex, the input box — and at phone
@@ -187,7 +187,11 @@ function dialogText(line: SelectLineLike): boolean {
 
 /** The dialog's heading, read upwards from its first row: past the blank the
  * TUI leaves under the heading, then the contiguous block above it, of which
- * the first line is the heading and the rest its blurb. */
+ * the first line is the heading and the rest its blurb. A dropped rule ends
+ * the block like a blank: Claude Code 2.1.286 fences a permission prompt's
+ * command in dashed rules (`╌╌╌`) with no blank before its question, and
+ * without the stop the command and its description ran into the heading and
+ * left the dialog untitled. */
 function readTitle(lines: readonly SelectLineLike[], start: number): string | undefined {
   let index = start - 1;
   while (index >= 0 && !lines[index].text.trim()) index -= 1;
@@ -195,6 +199,7 @@ function readTitle(lines: readonly SelectLineLike[], start: number): string | un
   while (index >= 0 && dialogText(lines[index])) {
     block.unshift(lines[index].text.trim());
     if (block.length > HEADING_BLOCK) return undefined;
+    if (lines[index].afterRule) break;
     index -= 1;
   }
   const title = block[0];

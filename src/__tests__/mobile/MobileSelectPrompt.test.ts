@@ -386,6 +386,21 @@ describe("Eldrun Mobile select dialog", () => {
     expect(prompt?.title).toBeUndefined();
   });
 
+  it("titles a permission prompt whose question sits under a dropped rule", () => {
+    // Claude Code 2.1.286, after readableScreen dropped its dashed `╌` rules:
+    // no blank separates the question from the command above it any more.
+    const prompt = readSelectPrompt([
+      { text: " Bash command" },
+      { text: " Write Unix timestamp to a.txt" },
+      { text: " date +%s > a.txt", afterRule: true },
+      { text: " Do you want to proceed?", afterRule: true },
+      { text: " \u276f 1. Yes" },
+      { text: "   2. No" },
+    ]);
+    expect(prompt?.options).toHaveLength(2);
+    expect(prompt?.title).toBe("Do you want to proceed?");
+  });
+
   it("moves the highlight the way the arrow row does", () => {
     expect(selectKeys(1, 3)).toEqual([`${ESC}[B`, `${ESC}[B`, "\r"]);
     expect(selectKeys(2, 0)).toEqual([`${ESC}[A`, `${ESC}[A`, "\r"]);
