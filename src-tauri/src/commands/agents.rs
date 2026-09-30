@@ -1353,6 +1353,24 @@ pub async fn agent_tab_model(
     .flatten()
 }
 
+/// Whether the tab launched as `agent` with launch id `session_id` is
+/// pursuing a `/goal`, read from the session's own record
+/// (`services::agent_session::agent_session_goal`). `None` when the agent
+/// keeps none Eldrun reads; the GOAL mark then goes by the tab's footer.
+#[tauri::command]
+pub async fn agent_tab_goal(
+    agent: String,
+    project_id: Option<String>,
+    session_id: String,
+) -> Option<bool> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::agent_session::agent_session_goal(&agent, project_id.as_deref(), &session_id)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// The last prompt the tab launched as `agent` with launch id `session_id`
 /// was given, however it was submitted — typed in the terminal included —
 /// read from the CLI's own transcript

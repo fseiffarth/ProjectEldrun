@@ -94,7 +94,7 @@ describe("Mobile bridge — the model beside a tab", () => {
     vi.mocked(listen).mockResolvedValue(() => {});
     useProjectsStore.setState({ projects: [paper], activeId: paper.id, loaded: true });
     useSettingsStore.setState({ settings: {} as Settings, loaded: true });
-    useAgentModelsStore.setState({ byTab: {}, promptByTab: {}, recentByTab: {}, screenByTab: {}, modeByTab: {} });
+    useAgentModelsStore.setState({ byTab: {}, promptByTab: {}, recentByTab: {}, screenByTab: {}, modeByTab: {}, goalByTab: {} });
     clearAgentModelFloorForTest();
     useTabsStore.setState({
       scope: paper.id,
@@ -115,7 +115,7 @@ describe("Mobile bridge — the model beside a tab", () => {
     vi.mocked(invoke).mockReset();
     vi.mocked(listen).mockReset();
     useActivityStore.setState({ busyByTab: {}, attentionByTab: {}, attentionByScope: {} });
-    useAgentModelsStore.setState({ byTab: {}, promptByTab: {}, recentByTab: {}, screenByTab: {}, modeByTab: {} });
+    useAgentModelsStore.setState({ byTab: {}, promptByTab: {}, recentByTab: {}, screenByTab: {}, modeByTab: {}, goalByTab: {} });
   });
 
   it("is what the session's own status line says, in its own words", async () => {
@@ -192,6 +192,27 @@ describe("Mobile bridge — the model beside a tab", () => {
     const [row] = answer.statuses as Record<string, unknown>[];
     expect(row).not.toHaveProperty("plan");
     expect(row).not.toHaveProperty("goal");
+  });
+
+  it("takes the goal from the session's own record, whatever the footer shows", async () => {
+    const fallback = vi.mocked(invoke).getMockImplementation()!;
+    let goal: boolean | null = true;
+    vi.mocked(invoke).mockImplementation((command: string, args?: unknown) =>
+      command === "agent_tab_goal" ? Promise.resolve(goal) : fallback(command, args as never));
+    // A footer the parser reads no goal in: a statusline and the mode row only.
+    liveScreen = [">", "me@box:~/paper (main) · Opus 5.5", "⏵⏵ auto mode on (shift+tab to cycle)"].join("\n");
+    clearAgentModelFloorForTest();
+    await vi.waitFor(async () => {
+      const answer = await ask({ type: "catalog", request_id: "g1", project_id: paper.id });
+      expect(answer.statuses).toMatchObject([{ tmux_session: TMUX, goal: true }]);
+    });
+    // Met: the record says so, and the mark goes, though no footer ever showed it.
+    goal = false;
+    clearAgentModelFloorForTest();
+    await vi.waitFor(async () => {
+      const answer = await ask({ type: "catalog", request_id: "g2", project_id: paper.id });
+      expect((answer.statuses as Record<string, unknown>[])[0]).not.toHaveProperty("goal");
+    });
   });
 
   it("marks a quiet tab in plan mode", async () => {

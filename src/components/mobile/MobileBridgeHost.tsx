@@ -14,7 +14,7 @@ import { closeTabInScope } from "../../lib/remote/closeRemoteTab";
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
 import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
-import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
+import { agentTabModelTag, tabModeMarks, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { queuePromptForTab, sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
@@ -528,7 +528,7 @@ function mobileModelTag(projectId: string, tab: TabEntry): string | undefined {
  * (`TabAgentModeMarks`), onto a phone row — only the ones that are on. Read
  * after `mobileModelTag`, whose screen re-read refreshes them too. */
 function withModeMarks<Row extends { plan?: boolean; goal?: boolean }>(row: Row, ptyId: string): Row {
-  const marks = useAgentModelsStore.getState().modeByTab[ptyId];
+  const marks = tabModeMarks(useAgentModelsStore.getState(), ptyId);
   if (marks?.plan) row.plan = true;
   if (marks?.goal) row.goal = true;
   return row;

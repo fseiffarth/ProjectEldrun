@@ -473,6 +473,54 @@ pub fn agent_session_last_prompt(
     read_agent_transcript_from(cmd, project_id, launch_id, false, last_prompt_in_transcript, |_, _| None)
 }
 
+/// Whether the tab launched as `cmd` with launch id `launch_id` is pursuing a
+/// `/goal`, from the session's own record rather than its screen — the one
+/// source that reads the same whatever the footer looks like: Claude's latest
+/// `goal_status` in its transcript, Codex's thread row in its goal store.
+/// `None` when the CLI keeps no such record or it cannot be read; the caller
+/// then goes by the footer.
+pub fn agent_session_goal(cmd: &str, project_id: Option<&str>, launch_id: &str) -> Option<bool> {
+    match cmd {
+        "claude" => read_agent_transcript_from(cmd, project_id, launch_id, false, |path, _| claude_goal_in_transcript(path), |_, _| None),
+        "codex" => {
+            if !is_uuid_shaped(launch_id) {
+                return None;
+            }
+            let thread = read_live_session_for(project_id, launch_id)?;
+            let db = crate::services::codex_store::goals_db_for(Some(project_id.unwrap_or("root")))?;
+            crate::services::codex_store::thread_goal_active(&db, &thread)
+        }
+        _ => None,
+    }
+}
+
+/// Claude's goal state in the transcript at `path`: its last word on a goal.
+/// `/goal` writes a `goal_status` attachment when it is set (`met: false`,
+/// the `sentinel`), another at every check that finds it unmet, and one with
+/// `met: true` — or `failed` when Claude gives up — when it ends; `/goal clear`
+/// is the user's own end. `None` when the tail holds none of them.
+fn claude_goal_in_transcript(path: &std::path::Path) -> Option<bool> {
+    with_prompt_tail(path, |lines| lines.iter().rev().find_map(|line| claude_goal_in_record(line)))
+}
+
+fn claude_goal_in_record(line: &str) -> Option<bool> {
+    if !line.contains("\"goal_status\"") && !line.contains("/goal</command-name>") {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if value.get("isSidechain").and_then(|s| s.as_bool()) == Some(true) {
+        return None;
+    }
+    if let Some(attachment) = value.get("attachment").filter(|a| a.get("type").and_then(|t| t.as_str()) == Some("goal_status")) {
+        let met = attachment.get("met").and_then(|m| m.as_bool()).unwrap_or(false);
+        let failed = attachment.get("failed").and_then(|f| f.as_bool()).unwrap_or(false);
+        return Some(!met && !failed);
+    }
+    let content = value.get("message")?.get("content")?.as_str()?;
+    let args = between(content, "<command-args>", "</command-args>")?.trim();
+    (content.contains("<command-name>/goal</command-name>") && args == "clear").then_some(false)
+}
+
 /// Resolve the transcript behind a tab and read one fact out of it. The
 /// resolution is the same whichever fact is wanted, so it lives once:
 ///
@@ -3741,6 +3789,31 @@ mod tests {
         let long = clean_prompt_text(&"p".repeat(MAX_PROMPT_CHARS + 50)).unwrap();
         assert_eq!(long.chars().count(), MAX_PROMPT_CHARS + 1);
         assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn a_claude_goal_runs_from_its_sentinel_until_met_failed_or_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let set = r#"{"type":"attachment","attachment":{"type":"goal_status","met":false,"sentinel":true,"condition":"fix it"}}"#;
+        let typed = r#"{"type":"user","message":{"role":"user","content":"<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args>fix it</command-args>"}}"#;
+        let answer = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"On it."}]}}"#;
+        let unmet = r#"{"type":"attachment","attachment":{"type":"goal_status","met":false,"reason":"not yet"}}"#;
+        let met = r#"{"type":"attachment","attachment":{"type":"goal_status","met":true,"condition":"fix it"}}"#;
+        let failed = r#"{"type":"attachment","attachment":{"type":"goal_status","met":false,"failed":true,"iterations":4}}"#;
+        let cleared = r#"{"type":"user","message":{"role":"user","content":"<command-name>/goal</command-name>\n<command-args>clear</command-args>"}}"#;
+        let sidechain = r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"goal_status","met":false,"sentinel":true}}"#;
+        let read = |lines: &[&str]| {
+            std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+            claude_goal_in_transcript(&path)
+        };
+        assert_eq!(read(&[answer]), None);
+        assert_eq!(read(&[set, typed, answer]), Some(true));
+        assert_eq!(read(&[set, typed, answer, unmet, answer]), Some(true));
+        assert_eq!(read(&[set, typed, answer, met, answer]), Some(false));
+        assert_eq!(read(&[set, typed, answer, failed]), Some(false));
+        assert_eq!(read(&[set, typed, answer, cleared]), Some(false));
+        assert_eq!(read(&[met, sidechain]), Some(false));
     }
 
     #[test]
