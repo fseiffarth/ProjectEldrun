@@ -67,29 +67,27 @@ export function mergeTranscript(previous: SessionTranscript | null, next: Sessio
   return next.unchanged && previous ? previous : next;
 }
 
-const STORAGE_KEY = "eldrun.agentReader.byAgent";
+const STORAGE_KEY = "eldrun.agentReader.open";
+/** The per-CLI choice this replaced: any CLI left on the Reader carries over. */
+const LEGACY_KEY = "eldrun.agentReader.byAgent";
 
-function readChoices(): Record<string, boolean> {
+/** The view the user last picked for every agent pane that offers the
+ * Reader: true for the Reader. Unset (or unreadable storage) is the terminal. */
+export function rememberedReader(): boolean {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, boolean>) : {};
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored !== null) return stored === "1";
+    const legacy: unknown = JSON.parse(localStorage.getItem(LEGACY_KEY) ?? "{}");
+    return !!legacy && typeof legacy === "object" && Object.values(legacy).some((on) => on === true);
   } catch {
-    return {};
+    return false;
   }
 }
 
-/** The view the user last picked for this agent CLI's tabs: true for the
- * Reader. Unset (or unreadable storage) is the terminal. */
-export function rememberedReader(agent: string): boolean {
-  return readChoices()[agent] === true;
-}
-
-export function rememberReader(agent: string, on: boolean): void {
+export function rememberReader(on: boolean): void {
   try {
-    const choices = readChoices();
-    if (on) choices[agent] = true;
-    else delete choices[agent];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(choices));
+    localStorage.setItem(STORAGE_KEY, on ? "1" : "0");
+    localStorage.removeItem(LEGACY_KEY);
   } catch {
     // A convenience only: without storage every tab opens on its terminal.
   }

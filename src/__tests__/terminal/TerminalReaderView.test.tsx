@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
@@ -14,7 +14,7 @@ vi.mock("../../lib/terminal/terminalInput", () => ({
 import { TerminalReaderView } from "../../components/terminal/TerminalReaderView";
 import { TerminalPromptStrip } from "../../components/terminal/TerminalPromptStrip";
 import { mergeTranscript, readerOffered, readerRequest, rememberReader, rememberedReader } from "../../lib/agents/agentReader";
-import { useAgentReaderStore } from "../../stores/agents/agentReader";
+import { useAgentReaderStore, useReaderOpen } from "../../stores/agents/agentReader";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
 import type { Terminal } from "@xterm/xterm";
@@ -54,7 +54,7 @@ describe("the agent pane's Reader", () => {
     invoke.mockImplementation((command: string) =>
       Promise.resolve(command === "agent_tab_transcript" ? transcript : []));
     useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [tab] } }));
-    useAgentReaderStore.setState({ byPty: {} });
+    useAgentReaderStore.setState({ open: false });
     host = document.createElement("div");
     document.body.appendChild(host);
   });
@@ -230,12 +230,26 @@ describe("agentReader helpers", () => {
     expect(mergeTranscript(shown, { available: true, unchanged: true, entries: [], truncated: false })).toBe(shown);
   });
 
-  it("remembers the choice per agent CLI; the terminal is the default", () => {
-    expect(rememberedReader("claude")).toBe(false);
-    rememberReader("claude", true);
-    expect(rememberedReader("claude")).toBe(true);
-    expect(rememberedReader("codex")).toBe(false);
-    rememberReader("claude", false);
-    expect(rememberedReader("claude")).toBe(false);
+  it("remembers one choice for every agent pane; the terminal is the default", () => {
+    expect(rememberedReader()).toBe(false);
+    rememberReader(true);
+    expect(rememberedReader()).toBe(true);
+    rememberReader(false);
+    expect(rememberedReader()).toBe(false);
+    // The per-CLI choice it replaced carries over when any CLI was on the Reader.
+    localStorage.clear();
+    localStorage.setItem("eldrun.agentReader.byAgent", JSON.stringify({ codex: true }));
+    expect(rememberedReader()).toBe(true);
+  });
+
+  it("picking the Reader in one pane switches every pane that offers it", () => {
+    const { result: claude } = renderHook(() => useReaderOpen(true));
+    const { result: gemini } = renderHook(() => useReaderOpen(false));
+    act(() => useAgentReaderStore.getState().set(true));
+    expect(claude.current).toBe(true);
+    expect(gemini.current).toBe(false);
+    expect(rememberedReader()).toBe(true);
+    act(() => useAgentReaderStore.getState().set(false));
+    expect(claude.current).toBe(false);
   });
 });

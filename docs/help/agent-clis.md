@@ -108,8 +108,10 @@ chat; click one to answer. While the agent works, a **working** row shows
 how long it has been busy, and its **Stop** button interrupts it. Press Esc in
 that box, or click **Terminal**, to go back. The terminal keeps running
 underneath, so nothing is lost by switching. The chat is optional: tabs
-open on their terminal until you pick Chat, and new tabs of the same
-agent then open the way you last left one.
+open on their terminal until you pick Chat. The choice is one for all agent
+tabs and is remembered: picking Chat (or Terminal) in one tab switches every
+open agent tab that has the chat, and new tabs open the same way. Agents
+without a chat view keep their terminal.
 
 ## Resume after a restart
 
