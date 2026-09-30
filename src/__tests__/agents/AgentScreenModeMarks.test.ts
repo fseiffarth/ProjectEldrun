@@ -26,6 +26,23 @@ describe("an agent tab's plan / goal marks", () => {
       .toEqual({ plan: true, goal: true });
   });
 
+  it("reads the goal right-aligned under a custom statusline that wrapped", () => {
+    const rows = [
+      "● Checking the footer.",
+      "────────────────────────────────────────────────────────────",
+      "❯ ",
+      "────────────────────────────────────────────────────────────",
+      "  me@box:~/work/projects/projecteldrun (develop*) · Opus 5.5",
+      "  [high] ⏵ auto · ctx 64% · 5h 71%/2h10m · 7d 40%/3d2h · +12",
+      "  0/-30",
+      "  ⏵⏵ auto mode on (shift+tab to cycle)     ◎ /goal active (4m)",
+    ];
+    expect(textScreenModeMarks(rows.join("\n"), "Claude")).toEqual({ plan: false, goal: true });
+    // Only the footer's own phrase: a `/` menu row naming the command is not one.
+    expect(textScreenModeMarks(["❯ /go", "  /goal   Keep working until a goal is met"].join("\n"), "Claude"))
+      .toEqual({ plan: false, goal: false });
+  });
+
   it("reads Codex's plan mode and its pursued goal", () => {
     expect(textScreenModeMarks("› \nPlan mode (shift+tab to cycle) · Pursuing goal (4m)\n", "Codex"))
       .toEqual({ plan: true, goal: true });

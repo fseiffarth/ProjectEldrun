@@ -374,6 +374,13 @@ export function sessionStatus(
     read += 1;
     for (const segment of text.split(SEGMENT_SPLIT)) classify(segment.trim(), status);
   }
+  // Claude Code prints its goal at the right end of its last footer row, under
+  // a custom statusline that can wrap to several rows on a narrow pane — past
+  // the rows read above. The phrase is only ever the footer's, so every row of
+  // the frame is looked through for it.
+  for (let index = inputIndex + 1; !status.goal && index < lines.length; index += 1) {
+    if (lines[index].text.split(SEGMENT_SPLIT).some((segment) => GOAL_ACTIVE.test(segment.trim()))) status.goal = true;
+  }
   if (!status.mode) {
     const mode = geminiIndicatorAbove(lines, inputIndex)?.mode;
     if (mode) status.mode = mode;
