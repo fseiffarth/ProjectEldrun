@@ -3427,6 +3427,33 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31br — Moving status glyphs and an Interrupted state on the phone** (2026-09-30;
+  ✅ code-complete, automated tests passing — `MobileAgentTurnEdges.test.ts`;
+  ⚠️ never seen live). The project screen's card discs and the Agents list's
+  pills animate their glyph: ▶ drifts forward (and the disc sends out a ping
+  ring), ? tips now and then, ✓ and ■ land once when they appear. Reduced
+  motion turns it all off. New fourth state `interrupted` (■, red): the desktop
+  bridge reports the desktop's own `interrupted` lamp (`mobileAgentState`), held
+  until the agent's next turn — no push notice for it. Untested id
+  `mobile.tabs.statusMotion`.
+  - Needs the PWA rebuilt (`npm run mobile:bundle`); the sidecar only passes the
+    string through, so the desktop's hot reload + a rebuilt PWA are enough.
+  - [ ] 🖐️ Manual phone QA — give an agent tab a long task: its card's ▶ disc
+    drifts and rings. Leave it at a permission prompt: ? wobbles every few
+    seconds. Let a turn finish: ✓ pops in once, then holds still. Start a turn
+    and press Esc on the desktop (or the phone's Esc key): the card shows a red
+    ■ that stamps in once, the Agents list pill reads "Interrupted", the status
+    sheet says "Interrupted"; no push notice arrives. Send a new prompt → back
+    to ▶. With the phone's reduce-motion setting on, nothing moves.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member

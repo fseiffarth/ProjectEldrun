@@ -525,8 +525,8 @@ struct ActivityRow {
 }
 
 /// Where a status sorts in the activity list. A session waiting on a decision is
-/// blocked on the reader and comes first; a finished one is the least urgent of
-/// the three. Anything else never reaches this list.
+/// blocked on the reader and comes first; a finished or interrupted one is the
+/// least urgent. Anything else never reaches this list.
 fn activity_rank(status: &str) -> u8 {
     match status {
         "question" => 0,

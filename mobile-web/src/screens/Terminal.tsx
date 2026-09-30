@@ -2747,9 +2747,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * row is frozen for the whole session (it even survives a restart, via
    * `lastPlace`). A `done` on it is by definition already read — the tab is on
    * screen — so it is not shown here, the same way the desktop's tab bar hides
-   * the viewed tab's own glow. The desktop retires the flag for real when the
+   * the viewed tab's own glow. An `interrupted` is left off too, as the desktop
+   * strip leaves it off the viewed tab. The desktop retires the flag for real when the
    * attach reports the tab seen. */
-  const lamp = tab.agent_status === "done" ? "idle" : tab.agent_status ?? "idle";
+  const lamp = tab.agent_status === "done" || tab.agent_status === "interrupted" ? "idle" : tab.agent_status ?? "idle";
   const shiftTab = shiftTabKey(agentLabel);
   const cycleMode = () => press(shiftTab);
   /** The modes this session has, decided by the mode it is showing with the

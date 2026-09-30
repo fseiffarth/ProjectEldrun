@@ -1,13 +1,15 @@
 import type { AgentStatus } from "../api";
 
 /** The desktop tab strip's status glyphs (`TabStatusMark`): ▶ working,
- *  ? waiting on a decision, ✓ finished. ▶ has an emoji presentation on phones,
- *  so each carries U+FE0E to stay a plain glyph in the pill's own colour —
- *  written as an escape because the selector is invisible in source. */
+ *  ? waiting on a decision, ■ interrupted, ✓ finished. ▶ and ■ have emoji
+ *  presentations on phones, so each carries U+FE0E to stay a plain glyph in
+ *  the pill's own colour — written as an escape because the selector is
+ *  invisible in source. */
 const TEXT = "︎";
 export const AGENT_STATUS_GLYPH: Record<AgentStatus, string> = {
   working: `▶${TEXT}`,
   question: `?`,
+  interrupted: `■${TEXT}`,
   done: `✓${TEXT}`,
 };
 
@@ -20,7 +22,8 @@ export function AgentStatusPill({ status }: { status: AgentStatus }) {
 
 /** The same state as the bare glyph, for the project screen's tab cards, which
  *  wear it on their left border. It has no word beside it, so the word is its
- *  accessible name. */
+ *  accessible name. The glyph sits in its own span because the disc's
+ *  `transform` places it on the border — the glyph's motion needs its own. */
 export function AgentStatusMark({ status }: { status: AgentStatus }) {
-  return <span className={`agent-status tab-card-status ${status}`} role="img" aria-label={status} title={status}>{AGENT_STATUS_GLYPH[status]}</span>;
+  return <span className={`agent-status tab-card-status ${status}`} role="img" aria-label={status} title={status}><span className="agent-status-glyph" aria-hidden="true">{AGENT_STATUS_GLYPH[status]}</span></span>;
 }

@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { useT } from "../../../src/lib/i18n";
+import { isUntested } from "../../../src/lib/untested";
 import { getAgentStatus, type AgentStatusReport, type TabRow } from "../api";
 import { describeFailure } from "../connection";
 import { limitMeters, noteParts, parseUsageReport, resolveResetAt, type LimitMeters } from "../../../shared/usageReport";
 import type { SessionStatus } from "../terminal/statusLine";
 
 /** Wording for the tab's own state, which the desktop classified from the
- * session's output. `idle` is the honest fourth: the catalog only publishes the
- * other three, and a tab nobody is waiting on is not "done". */
+ * session's output. `idle` is the honest fifth: the catalog only publishes the
+ * other four, and a tab nobody is waiting on is not "done". */
 const STATE_TEXT: Record<AgentStatusReport["state"], string> = {
   working: "Working",
   question: "Waiting on you",
+  interrupted: "Interrupted",
   done: "Finished its turn",
   idle: "Idle",
 };
@@ -125,7 +127,7 @@ export function StatusSheet({ tab, live, onLimits, onClose, signIn }: {
       </header>
 
       {report && <p className={`status-headline ${report.state}`}>
-        <strong>{STATE_TEXT[report.state]}</strong>
+        <strong>{STATE_TEXT[report.state]}{report.state === "interrupted" && isUntested("mobile.tabs.statusMotion") && <> · {t("mobile.focus.untested")}</>}</strong>
         {report.agent && <span>{report.agent}</span>}
         {live?.model && <span>{live.model}</span>}
         {live?.mode && <span>{live.mode}</span>}

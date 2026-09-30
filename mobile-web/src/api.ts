@@ -6,7 +6,7 @@ import { translate, useI18nStore } from "../../src/lib/i18n";
 /** A project's pending git state, the desktop pill's dot: changes not yet added ▸ staged, not committed ▸ committed, not pushed ▸ `.git` missing. Absent when clean. */
 export type GitDot = "dirty" | "staged" | "unpushed" | "broken";
 export interface ProjectRow { id: string; label: string; status: string; kind?: "project" | "box" | "root"; live_sessions: number; last_activity?: number; /** Root only: staged root-agent proposals awaiting a decision — which is made at the desk, never here. */ pending_reviews?: number; git?: GitDot }
-export type AgentStatus = "working" | "question" | "done";
+export type AgentStatus = "working" | "question" | "interrupted" | "done";
 /** The desktop's own one-line summary of a tab's scheduled prompts: what the
  * Agents view prints under an agent tab, so the project overview says the same
  * thing without opening the sheet. `next` is desktop-local wall clock, and so
@@ -539,7 +539,7 @@ export interface AgentUsagePanel { label: string; supported: boolean; raw?: stri
  * agent tab in it — which is what the sheet's wording says. */
 export interface AgentTally { prompts: number; worked_s: number; decisions: number; done: number }
 export interface AgentStatusReport {
-  state: "working" | "question" | "done" | "idle";
+  state: AgentStatus | "idle";
   label: string;
   agent?: string;
   project: string;

@@ -1132,7 +1132,7 @@ pub struct AgentCatalogEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTabStatus {
     pub tmux_session: String,
-    /// `working`, `question`, or `done`.
+    /// `working`, `question`, `interrupted`, or `done`.
     pub status: String,
     /// The model this tab's session shows on its own status line, read off
     /// the pane by the desktop and already composed for display
