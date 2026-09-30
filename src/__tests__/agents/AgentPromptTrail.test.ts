@@ -123,6 +123,18 @@ describe("joining the history and the typed prompts", () => {
     ];
     expect(buildPromptTrail(history, [], tab).map((p) => p.text)).toEqual(["delivered"]);
   });
+
+  it("keeps apart tabs that share the default label", () => {
+    const history = [
+      row("second Claude tab", T0, { tab_id: "launch-2" }),
+      row("second, before tab ids", T0 + 1, { tab_id: undefined, session_id: "launch-2" }),
+      row("mine, before tab ids", T0 + 2, { tab_id: undefined, session_id: "launch-1" }),
+      // A row with no id at all can only go by its label.
+      row("no ids", T0 + 3, { tab_id: undefined }),
+      row("mine", T0 + 4),
+    ];
+    expect(buildPromptTrail(history, [], tab).map((p) => p.text)).toEqual(["mine, before tab ids", "no ids", "mine"]);
+  });
 });
 
 describe("the per-pane typed trail", () => {

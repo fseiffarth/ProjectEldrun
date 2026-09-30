@@ -26,12 +26,17 @@ export function foldPrompt(text: string): string {
   return text.split(/\s+/u).filter(Boolean).join(" ");
 }
 
-/** Whether a history row went to `tab`: by tab id (the launch id, the same
- * across `/clear`), by session id for a row written before the tab id was
- * recorded, or by label for a tab that had no session id at all. */
+/** Whether a history row went to `tab`, by the strongest identity the row
+ * carries and by that one only: its tab id (the launch id, the same across
+ * `/clear`), else its session id (a row written before the tab id was
+ * recorded), else its label (a row from a tab that had no session id). A
+ * fallback, never an OR: default labels repeat ("Claude"), so matching by
+ * label as well hands every tab of that name every other one's prompts —
+ * as `chart.rowOnStrand` learned first. */
 export function rowOfTab(row: SentAgentPrompt, tab: TabEntry): boolean {
-  return (!!tab.sessionId && (row.tab_id === tab.sessionId || row.session_id === tab.sessionId))
-    || row.tab_label === tab.label;
+  if (row.tab_id) return row.tab_id === tab.sessionId;
+  if (row.session_id) return row.session_id === tab.sessionId;
+  return row.tab_label === tab.label;
 }
 
 /** The tab's newest history row: its session first, its label as the
