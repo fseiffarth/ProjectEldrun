@@ -435,6 +435,21 @@ export function reportSentPrompt(tabId: string, message: string): Promise<unknow
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/prompt`, { method: "POST", body: JSON.stringify({ message }) });
 }
 
+/** `POST /api/v1/tabs/{id}/held` — a prompt sent while the agent works: the
+ * desktop holds it and types it at the tab's next safe idle point, so it can
+ * still be edited (`editHeldPrompt`). Answers the id to edit it by; refused
+ * when there is no desktop window to hold it. */
+export async function holdPrompt(tabId: string, message: string): Promise<string> {
+  const { id } = await api<{ id: string }>(`/api/v1/tabs/${encodeURIComponent(tabId)}/held`, { method: "POST", body: JSON.stringify({ message }) });
+  return id;
+}
+
+/** `PUT /api/v1/tabs/{id}/held/{heldId}` — new words for a held prompt.
+ * `409 held_gone` once the agent has it, `409 held_busy` while it is typed. */
+export function editHeldPrompt(tabId: string, heldId: string, message: string): Promise<unknown> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/held/${encodeURIComponent(heldId)}`, { method: "PUT", body: JSON.stringify({ message }) });
+}
+
 /** `POST /api/v1/tabs/{id}/undo-clear` — take back this agent tab's last
  * `/clear`: the desktop types the resume of the conversation it ended (the
  * session id never comes here). `409 nothing_to_undo` once the session has
@@ -572,6 +587,9 @@ export interface TranscriptEntry {
   pending?: number;
   failed?: boolean;
   retrying?: boolean;
+  /** Phone-only: a pending prompt the desktop still holds for the agent's
+   * next idle point, which the reader can still edit. */
+  held?: boolean;
   /** Phone-only: when a pending prompt left this phone (its bubble's time;
    * `at` on it is only its place). */
   sentAt?: string;

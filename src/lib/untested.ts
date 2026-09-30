@@ -343,6 +343,7 @@ export const UNTESTED = {
   "terminal.versionDrift": { area: "agents", what: "Terminal · an agent tab whose host CLI is newer than the release Eldrun was verified with (agent_versions) shows a card: × hides it until restart, \"Don't remind me for <version>\" persists until the next release" },
   "terminal.undoClear": { area: "agents", what: "Terminal · after /clear or /new on a resumable agent (typed, or Claude/Codex from the phone) a card offers Undo clear: Claude types /resume <id>, Codex and the continue-last agents relaunch onto the cleared conversation; gone on the next prompt or ×", tested: "2026-09-28" },
   "mobile.composer.keysToggle": { area: "mobile", what: "Terminal · keys button in the composer between ＋ and Plan (left of the bar on a shell tab) folds the Ctrl / Esc / Tab / arrows / Interrupt row in and out; the row starts folded" },
+  "mobile.chat.editHeld": { area: "mobile", what: "Terminal · a prompt sent while the agent works waits on the desktop (delivered at its next idle point) instead of the CLI's queue; hold its bubble → Edit rewrites it in the composer until the agent takes it in, and the bubble keeps its place" },
   "mobile.composer.clearBusy": { area: "mobile", what: "Terminal · new-conversation button on a working Codex says to stop it first; after a clear the Reader starts empty" },
   "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Reader on-screen transcript note", tested: "2026-09-23" },
   "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Reader auto-read toggle", tested: "2026-09-23" },
