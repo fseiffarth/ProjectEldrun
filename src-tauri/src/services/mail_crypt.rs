@@ -684,6 +684,14 @@ pub fn enable_with_passphrase(dir: &Path, passphrase: &str) -> Result<MailKeys, 
 /// Nothing in the store is re-encrypted — that is the point of the wrap
 /// indirection. Switching from keychain to passphrase and back is a key-file
 /// rewrite, not a re-seal of a hundred thousand rows.
+///
+/// **Not a passphrase change.** Nothing calls this yet. Because the master key
+/// survives, a copy of the old `key.json` (a backup, a synced folder) plus the
+/// old passphrase still opens everything sealed after the switch. A user who
+/// changes a passphrase because it leaked expects the old one to stop working,
+/// so that action needs a new master key: today the only way to get a new
+/// passphrase is `mail_encryption_reset`, which mints one. Wire this only to a
+/// mode switch that says it keeps the key, or re-seal the store first.
 pub fn rewrap(
     dir: &Path,
     keys: &MailKeys,

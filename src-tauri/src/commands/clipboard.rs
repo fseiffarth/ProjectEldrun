@@ -12,9 +12,9 @@
 //!   requests and the user's own copies out of a pane.
 
 use std::borrow::Cow;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::commands::fs::enforce_confinement;
+use crate::commands::fs::{canonical_or_new, enforce_confinement};
 
 /// Whether the system clipboard currently holds an image. Used to decide if the
 /// file tree's context menu should offer "Paste screenshot". Any failure
@@ -50,17 +50,19 @@ pub fn save_clipboard_image(project_dir: String, rel_path: String) -> Result<(),
 
     let root = std::fs::canonicalize(&project_dir).map_err(|e| e.to_string())?;
     let dest = root.join(&rel_path);
-    let dest_c = canonical_or_new(&dest);
+    let dest_c = canonical_or_new(&dest)?;
     enforce_confinement(&root, &dest_c)?;
     if dest_c.exists() {
         return Err(format!("'{}' already exists", dest.display()));
     }
-    if let Some(parent) = dest.parent() {
+    if let Some(parent) = dest_c.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
     let png = encode_png(img.width, img.height, &img.bytes)?;
-    std::fs::write(&dest, png).map_err(|e| e.to_string())
+    // `create_new` + `O_NOFOLLOW`: a file or link that appeared since the
+    // check is refused, never overwritten or followed.
+    crate::commands::projects::write_no_follow(&dest_c, &png, true).map_err(|e| e.to_string())
 }
 
 /// Put raw RGBA8 pixels on the system clipboard as an image.
@@ -242,20 +244,6 @@ pub(crate) fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec
         writer.write_image_data(rgba).map_err(|e| e.to_string())?;
     }
     Ok(out)
-}
-
-/// Resolve a (possibly not-yet-existing) destination for confinement: existing
-/// paths canonicalize directly; new ones canonicalize the parent and re-join the
-/// final component. Mirrors `fs::canonical_or_new` (kept local to avoid widening
-/// that module's visibility for one helper).
-fn canonical_or_new(path: &std::path::Path) -> PathBuf {
-    if path.exists() {
-        return path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    }
-    match path.parent().and_then(|p| p.canonicalize().ok()) {
-        Some(parent) => parent.join(path.file_name().unwrap_or_default()),
-        None => path.to_path_buf(),
-    }
 }
 
 #[cfg(test)]

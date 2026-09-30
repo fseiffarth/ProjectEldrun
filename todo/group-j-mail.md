@@ -613,8 +613,17 @@ no-MDC OpenPGP refused — is deliberately not re-listed here.*
       `create_new` + `O_NOFOLLOW` (`write_unique_in_dir`); agent instruction
       names (`CLAUDE.md`, `AGENTS.md`, …) get an `attachment-` prefix;
       `ensure_generated_dir_ignored` refuses a symlinked `.gitignore`; remote
-      projects are refused (and the button hidden). **Not done:** the same
-      pattern in `commands/screenshot.rs` (`eldrun-screenshots/`).
+      projects are refused (and the button hidden).
+    - **Screenshot half fixed 2026-09-30 (🧪 untested live)** — at the source,
+      `fs::canonical_or_new`: a dangling link resolved to where it points, and
+      `missing/../..` resolved lexically, both used to pass confinement (the
+      write then left the project). Every local project write
+      (`write_project_file{,_bytes}_local`, `create_file_local`,
+      `create_dir_local`, the clipboard PNG save) now writes the resolved path,
+      the file opened `O_NOFOLLOW`. Tests:
+      `write_project_file_never_follows_a_dangling_link_out_of_the_project`,
+      `write_project_file_blocks_escape_through_a_missing_folder`,
+      `write_project_file_still_saves_through_a_link_inside_the_project`.
     - [x] 🤖 Automated test — `the_emails_folder_must_be_a_real_folder_inside_the_project`,
       `a_save_never_follows_or_clobbers_what_is_already_there`,
       `agent_instruction_names_are_defused`,
@@ -731,8 +740,12 @@ no-MDC OpenPGP refused — is deliberately not re-listed here.*
       one-time pass for already-marked stores); plaintext in a completed sealed
       store reads as damaged; blobs re-sealed unless they actually open; Argon2
       parameters bounded; account delete prunes blobs and `VACUUM`s.
-      **Not done:** a passphrase change still does not rotate the master key;
-      drafts/outbox of a removed account are kept on purpose.
+      Drafts/outbox of a removed account are kept on purpose.
+    - **Passphrase rotation — not applicable (2026-09-30).** There is no
+      passphrase-change action: the only way to get a new passphrase is
+      `mail_encryption_reset`, which mints a new master key. The key-keeping
+      `mail_crypt::rewrap` has no caller; its doc comment now says it must not
+      back a "change passphrase" button without a re-seal.
     - [x] 🤖 Automated test — `plaintext_planted_in_a_sealed_store_reads_as_damaged`.
 
 855. **🟡 Low — crypto chrome vanishes on reopen.** A body-cache hit returns

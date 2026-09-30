@@ -789,7 +789,7 @@ pub fn rename_path_local(project_dir: &str, old_rel: &str, new_name: &str) -> Re
 
     let new = old.parent().ok_or("no parent")?.join(&new_name);
     // New path must also stay inside root.
-    let new_c = canonical_or_new(&new);
+    let new_c = canonical_or_new(&new)?;
     enforce_confinement(&root, &new_c)?;
 
     fs::rename(&old, &new).map_err(|e| e.to_string())
@@ -868,19 +868,13 @@ pub async fn create_file(
     create_file_local(&project_dir, &rel_path)
 }
 
-/// Local-fs empty-file create — byte-identical pre-Phase-3 body.
+/// Local-fs empty-file create, confined like every project write.
 pub fn create_file_local(project_dir: &str, rel_path: &str) -> Result<(), String> {
     let root = canonical(project_dir)?;
     let target = root.join(rel_path);
-    let target_c = canonical_or_new(&target);
+    let target_c = canonical_or_new(&target)?;
     enforce_confinement(&root, &target_c)?;
-
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::File::create(&target)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    write_confined(&target_c, &[])
 }
 
 /// Write a text file inside the project.
@@ -898,7 +892,7 @@ pub async fn write_project_file(
     write_project_file_local(&project_dir, &rel_path, &content)
 }
 
-/// Local-fs text write — byte-identical pre-Phase-3 body.
+/// Local-fs text write, confined like every project write.
 pub fn write_project_file_local(
     project_dir: &str,
     rel_path: &str,
@@ -906,13 +900,9 @@ pub fn write_project_file_local(
 ) -> Result<(), String> {
     let root = canonical(project_dir)?;
     let target = root.join(rel_path);
-    let target_c = canonical_or_new(&target);
+    let target_c = canonical_or_new(&target)?;
     enforce_confinement(&root, &target_c)?;
-
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::write(&target, content).map_err(|e| e.to_string())
+    write_confined(&target_c, content.as_bytes())
 }
 
 /// Write raw bytes to a file inside the project (used for drag-and-drop uploads).
@@ -930,7 +920,7 @@ pub async fn write_project_file_bytes(
     write_project_file_bytes_local(&project_dir, &rel_path, &content)
 }
 
-/// Local-fs byte write — byte-identical pre-Phase-3 body.
+/// Local-fs byte write, confined like every project write.
 pub fn write_project_file_bytes_local(
     project_dir: &str,
     rel_path: &str,
@@ -938,13 +928,9 @@ pub fn write_project_file_bytes_local(
 ) -> Result<(), String> {
     let root = canonical(project_dir)?;
     let target = root.join(rel_path);
-    let target_c = canonical_or_new(&target);
+    let target_c = canonical_or_new(&target)?;
     enforce_confinement(&root, &target_c)?;
-
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::write(&target, content).map_err(|e| e.to_string())
+    write_confined(&target_c, content)
 }
 
 #[tauri::command]
@@ -956,7 +942,7 @@ pub fn update_gitignore_rule(
 ) -> Result<(), String> {
     let root = canonical(&project_dir)?;
     let clean_rel = normalize_project_rel_path(&rel_path)?;
-    let target_c = canonical_or_new(&root.join(&clean_rel));
+    let target_c = canonical_or_new(&root.join(&clean_rel))?;
     enforce_confinement(&root, &target_c)?;
 
     let gitignore_path = root.join(".gitignore");
@@ -1003,13 +989,13 @@ pub async fn create_dir(
     create_dir_local(&project_dir, &rel_path)
 }
 
-/// Local-fs directory create — byte-identical pre-Phase-3 body.
+/// Local-fs directory create, confined like every project write.
 pub fn create_dir_local(project_dir: &str, rel_path: &str) -> Result<(), String> {
     let root = canonical(project_dir)?;
     let target = root.join(rel_path);
-    let target_c = canonical_or_new(&target);
+    let target_c = canonical_or_new(&target)?;
     enforce_confinement(&root, &target_c)?;
-    fs::create_dir_all(&target).map_err(|e| e.to_string())
+    fs::create_dir_all(&target_c).map_err(|e| e.to_string())
 }
 
 /// Copy a file or directory tree into another location. Both ends are confined
@@ -1131,7 +1117,7 @@ pub fn import_external_file_blocking(
     } else {
         root.join(&rel_dir)
     };
-    let dest_dir_c = canonical_or_new(&dest_dir);
+    let dest_dir_c = canonical_or_new(&dest_dir)?;
     enforce_confinement(&root, &dest_dir_c)?;
     // Block copying a directory into its own subtree (would recurse forever).
     if dest_dir_c.starts_with(&src) {
@@ -1151,7 +1137,7 @@ pub fn import_external_file_blocking(
     } else {
         unique_dest(&dest_dir_c, &file_name)
     };
-    enforce_confinement(&root, &canonical_or_new(&dest))?;
+    enforce_confinement(&root, &canonical_or_new(&dest)?)?;
 
     fs::create_dir_all(&dest_dir_c).map_err(|e| e.to_string())?;
     if replace && dest.exists() {
@@ -1182,7 +1168,7 @@ pub fn project_path_exists(project_dir: String, rel_path: String) -> Result<bool
     } else {
         root.join(&rel)
     };
-    let target_c = canonical_or_new(&target);
+    let target_c = canonical_or_new(&target)?;
     enforce_confinement(&root, &target_c)?;
     Ok(target_c.exists())
 }
@@ -1221,7 +1207,7 @@ pub fn extract_archive_blocking(project_dir: String, rel_path: String) -> Result
     // Reuse the " (n)" collision suffixing — `stem` has no extension, so the
     // suffix simply lands at the end of the folder name.
     let dest_dir = unique_dest(&parent, &stem);
-    enforce_confinement(&root, &canonical_or_new(&dest_dir))?;
+    enforce_confinement(&root, &canonical_or_new(&dest_dir)?)?;
 
     let file = fs::File::open(&archive).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("read zip: {e}"))?;
@@ -1238,7 +1224,7 @@ pub fn extract_archive_blocking(project_dir: String, rel_path: String) -> Result
         };
         let out = dest_dir.join(&rel);
         // Defense in depth: confine the resolved output to the dest folder.
-        enforce_confinement(&dest_dir, &canonical_or_new(&out))?;
+        enforce_confinement(&dest_dir, &canonical_or_new(&out)?)?;
         if entry.is_dir() {
             fs::create_dir_all(&out).map_err(|e| e.to_string())?;
         } else {
@@ -1312,7 +1298,7 @@ fn resolve_transfer(
 
     let dest_root = canonical(dest_project_dir)?;
     let dest = dest_root.join(dest_rel);
-    let dest_c = canonical_or_new(&dest);
+    let dest_c = canonical_or_new(&dest)?;
     enforce_confinement(&dest_root, &dest_c)?;
 
     if dest_c.exists() {
@@ -2189,16 +2175,65 @@ fn should_skip_ending_scan_dir(name: &str) -> bool {
     )
 }
 
-fn canonical_or_new(path: &Path) -> PathBuf {
-    // For new paths that don't exist yet, canonicalize the parent and join.
-    if path.exists() {
-        return path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+/// Resolve a path that may not exist yet, for confinement: existing paths
+/// canonicalize; a dangling link resolves to where it points; a missing path
+/// canonicalizes its deepest existing ancestor and applies the rest lexically.
+/// The result never keeps a `..` or a link, so neither `missing/../..` nor a
+/// planted link to a not-yet-existing file outside can pass a `starts_with`
+/// check. Callers write to the returned path, not the one they joined.
+pub(crate) fn canonical_or_new(path: &Path) -> Result<PathBuf, String> {
+    resolve_new(path, 0).ok_or_else(|| format!("cannot resolve '{}'", path.display()))
+}
+
+fn resolve_new(path: &Path, links: u32) -> Option<PathBuf> {
+    // The kernel's own ELOOP bound for a chain of links.
+    if links > 40 {
+        return None;
     }
-    let parent = path.parent().and_then(|p| p.canonicalize().ok());
-    match parent {
-        Some(p) => p.join(path.file_name().unwrap_or_default()),
-        None => path.to_path_buf(),
+    if let Ok(c) = path.canonicalize() {
+        return Some(c);
     }
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if !meta.file_type().is_symlink() {
+            // It exists yet will not canonicalize (an unreadable ancestor).
+            return None;
+        }
+        let link = fs::read_link(path).ok()?;
+        let target = match path.parent() {
+            Some(parent) => parent.join(link),
+            None => link,
+        };
+        return resolve_new(&target, links + 1);
+    }
+    let parent = resolve_new(path.parent()?, links)?;
+    match path.components().next_back()? {
+        std::path::Component::Normal(name) => Some(parent.join(name)),
+        std::path::Component::CurDir => Some(parent),
+        std::path::Component::ParentDir => parent.parent().map(Path::to_path_buf),
+        _ => None,
+    }
+}
+
+/// Write `content` to `target_c`, a path `canonical_or_new` resolved and
+/// `enforce_confinement` passed, creating its missing folders. The file itself
+/// is opened `O_NOFOLLOW`: a link swapped in after the check is refused rather
+/// than followed out of the project.
+fn write_confined(target_c: &Path, content: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(parent) = target_c.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options
+        .open(target_c)
+        .and_then(|mut f| f.write_all(content))
+        .map_err(|e| e.to_string())
 }
 
 /// Enforce that `target` is inside `root` (relative-path project confinement).
@@ -2992,6 +3027,60 @@ mod tests {
         assert!(
             err.contains("escapes project root"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn write_project_file_blocks_escape_through_a_missing_folder() {
+        // `missing/..` cannot be canonicalized, so the confinement check used
+        // to compare the raw path — whose components still start with the root.
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let dir = root.to_string_lossy().to_string();
+
+        assert!(write_project_file_local(&dir, "missing/../../outside.md", "x").is_err());
+        assert!(write_project_file_bytes_local(&dir, "missing/../../outside.png", b"x").is_err());
+        assert!(!outer.path().join("outside.md").exists());
+        assert!(!outer.path().join("outside.png").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_project_file_never_follows_a_dangling_link_out_of_the_project() {
+        // A link to a not-yet-existing file outside passes `exists()` as false,
+        // so only its parent was canonicalized — and the write then created
+        // the link's target outside the project.
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("project");
+        std::fs::create_dir_all(root.join("eldrun-screenshots")).unwrap();
+        let outside = outer.path().join("planted.desktop");
+        std::os::unix::fs::symlink(&outside, root.join("eldrun-screenshots/shot.png")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("notes.md")).unwrap();
+        let dir = root.to_string_lossy().to_string();
+
+        assert!(
+            write_project_file_bytes_local(&dir, "eldrun-screenshots/shot.png", b"png").is_err()
+        );
+        assert!(write_project_file_local(&dir, "notes.md", "text").is_err());
+        assert!(!outside.exists(), "nothing may land outside the project");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_project_file_still_saves_through_a_link_inside_the_project() {
+        // A symlinked file whose target is inside the project is the user's own
+        // layout; saving it must keep writing the target, as before.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("real.md"), "old").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("real.md"), tmp.path().join("alias.md"))
+            .unwrap();
+
+        write_project_file_local(&tmp.path().to_string_lossy(), "alias.md", "new").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("real.md")).unwrap(),
+            "new"
         );
     }
 
