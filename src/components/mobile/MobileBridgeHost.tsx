@@ -2042,13 +2042,13 @@ async function recordTabPrompt(projectId: string, tmuxSession: string, message: 
   return { status: "seen" };
 }
 
-/** The phone sent a prompt while the agent was at work: rather than the words
- * going straight into the CLI's own queue, where nothing can reach them again,
- * they wait here as a send-now schedule (`queuePromptForTab`) for a short edit
- * window (`phoneHolds.ts`), in which the phone can rewrite them
- * (`editHeldTabPrompt`). Then they join the CLI's queue, or go in at once if
- * the agent falls idle first. The delivery records the prompt in the history,
- * so nothing is recorded here. */
+/** The phone sent a prompt while the agent was at work: it goes in as a
+ * send-now schedule (`queuePromptForTab`) that the scheduler types into the
+ * CLI's own queue at once (`phoneHolds.ts`), with the scheduler's claim as the
+ * at-most-once check and its guard against answering a question. Only while
+ * the pane can't take it does it wait, and the phone can still rewrite it
+ * (`editHeldTabPrompt`). The delivery records the prompt in the history, so
+ * nothing is recorded here. */
 async function holdTabPrompt(projectId: string, tmuxSession: string, message: string): Promise<DesktopResponse> {
   const scope = mobileScope(projectId);
   if (!scope) {
@@ -2092,7 +2092,7 @@ async function editHeldTabPrompt(projectId: string, tmuxSession: string, heldId:
     if (code.includes("schedule_gone")) return gone;
     throw cause;
   }
-  // The reader is still at it: the edit window starts again.
+  // Still a phone prompt: it goes in as soon as the pane takes it.
   holdPhonePrompt(heldId);
   return { status: "held", held_id: heldId };
 }

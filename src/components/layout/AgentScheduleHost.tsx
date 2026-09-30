@@ -287,7 +287,7 @@ function queueableWhileBusy(input: ScheduledAgentInput): boolean {
 }
 
 /**
- * Type a phone prompt whose edit window is over (`phoneHolds.ts`) while the
+ * Type a phone prompt (`phoneHolds.ts`) while the
  * agent works, as a prompt typed then goes: into the CLI's own queue, which
  * the agent takes in mid-turn. The idle gate stays for every other rule. The
  * turn it lands in is not this delivery's, so nothing waits on its end; the
@@ -356,9 +356,17 @@ export function AgentScheduleHost() {
       ));
     };
 
-    const tick = async () => {
-      if (disposed || running.current) return;
+    // A tick asked for while one runs (a phone prompt arriving mid-sweep)
+    // runs once more after it rather than waiting for the next sweep.
+    let again = false;
+    const tick = async (): Promise<void> => {
+      if (disposed) return;
+      if (running.current) {
+        again = true;
+        return;
+      }
       running.current = true;
+      again = false;
       try {
         const now = new Date();
         for (const binding of bindings()) {
@@ -381,7 +389,7 @@ export function AgentScheduleHost() {
             // agent has never reported a verdict (see `completedTurn`).
             if (!ready()) {
               // The turn a delivery started is still going: a phone prompt
-              // past its edit window joins the CLI's queue all the same.
+              // joins the CLI's queue all the same.
               if (input) {
                 const pending = useAgentSchedulesStore.getState().byTarget[key]
                   ?? await useAgentSchedulesStore.getState()
@@ -459,7 +467,7 @@ export function AgentScheduleHost() {
             // Delivery waits inside the one-hour window until the PTY exists,
             // has settled, is idle, and is not on an approval/decision prompt.
             // The tab being focused is deliberately not part of this gate.
-            // Only a phone prompt past its edit window goes in meanwhile.
+            // Only a phone prompt goes in meanwhile.
             if (!input || !idleForDelivery(input)) {
               if (input) await queueDuePhoneHold(binding, input, schedules, now);
               break;
@@ -518,11 +526,12 @@ export function AgentScheduleHost() {
       } finally {
         running.current = false;
       }
+      if (again) return tick();
     };
 
     void loadBindings().then(tick);
     const timer = setInterval(() => void tick(), TICK_MS);
-    // A phone prompt's edit window ending is its moment, not the next sweep's.
+    // A phone prompt goes in now, not on the next sweep.
     const stopPhoneHolds = onPhoneHoldDue(() => void tick());
     // Backend reads prune proposals after seven days, even when no MCP client
     // or schedule dialog has been opened since they arrived.

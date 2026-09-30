@@ -1,8 +1,7 @@
 /**
- * A prompt the phone sent while the agent worked is held on the desktop only
- * for its edit window (`phoneHolds.ts`); then it goes into the CLI's own queue
- * while the agent still works, as a prompt typed then would. Every other rule
- * keeps waiting for the agent's idle point.
+ * A prompt the phone sent while the agent worked (`phoneHolds.ts`) goes into
+ * the CLI's own queue at once, while the agent still works, as a prompt typed
+ * then would. Every other rule keeps waiting for the agent's idle point.
  */
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -93,32 +92,42 @@ afterEach(() => {
 });
 
 describe("a prompt the phone sent mid-turn", () => {
-  it("joins the CLI's queue once its edit window is over, while the agent still works", async () => {
+  it("joins the CLI's queue at once, while the agent still works", async () => {
     noteAgentTurn(PTY, "working");
     schedules = [sendNow("held-1", "also fix the tests")];
     holdPhonePrompt("held-1");
     await act(async () => { render(<AgentScheduleHost />); });
-    await advance(45_000);
-    expect(delivered()).toBe("");
-
-    await advance(20_000);
+    await advance(1_000);
     expect(delivered()).toContain("also fix the tests");
     expect(completions()).toEqual([expect.objectContaining({ scheduleId: "held-1", result: "delivered" })]);
   });
 
-  it("starts the window again on an edit", async () => {
+  it("goes in without waiting for the next sweep when it arrives mid-watch", async () => {
     noteAgentTurn(PTY, "working");
+    await act(async () => { render(<AgentScheduleHost />); });
+    await advance(1_000);
+    schedules = [sendNow("held-1", "one more thing")];
+    await act(async () => {
+      await useAgentSchedulesStore.getState().load("p", "target-1");
+    });
+    holdPhonePrompt("held-1");
+    await advance(1_000);
+    expect(delivered()).toContain("one more thing");
+  });
+
+  it("goes in as edited once a question it waited behind is answered", async () => {
+    noteAgentTurn(PTY, "working");
+    noteAgentTurn(PTY, "decision");
     schedules = [sendNow("held-1", "first words")];
     holdPhonePrompt("held-1");
     await act(async () => { render(<AgentScheduleHost />); });
-    await advance(45_000);
+    await advance(1_000);
+    expect(delivered()).toBe("");
     schedules = [sendNow("held-1", "second words")];
     useAgentSchedulesStore.setState({ byTarget: {} });
     holdPhonePrompt("held-1");
-    await advance(30_000);
-    expect(delivered()).toBe("");
-
-    await advance(35_000);
+    noteAgentTurn(PTY, "working");
+    await advance(1_000);
     expect(delivered()).toContain("second words");
     expect(delivered()).not.toContain("first words");
   });
@@ -144,9 +153,7 @@ describe("a prompt the phone sent mid-turn", () => {
     schedules = [sendNow("held-1", "and the docs")];
     useAgentSchedulesStore.setState({ byTarget: {} });
     holdPhonePrompt("held-1");
-    await advance(15_000);
-    expect(delivered()).toBe("");
-    await advance(50_000);
+    await advance(1_000);
     expect(delivered()).toContain("and the docs");
   });
 

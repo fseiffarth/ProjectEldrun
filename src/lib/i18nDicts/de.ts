@@ -107,7 +107,7 @@ export const dict: Dict = {
   "mobile.composer.undoGone": "Nichts rückgängig zu machen: Die Unterhaltung ist seit dem Leeren weitergegangen.",
   "mobile.composer.undoFailed": "Das Leeren ließ sich nicht rückgängig machen. Ist Eldrun am Desktop mit diesem Tab offen?",
   "mobile.composer.undoRemote": "Dieser Tab läuft auf einem entfernten Host; dort lässt sich das Leeren von hier nicht rückgängig machen.",
-  "mobile.composer.heldNote": "Der Agent arbeitet: Dein Prompt kommt in etwa einer Minute in seine Warteschlange. Bis dahin kannst du ihn bearbeiten, indem du seine Blase gedrückt hältst.",
+  "mobile.composer.heldNote": "Der Agent arbeitet: Dein Prompt kommt in seine Warteschlange und wird aufgenommen, sobald der Agent dazu kommt.",
   "mobile.composer.heldEdited": "Prompt geändert — der Agent bekommt den neuen Wortlaut.",
   "mobile.composer.heldGone": "Der Agent hat diesen Prompt schon übernommen, er lässt sich nicht mehr ändern. Dein Text bleibt im Eingabefeld.",
   "mobile.composer.heldEditFailed": "Die Änderung hat den Desktop nicht erreicht. Versuch es erneut oder brich ab.",
