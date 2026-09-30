@@ -210,8 +210,8 @@ small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-
 /* The project screen's tab cards carry a hexagonal status mark on the left
    border. Its inset face leaves a coloured edge around the glyph; a static
    dark shadow separates it from the tab colour. Taps pass through the mark. */
-.tab-card > .tab-card-status { position:absolute; top:50%; left:-12px; z-index:2; display:grid; place-items:center; width:22px; height:22px; padding:0; border:0; border-radius:0; background:currentColor; clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%); filter:drop-shadow(0 0 2px #000); font-size:.72rem; line-height:1; transform:translateY(-50%); pointer-events:none; }
-.tab-card > .tab-card-status::before { content:""; position:absolute; inset:1.5px; background:var(--status-face); clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%); }
+.tab-card > .tab-card-status { position:absolute; top:50%; left:-12px; z-index:2; display:grid; place-items:center; width:22px; height:22px; padding:0; border:0; border-radius:0; background:currentColor; clip-path:polygon(25% 6.7%,75% 6.7%,100% 50%,75% 93.3%,25% 93.3%,0 50%); filter:drop-shadow(0 0 2px #000); font-size:.72rem; line-height:1; transform:translateY(-50%); pointer-events:none; }
+.tab-card > .tab-card-status::before { content:""; position:absolute; inset:1.5px; background:var(--status-face); clip-path:polygon(25% 6.7%,75% 6.7%,100% 50%,75% 93.3%,25% 93.3%,0 50%); }
 .tab-card > .tab-card-status.working { --status-face:#173827; font-size:.56rem; }
 .tab-card > .tab-card-status.question { --status-face:#493b1d; }
 .tab-card > .tab-card-status.done { --status-face:#193a29; }
@@ -219,7 +219,9 @@ small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-
 /* The Activity pill breathes; the working hexagon turns slowly while a faint
    fill pulses inside it, and its ▶ counter-turns so it stays upright and
    legible at phone size. ? tips its head while it waits; ✓ and ■ land once.
-   The mark's own transform places it on the border, so the spin repeats it. */
+   The mark's own transform places it on the border, so the spin repeats it.
+   The hexagon is regular (flat edges at 6.7%/93.3% of its square box) so it
+   turns without wobbling. */
 .agent-status-glyph { display:inline-block; position:relative; z-index:1; }
 .agent-status.working:not(.tab-card-status) .agent-status-glyph { animation:agent-status-breathe 1.6s ease-in-out infinite; }
 .agent-status.question .agent-status-glyph { animation:agent-status-ask 2.6s ease-in-out infinite; transform-origin:50% 85%; }
