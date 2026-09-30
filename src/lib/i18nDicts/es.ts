@@ -818,7 +818,7 @@ export const dict: Dict = {
   "mobile.rootAccessHeader": "Consola raíz",
   "mobile.rootAccess": "Consola raíz en el teléfono",
   "mobile.rootAccessHelp": "Un teléfono emparejado puede abrir las pestañas de la consola raíz e iniciar allí shells y agentes. Un agente raíz iniciado desde el teléfono recibe las mismas herramientas MCP que uno iniciado aquí. Aprobar, rechazar o deshacer lo que propone sigue siendo cosa de este escritorio; el teléfono solo ve cuántas propuestas esperan.",
-  "mobile.git.dirty": "sin añadir",
+  "mobile.git.dirty": "cambios sin preparar",
   "mobile.git.staged": "sin confirmar",
   "mobile.git.unpushed": "sin enviar",
   "mobile.git.broken": "falta .git",

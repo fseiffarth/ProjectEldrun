@@ -819,7 +819,7 @@ export const dict: Dict = {
   "mobile.rootAccessHeader": "Console racine",
   "mobile.rootAccess": "Console racine sur le téléphone",
   "mobile.rootAccessHelp": "Un téléphone appairé peut ouvrir les onglets de la console racine et y lancer des shells et des agents. Un agent racine lancé depuis le téléphone reçoit les mêmes outils MCP qu’un agent lancé ici. Approuver, rejeter ou annuler ce qu’il propose reste réservé à ce poste ; le téléphone voit seulement combien de propositions attendent.",
-  "mobile.git.dirty": "non ajouté",
+  "mobile.git.dirty": "modifications non indexées",
   "mobile.git.staged": "non validé",
   "mobile.git.unpushed": "non poussé",
   "mobile.git.broken": ".git manquant",

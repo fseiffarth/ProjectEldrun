@@ -774,7 +774,7 @@ export const en = {
   "mobile.rootAccessHeader": "Root console",
   "mobile.rootAccess": "Root console on the phone",
   "mobile.rootAccessHelp": "A paired phone may open the root console's tabs and start shells and agents there. A root agent started from the phone gets the same MCP tools as one started here. Approving, rejecting or undoing what it proposes stays on this desktop; the phone only sees how many proposals are waiting.",
-  "mobile.git.dirty": "not added",
+  "mobile.git.dirty": "unstaged changes",
   "mobile.git.staged": "not committed",
   "mobile.git.unpushed": "not pushed",
   "mobile.git.broken": ".git missing",
