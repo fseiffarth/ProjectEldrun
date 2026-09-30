@@ -171,8 +171,15 @@ Claude's `/fast` — different thing.
   `source: clear` / `startup`, `session_id` and `permission_mode` parsed off
   its payloads — and that a `claude -p` run from a Bash tool in another cwd
   passed the nested-startup guard and took the tab's record over; the guard
-  now looks for the tab's transcript in every project folder); the turn events
-  against 2.1.272 by reading the binary's strings, not live.
+  now looks for the tab's transcript in every project folder); re-checked
+  against 2.1.285 (2026-09-30, live, `-p` with an inline `--settings` hook
+  dumping every payload: SessionStart `source: startup` / `resume`, Stop and
+  UserPromptSubmit `permission_mode`, `session_id` equal to the
+  `--session-id` passed, SessionEnd `reason`; the transcript at the path
+  below, `--resume <uuid>` reopening it); the turn events against 2.1.272 by
+  reading the binary's strings, not live — 2.1.285 still carries
+  `permission_prompt`, `elicitation_dialog`, `idle_prompt` and the same six
+  permission modes.
 - Session logs: `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; `--resume` is
   emitted only when that file exists.
 - The model tag in the Agents views (`agent_session_model`) reads the tail of
@@ -187,7 +194,9 @@ Claude's `/fast` — different thing.
   `<command-name>…<command-args>` reads as `/name args`, `<bash-input>` as
   `! cmd`. A new wrapper tag shows up as a prompt until it is added here.
 - `/usage` in print mode returns a JSON envelope with `result` (panel text),
-  `is_error`, `num_turns: 0` (re-checked live against 2.1.284, 2026-09-29). The
+  `is_error`, `num_turns: 0` (re-checked live against 2.1.285, 2026-09-30,
+  its panel fed through `parseUsageReport`: three meters, the
+  "What's contributing" lines kept as notes). The
   panel text is parsed by `shared/usageReport.ts` for the phone's bars, the
   prompt chart's reset lines and auto-continue (five-hour / weekly windows,
   per-model lines) — a re-layout may cost figures. `resolveResetAt` places the
@@ -270,6 +279,33 @@ aliases, and anything about where or how credentials are stored.
 
 **Assumes**
 
+- **0.159.2 (2026-09-30), live but outside Eldrun** — the npm linux-x64 build
+  run in a private tmux with its own `CODEX_HOME`, inside a fenced agent tab.
+  Verified live: the approval menu (labels below) and its title frames, the
+  two-step `/model` screens (both fed to `looksLikeDecisionPrompt` and
+  `readSelectPrompt` as captured), the rollout header and records, and that
+  `resume <id>` / `exec --skip-git-repo-check` / `--oss` / `-m` / `-c` stand.
+  `-a` now takes only `on-request | never` (Eldrun passes none). Hook events
+  are unchanged since 0.157.0 (`PermissionRequest` and `Interrupt` exist; still
+  no `Notification`). Not verified: mobile mode lines, and the writer lock in
+  a fenced (in-process) tab.
+- **The shared app-server daemon.** Since at least 0.157.0
+  (`daemon_auto_start`, stable, on) a TUI may detach a
+  `codex app-server --managed-daemon` (own session, reparented to init) out of
+  `$CODEX_HOME/packages/app-server-daemon/`, socket under
+  `/tmp/codex-daemon-<uid>/`, and every later TUI on that `CODEX_HOME` attaches
+  to it — a second `resume <id>` of a live thread then *joins* it instead of
+  reporting an active writer. Fenced tabs have so far run in-process (the
+  scope's log says `rpc.transport="in-process"` on 0.158.0) for a reason not
+  pinned down; a TUI that does choose the daemon but cannot use it — only
+  `current/bin` of the standalone install is bound, a sibling tab's socket is
+  in another fence's private `/tmp` — exits 1 with "rerun … with
+  `--no-daemon`". So Eldrun appends `--no-daemon` to every host Codex TUI
+  launch (fresh, `resume`, `--oss`; not `login`/`exec`/…) once the probed
+  version is ≥ `CODEX_NO_DAEMON_SINCE` = 0.156.0, the release that brought
+  both the daemon and the flag (0.155.x exits on it; unknown version → no
+  flag, as with Claude's `--name`). Containers, remote hosts and
+  `ollama launch codex` run their own Codex and get no flag.
 - **0.157.0 (2026-09-25) was checked from the binary's strings, not live** —
   launching a Codex TUI from an agent tab was refused, so all four
   `VERIFIED` rows moved to 0.157.0 on this evidence: `--help` still lists
@@ -330,11 +366,14 @@ aliases, and anything about where or how credentials are stored.
     (U+2800–U+28FF) around the composer every ~150ms, indefinitely.
     `notePtyOutput` drops braille cells before judging a frame, or a finished
     turn reads as "working" forever. An animation in any other glyph range
-    brings that back.
+    brings that back. (0.159.2 under tmux: an idle TUI wrote nothing for 4s;
+    a blocked one only the title, now `[ ! ] Action Required | <action> |
+    <dir>` about once a second.)
   - **Approval menus are numbered rows whose labels decide, not their index.**
-    Codex offers two flavours of yes before the no ("Yes, just this once",
-    "Yes, and don't ask again for this command in this session", "No, and tell
-    Codex what to do differently"), and the diff renderer skips unchanged cells
+    Codex offers two flavours of yes before the no — on 0.159.2 "Yes, proceed
+    (y)", "Yes, and don't ask again for commands that start with `…` (p)",
+    "No, and tell Codex what to do differently (esc)"; earlier "Yes, just this
+    once" / "…for this command in this session" — and the diff renderer skips unchanged cells
     so the row arrives as `2.Yes,and…` — spaces gone, glued to the row above.
     `agentPrompt.ts` matches the first word of each option; renaming the
     options away from yes/no/allow/cancel wording is what would break it.
@@ -344,11 +383,13 @@ aliases, and anything about where or how credentials are stored.
 - Mobile's model sheet reads `/model` off the screen, and Codex answers it in
   **two steps** — `Select Model and Effort`, then `Select Reasoning Level for
   <model>` (whose row 5, "More reasoning…", opens a third). Each step is a
-  heading, a blank line, then rows `N. Label  Description` numbered from 1 with
+  heading, blank lines (one through 0.153.4, two on 0.159.2), then rows `N. Label  Description` numbered from 1 with
   the highlight marked `›`; the sheet holds until a *different* list is drawn
   and closes when none is. Renumbering, dropping the heading, or drawing the
   next step without clearing the previous one is what would break it. Verified
-  against codex-cli 0.153.4 (0.157.0 by strings).
+  against codex-cli 0.153.4 and live against 0.159.2, whose reasoning step's
+  footer reads `enter default · s session · esc back`: the Enter the sheet
+  sends saves the pick as the default, `s` would keep it to the session.
 
 **Verify**
 
@@ -420,8 +461,13 @@ Version probes (`agent_versions::VERSION_ARGV`) exist for Antigravity
 `Muse Code 1.3.0 (1.3.0-R3057.1)`) as well. Muse's launcher script starts a
 background self-update on any invocation once its interval has passed, so its
 probe sets `MUSE_NO_AUTO_UPDATE=1` (`VERSION_ENV`); a launcher that renames
-that switch turns the daily probe into an updater. Muse and Copilot have a
-recipe but no recorded check, so Manage CLIs calls them unverified.
+that switch turns the daily probe into an updater. Muse has a recipe but no
+recorded check, so Manage CLIs calls it unverified; the 1.4.1-era launcher
+(`api.meta.ai/muse-launcher.sh`, fetched 2026-09-30) still honours the switch
+and still defaults the login to `$XDG_CONFIG_HOME` or `~/.config/muse/auth.json`.
+Copilot's row is 1.0.89 (2026-09-30, from the npm package, not live): `-p`,
+`--continue`, `session-state` under `COPILOT_HOME`/home, and `authTokens` /
+`storeTokenPlaintext` in the runtime it unpacks into `~/.cache/copilot/pkg/`.
 
 A fenced tab resumes only if its session store is mounted into the fence:
 `sandbox::agent_home_mounts` lists each continue-last agent's store (OpenCode
@@ -458,11 +504,13 @@ the `fixed` flag in `agentModes.ts` be dropped.
 
 **Antigravity's model and effort** are read by the phone since 2026-09-20
 (`mobile-web/src/terminal/antigravity.ts`, verified against 1.2.7 by a pty
-capture; 1.2.9 by the binary's strings only, 2026-09-25 — `? for shortcuts`,
-`Switch Model`, `Search:`, `(current)` and the `items]` window note are all
-still in it). 1.2.11's changelog reworks the effort gauge in `/effort` and
-`/model`, so the slider below is the first thing to re-capture on that
-release. It assumes, of `agy`: the footer row under the input box, with
+capture; 1.2.14 by a tmux capture at 80×24 on 2026-09-30, run through
+`readableScreen` and the parsers: six rows, `[1-6 of 7 items]`, three effort
+stops — the 1.2.11 gauge rework left the slider's shape as below, and 1.2.9's
+dialog is byte-identical). Since at least 1.2.9 an underline row
+(`──────────`) sits under `Search:`; `readableScreen` drops it, so a parser fed
+raw rows would miss the list. A fresh home opens on a theme picker, a
+data-sharing opt-in (leave it unticked) and a folder-trust prompt. It assumes, of `agy`: the footer row under the input box, with
 `? for shortcuts` on the left and the model right-aligned, the reasoning effort
 after a ` · ` where the model has one (`Gemini 3.8 Flash · high`); the `/model`
 dialog's heading `Switch Model` and its `Search:` field; unnumbered rows, two
@@ -482,7 +530,12 @@ is; the phone's Focus view cannot read them — a release that changes that is a
 `--alt-screen` flag was removed). Copilot 1.0.81–1.0.82 also offered to restore
 interrupted sessions at startup, a prompt a restored tab would open on; 1.0.83
 turned it off by default. Vibe 2.25.4 still has `-c/--continue` and
-`-p/--prompt` (read out of the wheel, 2026-09-15). Droid, OpenClaw and OpenCode are also `LOCAL_DRIVERS` (Ollama-backed
+`-p/--prompt` (read out of the wheel, 2026-09-15); 2.25.8 too (2026-09-30),
+with `--resume [SESSION_ID]`, the `post_agent` hook type in `hooks.toml` whose
+payload carries `session_id`, and `logs/session/unified/<id>/CURRENT` — what
+`resolve_vibe_session` relies on. Cursor 2026.09.28 keeps `-p/--print`,
+`--continue` and its chats under `~/.cursor`. Aider 0.86.2 (latest) needs
+only its binary name and `aider.chat/install.sh`, still served. Droid, OpenClaw and OpenCode are also `LOCAL_DRIVERS` (Ollama-backed
 tabs via `ollama launch <agent>`).
 
 ---

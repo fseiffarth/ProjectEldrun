@@ -651,6 +651,21 @@ pub async fn pty_spawn(
         && crate::commands::agents::claude_takes_name_flag()
         && append_claude_name(&mut opts.args, session_name.as_deref());
 
+    // Codex (0.156.0+) otherwise may hand its threads to a detached, shared
+    // `app-server` daemon that outlives the tab and the fence: its socket sits
+    // in this fence's private /tmp, where a sibling tab on the same CODEX_HOME
+    // cannot reach it — that tab's Codex then exits on start. `--no-daemon`
+    // keeps every tab's Codex in-process, as fenced tabs have run so far. Same
+    // seam and reasoning as `--name` above: only the host binary, whose
+    // version Eldrun has read, and only its TUI.
+    if opts.cmd == "codex"
+        && crate::services::agent_versions::codex_runs_tui(&opts.args)
+        && !opts.args.iter().any(|a| a == "--no-daemon")
+        && crate::commands::agents::codex_takes_no_daemon()
+    {
+        opts.args.push("--no-daemon".to_string());
+    }
+
     // Apply the outer fence boundary (bubblewrap on Linux, sandbox-exec on
     // macOS) after docker/ssh selection but before local tmux.  This keeps the
     // tmux server on the host while the command *inside* its session is
