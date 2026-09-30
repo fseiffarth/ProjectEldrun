@@ -32,11 +32,19 @@ export function foldPrompt(text: string): string {
  * recorded), else its label (a row from a tab that had no session id). A
  * fallback, never an OR: default labels repeat ("Claude"), so matching by
  * label as well hands every tab of that name every other one's prompts —
- * as `chart.rowOnStrand` learned first. */
+ * as `chart.rowOnStrand` learned first. For the same reason a tab with an id
+ * of its own never takes a label-only row: it stamped every row it got. */
 export function rowOfTab(row: SentAgentPrompt, tab: TabEntry): boolean {
-  if (row.tab_id) return row.tab_id === tab.sessionId;
+  if (row.tab_id) return row.tab_id === historyTabId(tab);
   if (row.session_id) return row.session_id === tab.sessionId;
-  return row.tab_label === tab.label;
+  return !historyTabId(tab) && row.tab_label === tab.label;
+}
+
+/** The id a tab's history rows carry as `tab_id`: its launch id, or — for a
+ * tab without one (a CLI Eldrun cannot resume) — its schedule target id,
+ * which a restore keeps too. */
+export function historyTabId(tab: Pick<TabEntry, "sessionId" | "scheduleTargetId">): string | undefined {
+  return tab.sessionId ?? tab.scheduleTargetId;
 }
 
 /** The tab's newest history row: its session first, its label as the
@@ -128,7 +136,7 @@ export async function adoptTranscriptPrompts(scope: string, tab: TabEntry, promp
       await store.record(scope, {
         id: crypto.randomUUID(),
         message: prompt.text,
-        sent: { tabLabel: tab.label, sessionId: tab.sessionId, agent: tab.cmd, result: "delivered", sentAt: prompt.at },
+        sent: { tabLabel: tab.label, sessionId: tab.sessionId, tabId: tab.scheduleTargetId, agent: tab.cmd, result: "delivered", sentAt: prompt.at },
       });
     } catch {
       // A prompt the history cannot take is still shown beside the tab.
@@ -151,7 +159,7 @@ export async function adoptTypedPrompt(scope: string, tab: TabEntry, prompt: str
     .record(scope, {
       id: crypto.randomUUID(),
       message: prompt,
-      sent: { tabLabel: tab.label, sessionId: tab.sessionId, agent: tab.cmd, result: "delivered" },
+      sent: { tabLabel: tab.label, sessionId: tab.sessionId, tabId: tab.scheduleTargetId, agent: tab.cmd, result: "delivered" },
     })
     .catch(() => []);
 }

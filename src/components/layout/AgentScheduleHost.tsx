@@ -171,6 +171,7 @@ async function retire(
     {
       tabLabel: binding.tab.label,
       sessionId: binding.tab.sessionId,
+      tabId: binding.scheduleTargetId,
       agent: binding.tab.cmd,
       result: last.result,
       scheduledFor: last.occurrence || undefined,

@@ -2037,7 +2037,7 @@ async function recordTabPrompt(projectId: string, tmuxSession: string, message: 
   await useAgentPromptsStore.getState().record(scope.id, {
     id: crypto.randomUUID(),
     message: text,
-    sent: { tabLabel: tab.label, sessionId: tab.sessionId, agent: tab.cmd, result: "delivered" },
+    sent: { tabLabel: tab.label, sessionId: tab.sessionId, tabId: tab.scheduleTargetId, agent: tab.cmd, result: "delivered" },
   }).catch(() => []);
   return { status: "seen" };
 }
