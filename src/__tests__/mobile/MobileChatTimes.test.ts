@@ -18,6 +18,12 @@ describe("Eldrun Mobile chat times", () => {
     expect(chatTime(local(2026, 9, 29, 14, 5))).toMatch(/14:05|2:05/);
   });
 
+  it("follows the desktop's clock when it is handed one, whatever the locale", () => {
+    expect(chatTime(local(2026, 9, 29, 14, 5), true)).toBe("14:05");
+    expect(chatTime(local(2026, 9, 29, 14, 5), false)).toMatch(/02:05|2:05/);
+    expect(chatTime(local(2026, 9, 29, 14, 5), false)).not.toMatch(/14/);
+  });
+
   it("names the day as a messenger does", () => {
     const now = local(2026, 9, 29, 9);
     expect(chatDayLabel(local(2026, 9, 29, 0, 1), now, labels)).toBe("Today");
