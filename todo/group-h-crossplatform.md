@@ -3158,6 +3158,9 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     notice goes. Then a Codex tab signed out → "Sign in with ChatGPT" →
     open page, approve → copy the failed localhost address → Finish
     sign-in → Codex continues.
+    - 2026-10-01: Claude sign-in from the phone confirmed working by the
+      user (`mobile.signIn`, `mobile.signIn.tab` stamped tested); the
+      Codex half is still open, so the boxes stay unticked.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
