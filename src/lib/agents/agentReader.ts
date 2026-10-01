@@ -69,27 +69,42 @@ export function mergeTranscript(previous: SessionTranscript | null, next: Sessio
   return next.unchanged && previous ? previous : next;
 }
 
-const STORAGE_KEY = "eldrun.agentReader.open";
-/** The per-CLI choice this replaced: any CLI left on the Reader carries over. */
-const LEGACY_KEY = "eldrun.agentReader.byAgent";
+const STORAGE_KEY = "eldrun.agentReader.byAgent";
+/** The one window-wide choice that briefly replaced the per-CLI one: a CLI
+ * without its own choice yet starts from it. */
+const SHARED_KEY = "eldrun.agentReader.open";
 
-/** The view the user last picked for every agent pane that offers the
- * Reader: true for the Reader. Unset (or unreadable storage) is the terminal. */
-export function rememberedReader(): boolean {
+function readChoices(): Record<string, boolean> {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored !== null) return stored === "1";
-    const legacy: unknown = JSON.parse(localStorage.getItem(LEGACY_KEY) ?? "{}");
-    return !!legacy && typeof legacy === "object" && Object.values(legacy).some((on) => on === true);
+    const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The view the user last picked for this agent CLI's tabs: true for the
+ * Reader. Unset (or unreadable storage) is the terminal. */
+export function rememberedReader(agent: string): boolean {
+  const chosen = readChoices()[agent];
+  if (typeof chosen === "boolean") return chosen;
+  try {
+    return localStorage.getItem(SHARED_KEY) === "1";
   } catch {
     return false;
   }
 }
 
-export function rememberReader(on: boolean): void {
+/** Every CLI's remembered view, for the store's start. */
+export function rememberedReaders(): Record<string, boolean> {
+  return Object.fromEntries([...READER_AGENTS].map((agent) => [agent, rememberedReader(agent)]));
+}
+
+export function rememberReader(agent: string, on: boolean): void {
   try {
-    localStorage.setItem(STORAGE_KEY, on ? "1" : "0");
-    localStorage.removeItem(LEGACY_KEY);
+    const choices = readChoices();
+    choices[agent] = on;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(choices));
   } catch {
     // A convenience only: without storage every tab opens on its terminal.
   }

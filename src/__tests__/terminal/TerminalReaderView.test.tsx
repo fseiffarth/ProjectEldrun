@@ -61,7 +61,7 @@ describe("the agent pane's Reader", () => {
     invoke.mockImplementation((command: string) =>
       Promise.resolve(command === "agent_tab_transcript" ? transcript : []));
     useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [tab] } }));
-    useAgentReaderStore.setState({ open: false });
+    useAgentReaderStore.setState({ byAgent: {} });
     host = document.createElement("div");
     document.body.appendChild(host);
   });
@@ -426,26 +426,34 @@ describe("agentReader helpers", () => {
     expect(mergeTranscript(shown, { available: true, unchanged: true, entries: [], truncated: false })).toBe(shown);
   });
 
-  it("remembers one choice for every agent pane; the terminal is the default", () => {
-    expect(rememberedReader()).toBe(false);
-    rememberReader(true);
-    expect(rememberedReader()).toBe(true);
-    rememberReader(false);
-    expect(rememberedReader()).toBe(false);
-    // The per-CLI choice it replaced carries over when any CLI was on the Reader.
+  it("remembers one choice per agent CLI; the terminal is the default", () => {
+    expect(rememberedReader("claude")).toBe(false);
+    rememberReader("claude", true);
+    expect(rememberedReader("claude")).toBe(true);
+    expect(rememberedReader("codex")).toBe(false);
+    rememberReader("claude", false);
+    expect(rememberedReader("claude")).toBe(false);
+    // The window-wide choice it replaced seeds every CLI without its own.
     localStorage.clear();
-    localStorage.setItem("eldrun.agentReader.byAgent", JSON.stringify({ codex: true }));
-    expect(rememberedReader()).toBe(true);
+    localStorage.setItem("eldrun.agentReader.open", "1");
+    rememberReader("codex", false);
+    expect(rememberedReader("claude")).toBe(true);
+    expect(rememberedReader("codex")).toBe(false);
   });
 
-  it("picking the Reader in one pane switches every pane that offers it", () => {
-    const { result: claude } = renderHook(() => useReaderOpen(true));
-    const { result: gemini } = renderHook(() => useReaderOpen(false));
-    act(() => useAgentReaderStore.getState().set(true));
+  it("picking the Reader in one pane switches every pane of that CLI only", () => {
+    const { result: claude } = renderHook(() => useReaderOpen("claude", true));
+    const { result: otherClaude } = renderHook(() => useReaderOpen("claude", true));
+    const { result: codex } = renderHook(() => useReaderOpen("codex", true));
+    const { result: gemini } = renderHook(() => useReaderOpen("gemini", false));
+    act(() => useAgentReaderStore.getState().set("claude", true));
     expect(claude.current).toBe(true);
+    expect(otherClaude.current).toBe(true);
+    expect(codex.current).toBe(false);
     expect(gemini.current).toBe(false);
-    expect(rememberedReader()).toBe(true);
-    act(() => useAgentReaderStore.getState().set(false));
+    expect(rememberedReader("claude")).toBe(true);
+    act(() => useAgentReaderStore.getState().set("claude", false));
     expect(claude.current).toBe(false);
+    expect(otherClaude.current).toBe(false);
   });
 });
