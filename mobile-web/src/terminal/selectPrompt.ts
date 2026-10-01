@@ -144,7 +144,10 @@ const COLUMN_SPLIT = /\s{2,}/u;
  * A note is text, so a column that starts with a frame is dropped whole
  * rather than read as one. */
 const PANEL_COLUMN = /^[│┃┆┇┊┋┌┏╭╔└┗╰╚├┣┤┫─━═]/u;
-const MAX_LABEL = 80;
+/** Room for Claude Code's longest permission row once its wrap is rejoined
+ * (`Yes, and switch to accept edits (auto-approve file edits and common file
+ * commands) for this session (shift+tab)`). */
+const MAX_LABEL = 160;
 const MAX_DESCRIPTION = 200;
 /** Non-blank rows a heading may occupy above the list: the heading itself and
  * the blurb both CLIs print under it. A longer block above the rows is
@@ -190,16 +193,37 @@ interface ReadRow {
  * — so for a row without a second column the note's column is the label's.
  * A line that is not a row and starts at or past the label's column continues
  * the row above: what sits left of the note's column is more label, the rest
- * more note. Anything shallower is ordinary text and ends the run. */
+ * more note. Anything shallower is ordinary text and ends the run.
+ *
+ * Except where the label itself ran out of room: Claude Code's permission
+ * dialog wraps a long row at the pane's edge onto the label's column too —
+ *
+ *       2. Yes, and switch to accept edits (auto-approve file
+ *          edits and common file commands) for this session
+ *
+ * — the same shape as a note under its label. What tells them apart is the
+ * width: a note starts a line of its own, a wrap is a word that did not fit
+ * on the line above (`wrapsLabel`). */
 function readContinuation(
   text: string,
   labelColumn: number,
   descriptionColumn: number,
+  labelWrap = false,
 ): { label: string; description: string } | null {
   const indent = text.length - text.trimStart().length;
   if (indent < labelColumn) return null;
+  if (labelWrap) return { label: text.trim(), description: "" };
   if (descriptionColumn <= labelColumn || indent >= descriptionColumn) return { label: "", description: text.trim() };
   return { label: text.slice(0, descriptionColumn).trim(), description: text.slice(descriptionColumn).trim() };
+}
+
+/** Whether `next` continues the label on `above` rather than starting the
+ * row's note under it: its first word would not have fit on `above` in a pane
+ * `columns` wide. Unknown width reads every such line as a note, as before. */
+function wrapsLabel(above: string, next: string, columns?: number): boolean {
+  if (!columns) return false;
+  const word = next.trim().split(/\s/u)[0];
+  return above.trimEnd().length + 1 + word.length > columns;
 }
 
 /** Where the dialog's own text ends going up. A `/model` opened mid-turn is
@@ -263,6 +287,11 @@ function readContext(lines: readonly SelectLineLike[], start: number): { questio
       context = index;
       taken += 1;
       index -= 1;
+      // The question ends at a dropped rule, as its heading does (`readTitle`):
+      // Claude Code 2.1.286 rules the diff of a file it asks to write off from
+      // its question with no blank between, and read through the rule, the
+      // diff's last lines became the question — rejoined into prose.
+      if (block === 0 && lines[index + 1].afterRule) break;
     }
     if (block === 0) question = context;
     // Claude Code's tab row over an agent's question is the question's label,
@@ -298,9 +327,14 @@ function readRow(text: string, option: RegExp): ReadRow | null {
 /**
  * The select dialog the session is showing right now, or `null` when the bottom
  * of the screen does not hold one in the recognized shape. `agentLabel` is the
- * tab's agent, which says whether `●` marks a row (`radioMarkerAgent`).
+ * tab's agent, which says whether `●` marks a row (`radioMarkerAgent`);
+ * `columns` the pane's width, which tells a row's wrapped label from its note.
  */
-export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: string): SelectPrompt | null {
+export function readSelectPrompt(
+  lines: readonly SelectLineLike[],
+  agentLabel?: string,
+  columns?: number,
+): SelectPrompt | null {
   const option = radioMarkerAgent(agentLabel) ? RADIO_OPTION : OPTION;
   const first = Math.max(0, lines.length - SEARCH_WINDOW);
   type Run = {
@@ -339,8 +373,9 @@ export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: 
       continue;
     }
     if (!row) {
-      const more = run ? readContinuation(text, run.labelColumn, run.column) : null;
       const last = run?.options[run.options.length - 1];
+      const labelWrap = last !== undefined && !last.description && wrapsLabel(lines[index - 1].text, text, columns);
+      const more = run ? readContinuation(text, run.labelColumn, run.column, labelWrap) : null;
       if (more && last) {
         if (more.label && !PANEL_COLUMN.test(more.label)) last.label = `${last.label} ${more.label}`.slice(0, MAX_LABEL);
         if (more.description && !PANEL_COLUMN.test(more.description)) {

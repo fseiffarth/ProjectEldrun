@@ -3027,7 +3027,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * itself — its rows, and where on the tail they start — not just that there
    * is one. */
   const liveQuestion = useMemo(
-    () => (liveTail.length > 0 ? readSelectPrompt(liveTail, agentLabel) : null),
+    () => (liveTail.length > 0 ? readSelectPrompt(liveTail, agentLabel, paneColumns.current) : null),
     [liveTail, agentLabel],
   );
   /** The dialog's own question — the block right above its rows, which the

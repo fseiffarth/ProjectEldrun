@@ -262,7 +262,7 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
       const term = terminalFor(ptyId);
       if (!term) return;
       if (!subscribed) subscribed = term.onWriteParsed(() => { settle ??= setTimeout(read, LIVE_SETTLE_MS); });
-      const next = readReaderLive(term.buffer.active, agentLabel);
+      const next = readReaderLive(term.buffer.active, agentLabel, term.cols);
       if (next.working) workingSeenAt.current = Date.now();
       setLive((previous) => (sameReaderLive(previous, next) ? previous : next));
     };

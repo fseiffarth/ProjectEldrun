@@ -448,6 +448,41 @@ describe("Eldrun Mobile select dialog", () => {
     expect(prompt?.title).toBe("Do you want to proceed?");
   });
 
+  // Claude Code 2.1.286 asking to overwrite a plan file in a 60-column pane:
+  // the diff runs right up to the dashed rule over the question, and option 2
+  // wraps at the pane's edge onto its label's column.
+  const OVERWRITE = [
+    { text: "  14 +- Preserve original PDF integrity or export cleanly" },
+    { text: "  15 +- Fast, responsive interaction even with large docume" },
+    { text: "     +nts" },
+    { text: "  16 +- Clear visual feedback for all markup actions" },
+    { text: " Do you want to overwrite plan.md?", afterRule: true },
+    { text: " ❯ 1. Yes" },
+    { text: "   2. Yes, and switch to accept edits (auto-approve file" },
+    { text: "      edits and common file commands) for this session" },
+    { text: "      (shift+tab)" },
+    { text: "   3. No" },
+  ];
+
+  it("ends a permission prompt's question at the rule over it, leaving the diff as context", () => {
+    const prompt = readSelectPrompt(OVERWRITE, "Claude Code", 60);
+    expect(prompt?.title).toBe("Do you want to overwrite plan.md?");
+    expect(prompt?.question).toBe(4);
+    expect(prompt?.context).toBe(0);
+  });
+
+  it("rejoins a row's label wrapped at the pane's edge instead of reading it as a note", () => {
+    const prompt = readSelectPrompt(OVERWRITE, "Claude Code", 60);
+    expect(prompt?.options.map((option) => [option.label, option.description])).toEqual([
+      ["Yes", undefined],
+      ["Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)", undefined],
+      ["No", undefined],
+    ]);
+    // A short label's note under it stays a note at any width.
+    const question = readSelectPrompt(lines("❯ 1. Red", "     Warm and loud", "  2. Green"), "Claude Code", 60);
+    expect(question?.options[0]).toMatchObject({ label: "Red", description: "Warm and loud" });
+  });
+
   it("moves the highlight the way the arrow row does", () => {
     expect(selectKeys(1, 3)).toEqual([`${ESC}[B`, `${ESC}[B`, "\r"]);
     expect(selectKeys(2, 0)).toEqual([`${ESC}[A`, `${ESC}[A`, "\r"]);

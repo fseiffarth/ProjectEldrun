@@ -46,8 +46,9 @@ export interface ReaderLive {
 
 export const NO_LIVE: ReaderLive = { question: null, ask: [], context: [], tabs: [], signature: "", working: null, status: null };
 
-/** Reads `buffer` (the pane's active xterm buffer) for `agentLabel`'s TUI. */
-export function readReaderLive(buffer: ReadableBufferLike, agentLabel: string): ReaderLive {
+/** Reads `buffer` (the pane's active xterm buffer, `columns` wide) for
+ * `agentLabel`'s TUI. */
+export function readReaderLive(buffer: ReadableBufferLike, agentLabel: string, columns?: number): ReaderLive {
   const { lines } = readableScreen(buffer);
   const status = sessionStatus(lines, agentLabel);
   // The input box and the rows under it are the TUI's frame, not output; the
@@ -56,7 +57,7 @@ export function readReaderLive(buffer: ReadableBufferLike, agentLabel: string): 
   let start = 0;
   screen.forEach((line, index) => { if (isPromptEcho(line, agentLabel)) start = index + 1; });
   const tail = screen.slice(start);
-  const question = tail.length > 0 ? readSelectPrompt(tail, agentLabel) : null;
+  const question = tail.length > 0 ? readSelectPrompt(tail, agentLabel, columns) : null;
   if (question) {
     const parts = questionParts(tail, question);
     return {
