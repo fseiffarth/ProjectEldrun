@@ -1476,6 +1476,7 @@ pub fn run() {
             commands::projects::project_migration_apply,
             commands::projects::import_project,
             commands::projects::check_project_site,
+            commands::projects::project_folder_exists,
             commands::projects::extend_project_to_remote,
             commands::projects::detach_project_from_remote,
             commands::projects::get_time_today,

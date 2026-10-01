@@ -3292,6 +3292,8 @@ export const dict: Dict = {
     "Ce dossier est la copie de travail locale du projet distant « {name} ».",
   "projectDialog.conflictRemotePath": "Ce dossier sur l'hôte est déjà le projet « {name} ».",
   "projectDialog.conflictOpen": "L'ouvrir",
+  "projectDialog.folderExists":
+    "Le dossier {path} existe déjà, le projet ne peut donc pas être créé. Choisissez un autre nom ou importez le dossier.",
   "projectDialog.projectNameLabel": "Nom du projet",
   "projectDialog.descriptionLabel": "Description du projet",
   "projectDialog.descFillModeTitle": "Mode de remplissage de la description du projet",

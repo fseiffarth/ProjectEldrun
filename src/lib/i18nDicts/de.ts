@@ -3299,6 +3299,8 @@ export const dict: Dict = {
   "projectDialog.conflictRemotePath":
     "Dieser Ordner auf dem Host ist bereits das Projekt „{name}“.",
   "projectDialog.conflictOpen": "Öffnen",
+  "projectDialog.folderExists":
+    "Der Ordner {path} existiert bereits, daher kann das Projekt nicht erstellt werden. Wähle einen anderen Namen oder importiere den Ordner.",
   "projectDialog.projectNameLabel": "Projektname",
   "projectDialog.descriptionLabel": "Projektbeschreibung",
   "projectDialog.descFillModeTitle": "Ausfüllmodus für die Projektbeschreibung",

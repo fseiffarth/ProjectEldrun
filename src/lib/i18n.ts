@@ -3375,6 +3375,8 @@ export const en = {
     "That folder is the local working copy of the remote project “{name}”.",
   "projectDialog.conflictRemotePath": "That folder on the host is already the project “{name}”.",
   "projectDialog.conflictOpen": "Open it",
+  "projectDialog.folderExists":
+    "The folder {path} already exists, so the project cannot be created. Choose another name, or import the folder instead.",
   "projectDialog.projectNameLabel": "Project name",
   "projectDialog.descriptionLabel": "Project description",
   "projectDialog.descFillModeTitle": "Project description fill mode",

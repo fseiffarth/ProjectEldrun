@@ -183,7 +183,7 @@ fn stale_frontend_save_preserves_a_newer_entry_patch() {
         let target = tempdir_in_test_projects("stale-save-target");
         let entry = create_project_blocking(CreateProjectRequest {
             name: "stale-save".to_string(),
-            directory: target.path().to_string_lossy().to_string(),
+            directory: target.path().join("project").to_string_lossy().to_string(),
             description: None,
             git_type: None,
             git_provider: None,
@@ -220,8 +220,11 @@ fn stale_frontend_save_preserves_a_newer_entry_patch() {
     });
 }
 
+/// A new project never moves into a folder that is already there: the files
+/// stay byte-for-byte, no `project.json` is written, nothing is registered.
+/// (Importing is the verb for an existing folder — see the import tests below.)
 #[test]
-fn create_project_preserves_existing_scaffolds() {
+fn create_project_refuses_an_existing_folder() {
     with_isolated_home("create-home", |_| {
         let target = tempdir_in_test_projects("create-target");
         seed_project(target.path(), "create");
@@ -238,23 +241,49 @@ fn create_project_preserves_existing_scaffolds() {
             vm: None,
         };
 
-        let entry = create_project_blocking(req).expect("create project");
-        assert_eq!(entry.name, "create-project");
-        assert_eq!(entry.status, "inactive");
-        assert_eq!(
-            entry.extra.get("description").and_then(|v| v.as_str()),
-            Some("Create description")
-        );
-        assert_eq!(
-            entry.local_file,
-            target.path().join("project.json").to_string_lossy()
-        );
+        let err = create_project_blocking(req).expect_err("an existing folder is refused");
+        assert!(err.contains("already exists"), "{err}");
 
-        assert_scaffold_state(target.path(), "create");
-        assert!(target.path().join("notes.txt").exists());
-        assert!(target.path().join("nested/info.txt").exists());
-        assert!(target.path().join("project.json").exists());
-        assert_project_registered(&target.path().join("project.json"), "create-project");
+        assert_eq!(fs::read_to_string(target.path().join("AGENTS.md")).unwrap(), "create:agents\n");
+        assert_eq!(fs::read_to_string(target.path().join("TODO.md")).unwrap(), "create:todo\n");
+        assert_eq!(fs::read_to_string(target.path().join(".gitignore")).unwrap(), "create:gitignore\n");
+        assert_eq!(
+            fs::read_to_string(target.path().join(".claude/settings.json")).unwrap(),
+            r#"{"marker":"create"}"#
+        );
+        assert!(!target.path().join("CLAUDE.md").exists(), "nothing scaffolded");
+        assert!(!target.path().join("project.json").exists());
+        assert!(!target.path().join(".git").exists());
+        assert!(get_projects().expect("get projects").is_empty());
+    });
+}
+
+/// The same refusal for an existing folder that holds nothing at all — and a
+/// fresh one next to it is created and scaffolded as usual.
+#[test]
+fn create_project_refuses_an_existing_empty_folder_but_creates_a_fresh_one() {
+    with_isolated_home("create-empty-home", |_| {
+        let target = tempdir_in_test_projects("create-empty-target");
+        let req = |dir: &Path| CreateProjectRequest {
+            name: "create-project".to_string(),
+            directory: dir.to_string_lossy().to_string(),
+            description: None,
+            git_type: Some("none".to_string()),
+            git_provider: None,
+            skip_scaffold: false,
+            remote: None,
+            mirror_parent: None,
+            vm: None,
+        };
+
+        assert!(create_project_blocking(req(target.path())).is_err());
+        assert_eq!(fs::read_dir(target.path()).unwrap().count(), 0);
+
+        let fresh = target.path().join("fresh");
+        let entry = create_project_blocking(req(&fresh)).expect("create into a new folder");
+        assert_eq!(entry.local_file, fresh.join("project.json").to_string_lossy());
+        assert!(fresh.join("AGENTS.md").is_file());
+        assert_project_registered(&fresh.join("project.json"), "create-project");
     });
 }
 
@@ -651,11 +680,10 @@ fn import_project_skip_scaffold_without_git_does_not_init() {
 fn set_project_description_writes_both_projects_json_and_project_json() {
     with_isolated_home("desc-home", |_| {
         let target = tempdir_in_test_projects("desc-target");
-        seed_project(target.path(), "desc");
 
         let entry = create_project_blocking(CreateProjectRequest {
             name: "desc-project".to_string(),
-            directory: target.path().to_string_lossy().to_string(),
+            directory: target.path().join("project").to_string_lossy().to_string(),
             description: Some("original".to_string()),
             git_type: None,
             git_provider: None,
@@ -702,20 +730,25 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
 
 // ── Archive (delete → restorable) ──────────────────────────────────────────
 
+/// A registered local project over a seeded tree. `create_project` refuses a
+/// folder that already exists, so the tree is registered the way any existing
+/// folder is: an in-place (`keep`) import.
 fn new_local_project(name: &str, target: &Path) -> eldrun_lib::schema::projects::ProjectEntry {
     seed_project(target, name);
-    create_project_blocking(CreateProjectRequest {
+    import_project_blocking(ImportProjectRequest {
+        source_dir: target.to_string_lossy().to_string(),
         name: name.to_string(),
-        directory: target.to_string_lossy().to_string(),
         description: None,
         git_type: None,
         git_provider: None,
+        mode: "keep".to_string(),
+        scaffold_fill_modes: None,
+        manual_validation_confirmed: None,
         skip_scaffold: false,
         remote: None,
         mirror_parent: None,
-        vm: None,
     })
-    .expect("create project")
+    .expect("import project")
 }
 
 #[test]
@@ -1399,7 +1432,7 @@ fn set_project_auto_connect_rejects_local_and_unknown_projects() {
         let target = tempdir_in_test_projects("auto-connect-local");
         let entry = create_project_blocking(CreateProjectRequest {
             name: "local-project".to_string(),
-            directory: target.path().to_string_lossy().to_string(),
+            directory: target.path().join("project").to_string_lossy().to_string(),
             description: None,
             git_type: Some("none".to_string()),
             git_provider: None,

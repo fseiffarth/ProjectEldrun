@@ -175,6 +175,9 @@ export function ProjectDialog({
   const [error, setError] = useState("");
   // The project this one would land on top of, if any (see the pre-check effect).
   const [conflict, setConflict] = useState<ProjectConflict | null>(null);
+  // A new local project's destination folder is already on disk (see the
+  // pre-check effect): the backend refuses to create a project over it.
+  const [folderExists, setFolderExists] = useState(false);
   const [busy, setBusy] = useState(false);
   const modalRef = useModalFocus(onClose);
   // Whether `git` is on PATH on this machine. `null` while still probing (never
@@ -565,6 +568,31 @@ export function ProjectDialog({
     };
   }, [checkedDir, checkedRemoteKey]);
 
+  // A new project never moves into a folder that is already there — whatever it
+  // holds is somebody's, and `create_project` refuses it. Asked as the name is
+  // typed so the dialog says so before Create; the backend stays the gate.
+  const newFolderToCheck = kind === "new" && !isRemoteProject && !isVmProject ? targetDir : "";
+  useEffect(() => {
+    if (!newFolderToCheck) {
+      setFolderExists(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      invoke<boolean>("project_folder_exists", { directory: newFolderToCheck })
+        .then((exists) => {
+          if (!cancelled) setFolderExists(exists === true);
+        })
+        .catch(() => {
+          if (!cancelled) setFolderExists(false);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [newFolderToCheck]);
+
   const chooseFolder = async () => {
     const picked = await open({ directory: true, multiple: false });
     if (typeof picked === "string") {
@@ -940,6 +968,8 @@ export function ProjectDialog({
     // downloads a repository the backend is going to refuse; the backend's own
     // check stays the gate, since this one can be answering a stale list.
     !conflict &&
+    // A new project's folder already exists; the backend would refuse it.
+    !(folderExists && newFolderToCheck !== "") &&
     // "Push to GitHub/GitLab" requires an Eldrun connection first — block submit
     // until a token is saved (the notice above links to Settings → Git Hosting).
     !needsGitConnection &&
@@ -1620,6 +1650,11 @@ export function ProjectDialog({
             ""
           )}
         </div>
+        {folderExists && newFolderToCheck && !conflict && (
+          <div className="project-dialog-error" role="alert">
+            {t("projectDialog.folderExists", { path: newFolderToCheck })}
+          </div>
+        )}
         {/* Already a project. A dead-end error would leave the user to find it
             themselves, so the notice names it and offers to open it instead. */}
         {conflict && (

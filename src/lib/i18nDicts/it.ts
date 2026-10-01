@@ -3290,6 +3290,8 @@ export const dict: Dict = {
     "Quella cartella è la copia di lavoro locale del progetto remoto «{name}».",
   "projectDialog.conflictRemotePath": "Quella cartella sull'host è già il progetto «{name}».",
   "projectDialog.conflictOpen": "Aprilo",
+  "projectDialog.folderExists":
+    "La cartella {path} esiste già, quindi il progetto non può essere creato. Scegli un altro nome oppure importa la cartella.",
   "projectDialog.projectNameLabel": "Nome del progetto",
   "projectDialog.descriptionLabel": "Descrizione del progetto",
   "projectDialog.descFillModeTitle": "Modalità di compilazione della descrizione del progetto",
