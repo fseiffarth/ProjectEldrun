@@ -1,4 +1,6 @@
 // TS/TSX brand codemod. usage: node tsmod.mjs [--dry] [--neutral-dash] files...
+/* global process, console */
+/* eslint-disable no-control-regex */
 import ts from 'typescript';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -114,7 +116,6 @@ for (const file of files) {
             let raw;
             if (t === K.StringLiteral) {
               raw = src.slice(1, -1);
-              const q = src[0];
               raw = raw.replace(/\\(['"])/g, '$1').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
               if (/\\[0-7]/.test(raw)) { report.push(`${file}:${line(n)}: octal escape, left: ${src.slice(0, 60)}`); return; }
             } else raw = src.slice(1, -1);

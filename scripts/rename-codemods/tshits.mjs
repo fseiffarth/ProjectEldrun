@@ -1,4 +1,5 @@
 // usage: node tshits.mjs [--tokens] files...   lists non-comment brand hits in TS/TSX
+/* global process, console */
 import ts from 'typescript';
 import fs from 'node:fs';
 const K = ts.SyntaxKind;
@@ -23,7 +24,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   for (const f of process.argv.slice(2).filter(a => !a.startsWith('--'))) {
     const hs = hits(f);
     if (!hs.length) continue;
-    if (tokensMode) { for (const h of hs) for (const m of h.text.matchAll(/[A-Za-z0-9_.:\/~$-]*eldrun[A-Za-z0-9_.:\/-]*/gi)) { const k = (h.kind === 'Identifier' ? 'id:' : '') + m[0]; counts.set(k, (counts.get(k) || 0) + 1); } }
+    if (tokensMode) { for (const h of hs) for (const m of h.text.matchAll(/[A-Za-z0-9_.:/~$-]*eldrun[A-Za-z0-9_.:/-]*/gi)) { const k = (h.kind === 'Identifier' ? 'id:' : '') + m[0]; counts.set(k, (counts.get(k) || 0) + 1); } }
     else { console.log('## ' + f); for (const h of hs) console.log(`${h.line}: [${h.kind.replace('Literal','')}] ${h.text.replace(/\s+/g,' ').slice(0, 150)}`); }
   }
   if (tokensMode) console.log([...counts].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}×${v}`).join('  '));
