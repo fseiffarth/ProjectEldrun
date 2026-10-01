@@ -90,6 +90,7 @@ import {
 import { isCursorTab, readCursorPicker } from "../terminal/cursorAgent";
 import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
+import { COMMIT_CHOICES, COMMIT_PROMPTS, type CommitChoice } from "../terminal/commitPrompts";
 import { agentWork } from "../terminal/agentBusy";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { answerHtml } from "../terminal/answerMarkdown";
@@ -195,6 +196,9 @@ const AGENT_SUBMIT_GAP = 200;
  * "Where should the new conversation run?" picker, which the button's single
  * Enter leaves waiting on the desktop (2026-09-23). */
 const NEW_CONVERSATION_COMMAND = "/clear";
+/** The Commit chip's sheet rows, by the prompt each sends. */
+const COMMIT_LABELS: Record<CommitChoice, TranslationKey> = { own: "mobile.commit.own", state: "mobile.commit.state", split: "mobile.commit.split" };
+const COMMIT_HINTS: Record<CommitChoice, TranslationKey> = { own: "mobile.commit.ownHint", state: "mobile.commit.stateHint", split: "mobile.commit.splitHint" };
 const CLEAR_COMMAND = /^\s*\/clear\b/u;
 const SLASH_COMMAND = /^\s*\//u;
 /** A slash command owns a turn of the agent's own: `/clear` redraws and has
@@ -846,6 +850,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   /** The composer's **+**: a phone file into the project inbox, an image
    * already on the desktop, or an `@`. */
   const [addSheet, setAddSheet] = useState(false);
+  /** The Commit chip's sheet: commit everything, or split it up. */
+  const [commitSheet, setCommitSheet] = useState(false);
   /** The "From the desktop" list: `null` while the desktop is being asked. */
   const [desktopSheet, setDesktopSheet] = useState(false);
   const [desktopImages, setDesktopImages] = useState<DesktopImage[] | null>(null);
@@ -2175,8 +2181,11 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     setVoicePreview("");
     setVoiceStatus(null);
   };
-  const submitDraft = (text = draft) => {
-    if (editing) {
+  /** `fromComposer` false: words that are not the draft (the Commit chip's
+   * prompts) — sent as a prompt like any other, the draft and an edit left
+   * alone. */
+  const submitDraft = (text = draft, fromComposer = true) => {
+    if (editing && fromComposer) {
       submitEdit(editing, text);
       return;
     }
@@ -2195,7 +2204,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     // earlier bubbles were waiting in.
     const id = /^\s*\//u.test(text) ? undefined : ++pendingId.current;
     if (id !== undefined && agentAtWork) {
-      holdDraft(id, text);
+      holdDraft(id, text, fromComposer);
       return;
     }
     if (!sendAgentText(text, id)) return;
@@ -2216,6 +2225,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       // transcript is not read (OpenCode's cards list these).
       void reportSentPrompt(tab.id, text).catch(() => {});
     }
+    if (!fromComposer) return;
     setDraft("");
     endDictation();
   };
@@ -2230,15 +2240,17 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * prompt's does. A desktop that cannot hold it (no window, an older build)
    * costs nothing: the words are typed as they always were. The delivery
    * records the prompt in the desktop's history, so it is not reported here. */
-  const holdDraft = (id: number, text: string) => {
+  const holdDraft = (id: number, text: string, fromComposer = true) => {
     setLastSent(text);
     setUndoable(false);
     setUndoNote("");
     setEditNote("mobile.composer.heldNote");
     // `held: ""` — asked for, id not known yet: waiting, not yet editable.
     setPending((current) => [...current, { ...pendingPrompt(id, text, storedEntries), held: "" }].slice(-MAX_PENDING));
-    setDraft("");
-    endDictation();
+    if (fromComposer) {
+      setDraft("");
+      endDictation();
+    }
     // The answer may come after the reader left the tab, or came back to it:
     // `patchHeld` hands it to the chat showing the tab then (`onHeldPatched`).
     holdPrompt(tab.id, text).then(
@@ -2428,6 +2440,18 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     }
     setClearRefused(false);
     if (sendAgentText(NEW_CONVERSATION_COMMAND)) startedOver();
+  };
+  /** The Commit chip's pick: its prompt goes as the reader's own would —
+   * a bubble at once, held while the agent works — and the draft stays. */
+  const commitOptions: SheetOption[] = COMMIT_CHOICES.map((choice) => ({
+    key: choice,
+    label: t(COMMIT_LABELS[choice]),
+    description: t(COMMIT_HINTS[choice]),
+    current: false,
+  }));
+  const pickCommit = (key: string) => {
+    setCommitSheet(false);
+    submitDraft(COMMIT_PROMPTS[key as CommitChoice], false);
   };
   /** The composer's `/` menu: the commands that continue the draft, the
    * reader's own first. Picking one only fills the field — the reader still
@@ -3555,6 +3579,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
               ? <button className="composer-prefix" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={undoClearConversation} aria-label={t("mobile.composer.undoClearHint")} title={t("mobile.composer.undoClearHint")}>{t("mobile.composer.undoClear")}</button>
               : <button className="composer-prefix" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={clearConversation} aria-label={t("mobile.composer.clearChat")} title={t("mobile.composer.clearChat")}>{t("mobile.composer.clearChip")}</button>}
             {undoable && isUntested("mobile.composer.undoClear") && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
+            {/* Commit opens its sheet: one commit, or split into several. */}
+            <button className="composer-prefix composer-commit" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={() => setCommitSheet(true)} aria-label={t("mobile.commit.open")} aria-haspopup="dialog" aria-expanded={commitSheet} title={t("mobile.commit.open")}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5" /><path d="M2 12h6.5M15.5 12H22" /></svg></button>
             </div>
           </>}
           {tab.kind !== "agent" && <>
@@ -3600,6 +3626,15 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       busy={false}
       onPick={pickAdd}
       onClose={() => setAddSheet(false)}
+    />}
+    {commitSheet && <OptionSheet
+      title={t("mobile.commit.title")}
+      note={isUntested("mobile.composer.commit") ? { text: t("mobile.focus.untested") } : undefined}
+      options={commitOptions}
+      waiting=""
+      busy={!connected}
+      onPick={pickCommit}
+      onClose={() => setCommitSheet(false)}
     />}
     {desktopSheet && <OptionSheet
       title="From the desktop"

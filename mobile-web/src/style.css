@@ -962,6 +962,9 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-prefix { flex:0 0 auto; height:30px; padding:0 11px; border:1px solid #3a3f55; border-radius:15px; background:transparent; color:#c8cdda; font:inherit; font-size:.8rem; }
 .composer-prefix.active { border-color:#8c7df4; background:rgba(120,104,217,.28); color:#fff; }
 .composer-prefix:disabled { opacity:.5; }
+/* Commit: an icon chip, so a fourth chip still fits a narrow phone. */
+.composer-prefix.composer-commit { display:grid; place-items:center; width:30px; padding:0; }
+.composer-bar .composer-commit svg { width:17px; height:17px; }
 .composer-untested { color:#ffd36b; font-size:.7rem; font-style:normal; }
 /* The draft row: the textarea, while there is a draft a ✕ that empties it —
    a phone keyboard has no select-all, and a long dictated draft was otherwise

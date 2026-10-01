@@ -47,7 +47,7 @@ class FakeWebSocket {
   onclose: (() => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   constructor() { queueMicrotask(() => this.onopen?.()); }
-  send(data: string) { sent.push(String(data)); }
+  send(data: string | Uint8Array) { sent.push(ArrayBuffer.isView(data) ? new TextDecoder().decode(data) : String(data)); }
   close() { this.readyState = 3; }
 }
 
@@ -67,6 +67,7 @@ function memoryStorage(seed: Record<string, string> = {}) {
 }
 
 const settle = () => act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+const typedOut = () => act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 400)); });
 const lines = (draft: string, cli: string, used: string[] = []) => slashSuggestions(draft, cli, used).map((row) => row.line);
 
 describe("Eldrun Mobile slash commands — which CLI", () => {
@@ -233,7 +234,7 @@ describe("Eldrun Mobile slash commands — the composer", () => {
     expect(within(menu).getByText("/review")).toBeTruthy();
   });
 
-  it("puts the keys button after ＋, then Plan, Goal and Clear, the mic in the field; a tap leads the draft and sends nothing", async () => {
+  it("puts the keys button after ＋, then Plan, Goal, Clear and Commit, the mic in the field; a tap leads the draft and sends nothing", async () => {
     render(<Terminal tab={CLAUDE_TAB} back={() => {}} />);
     await settle();
     const field = screen.getByLabelText("Message agent") as HTMLTextAreaElement;
@@ -241,7 +242,7 @@ describe("Eldrun Mobile slash commands — the composer", () => {
     const goal = screen.getByRole("button", { name: "Goal" });
     const bar = plan.closest(".composer-bar") as HTMLElement;
     const order = Array.from(bar.querySelectorAll("button")).map((button) => button.className.split(" ")[0]);
-    expect(order).toEqual(["composer-add", "composer-keys", "composer-prefix", "composer-prefix", "composer-prefix", "send-icon"]);
+    expect(order).toEqual(["composer-add", "composer-keys", "composer-prefix", "composer-prefix", "composer-prefix", "composer-prefix", "send-icon"]);
     expect(screen.getByRole("button", { name: "Start a new conversation" }).textContent).toBe("Clear");
     expect(bar.previousElementSibling?.querySelector(".composer-dictate")).toBeTruthy();
 
@@ -257,7 +258,37 @@ describe("Eldrun Mobile slash commands — the composer", () => {
     expect(sent.length).toBe(before);
   });
 
-  it("offers only the chips a CLI documents", async () => {
+  it("sends the Commit chip's prompts as prompts, the draft left alone", async () => {
+    render(<Terminal tab={CLAUDE_TAB} back={() => {}} />);
+    await settle();
+    const field = screen.getByLabelText("Message agent") as HTMLTextAreaElement;
+    fireEvent.change(field, { target: { value: "half a thought" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Commit" }));
+    const sheet = screen.getByRole("dialog", { name: "Commit" });
+    const before = sent.length;
+    fireEvent.click(within(sheet).getByText("Split into commits"));
+    // The line is cleared first; the words follow a key gap later.
+    await typedOut();
+    expect(screen.queryByRole("dialog", { name: "Commit" })).toBeNull();
+    expect(sent.slice(before).join("")).toContain("Split the uncommitted changes into focused commits");
+    expect(field.value).toBe("half a thought");
+
+    fireEvent.click(screen.getByRole("button", { name: "Commit" }));
+    const again = sent.length;
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Commit" })).getByText("Commit the current state"));
+    await typedOut();
+    expect(sent.slice(again).join("")).toContain("Commit the current state");
+
+    fireEvent.click(screen.getByRole("button", { name: "Commit" }));
+    const own = sent.length;
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Commit" })).getByText("Commit your changes only"));
+    await typedOut();
+    expect(sent.slice(own).join("")).toContain("Commit only the changes you made in this conversation");
+    expect(readSlashCommands("claude")).toEqual([]);
+  });
+
+    it("offers only the chips a CLI documents", async () => {
     render(<Terminal tab={{ ...CLAUDE_TAB, id: "tab-g", label: "Gemini" }} back={() => {}} />);
     await settle();
     expect(screen.getByRole("button", { name: "Plan" })).toBeTruthy();
