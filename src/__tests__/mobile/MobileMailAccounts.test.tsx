@@ -69,7 +69,7 @@ describe("phone mail account picker", () => {
     fireEvent.change(screen.getByLabelText("Mail account"), { target: { value: "home" } });
     await waitFor(() => expect((screen.getByLabelText("Folder") as HTMLSelectElement).value).toBe("h-inbox"));
     fireEvent.change(screen.getByLabelText("Folder"), { target: { value: "h-trash" } });
-    await waitFor(() => expect(paths.at(-1)).toBe("/api/v1/mail/folders/h-trash?offset=0"));
+    await waitFor(() => expect(paths[paths.length - 1]).toBe("/api/v1/mail/folders/h-trash?offset=0"));
     expect(paths).toContain("/api/v1/mail/folders/h-inbox?offset=0");
   });
 });
