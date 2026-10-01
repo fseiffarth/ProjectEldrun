@@ -1475,6 +1475,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // goes through `flushPending`'s query guard like every other late write.
         let tail = "";
         let snapshotEnd: number | undefined;
+        // Register this view before taking the snapshot: a popout hears only
+        // the PTYs it has a view of (`streamEventName`), so a chunk emitted
+        // between the snapshot and a later registration would never reach it.
+        // Registered first, every later chunk lands in `historyOutput`, and the
+        // byte ranges drop whatever the snapshot already holds.
+        const viewSeq = ++viewerUpdateSeq.current;
+        try {
+          await invoke("pty_set_visible", { id, viewerId, visible, updateSeq: viewSeq });
+        } catch {
+          // An older backend: the visibility effect registers the view instead.
+        }
+        if (cancelled) return;
         try {
           const snapshot = await invoke<string | PtyScrollback>("pty_scrollback", { id });
           if (typeof snapshot === "string") {

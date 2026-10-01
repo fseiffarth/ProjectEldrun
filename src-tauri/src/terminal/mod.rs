@@ -22,6 +22,8 @@ use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, P
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
+use crate::services::window_service::MAIN_WINDOW_LABEL;
+
 // ── Constants ─────────────────────────────────────────────────────────────
 
 const BATCH_INTERVAL: Duration = Duration::from_millis(16);
@@ -169,6 +171,19 @@ impl OutputRoute {
         self.visible_viewers.values().any(|v| v.visible) || self.watchers > 0
     }
 
+    /// Every window other than the main one with a view of this PTY registered,
+    /// shown or hidden (a hidden view still buffers what a sibling view streams).
+    /// See `emit_output`.
+    fn viewer_windows(&self) -> Vec<String> {
+        let mut windows: Vec<String> = Vec::new();
+        for v in self.visible_viewers.values() {
+            if v.window != MAIN_WINDOW_LABEL && !windows.contains(&v.window) {
+                windows.push(v.window.clone());
+            }
+        }
+        windows
+    }
+
     /// Append to the always-on catch-up tail. Called for every routed chunk,
     /// visible or not — that is the point: the question it answers is "what has
     /// this terminal shown", which does not depend on who was watching.
@@ -186,6 +201,7 @@ impl OutputRoute {
             text,
             start_offset,
             end_offset: self.output_offset,
+            windows: Vec::new(),
         }
     }
 
@@ -211,6 +227,7 @@ impl OutputRoute {
             text,
             start_offset,
             end_offset: self.output_offset,
+            windows: self.viewer_windows(),
         })
     }
 }
@@ -306,6 +323,10 @@ struct OutputSlice {
     text: String,
     start_offset: u64,
     end_offset: u64,
+    /// The secondary windows (popouts) holding a view of this PTY, each sent
+    /// its own copy of the chunk (`emit_output`). Filled only when the slice is
+    /// emitted; empty for a PTY shown only in the main window.
+    windows: Vec<String>,
 }
 
 /// What the batcher should do with one flushed chunk.
@@ -343,8 +364,9 @@ fn route_chunk_at(id: &str, bytes: &[u8], now: Instant, seq: u64) -> Routed {
     if text.is_empty() {
         return Routed::Quiet;
     }
-    let slice = route.retain(text);
+    let mut slice = route.retain(text);
     if route.subscribed() {
+        slice.windows = route.viewer_windows();
         return Routed::Data(slice);
     }
     route.push_pending(&slice);
@@ -387,8 +409,9 @@ fn route_finish(id: &str, seq: u64) -> Routed {
     if text.is_empty() {
         return Routed::Quiet;
     }
-    let slice = route.retain(text);
+    let mut slice = route.retain(text);
     if route.subscribed() {
+        slice.windows = route.viewer_windows();
         return Routed::Data(slice);
     }
     route.push_pending(&slice);
@@ -478,16 +501,28 @@ fn route_close(id: &str, seq: u64) -> bool {
 /// guaranteed to precede any output produced after the flip.
 fn emit_replay(app: &AppHandle, id: &str, route: &mut OutputRoute) {
     if let Some(slice) = route.take_pending() {
-        let _ = app.emit(
-            "terminal-replay",
-            TerminalOutput {
-                id: id.to_string(),
-                data: slice.text,
-                start_offset: Some(slice.start_offset),
-                end_offset: Some(slice.end_offset),
-            },
-        );
+        emit_output(app, "terminal-replay", id, slice);
     }
+}
+
+/// Emit a chunk of a PTY's output (`terminal-output`) or a replay
+/// (`terminal-replay`). Tauri evaluates every emit in every webview that
+/// listens for that event name, whatever the listener's target, so one shared
+/// name made each popout parse every chunk of every PTY the main window
+/// streams. The main window keeps the plain name: it receives every chunk, as
+/// its activity classifier needs. A popout listens on `<event>:<its label>`
+/// (`terminalBus.ts`) and gets only the PTYs it has a view of.
+fn emit_output(app: &AppHandle, event: &str, id: &str, slice: OutputSlice) {
+    let payload = TerminalOutput {
+        id: id.to_string(),
+        data: slice.text,
+        start_offset: Some(slice.start_offset),
+        end_offset: Some(slice.end_offset),
+    };
+    for window in &slice.windows {
+        let _ = app.emit(&format!("{event}:{window}"), &payload);
+    }
+    let _ = app.emit(event, payload);
 }
 
 /// One TerminalView instance's visibility report (`pty_set_visible`). `window`
@@ -1151,17 +1186,7 @@ pub fn spawn_pty(
     tokio::spawn(async move {
         let emitter = app.clone();
         batch_output(rx, |bytes| match route_chunk(&id, bytes, route_seq) {
-            Routed::Data(slice) => {
-                let _ = emitter.emit(
-                    "terminal-output",
-                    TerminalOutput {
-                        id: id.clone(),
-                        data: slice.text,
-                        start_offset: Some(slice.start_offset),
-                        end_offset: Some(slice.end_offset),
-                    },
-                );
-            }
+            Routed::Data(slice) => emit_output(&emitter, "terminal-output", &id, slice),
             Routed::Activity(text) => {
                 let _ = emitter.emit(
                     "terminal-activity",
@@ -1198,17 +1223,7 @@ pub fn spawn_pty(
         })
         .await;
         match route_finish(&id, route_seq) {
-            Routed::Data(slice) => {
-                let _ = emitter.emit(
-                    "terminal-output",
-                    TerminalOutput {
-                        id: id.clone(),
-                        data: slice.text,
-                        start_offset: Some(slice.start_offset),
-                        end_offset: Some(slice.end_offset),
-                    },
-                );
-            }
+            Routed::Data(slice) => emit_output(&emitter, "terminal-output", &id, slice),
             Routed::Activity(text) => {
                 let _ = emitter.emit(
                     "terminal-activity",
@@ -1738,6 +1753,41 @@ mod route_tests {
             let mut map = routes().lock().unwrap();
             map.get_mut(id).unwrap().visible_viewers.remove("main-view");
         }
+        route_close(id, seq);
+    }
+
+    /// A chunk names each popout with a view of the PTY (shown or hidden) once,
+    /// and never the main window, which gets every chunk under the plain event.
+    #[test]
+    fn a_streamed_chunk_names_the_popouts_viewing_it() {
+        let id = "route-t-chunk-windows";
+        let seq = route_open(id);
+        {
+            let mut map = routes().lock().unwrap();
+            let route = map.get_mut(id).unwrap();
+            route.visible_viewers.insert("main-view".to_string(), viewer(true, "main"));
+            route
+                .visible_viewers
+                .insert("pop-a".to_string(), viewer(true, "detached-p-g-1"));
+            route
+                .visible_viewers
+                .insert("pop-b".to_string(), viewer(false, "detached-p-g-1"));
+        }
+        match route_chunk_at(id, b"live", Instant::now(), seq) {
+            Routed::Data(slice) => assert_eq!(slice.windows, vec!["detached-p-g-1".to_string()]),
+            other => panic!("expected data, got {other:?}"),
+        }
+        {
+            let mut map = routes().lock().unwrap();
+            let route = map.get_mut(id).unwrap();
+            route.visible_viewers.remove("pop-a");
+            route.visible_viewers.remove("pop-b");
+        }
+        match route_chunk_at(id, b"main-only", Instant::now(), seq) {
+            Routed::Data(slice) => assert!(slice.windows.is_empty()),
+            other => panic!("expected data, got {other:?}"),
+        }
+        routes().lock().unwrap().get_mut(id).unwrap().visible_viewers.remove("main-view");
         route_close(id, seq);
     }
 
