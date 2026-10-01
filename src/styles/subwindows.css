@@ -1016,6 +1016,30 @@ html:is([data-steer="panes"], [data-steer="scroll"]) .focus-frame {
   outline-width: 4px;
   outline-offset: -4px;
 }
+/* Steering dims what the level can't reach (#213f). Below the projects level
+   (subwindows, tabs, inside a tab) the top frame with its project pills steps
+   back. On the tab level the other subwindows get a light veil; inside a tab
+   (scroll) the veil darkens and the side panel steps back too, so only the
+   focused subwindow stays lit. The veil is a 0-blur spread on the focus
+   frame's pseudo-element — the frame sits above the pane layer and the
+   center panel clips the spread to itself. Nothing here animates. */
+html:is([data-steer="panes"], [data-steer="tabs"], [data-steer="scroll"]) .app-header {
+  opacity: 0.4;
+}
+html[data-steer="scroll"] .side-panel.open {
+  opacity: 0.35;
+}
+html:is([data-steer="tabs"], [data-steer="scroll"]) .focus-frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 0 100vmax color-mix(in srgb, var(--bg-main) 35%, transparent);
+}
+html[data-steer="scroll"] .focus-frame::before {
+  box-shadow: 0 0 0 100vmax color-mix(in srgb, var(--bg-main) 65%, transparent);
+}
 html[data-steer-region="side"] .side-panel.open,
 html[data-steer-region="header"] .app-header,
 html[data-steer-region="overlay"] .steer-layer,

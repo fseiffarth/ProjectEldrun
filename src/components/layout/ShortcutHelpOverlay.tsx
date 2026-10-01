@@ -121,6 +121,7 @@ export function ShortcutHelpOverlay() {
               <UntestedTag id="steering.scroll" />
               <UntestedTag id="steering.legendGroups" />
               <UntestedTag id="steering.handoffLegend" />
+              <UntestedTag id="steering.dim" />
             </h3>
             <p className="shortcut-help-intro">
               {t("shortcutHelp.steeringIntro", {
