@@ -1130,7 +1130,7 @@ pub trait MailEngine: Send + Sync {
     ) -> Result<(), MailError>;
 }
 
-/// The in-process engine: sockets and parsers in Eldrun's own address space.
+/// The in-process engine: sockets and parsers in Tabtivity's own address space.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InProcessEngine;
 

@@ -1,7 +1,7 @@
 //! Which release of each agent CLI is installed, and whether it is still the
-//! one Eldrun's flags and parsers were actually checked against.
+//! one Tabtivity's flags and parsers were actually checked against.
 //!
-//! Eldrun reads other people's CLIs at a level of detail that only holds for
+//! Tabtivity reads other people's CLIs at a level of detail that only holds for
 //! the release someone sat down and verified: a `--resume` flag, a session-log
 //! key, the numbered rows of an approval menu, the shape of a `/model` sheet.
 //! `docs/third_party_update_checklist.md` records those checks in prose — "*
@@ -81,7 +81,7 @@ const VERSION_ARGV: &[(&str, &[&str])] = &[
 /// For the CLI whose launcher does more than print on `--version`: Muse's
 /// wrapper script checks for an update on *any* invocation and, once its
 /// interval has passed, starts a background self-update — so an unguarded
-/// daily probe would be Eldrun updating somebody else's CLI.
+/// daily probe would be Tabtivity updating somebody else's CLI.
 /// `MUSE_NO_AUTO_UPDATE=1` skips that branch of the launcher (read out of the
 /// 1.3.0 launcher, 2026-09-25) and the version still prints.
 const VERSION_ENV: &[(&str, &[(&str, &str)])] = &[("muse", &[("MUSE_NO_AUTO_UPDATE", "1")])];
@@ -103,7 +103,7 @@ pub struct Verified {
 ///
 /// One row per *check*, not per agent: Codex has four because four different
 /// surfaces are verified separately, and once they sit at different releases
-/// the oldest of them is the weakest assumption Eldrun currently rests on.
+/// the oldest of them is the weakest assumption Tabtivity currently rests on.
 /// Collapsing them to one number per agent would throw away the only part that
 /// says where to look.
 ///

@@ -171,13 +171,13 @@ async function savedPasswordState(sshArgs: SshArgs): Promise<SavedPasswordState>
  * Auto-connect **without headless credentials** (`connections_headless` off), for one
  * host.
  *
- * In that mode Eldrun handles no passwords at all — there is nothing in the keychain
+ * In that mode Tabtivity handles no passwords at all — there is nothing in the keychain
  * to re-check and `remote_has_saved_password` is always false — so the headless
  * eligibility gate (a saved password, or a `key_auth` host) rejected *every* project
  * and auto-connect silently did nothing at all. This is the same substitution the
  * machine-wide VPN toggle already makes (`lib/remote/vpn/vpnAutoConnect`): "connect on launch"
  * means *the connect command is waiting in the root terminal*, where the user types
- * the password into a visible shell, rather than a connect Eldrun completes by itself.
+ * the password into a visible shell, rather than a connect Tabtivity completes by itself.
  *
  * So the promise the toggle keeps is unchanged in substance — it never opens a
  * **modal** — but it is kept differently: one root-terminal login, deduped, then the
@@ -317,7 +317,7 @@ async function autoConnectPrimary(projectId: string): Promise<void> {
   const remote = project?.remote;
   if (!remote?.auto_connect) return;
   // Never silently, on a machine tagged HPC (`lib/remote/hpc/hpcHost.ts`). A connect is not
-  // free on a cluster login node — it opens an SSH master, and Eldrun's own
+  // free on a cluster login node — it opens an SSH master, and Tabtivity's own
   // session machinery may raise a tmux server behind it — and "silently, because
   // the app happened to start" is precisely the shape of unattended presence a
   // shared login node's rules ask you not to leave lying around. Connecting by
@@ -354,7 +354,7 @@ async function autoConnectPrimary(projectId: string): Promise<void> {
     };
 
     // ── Non-headless (`connections_headless` off) ───────────────────────────────
-    // Eldrun holds no credentials in this mode, so the eligibility gate below can
+    // Tabtivity holds no credentials in this mode, so the eligibility gate below can
     // never pass and auto-connect used to do *nothing at all* here. Connect the way
     // this mode connects instead: the tunnel and the login go to the root terminal
     // for the user to authenticate, and the pool rides what they leave behind.
@@ -370,7 +370,7 @@ async function autoConnectPrimary(projectId: string): Promise<void> {
       if (!stillActive()) return abandon();
       const config = remote.openvpn?.config;
       if (!probe.ok && probe.unreachable && config) {
-        // Host needs a route this network doesn't have. In non-headless mode Eldrun
+        // Host needs a route this network doesn't have. In non-headless mode Tabtivity
         // holds no passphrase, so the tunnel is the *user's* to authenticate — surface
         // its login in the root terminal (deduped; a tunnel already up isn't opened
         // again) and stop there.
@@ -840,12 +840,12 @@ interface ProjectsStore {
   addProject: (project: ProjectEntry) => Promise<void>;
   activateProject: (id: string) => Promise<void>;
   deactivateProject: (id: string) => Promise<void>;
-  /** Delete a project: tear down all its Eldrun-side connections/state and move
-   * it into the archive (`~/eldrun/archive/<id>/`). Reversible from Settings; the
+  /** Delete a project: tear down all its Tabtivity-side connections/state and move
+   * it into the archive (`~/tabtivity/archive/<id>/`). Reversible from Settings; the
    * remote host tree of an SSH project is never touched. */
   archiveProject: (id: string) => Promise<void>;
-  /** Remove a project from Eldrun and leave its folder exactly where it is:
-   *  only the registry entry and Eldrun's state dirs about it go — nothing
+  /** Remove a project from Tabtivity and leave its folder exactly where it is:
+   *  only the registry entry and Tabtivity's state dirs about it go — nothing
    *  inside the tree is touched. For a botched import that should be redone. */
   forgetProject: (id: string) => Promise<void>;
   updateProjectDescription: (id: string, description: string) => Promise<void>;
@@ -1067,8 +1067,8 @@ function patchProjectRemote(id: string, patch: (remote: RemoteSpec) => RemoteSpe
 }
 
 /**
- * The one "take a project out of Eldrun" sequence behind `archiveProject` and
- * `forgetProject`: tear down every Eldrun-side connection and in-memory state
+ * The one "take a project out of Tabtivity" sequence behind `archiveProject` and
+ * `forgetProject`: tear down every Tabtivity-side connection and in-memory state
  * the project holds, run the backend verb that drops it from `projects.json`
  * (and moves or purges its state — that is the only part the two differ in),
  * then remove the pill and re-focus if it was the current project. The teardown
@@ -1080,7 +1080,7 @@ async function removeProjectVia(id: string, unregister: () => Promise<unknown>):
   const entry = projects.find((p) => p.id === id);
   if (!entry) return;
 
-  // ── Tear down all Eldrun-side connections/state for this project ──────────
+  // ── Tear down all Tabtivity-side connections/state for this project ──────────
   // Drop the pooled SSH/SFTP ControlMaster + reset its lamps (remote only).
   if (entry.remote) dropRemotePool(id);
   // Close its Connect modal if it happens to be targeting this project.
@@ -1186,7 +1186,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     );
     // Fire-and-forget: sniff each local repo's `origin` host so pills can badge
     // a hosting provider (GitHub/GitLab) and the hover can show the git address,
-    // even when the repo was pushed outside Eldrun's Publish flow. Host-only, no
+    // even when the repo was pushed outside Tabtivity's Publish flow. Host-only, no
     // network — must not block the list.
     void invoke<Record<string, { provider: string; url: string }>>("detect_git_providers")
       .then((map) =>
@@ -1287,7 +1287,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
         if (proj) {
           if (proj.remote) {
             // A remote (SSH) project lives in two places — show both: the
-            // paired local working copy ("mirror", ~/eldrun/projects/ssh/…) and
+            // paired local working copy ("mirror", ~/tabtivity/projects/ssh/…) and
             // the remote target (user@host:remote_path). Rendered as two lines
             // (AppShell adds a `multiline` class when it sees the newline).
             const local =
@@ -1464,7 +1464,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       const remoteSessions = tmuxTargets.length - localTargets.length;
 
       if (ptyTabs.length > 0 || tmuxTargets.length > 0) {
-        // Eldrun's own dialog, not the platform's: it wears the theme, and it
+        // Tabtivity's own dialog, not the platform's: it wears the theme, and it
         // lists the tabs instead of counting them (stores/stopProjectPrompt).
         const { useStopProjectStore } = await import("./stopProjectPrompt");
         const ok = await useStopProjectStore.getState().request(
@@ -1489,7 +1489,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
 
       // Kill only LOCAL sessions named by this project's tabs. Never use tmux
       // kill-server: the local tmux server is shared with other projects and with
-      // sessions created outside Eldrun.
+      // sessions created outside Tabtivity.
       const kills = await Promise.allSettled(
         localTargets.map((target) => invoke<void>("local_tmux_kill", { session: target.session })),
       );
@@ -1555,7 +1555,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   },
 
   forgetProject: async (id) => {
-    // Drop it from projects.json + Eldrun's state dirs; the folder stays put.
+    // Drop it from projects.json + Tabtivity's state dirs; the folder stays put.
     await removeProjectVia(id, () => invoke("forget_project", { projectId: id }));
   },
 

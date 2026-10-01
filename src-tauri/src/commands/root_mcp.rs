@@ -4,7 +4,7 @@
 //! One loopback HTTP route, `POST /mcp`, speaking MCP's streamable-HTTP
 //! transport in its simplest legal form: one JSON-RPC message in, one JSON
 //! reply out (or `202` for a notification). No SSE stream and no session id —
-//! every tool is a single read or write of Eldrun's own files, so there is
+//! every tool is a single read or write of Tabtivity's own files, so there is
 //! nothing to stream and nothing to remember between calls.
 
 use axum::{
@@ -491,7 +491,7 @@ pub fn root_mcp_status() -> RootMcpStatus {
 }
 
 /// The window's own view of the help corpus (an intro / Settings "Ask" box):
-/// the same index and bounds the `eldrun-help` MCP server answers from.
+/// the same index and bounds the `tabtivity-help` MCP server answers from.
 /// Off the main thread: the first call builds the index.
 #[tauri::command]
 pub async fn help_search(query: String, limit: Option<usize>) -> Result<Vec<crate::services::help_mcp::Hit>, String> {

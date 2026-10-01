@@ -5,10 +5,10 @@
 //! Tauri calls that consume the result live in `lib.rs`'s `setup`.
 //!
 //! The job is *not* "apply the saved rect". It is "apply the saved rect only if a
-//! currently-connected monitor can still host it". A user who saved Eldrun on an
+//! currently-connected monitor can still host it". A user who saved Tabtivity on an
 //! external display and then undocked would otherwise get a window mapped at
 //! x=2400 on a laptop whose only screen ends at 1920 — off-screen, unreachable,
-//! and indistinguishable from "Eldrun didn't start". Whenever we can't place the
+//! and indistinguishable from "Tabtivity didn't start". Whenever we can't place the
 //! rect confidently we return `None`, which means "leave the window exactly as
 //! `tauri.conf.json` configured it" (maximized, WM's choice of monitor) — i.e. we
 //! degrade to today's behaviour rather than to a broken one.
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn window_on_the_secondary_monitor_is_returned_unchanged() {
-        // THE core case: Eldrun was on DP-7, it must come back on DP-7.
+        // THE core case: Tabtivity was on DP-7, it must come back on DP-7.
         let saved = ws(2200, 100, 1400, 900);
         assert_eq!(
             resolve_startup_geometry(Some(saved), &two_monitors()),

@@ -1,6 +1,6 @@
 # Third-party update checklist
 
-Eldrun wraps a lot of software it does not control: agent CLIs, Ollama,
+Tabtivity wraps a lot of software it does not control: agent CLIs, Ollama,
 Tailscale, tmux, Docker, QEMU, bubblewrap, OpenVPN, OpenSSH, SLURM, TeX, mail
 and CalDAV servers, desktop shells, and the GitHub API. Each of those ships on
 its own schedule, and every one of them is wired in through a *specific*
@@ -24,7 +24,7 @@ How to use it:
    prints installed-vs-verified for every installed CLI and exits non-zero on
    drift, and Manage Agents shows the same verdict per row. Re-verifying a
    surface means bumping **both** its row and the prose note here, in one
-   commit; a version only Eldrun can read and a version only a human can read
+   commit; a version only Tabtivity can read and a version only a human can read
    drift apart exactly like the two install tables did.
 3. A breakage found this way is a normal fix: patch the one place named under
    **Where**, add a test alongside the existing ones, update the version note.
@@ -117,16 +117,16 @@ npx vitest run src/__tests__/agents/agentPrompt.test.ts              # decision-
 ```
 
 Then open one tab per updated agent, trigger a permission prompt, and check
-the tab lamp turns to "decision"; close and reopen Eldrun and check the tab
+the tab lamp turns to "decision"; close and reopen Tabtivity and check the tab
 resumes.
 
 ### 1.1 Claude Code (deepest coupling)
 
 - Mobile send hint (2026-09-14): installed CLI is 2.1.270. The official
   [hooks reference](https://code.claude.com/docs/en/hooks#sessionstart) specifies
-  SessionStart stdout as model context. Eldrun prints `eldrun-send <file>` only
-  after session continuity accepts the payload, with `ELDRUN_TAB_AGENT=claude`
-  (or `codex`, see 1.2) and `ELDRUN_PROJECT_DIR` set; tests execute the hook
+  SessionStart stdout as model context. Tabtivity prints `tabtivity-send <file>` only
+  after session continuity accepts the payload, with `TABTIVITY_TAB_AGENT=claude`
+  (or `codex`, see 1.2) and `TABTIVITY_PROJECT_DIR` set; tests execute the hook
   and prove nested startups, Stop and unscoped invocations stay silent. Verify
   context ingestion again on CLI upgrades; an authenticated live Claude round
   trip remains QA.
@@ -140,7 +140,7 @@ Claude's `/fast` — different thing.
 **Assumes**
 
 - Root console (`services::root_mcp`): `--mcp-config <inline json>` with an
-  HTTP server whose `headers` value `Bearer ${ELDRUN_ROOT_MCP_TOKEN}` is
+  HTTP server whose `headers` value `Bearer ${TABTIVITY_ROOT_MCP_TOKEN}` is
   **expanded from the environment** — verified on 2.1.276 against a logging
   loopback server (`headersHelper` worked too). If expansion ever stops, the
   root tools fail with 401 rather than leaking; the fallback is
@@ -240,7 +240,7 @@ Claude's `/fast` — different thing.
   CLI opens it with `O_NOFOLLOW` — a symlink is refused (`refused-symlink`,
   `ELOOP`) — and **rotates it by atomic rename** (temp file + `rename(2)`),
   so the path gets a new inode on every refresh. `services/agent_creds.rs`
-  relies on all three: the fence mounts an Eldrun-owned mirror *file* (not a
+  relies on all three: the fence mounts a Tabtivity-owned mirror *file* (not a
   link, not the host inode) at that path and rewrites it in place; a
   cleared record has empty token strings and `expiresAt: 0`, which the mirror
   never copies back to the host. Verified against Claude Code 2.1.263. A moved
@@ -290,18 +290,18 @@ aliases, and anything about where or how credentials are stored.
 - Mobile send hint (2026-10-01): the Codex [hooks
   docs](https://learn.chatgpt.com/docs/hooks) say plain SessionStart stdout
   "is added as extra developer context", so the hook prints the same
-  `eldrun-send <file>` line as for Claude (1.1) and the project scaffold's
+  `tabtivity-send <file>` line as for Claude (1.1) and the project scaffold's
   `AGENTS.md` no longer carries it. Never verified live.
 
 **Assumes**
 
-- **0.159.2 (2026-09-30), live but outside Eldrun** — the npm linux-x64 build
+- **0.159.2 (2026-09-30), live but outside Tabtivity** — the npm linux-x64 build
   run in a private tmux with its own `CODEX_HOME`, inside a fenced agent tab.
   Verified live: the approval menu (labels below) and its title frames, the
   two-step `/model` screens (both fed to `looksLikeDecisionPrompt` and
   `readSelectPrompt` as captured), the rollout header and records, and that
   `resume <id>` / `exec --skip-git-repo-check` / `--oss` / `-m` / `-c` stand.
-  `-a` now takes only `on-request | never` (Eldrun passes none). Hook events
+  `-a` now takes only `on-request | never` (Tabtivity passes none). Hook events
   are unchanged since 0.157.0 (`PermissionRequest` and `Interrupt` exist; still
   no `Notification`). Not verified: mobile mode lines, and the writer lock in
   a fenced (in-process) tab.
@@ -316,7 +316,7 @@ aliases, and anything about where or how credentials are stored.
   pinned down; a TUI that does choose the daemon but cannot use it — only
   `current/bin` of the standalone install is bound, a sibling tab's socket is
   in another fence's private `/tmp` — exits 1 with "rerun … with
-  `--no-daemon`". So Eldrun appends `--no-daemon` to every host Codex TUI
+  `--no-daemon`". So Tabtivity appends `--no-daemon` to every host Codex TUI
   launch (fresh, `resume`, `--oss`; not `login`/`exec`/…) once the probed
   version is ≥ `CODEX_NO_DAEMON_SINCE` = 0.156.0, the release that brought
   both the daemon and the flag (0.155.x exits on it; unknown version → no
@@ -366,7 +366,7 @@ aliases, and anything about where or how credentials are stored.
 - Local models: `codex --oss -c oss_provider="ollama" -m <model>` as the
   fallback when `ollama launch codex` cannot be used; reasoning is turned off
   with `-c model_reasoning_effort="none"`; the model catalog Codex expects is
-  `model.json` (written under Eldrun's own state dir, not `~/.codex`).
+  `model.json` (written under Tabtivity's own state dir, not `~/.codex`).
 - Preface commands `/new /compact /status`; `/status` is *not* available in
   exec mode, so there is no usage recipe.
 - The decision lamp reads Codex's screen off the PTY, and two habits of its
@@ -485,7 +485,7 @@ Copilot's row is 1.0.89 (2026-09-30, from the npm package, not live): `-p`,
 `--continue`, `session-state` under `COPILOT_HOME`/home, and `authTokens` /
 `storeTokenPlaintext` in the runtime it unpacks into `~/.cache/copilot/pkg/`.
 
-The `eldrun-send` hint (`services/agent_hint.rs`, 2026-10-01) leans on each
+The `tabtivity-send` hint (`services/agent_hint.rs`, 2026-10-01) leans on each
 CLI's session-start context channel; re-check it on update. Gemini, Qwen,
 Auggie, CodeBuddy: `settings.json` `hooks.SessionStart[].hooks[]`, stdout JSON
 `hookSpecificOutput.additionalContext` (Gemini requires stdout to be JSON only).
@@ -496,7 +496,7 @@ Cursor: `~/.cursor/hooks.json` `hooks.sessionStart[]`, `{"additional_context"}`
 `{"additionalContext"}` — probed live on 1.0.88 (2026-10-01). Vibe (hooks are
 `pre_tool`/`post_tool`/`post_agent` only) and OpenCode (no start hook outside
 the experimental plugin API) get instructions instead: a marker block in
-`~/.vibe/AGENTS.md`, and for OpenCode `<state_dir>/hooks/eldrun_agent_hint.md`
+`~/.vibe/AGENTS.md`, and for OpenCode `<state_dir>/hooks/tabtivity_agent_hint.md`
 in `~/.config/opencode/opencode.json` `instructions` (its global `AGENTS.md`
 would shadow the `~/.claude/CLAUDE.md` fallback). All but Copilot are from the vendors'
 docs, not live.
@@ -599,7 +599,7 @@ Headless probe: `cargo run --example ollama_probe --manifest-path src-tauri/Carg
   `claude`, `codex`, `opencode`, `droid`, `openclaw`. `ollama launch --help` is
   read to learn which agents the installed server supports. `launch` writes
   `~/.codex/model.json` and forwards no extra flags.
-- **≥ 0.32 drops integrated GPUs** unless `OLLAMA_IGPU_ENABLE=1`; Eldrun sets it
+- **≥ 0.32 drops integrated GPUs** unless `OLLAMA_IGPU_ENABLE=1`; Tabtivity sets it
   on the server it spawns and offers a systemd drop-in for the unit. The flag's
   existence is read from `ollama serve --help`, not from the version.
 - `OLLAMA_HOST`, `OLLAMA_MODELS` env semantics (a bare number is a port).
@@ -658,10 +658,10 @@ finishing it via `workspace/executeCommand`, `signOut` and `checkStatus`
 against a fake server. `didChangeStatus` `kind`/`message` likewise.
 
 **Verify** after bumping `SERVER_VERSION`, the real server inside the real fence:
-`ELDRUN_COPILOT_INSTALL=<npm prefix> cargo test --manifest-path src-tauri/Cargo.toml --lib copilot -- --ignored`
+`TABTIVITY_COPILOT_INSTALL=<npm prefix> cargo test --manifest-path src-tauri/Cargo.toml --lib copilot -- --ignored`
 (initialize + unauthenticated error 1000 through `session.rs`). Also
 `python3 scripts/copilot-probe.py /absolute/path/to/copilot-language-server`
-without launching Eldrun. It currently verifies initialization, unsaved document
+without launching Tabtivity. It currently verifies initialization, unsaved document
 sync, unauthenticated error 1000 and cancellation -32800 only. Before release,
 also verify device sign-in/sign-out, credential persistence policy, exclusions,
 workspace filesystem reads, quota messages and accepted-item offsets against a
@@ -669,7 +669,7 @@ real signed-in session. Never capture tokens or raw protocol logs.
 
 ---
 
-## 3. Tailscale (Eldrun Mobile)
+## 3. Tailscale (Tabtivity Mobile)
 
 **Where** `services/mobile_control/config.rs` (`verify_tailscale_serve`,
 detect settings), `services/mobile_control/host.rs`, `src/components/mobile/
@@ -729,7 +729,7 @@ Also check the remote host's tmux, which is usually older.
 **Assumes** `docker --version`, `ps --filter label=… --format`, `run -d --init
 --name --label --user 1000:1000 --cap-drop --security-opt --pids-limit
 --memory --cpus --network --read-only --tmpfs … sleep infinity`, `exec`,
-`rm -f`, `build -t`, `pull`; the image tag Eldrun builds/pulls; bind-mount of
+`rm -f`, `build -t`, `pull`; the image tag Tabtivity builds/pulls; bind-mount of
 the project at its identical absolute path.
 
 **Verify** `docker --version; docker run --help | grep -E 'pids-limit|init'`;
@@ -818,7 +818,7 @@ watch the progress stream; `cargo test --manifest-path src-tauri/Cargo.toml open
   `sshpass -e` on Windows; OpenSSH re-asks a rejected passphrase three times.
 - `ssh-keygen -F/-l/-lf -/-t ed25519`, `ssh-keyscan` for host keys.
 - rsync present on **both** ends for the bulk fast path (`rsync >/dev/null
-  && echo eldrun-rsync-yes`), pull-only.
+  && echo tabtivity-rsync-yes`), pull-only.
 - `git bundle create … --not …` and git's literal refusal text; `-c
   core.hooksPath=` suppresses hooks (verified against git 2.53.0);
   `GIT_OPTIONAL_LOCKS=0`.
@@ -1018,7 +1018,7 @@ not written.
 |------------|----------------|------------------------|
 | WebKitGTK | 2.52 observed | no renderer-pid API (watchdog probes instead); scrollbar built once; DMABUF off (flicker + SIGBUS) |
 | Tauri / wry / plugins | `^2` | IPC fallback path evaluates PDF bytes as script — keep the custom protocol |
-| `tauri-runtime-wry` | patched 2.11.3 (`src-tauri/patches/`, root `Cargo.toml` `[patch.crates-io]`) | `Context.main_thread` behind an `Arc`, or off-thread `AppHandle` clones race tao's Linux `Rc` and corrupt the heap. On a tauri bump: re-copy the new version and re-apply the `ELDRUN PATCH` hunk, or drop the patch once upstream fixes it |
+| `tauri-runtime-wry` | patched 2.11.3 (`src-tauri/patches/`, root `Cargo.toml` `[patch.crates-io]`) | `Context.main_thread` behind an `Arc`, or off-thread `AppHandle` clones race tao's Linux `Rc` and corrupt the heap. On a tauri bump: re-copy the new version and re-apply the `TABTIVITY PATCH` hunk, or drop the patch once upstream fixes it |
 | `@xterm/xterm` + addons | `^5.5`, webgl `^0.18` | key encodings (`ESC [ Z`, CSI-u) the mobile bridge relies on |
 | `pdfjs-dist` | `^6.3` (floor 6.0) | beamer shadow compositing |
 | `portable-pty` | 0.9 | PTY registry / reconnect |
@@ -1035,13 +1035,13 @@ first), then `npm run package:dev` and click through the viewers.
 
 ---
 
-## 20. Eldrun's own updater
+## 20. Tabtivity's own updater
 
 **Where** `services/app_update.rs`, `commands/app_update.rs`.
 
 **Assumes** `https://api.github.com/repos/fseiffarth/ProjectEldrun/releases/latest`
 (unauthenticated, rate-limited), asset names
-`eldrun_<v>_amd64.AppImage`, `Eldrun_<v>_x64-setup.exe`, `.dmg`, `.deb`,
+`tabtivity_<v>_amd64.AppImage`, `Tabtivity_<v>_x64-setup.exe`, `.dmg`, `.deb`,
 download only from `https://github.com/fseiffarth/ProjectEldrun/releases/download/`.
 A GitHub API or release-naming change breaks the update banner.
 

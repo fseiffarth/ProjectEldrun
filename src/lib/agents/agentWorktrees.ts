@@ -30,7 +30,7 @@ function stripTrailingSep(p: string): string {
 
 /**
  * Is `cwd` a linked worktree of the project at `projectDir` — i.e. exactly one
- * directory under `<projectDir>/.eldrun/worktrees/`? The name must be a single
+ * directory under `<projectDir>/.tabtivity/worktrees/`? The name must be a single
  * plain segment: a `..` or an empty name is not a worktree, and neither is the
  * worktrees folder itself. Both separators are accepted so a Windows layout
  * round-trips.
@@ -47,8 +47,8 @@ export function isProjectWorktreeCwd(cwd: string, projectDir: string): boolean {
   return name.length > 0 && !name.includes("/") && name !== "." && name !== "..";
 }
 
-/** A linked worktree's folder as the agents keep them: Eldrun's own
- * (`.eldrun/worktrees/<name>`), Claude Code's `--worktree` ones
+/** A linked worktree's folder as the agents keep them: Tabtivity's own
+ * (`.tabtivity/worktrees/<name>`), Claude Code's `--worktree` ones
  * (`.claude/worktrees/<name>`), or any other dot-folder's `worktrees`. */
 const WORKTREE_IN_PATH = /[/\\]\.[^/\\]+[/\\]worktrees[/\\]([^/\\]+)/u;
 

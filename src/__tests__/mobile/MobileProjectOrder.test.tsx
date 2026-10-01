@@ -2,7 +2,7 @@
  * Arranging the phone's project list by hand.
  *
  * Unlike the tab order this one never leaves the phone: it is a `localStorage`
- * preference, so a drag needs no desktop and the Eldrun window's own project
+ * preference, so a drag needs no desktop and the Tabtivity window's own project
  * pills are left where their owner put them. Three things are worth pinning:
  * the remembered order wins over the host's while the host's stays the fallback
  * for a project that has never been placed, a move survives the re-mount every

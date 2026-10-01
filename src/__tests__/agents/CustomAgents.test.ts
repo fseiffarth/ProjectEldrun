@@ -58,7 +58,7 @@ describe("buildStaticTabSpec — custom agents", () => {
     const spec = buildStaticTabSpec(customAgentToItem(ca), "/proj", "Proj", t);
     expect(spec.resumeArgs).toEqual(["--continue"]);
     // A session id is minted so the tab satisfies the persistence gate, and the
-    // tab is tagged with the ELDRUN_TAB_UID env var like the built-in resumables.
+    // tab is tagged with the TABTIVITY_TAB_UID env var like the built-in resumables.
     expect(typeof spec.sessionId).toBe("string");
     expect(spec.env?.[envName("TAB_UID")]).toBe(spec.sessionId);
     expect(isResumableAgentTab({ ...spec })).toBe(true);

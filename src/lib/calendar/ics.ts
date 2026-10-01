@@ -1,5 +1,5 @@
 /**
- * iCalendar (RFC 5545) import/export — the subset Eldrun's model actually holds.
+ * iCalendar (RFC 5545) import/export — the subset Tabtivity's model actually holds.
  *
  * Parsing lives here, in tested TypeScript, rather than in Rust: the backend
  * stays a dumb store, and the format's real complexity (line folding, escaping,
@@ -222,7 +222,7 @@ function icsNowUtc(now: Date): string {
  * The RRULE parts the model holds. Anything else in a rule — `BYHOUR`,
  * `BYYEARDAY`, `BYSETPOS` over several days… — cannot be expanded here, so the
  * rule keeps its original text (`ics_value`) to write back unreduced.
- * `WKST` only moves which day a week starts on, which Eldrun's weekly expansion
+ * `WKST` only moves which day a week starts on, which Tabtivity's weekly expansion
  * does not consult either way.
  */
 const HELD_RRULE_PARTS = new Set(["FREQ", "INTERVAL", "BYDAY", "BYMONTHDAY", "UNTIL", "COUNT", "WKST"]);
@@ -682,7 +682,7 @@ export function icsUid(row: { id: string; uid?: string }): string {
  *
  * A recurring event's **occurrence edits** are written the only way iCalendar
  * has to express them: extra `VEVENT` components sharing the master's UID and
- * naming the slot they replace with `RECURRENCE-ID`. Eldrun stores those in the
+ * naming the slot they replace with `RECURRENCE-ID`. Tabtivity stores those in the
  * master's `overrides[]`, and until this existed they were simply dropped from
  * every export — a series exported and re-imported came back with each moved
  * occurrence silently back in its original place.

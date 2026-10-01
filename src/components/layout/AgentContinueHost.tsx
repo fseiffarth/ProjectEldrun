@@ -57,7 +57,7 @@ const REARM_AFTER_SEND_MS = 90_000;
  *  error, is asked again. Long enough not to respawn a CLI on a loop. */
 const RETRY_MS = 5 * 60_000;
 
-/** An agent with no usage readout at all cannot grow one while Eldrun runs, so
+/** An agent with no usage readout at all cannot grow one while Tabtivity runs, so
  *  this only exists to stop the (cheap, spawn-free) refusal being re-fetched
  *  every tick. Turning the switch off and on again asks immediately. */
 const UNSUPPORTED_RETRY_MS = 60 * 60_000;

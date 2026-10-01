@@ -4,7 +4,7 @@
 //! against the layer it targets. This checks the thing a user actually meets:
 //! a single realistic phishing mail carrying ~40 payloads at once — script
 //! elements, mutation-XSS constructs, framing, a credential form, a
-//! full-viewport fake-Eldrun overlay, trackers in every fetching attribute,
+//! full-viewport fake-Tabtivity overlay, trackers in every fetching attribute,
 //! every way a URL can lie about its destination, and four attachments whose
 //! names attack the filesystem — parsed by `parse_message` and cleaned by
 //! `sanitize_message_html` exactly as `commands::mail` does it.

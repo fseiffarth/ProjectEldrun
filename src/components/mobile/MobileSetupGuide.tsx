@@ -18,14 +18,14 @@ function tr(
 const DEFAULT_PORT = 8742;
 
 /**
- * The setup instruction behind the header's phone icon while Eldrun Mobile is
+ * The setup instruction behind the header's phone icon while Tabtivity Mobile is
  * off — the one door into Mobile for someone who has never used it.
  *
  * The full guide lives in Mobile settings, which is exactly the problem it
  * solves: a feature nobody has switched on is a feature nobody goes looking for
  * in the settings scroll. The icon is therefore shown *before* setup too, and
  * clicking it opens this — the same six steps, in the order they are performed,
- * with the two that Eldrun can do for the user (run the `tailscale serve`
+ * with the two that Tabtivity can do for the user (run the `tailscale serve`
  * command, land on the Mobile section of Settings) as buttons in their own step.
  *
  * Chrome is `HowToStart`'s down to the class names — `.modal-backdrop` +
@@ -35,7 +35,7 @@ const DEFAULT_PORT = 8742;
 export function MobileSetupGuide({ onClose }: { onClose: () => void }) {
   const t = useT();
   const stored = useSettingsStore((s) => s.settings?.[MOBILE_HOST_KEY]);
-  // The command has to name the port Eldrun will actually listen on, so a user
+  // The command has to name the port Tabtivity will actually listen on, so a user
   // who already changed it in Mobile settings is not told to publish 8742.
   const port = Number.isInteger(stored?.port) && (stored?.port ?? 0) >= 1024 && (stored?.port ?? 0) <= 65535
     ? (stored?.port as number)

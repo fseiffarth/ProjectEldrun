@@ -235,7 +235,7 @@ describe("#23 git worktrees", () => {
 
   it("a locked worktree escalates straight to force: 2", async () => {
     // B4: git answers a locked worktree with "use 'remove -f -f' to override or
-    // unlock first" and exits 128 for a single --force. Eldrun could pass at most
+    // unlock first" and exits 128 for a single --force. Tabtivity could pass at most
     // one, so a locked worktree was permanently unremovable from the app.
     const user = userEvent.setup();
     worktrees = [

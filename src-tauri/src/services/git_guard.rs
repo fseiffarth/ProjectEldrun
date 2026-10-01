@@ -6,7 +6,7 @@
 //! `core.hooksPath`, `core.sshCommand`, filter drivers), `.git/hooks/*`, and
 //! the `.git` entry itself (swap the directory for a `gitdir:` pointer file and
 //! every one of those comes from wherever the pointer says) are instructions
-//! the *next unsandboxed* git follows: Eldrun's own calls, and the user's
+//! the *next unsandboxed* git follows: Tabtivity's own calls, and the user's
 //! terminal. That is the sandbox "trust handoff" escape (Pillar Security,
 //! CSA, 2026) — the agent never leaves the box; the host runs what it wrote.
 //!
@@ -23,7 +23,7 @@
 //! dir itself stays writable, and an agent can still *create* a
 //! `commondir` in a main `.git` (git then reads config and hooks from where it
 //! points — verified: a plain `git add` runs the target's `post-index-change`),
-//! or `git init` a repo where there was none. Eldrun's own local git is not
+//! or `git init` a repo where there was none. Tabtivity's own local git is not
 //! steered by either (#862): every call pins `GIT_COMMON_DIR` to a main `.git`
 //! (`commands::git::pin_common_dir`), so a planted `commondir` is ignored, and
 //! runs with hooks off except the verbs `services::exec_trust` gates. A plain
@@ -31,7 +31,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// Where Eldrun puts agent worktrees inside a project (`commands::git`'s
+/// Where Tabtivity puts agent worktrees inside a project (`commands::git`'s
 /// `worktrees_root`). Each holds a `.git` pointer file the occupant could
 /// otherwise rewrite.
 const WORKTREES_DIR: [&str; 2] = [crate::brand::PROJECT_DIR, "worktrees"];

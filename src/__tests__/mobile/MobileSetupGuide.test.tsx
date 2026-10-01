@@ -1,11 +1,11 @@
 /**
- * The phone icon is the door into Eldrun Mobile before it exists.
+ * The phone icon is the door into Tabtivity Mobile before it exists.
  *
  * While Mobile is off the header indicator used to render nothing at all, so
  * the only way in was the Mobile section of the settings scroll — which nobody
  * who has not already heard of the feature ever opens. The icon is therefore
  * shown dimmed, and clicking it opens the step-by-step setup overlay: the same
- * six steps as the settings fold, with the two Eldrun can perform (run the
+ * six steps as the settings fold, with the two Tabtivity can perform (run the
  * `tailscale serve` command, land on the Mobile section) as buttons.
  */
 import { cleanup, render, screen } from "@testing-library/react";

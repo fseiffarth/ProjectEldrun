@@ -74,7 +74,7 @@ pub struct MarkupPage {
     /// The page's displayed size the marks are measured in.
     pub size: [f64; 2],
     pub marks: Vec<Mark>,
-    /// The page's layer PNG, as the inbox answered it (`.eldrun/inbox/<name>`).
+    /// The page's layer PNG, as the inbox answered it (`.tabtivity/inbox/<name>`).
     pub layer: String,
 }
 
@@ -83,7 +83,7 @@ pub struct MarkupPage {
 pub enum MarkupSource {
     /// A project file's sealed token (`files.rs`).
     Files(String),
-    /// A leaf in the project's `.eldrun/outbox/`.
+    /// A leaf in the project's `.tabtivity/outbox/`.
     Outbox(String),
 }
 
@@ -267,7 +267,7 @@ pub struct Submitted {
 
 /// One submit, after `validate`: checks the layers, reads the source, bakes
 /// a PDF's marked copy into the inbox and builds the prompt. `send_back` is
-/// whether the tab can answer with `eldrun-send` into this chat.
+/// whether the tab can answer with `tabtivity-send` into this chat.
 pub fn submit(
     root: &Path,
     source: &ResolvedSource,

@@ -1,6 +1,6 @@
 /**
  * In-app viewer embeds remember the reader's scroll/zoom/pan (ViewerState) so
- * reopening a file — or restarting Eldrun — restores the position instead of
+ * reopening a file — or restarting Tabtivity — restores the position instead of
  * jumping back to the top/default zoom. The viewer panes call setViewerState as
  * the reader scrolls/zooms; the value travels with the embed tab through
  * saveLayout → project.json and back via loadFromLayout. These tests lock that

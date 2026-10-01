@@ -11,7 +11,7 @@
    sizing, the period switch and the stat primitives live here.
 
    The stat tile (.stats-metric) and the bar rows deliberately mirror
-   .network-metric — one visual language for "a number Eldrun measured". */
+   .network-metric — one visual language for "a number Tabtivity measured". */
 .stats-dialog {
   width: min(760px, calc(100vw - 32px));
   max-height: min(860px, calc(100vh - 40px));

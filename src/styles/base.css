@@ -49,7 +49,7 @@ html, body, #root {
 /* ── Launch splash ────────────────────────────────────────────────────── */
 /* The app shell mounts at once, but its initial settings/project reads are
    asynchronous. Keep a light, branded curtain over that otherwise empty
-   interval so launching Eldrun always has visible feedback. */
+   interval so launching Tabtivity always has visible feedback. */
 .startup-splash {
   position: fixed;
   inset: 0;

@@ -964,7 +964,7 @@ export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
       // on every Cmd+key chord. On Windows the lone Win key belongs to the OS —
       // the Start menu opens on key *release* at the shell level and
       // preventDefault() cannot stop it, and every global Win+X shortcut
-      // pressed while Eldrun is focused fires a lone "Meta" keydown first,
+      // pressed while Tabtivity is focused fires a lone "Meta" keydown first,
       // spuriously toggling the panels. Both therefore use F9 (below).
       //
       // `PLATFORM === "linux"` used to be the whole test, which quietly said

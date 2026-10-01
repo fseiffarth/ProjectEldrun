@@ -10,7 +10,7 @@ import type { TranslationKey } from "./i18n";
  *
  * The two overview tours are lessons too — the quick tour opens Basics and the
  * tour of other machines opens Advanced — so there is one place to learn
- * Eldrun instead of a tour, an advanced tour, and a lesson list side by side.
+ * Tabtivity instead of a tour, an advanced tour, and a lesson list side by side.
  * Only the quick tour counts as onboarding done (`completesOnboarding`).
  *
  * Most steps spotlight a persistent entry-point control (the + button, the gear,
@@ -71,7 +71,7 @@ export interface Lesson {
 }
 
 /** The quick tour's lesson id — what the wizard's "Take a tour" and the
- *  `eldrun:start-tour` event start. */
+ *  `tabtivity:start-tour` event start. */
 export const TOUR_LESSON_ID = "tour";
 
 /** Reveal the right-side file panel so a step's anchor exists to spotlight.

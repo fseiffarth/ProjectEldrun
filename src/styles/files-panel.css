@@ -705,7 +705,7 @@
   flex-shrink: 0;
 }
 
-/* Per-project Eldrun Mobile opt-in. Shown only while the local Mobile host is
+/* Per-project Tabtivity Mobile opt-in. Shown only while the local Mobile host is
    live, so this control never suggests a project is reachable from a stopped
    companion service. Kept visually apart from the `.pill-popup-tag` chips on
    the same row: those are static labels (pill, uppercase, tinted by kind),

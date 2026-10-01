@@ -38,7 +38,7 @@ export const INTERNAL_PROJECT_FILES = new Set([
 
 export type SortKey = "name" | "type" | "size" | "created" | "modified";
 
-/** Which built-in Eldrun viewer can render a file in-tab (drag from the right
+/** Which built-in Tabtivity viewer can render a file in-tab (drag from the right
  *  panel onto a tab bar). Independent of any external default app. */
 export type InternalViewer =
   | "pdf"
@@ -72,7 +72,7 @@ export type InternalViewer =
   // A BibTeX/BibLaTeX bibliography (`.bib`) as a list of cards — one per entry,
   // with its `field = {value}` pairs (see BibCards). Falls back to the plain code
   // editor when opted out, the way the YAML tree does: turning the cards off is a
-  // vote against the cards, not against editing a `.bib` in Eldrun.
+  // vote against the cards, not against editing a `.bib` in Tabtivity.
   | "bib"
   // The native presenter's deck sidecar (`*.eldeck.json`, EXPERIMENTAL — see
   // `docs/deck_presenter_plan.md`). A deck is JSON, so this must be matched by
@@ -151,7 +151,7 @@ export function internalViewerFor(
   // through to the external-app path (commitFileDrop routes it via embedExec) —
   // unless the type has a native fallback that is itself still enabled. YAML is
   // the case: turning off its tree is a vote against the *tree*, not against
-  // editing YAML in Eldrun at all, so it drops back to the plain code editor
+  // editing YAML in Tabtivity at all, so it drops back to the plain code editor
   // (which is where .yaml opened before the tree existed).
   if (viewer && disabled?.has(viewer)) {
     const fallback = VIEWER_FALLBACK[viewer];

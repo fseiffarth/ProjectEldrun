@@ -7,7 +7,7 @@
  * opened days ago. That makes two things load-bearing and easy to regress:
  *
  *  - `loadFromLayout` (restore) must NOT go through `addTab`.
- *  - the root scope's auto-seeded 3D-blob tab must opt out — Eldrun opened it,
+ *  - the root scope's auto-seeded 3D-blob tab must opt out — Tabtivity opened it,
  *    not the user.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";

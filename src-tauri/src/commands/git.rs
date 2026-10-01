@@ -8,7 +8,7 @@ use crate::services::remote::{remote_target_for_dir, RemoteTarget};
 // on whether the project is local or remote:
 //
 //   * **local** → `crate::paths::command_no_window("git")` in `project_dir`
-//     rather than a bare `Command::new`: Eldrun is a windowed app with no
+//     rather than a bare `Command::new`: Tabtivity is a windowed app with no
 //     console, so on Windows every `git` subprocess would otherwise flash a
 //     transient console window — and `git_status`/`git_file_statuses` are polled
 //     continuously for the file tree. `command_no_window` sets CREATE_NO_WINDOW
@@ -36,16 +36,16 @@ use crate::services::remote::{remote_target_for_dir, RemoteTarget};
 // `git status`, and `git_file_statuses`/`git_status` are polled continuously for
 // the file tree — no user action anywhere in the chain.
 //
-// So Eldrun's own invocations pin the config keys that turn a read into an exec.
-// This does not need a read/write split: none of these are settings an Eldrun
+// So Tabtivity's own invocations pin the config keys that turn a read into an exec.
+// This does not need a read/write split: none of these are settings a Tabtivity
 // git call wants honoured in the first place. Two layers: `-c` overrides for
-// keys Eldrun knows the exact name of ([`HARDENED_CONFIG`] below), and a
+// keys Tabtivity knows the exact name of ([`HARDENED_CONFIG`] below), and a
 // pattern-matched strip of the repo's own `.git/config` file for keys whose
 // name the attacker picks ([`CONFIG_DENYLIST`]/[`sanitize_repo_git_config`],
 // further down) — a `-c` can only ever fix an exact key, so it cannot reach
 // `filter.<any driver name>.clean`.
 
-/// `-c <key>=<value>` overrides applied to every git call Eldrun makes.
+/// `-c <key>=<value>` overrides applied to every git call Tabtivity makes.
 ///
 /// - `core.fsmonitor=false` — the hook form of this key is a program git runs on
 ///   `status`/`diff`. Pinning it off also costs the *builtin* FSMonitor daemon on
@@ -54,11 +54,11 @@ use crate::services::remote::{remote_target_for_dir, RemoteTarget};
 ///   and the safe direction is the one that cannot execute.
 /// - `protocol.ext.allow=never` — an `ext::<command>` remote URL runs a shell
 ///   command, and git's default (`user`) permits exactly the direct invocations
-///   Eldrun makes. Eldrun never legitimately uses `ext::`.
+///   Tabtivity makes. Tabtivity never legitimately uses `ext::`.
 /// - `safe.bareRepository=explicit` — a folder laid out as a bare repository
 ///   (`HEAD`, `objects/`, `refs/`, `config`) is otherwise *itself* the git dir to
 ///   implicit discovery, and its `config` can name a `core.worktree` and filter
-///   drivers the `.git`-based strip never sees (#158). Eldrun never runs git in
+///   drivers the `.git`-based strip never sees (#158). Tabtivity never runs git in
 ///   a bare repo by discovery. Honoured only from protected config, which
 ///   includes `-c`; an older git ignores the unknown key.
 ///
@@ -187,7 +187,7 @@ fn git_command<S: AsRef<str>>(args: &[S], hooks: Hooks) -> std::process::Command
 // ── Config-key denylist (Group O #151) ─────────────────────────────────────
 //
 // `HARDENED_CONFIG`'s per-key `-c` overrides can only ever fix an EXACT key —
-// which closes `core.fsmonitor`/`protocol.ext.allow` because Eldrun knows those
+// which closes `core.fsmonitor`/`protocol.ext.allow` because Tabtivity knows those
 // names in advance, but cannot touch `filter.<driver>.clean`: the driver name is
 // the attacker's choice, so there is no finite list of `-c` flags that covers it.
 // This closes that shape instead, structurally: before any LOCAL git call, the
@@ -1521,7 +1521,7 @@ fn push_local(
 /// one explicit `refspec` to one explicit `url`, hooks off. Unlike
 /// [`push_local`] this never runs the repo's `pre-push` — the fenced,
 /// tokenless preflight has already run it — so no project code runs on the
-/// host while `ELDRUN_GIT_TOKEN` is in the environment. `--no-verify` says so
+/// host while `TABTIVITY_GIT_TOKEN` is in the environment. `--no-verify` says so
 /// twice: [`hardened_git_command_in`] already pins `core.hooksPath=`, which
 /// also silences `reference-transaction`. The URL goes on the command line, so
 /// `remote.<r>.pushurl` plays no part (a repo-scope `insteadOf` is refused by
@@ -1742,7 +1742,7 @@ fn clone_error(stderr: &str, had_token: bool, https: bool) -> String {
 /// Auth: an https URL rides the global access token from Settings → Git Hosting
 /// (via the same inline credential helper as `git_push`) when one is stored; an
 /// SSH URL uses the user's own keys. Every interactive prompt git could raise is
-/// disabled (`GIT_TERMINAL_PROMPT=0`, ssh `BatchMode=yes`) — Eldrun has no console
+/// disabled (`GIT_TERMINAL_PROMPT=0`, ssh `BatchMode=yes`) — Tabtivity has no console
 /// attached, so a prompt would be an invisible hang rather than a question.
 #[tauri::command]
 pub async fn git_clone(url: String, dest: String) -> Result<String, String> {
@@ -2189,7 +2189,7 @@ fn git_checkout_blocking(project_dir: String, target: String) -> Result<String, 
     let rt = remote_target_for_dir(&project_dir);
     // A checkout fires `post-checkout`, and for a container-toggled project
     // `.git/hooks` is the container's writable mount — so a contained agent
-    // writing one would get host execution from a click in Eldrun's Git panel.
+    // writing one would get host execution from a click in Tabtivity's Git panel.
     // `run_git` pins hooks off (see `hardened_git_args`); checkout stays there.
     let out = run_git(rt.as_ref(), &project_dir, &["checkout", &target])?;
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -2421,9 +2421,9 @@ fn git_blame_blocking(project_dir: String, rel_path: String) -> Result<Vec<GitBl
 // **A worktree has exactly one legitimate home** (I3). `git worktree add <path>`
 // creates *and populates* `<path>`, so an unconstrained path argument is a
 // "write repo-controlled content to any writable absolute path" primitive —
-// including a path Eldrun would later read back as executable intent (Group O
-// #151). Every worktree therefore lands under `<root>/.eldrun/worktrees/`, which
-// is also the answer to two other findings at once: `.eldrun` is already a walk
+// including a path Tabtivity would later read back as executable intent (Group O
+// #151). Every worktree therefore lands under `<root>/.tabtivity/worktrees/`, which
+// is also the answer to two other findings at once: `.tabtivity` is already a walk
 // boundary for both byte-sync walkers (so a worktree is never mirrored as a
 // second full copy of the tree), and it sits inside the project directory the
 // container bind-mounts at its identical absolute path (so the linked `.git`
@@ -2836,7 +2836,7 @@ fn git_worktree_add_blocking(
 
     // The worktrees root lives inside the project tree so a container mount and
     // both byte-sync walkers already cover it — but an *imported* repo has no
-    // `.eldrun/` ignore rule, and `git add -A` then records the new checkout as a
+    // `.tabtivity/` ignore rule, and `git add -A` then records the new checkout as a
     // bogus gitlink (mode 160000, verified). Repo-local `info/exclude` fixes that
     // without touching a tracked file. Best-effort: a failure here costs a noisy
     // `git status`, never the worktree.
@@ -2861,7 +2861,7 @@ fn git_worktree_add_blocking(
     Ok(abs)
 }
 
-/// Add `.eldrun/` to the repo's own `info/exclude` if it is not already ignored.
+/// Add `.tabtivity/` to the repo's own `info/exclude` if it is not already ignored.
 /// Untracked and repo-local, so it changes nothing the user has committed.
 fn exclude_app_dir(ctx: &WorktreeCtx) {
     const RULE: &str = crate::brand::PROJECT_DIR_EXCLUDE_RULE;
@@ -2917,7 +2917,7 @@ fn exclude_app_dir(ctx: &WorktreeCtx) {
 /// `force` is a **count**, not a flag: `1` removes a dirty worktree, and `2`
 /// (`remove -f -f`) is the only thing that removes a *locked* one — git says so
 /// itself and exits 128 for a single `--force` (verified). Passing a bool here
-/// is what made a locked worktree permanently unremovable from Eldrun (B4).
+/// is what made a locked worktree permanently unremovable from Tabtivity (B4).
 #[tauri::command]
 pub async fn git_worktree_remove(
     project_dir: String,
@@ -3073,7 +3073,7 @@ pub struct DetectedOrigin {
 /// resolves to a recognized provider. Published (`remote-*`) local projects are
 /// included too, so their git address shows in the hover even though their badge
 /// already rides on `git_type`. Used to decorate pill/side-panel hovers for
-/// repos pushed to a host — including ones published outside Eldrun's own
+/// repos pushed to a host — including ones published outside Tabtivity's own
 /// Publish flow (the sole writer of the `remote-*` `git_type`).
 ///
 /// Offloaded via [`run_off_thread`]: the body forks one `git remote get-url`
@@ -4106,7 +4106,7 @@ filename note.txt
         for bad in [
             "/etc/cron.d/x",
             "/home/u/proj/wt", // inside the project, outside the root
-            concat!("/home/u/proj/.", crate::app_slug!(), "/sessions/x"), // Eldrun reads this dir as intent
+            concat!("/home/u/proj/.", crate::app_slug!(), "/sessions/x"), // Tabtivity reads this dir as intent
             "../../elsewhere",
             concat!("/home/u/proj/.", crate::app_slug!(), "/worktrees/../../x"),
             concat!("/home/u/proj/.", crate::app_slug!(), "/worktrees-evil/x"), // prefix-match near miss
@@ -4267,7 +4267,7 @@ filename note.txt
         assert_eq!(listed.iter().filter(|w| w.is_current).count(), 1);
         assert!(listed.iter().any(|w| w.branch == "feature"));
 
-        // `.eldrun/` is excluded repo-locally, so the new checkout is not staged as
+        // `.tabtivity/` is excluded repo-locally, so the new checkout is not staged as
         // a bogus gitlink by the commit UI's `git add -A` (verified: without this,
         // `git ls-files --stage` shows mode 160000 for it).
         run(&["add", "-A"]);
@@ -4280,7 +4280,7 @@ filename note.txt
         run(&["reset"]);
 
         // Removing the worktree we are standing in is refused (D4) — git itself
-        // does not refuse it, and it would delete the tree Eldrun works in.
+        // does not refuse it, and it would delete the tree Tabtivity works in.
         let err = git_worktree_remove_blocking(root_str.clone(), root_str.clone(), 2, None, None)
             .unwrap_err();
         assert!(err.contains("own checkout"), "unexpected: {err}");
@@ -4294,7 +4294,7 @@ filename note.txt
     #[test]
     fn a_locked_worktree_needs_two_forces_and_can_be_unlocked() {
         // git: "use 'remove -f -f' to override or unlock first" — exit 128 for a
-        // single --force. Neither escape existed in Eldrun before (B4).
+        // single --force. Neither escape existed in Tabtivity before (B4).
         if !git_available() {
             eprintln!("skipping: git binary not available");
             return;
@@ -4861,7 +4861,7 @@ filename note.txt
         assert_filter_contained(&dir, &dir, &marker, "gitdir pointer");
     }
 
-    /// #158: a linked worktree — Eldrun's own agent worktrees. Its `.git`
+    /// #158: a linked worktree — Tabtivity's own agent worktrees. Its `.git`
     /// points at `<common>/worktrees/<name>`, whose `commondir` names the shared
     /// config; with `extensions.worktreeConfig` it also reads `config.worktree`.
     #[cfg(unix)]

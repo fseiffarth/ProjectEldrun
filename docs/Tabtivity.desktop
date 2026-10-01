@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Tabtivity
-Comment=Terminal workspace manager
+Comment=A tab for each project. A tab for everything in it.
 Exec=/path/to/projecteldrun/start-tabtivity-tauri.sh
 Icon=/path/to/projecteldrun/src-tauri/icons/128x128.png
 Terminal=false

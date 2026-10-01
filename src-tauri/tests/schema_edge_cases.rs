@@ -1,4 +1,4 @@
-//! Edge-case and invariant tests for the Eldrun schema types.
+//! Edge-case and invariant tests for the Tabtivity schema types.
 //!
 //! These complement schema_roundtrip.rs (which tests real fixtures) by
 //! covering degenerate inputs, default values, and Python-rollback invariants

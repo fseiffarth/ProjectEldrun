@@ -3,7 +3,7 @@
 //! The project container remains the stronger, opt-in boundary.  For ordinary
 //! local agent tabs this module wraps the agent in the OS's unprivileged
 //! sandbox: `bubblewrap` on Linux (the host root is read-only, the scope's
-//! Eldrun-owned agent home (`services::agent_home`) is bound over `$HOME`,
+//! Tabtivity-owned agent home (`services::agent_home`) is bound over `$HOME`,
 //! `/tmp`, `/run` and `~/.cache` are private, and only the owning project plus
 //! every box it belongs to is mounted read-write) and `sandbox-exec` on macOS
 //! (a Seatbelt profile that denies writes outside the same roots and hides the
@@ -26,7 +26,7 @@ use crate::terminal::PtyOptions;
 use crate::{paths, storage};
 
 /// A package the fence may ask the user to install. Only bubblewrap for now: it
-/// is the one missing tool that makes Eldrun fail closed.
+/// is the one missing tool that makes Tabtivity fail closed.
 #[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallPkg {
@@ -121,7 +121,7 @@ pub fn fence_tool_name() -> &'static str {
 
 /// Whether this OS has a fence implementation at all: Linux (bubblewrap) and
 /// macOS (sandbox-exec). Windows has no fence: AppContainer is the one
-/// unprivileged sandbox there, and it cuts loopback, which every Eldrun MCP
+/// unprivileged sandbox there, and it cuts loopback, which every Tabtivity MCP
 /// endpoint, local model and agent sign-in needs (`docs/context/agent_authority.md`).
 /// Agents there run unfenced, the pill says so, and the first one is refused
 /// until the user accepts that ([`platform_accepted`]).
@@ -372,7 +372,7 @@ fn read_lists() -> (BoxesList, ProjectsList) {
 pub const ROOT_SCOPE: &str = "root";
 
 /// `Settings::root_fence_projects_readable`: what a **root** agent's fence
-/// exposes read-only on top of `~/eldrun/root` — every local project's
+/// exposes read-only on top of `~/tabtivity/root` — every local project's
 /// directory, every box folder, and every remote project's local mirror (the
 /// explicit one, else the default under the state dir, which the private-state
 /// mask keeps hidden). Pure, so the planner test drives it with lists.
@@ -676,7 +676,7 @@ fn command_search_dirs(opts: &PtyOptions) -> Vec<PathBuf> {
 }
 
 /// Cache successful probes only: installing/unblocking the tool must let the
-/// next tab start without restarting Eldrun. Serialize probes across callers.
+/// next tab start without restarting Tabtivity. Serialize probes across callers.
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn probe_until_available(cache: &Mutex<bool>, probe: impl FnOnce() -> bool) -> bool {
     let mut available = cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -771,7 +771,7 @@ pub(crate) fn local_model_mounts(home: Option<&Path>) -> Vec<BindMount> {
     let Some(home) = home else {
         return Vec::new();
     };
-    // Eldrun's hook alone, whatever an earlier tab left in the file.
+    // Tabtivity's hook alone, whatever an earlier tab left in the file.
     if let Err(e) = crate::services::agent_session::register_vibe_hook_in(home) {
         eprintln!("agent_fence: reset local vibe hooks: {e}");
     }
@@ -813,7 +813,7 @@ const LOCAL_MODEL_CONTROL: &[(&str, bool)] = &[
 /// a path that doesn't exist can't be mounted read-only, and one the agent
 /// could create would be as good as writable. An empty `.env` or `AGENTS.md`
 /// changes nothing (vibe skips a blank instructions file). A symlink in one of
-/// these places is not Eldrun's and is replaced.
+/// these places is not Tabtivity's and is replaced.
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn local_model_control_paths(home: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -859,7 +859,7 @@ pub(crate) fn local_model_home(
 /// The support mounts every fenced tab gets on top of its scope home
 /// (`services::agent_home`, bound over `$HOME`): the scope's own live-session
 /// slice at the canonical path the hook script writes, the hook scripts and
-/// Eldrun's commands read-only and the spawn's own local-model home.
+/// Tabtivity's commands read-only and the spawn's own local-model home.
 /// Everything else an agent keeps — config, transcripts, session stores, its
 /// copy of the shared logins — is simply in the home.
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
@@ -990,7 +990,7 @@ const KEYRING_SYSCALLS: &[(u32, u32, [u32; 3])] = &[];
 /// `EPERM`; everything else is allowed. `None` on an architecture without a
 /// table, which the fence refuses rather than launching without it.
 ///
-/// Only Eldrun needs the keyring. Its saved secrets (`remote_credentials`) are
+/// Only Tabtivity needs the keyring. Its saved secrets (`remote_credentials`) are
 /// cached there in front of the Secret Service, in the login session keyring
 /// every process inherits, bubblewrap included. The private `/run` hides the
 /// Secret Service's socket but nothing reached by syscall, so without this a
@@ -1089,7 +1089,7 @@ fn write_keyring_filter() -> Result<PathBuf, String> {
 /// Pure bubblewrap argv builder.  Later mounts intentionally shadow earlier
 /// ones: the scope home (or, with no `home_src`, an empty tmpfs) replaces the
 /// user's home and hides everything in it, selected toolchain paths and
-/// Eldrun's support dirs are restored, and project/box roots finally become
+/// Tabtivity's support dirs are restored, and project/box roots finally become
 /// read-write. `~/.cache` is a tmpfs over the home either way.
 #[cfg(any(target_os = "linux", test))]
 #[allow(clippy::too_many_arguments)]
@@ -1160,7 +1160,7 @@ pub(crate) fn bwrap_args(
     args
 }
 
-/// Shadow the whole Eldrun state tree, including its canonical alias. Explicit
+/// Shadow the whole Tabtivity state tree, including its canonical alias. Explicit
 /// tool mounts are restored afterwards; future private files stay hidden too.
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn private_state_paths(state_dir: &Path) -> Vec<PathBuf> {
@@ -1184,7 +1184,7 @@ fn mask_private_state(args: &mut Vec<String>, state_dir: &Path, mounts: &[BindMo
         if path.is_dir() { mask.extend(["--tmpfs".into(), path.to_string_lossy().into_owned()]); }
         else if path.exists() { mask.extend(["--ro-bind".into(), "/dev/null".into(), path.to_string_lossy().into_owned()]); }
     }
-    // Only Eldrun's explicit agent support mounts may pierce the state mask.
+    // Only Tabtivity's explicit agent support mounts may pierce the state mask.
     // Project roots and user allowlists are intentionally never restored here.
     for m in mounts.iter().filter(|m| Path::new(&m.dst).starts_with(state_dir)) {
         mask.extend([if m.read_only { "--ro-bind" } else { "--bind" }.into(), m.src.clone(), m.dst.clone()]);
@@ -1223,10 +1223,10 @@ pub fn wrap_pty_options_bwrap(
     // the same channel as the allowlist, so the state mask below still wins.
     extra_ro.extend(root_project_read_only_paths_for(&opts.id, scope_id));
     let search_dirs = command_search_dirs(opts);
-    // The CLI's own install — Eldrun's (`agent_install`) or the host's — is
+    // The CLI's own install — Tabtivity's (`agent_install`) or the host's — is
     // read-only in the fence, every hop of it: a payload one scope's agent
     // could rewrite would run in every other scope and the user's own shell
-    // next. Updates run through Manage CLIs (a reinstall) or outside Eldrun;
+    // next. Updates run through Manage CLIs (a reinstall) or outside Tabtivity;
     // the CLI's own updater is switched off below where it has a switch.
     let visible = extra_ro.clone();
     extra_ro.extend(command_bind_paths(
@@ -1262,7 +1262,7 @@ pub fn wrap_pty_options_bwrap(
     // Keep the CLI's login in its file: the keyring is not reachable here.
     crate::services::agent_auth::apply_fence_env(&agent_cmd, &mut opts.env);
     crate::services::agent_install::apply_fence_env(&agent_cmd, &mut opts.env);
-    // The fence hides the keyring Copilot signs in through; Eldrun holds the
+    // The fence hides the keyring Copilot signs in through; Tabtivity holds the
     // sign-in for it instead (`copilot_auth`).
     if copilot {
         crate::services::copilot_auth::inject_env(&mut opts.env);
@@ -1517,7 +1517,7 @@ pub fn wrap_pty_options_sandbox_exec(
 
 /// Whether an agent launch runs one of the CLI's subcommands (`claude auth
 /// login`, a sign-in tab) rather than a session: its first argument is not a
-/// flag. The session flags Eldrun adds (`--add-dir`, `--remote-control`,
+/// flag. The session flags Tabtivity adds (`--add-dir`, `--remote-control`,
 /// `--name`) belong to the session command, and a subcommand refuses them.
 pub fn runs_subcommand(args: &[String]) -> bool {
     args.first().is_some_and(|arg| !arg.starts_with('-'))
@@ -1654,7 +1654,7 @@ pub fn fenced_scope_of_tab(tab_id: &str) -> Option<String> {
     fenced_tabs().lock().unwrap_or_else(|e| e.into_inner()).get(tab_id).map(|t| t.scope_id.clone())
 }
 
-/// A one-shot command inside the fence of `scope_id`, for work Eldrun runs on
+/// A one-shot command inside the fence of `scope_id`, for work Tabtivity runs on
 /// a fenced tab's behalf (an agent-requested push's `pre-push` preflight,
 /// `services::git_push_mcp`). Built from the same primitives as the tab's own
 /// boundary — project and box roots read-write, the allowlist read-only, the
@@ -1762,7 +1762,7 @@ pub enum LiveFence {
 pub struct ProcView {
     pub argv0: String,
     pub argv1: Option<String>,
-    /// Whether it runs in Eldrun's own mount namespace. bubblewrap always
+    /// Whether it runs in Tabtivity's own mount namespace. bubblewrap always
     /// unshares it, so a fenced agent never does.
     pub host_ns: bool,
 }
@@ -1798,7 +1798,7 @@ pub fn classify_live(agent_cmd: &str, procs: &[ProcView]) -> LiveFence {
 }
 
 /// Parse `tmux list-panes -a -F '#{session_name}\t#{pane_pid}'`. A session
-/// with several panes keeps its first, which is the one Eldrun created.
+/// with several panes keeps its first, which is the one Tabtivity created.
 pub fn parse_tmux_pane_pids(out: &str) -> HashMap<String, u32> {
     let mut panes = HashMap::new();
     for line in out.lines() {

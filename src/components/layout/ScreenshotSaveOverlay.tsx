@@ -20,11 +20,11 @@ import { ErrorNote } from "../common/ErrorNote";
  * routinely have public git remotes: a screen grab holds whatever was on the
  * screen — another project's window, mail, a token in a terminal — and a
  * `git add -A` publishes it. So the shot waits in a staging area outside every
- * project tree until this overlay is answered, and `eldrun-screenshots/` is in
+ * project tree until this overlay is answered, and `tabtivity-screenshots/` is in
  * the scaffold's `.gitignore` defaults — and the backend ensures that line
  * before it writes — so even a saved shot is ignored by default.
  *
- * The folder is `eldrun-`prefixed because the bare name is one a project itself
+ * The folder is `tabtivity-`prefixed because the bare name is one a project itself
  * may own: ignoring a repo's own `screenshots/` of documentation images would
  * hide the user's files from git.
  *

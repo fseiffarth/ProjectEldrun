@@ -277,7 +277,7 @@ pub fn prompts(state_dir: &Path, project_id: &str) -> Result<Vec<ProjectAgentPro
 
 // ── Transcript ──────────────────────────────────────────────────────────────
 
-/// The agents whose transcript Eldrun reads at all (`TRANSCRIPT_AGENTS`).
+/// The agents whose transcript Tabtivity reads at all (`TRANSCRIPT_AGENTS`).
 const TRANSCRIPT_AGENTS: &[&str] = &["claude", "codex", "opencode"];
 
 /// `agentTranscriptFor` off the tab record: the same two "not yet" answers

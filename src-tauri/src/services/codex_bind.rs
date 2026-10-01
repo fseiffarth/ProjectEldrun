@@ -1,5 +1,5 @@
 //! Hook-free Codex session binding — the fallback that keeps Codex tabs
-//! resumable when Codex won't run Eldrun's `SessionStart` hook.
+//! resumable when Codex won't run Tabtivity's `SessionStart` hook.
 //!
 //! Codex gates user-level hooks behind a one-time trust approval (`/hooks`), and
 //! an untrusted hook never fires — silently. Until the user trusts it, nothing
@@ -22,12 +22,12 @@
 //!   cannot both be assigned the same conversation, and once a tab's hook
 //!   records the conversation a sibling was only guessed into, that guess is
 //!   withdrawn — two tabs never keep one conversation.
-//! - A Codex started *outside* Eldrun in a tracked tab's cwd can be mis-claimed
+//! - A Codex started *outside* Tabtivity in a tracked tab's cwd can be mis-claimed
 //!   when that tab's `/clear` is being rebound.
 //!
 //! Remote (ssh) Codex tabs are out of scope: their rollouts live on the far
 //! host, so `commands::terminal::pty_spawn` never tracks them. Every local tab's
-//! Codex — fenced or containerized — lives in its scope's Eldrun-owned agent
+//! Codex — fenced or containerized — lives in its scope's Tabtivity-owned agent
 //! home (`services::agent_home`), so each tracked tab carries the sessions
 //! tree of its own scope and the poll walks one tree per scope.
 
@@ -81,7 +81,7 @@ pub struct RolloutMeta {
 
 /// One Codex tab the binder is following.
 struct Tracked {
-    /// `ELDRUN_TAB_UID` — the key `live_sessions/<uid>` is stored under.
+    /// `TABTIVITY_TAB_UID` — the key `live_sessions/<uid>` is stored under.
     uid: String,
     /// The tab's cwd, canonicalized where possible (matched against `meta.cwd`).
     cwd: PathBuf,

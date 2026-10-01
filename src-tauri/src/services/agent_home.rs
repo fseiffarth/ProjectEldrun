@@ -1,4 +1,4 @@
-//! Eldrun-owned agent homes: one persistent `$HOME` per scope.
+//! Tabtivity-owned agent homes: one persistent `$HOME` per scope.
 //!
 //! Every locally-run agent tab sees `<state_dir>/agent-homes/<scope>/` as its
 //! home directory instead of the user's (bound over `$HOME` by the Linux
@@ -7,7 +7,7 @@
 //! home, `host`, which no fence ever mounts. Homes are per scope rather than
 //! per CLI so that config written by an agent in one project (hooks, MCP
 //! servers, skills) can only ever run in that project; what the user wants in
-//! every project comes from the Eldrun-wide layer (`services::agent_global`),
+//! every project comes from the Tabtivity-wide layer (`services::agent_global`),
 //! which no agent can write. Each home holds the
 //! agent's own config, transcripts, session stores and trust answers; logins
 //! are not kept here but hard-linked in from the per-CLI store
@@ -95,8 +95,8 @@ pub struct PreparedHome {
 }
 
 /// Create (or reuse) the home of `scope_id` and bring it up to date: seeded
-/// once ([`seed_home`]), the Eldrun-wide config layer laid in
-/// (`services::agent_global`), Eldrun's session hooks registered, the shared logins
+/// once ([`seed_home`]), the Tabtivity-wide config layer laid in
+/// (`services::agent_global`), Tabtivity's session hooks registered, the shared logins
 /// linked in, the `.cache` mount point present. `roots` are the scope's
 /// writable roots, used only by the one-time transcript seeding. Called at
 /// every local agent spawn.
@@ -150,14 +150,14 @@ fn prepare_home_in(
         }
         let _ = HomeDir::open(home, ".cache");
     }
-    // The user's Eldrun-wide instructions, skills, hooks and MCP servers,
-    // before Eldrun's own hooks so a merge never displaces those.
+    // The user's Tabtivity-wide instructions, skills, hooks and MCP servers,
+    // before Tabtivity's own hooks so a merge never displaces those.
     if let Err(e) = crate::services::agent_global::apply_to_home(state_dir, home) {
         eprintln!("agent_home: apply the global agent config to {}: {e}", home.display());
     }
     crate::services::agent_session::register_hooks_in_home(home);
     // Copilot signs in through a keyring the fence hides: its home gets the
-    // plain-text token setting Eldrun's keeper collects from (`copilot_auth`).
+    // plain-text token setting Tabtivity's keeper collects from (`copilot_auth`).
     #[cfg(target_os = "linux")]
     let _ = crate::services::copilot_auth::prepare_home(scope_id);
     crate::services::agent_auth::link_into_home(state_dir, home);
@@ -169,7 +169,7 @@ fn prepare_home_in(
 
 /// One-time seeding of a new home:
 ///
-/// - the scope's existing Eldrun-kept Codex store (`codex-state/<key>`) and
+/// - the scope's existing Tabtivity-kept Codex store (`codex-state/<key>`) and
 ///   Copilot home (`copilot-home/<key>`) move in as `.codex` / `.copilot`, so
 ///   sessions those tabs had keep resuming;
 /// - the Claude transcripts of the scope's own roots are **copied** from the
@@ -180,7 +180,7 @@ fn prepare_home_in(
 ///   install and keeps the folder trust it already had.
 ///
 /// Instructions, skills, hooks and MCP entries of the user's home are not
-/// brought in here: they reach every home through the Eldrun-wide layer
+/// brought in here: they reach every home through the Tabtivity-wide layer
 /// (`services::agent_global`) once the user imports them there.
 fn seed_home(state_dir: &Path, home: &Path, scope_id: &str, roots: &[PathBuf], scope_state: bool) {
     let user_home = crate::paths::home_dir();

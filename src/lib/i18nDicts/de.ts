@@ -1000,6 +1000,7 @@ export const dict: Dict = {
   "nav.updates.title": "Aktualisierungen",
   "nav.updates.blurb": "Auf GitHub nach einem neueren {app} suchen und es installieren.",
   "updates.help": "{app} sieht auf der GitHub-Releases-Seite des Projekts nach — nur wenn du es anstößt. Heruntergeladen wird erst nach einem Klick, und der Neustart bleibt deine Sache.",
+  "brand.tagline": "Ein Tab für jedes Projekt. Ein Tab für alles darin.",
   "updates.installedVersion": "Installierte Version",
   "updates.checking": "Suche…",
   "updates.checkNow": "Jetzt suchen",

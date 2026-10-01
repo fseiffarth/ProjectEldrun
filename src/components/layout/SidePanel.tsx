@@ -115,7 +115,7 @@ function TerminalOutputRate({ ptyIds }: { ptyIds: readonly string[] }) {
   );
 }
 
-/** Debug-only: every Eldrun window's webview renderer and its resident size —
+/** Debug-only: every Tabtivity window's webview renderer and its resident size —
  * the number the memory watchdog reloads a window on, shown where the TTY meter
  * already is. Per window because that is the unit that leaks and the unit that
  * reloads: a 4.7 GB popout is invisible from the main window otherwise, and it
@@ -196,7 +196,7 @@ export function SidePanel({
   const scope = useTabsStore((s) => s.scope);
 
   const activeProject = projects.find((p) => p.id === activeId) ?? null;
-  // The root scope gets the same panel, rooted at `~/eldrun/root` — the app's
+  // The root scope gets the same panel, rooted at `~/tabtivity/root` — the app's
   // unfiled/scratch area, for data that is only being looked at or has no project
   // to belong to yet. Deliberately keyed off the SCOPE and not merely "no active
   // project": a box scope also has none, and its multi-root view must keep its
@@ -461,7 +461,7 @@ export function SidePanel({
       // rows, the tree's entries) carried into the next project — a path from
       // one project resolved against another's root. Identity is the project,
       // so a switch is a remount. With no project it is the scope — root and a
-      // box are two different roots (`~/eldrun/root` and a multi-root view), and
+      // box are two different roots (`~/tabtivity/root` and a multi-root view), and
       // one shared key would have carried the tree between them.
       key={activeId ?? scope}
       scope={scope}

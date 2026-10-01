@@ -1,9 +1,9 @@
 /**
  * The one-click fix for Codex's hook trust gate.
  *
- * Codex refuses to run Eldrun's SessionStart hook until the user enables it in
+ * Codex refuses to run Tabtivity's SessionStart hook until the user enables it in
  * Codex's own `/hooks` list, and until then Codex tabs resume off a heuristic
- * fallback rather than the exact recorded session. Per Eldrun's install-via-tab
+ * fallback rather than the exact recorded session. Per Tabtivity's install-via-tab
  * policy, the remedy must be a click that *opens Codex on that list* — never a
  * command handed to the user to run themselves. See lib/agents/codexHooks.ts.
  */

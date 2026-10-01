@@ -2,7 +2,7 @@
  * What the user typed into an agent's input box, followed from the keystrokes
  * alone — the prompt strip's CLI-independent source (`stores/agents/promptTrail`).
  *
- * Same stance as `promptCount` and `typedClear`: Eldrun sees only the bytes
+ * Same stance as `promptCount` and `typedClear`: Tabtivity sees only the bytes
  * going into the PTY, never the TUI's input box, and reads no CLI's private
  * files for this. So the line is edited here as a plain line editor would:
  * printable text and pastes insert at a cursor, Backspace/Delete remove,

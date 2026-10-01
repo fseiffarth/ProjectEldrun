@@ -300,7 +300,7 @@ interface ClosedAgentTabRow { id: string; label: string; agent: string; closed_a
 /** One image the desktop offers the phone's composer — an opaque id and a
  * folder label, never a path (`services::desktop_images`). */
 interface DesktopImage { id: string; name: string; source: string; size?: number; age_secs?: number; width?: number; height?: number }
-/** A file that landed in the project's `.eldrun/inbox/`: what the phone's own
+/** A file that landed in the project's `.tabtivity/inbox/`: what the phone's own
  * upload gets back, so the two ways of filling the inbox read alike. */
 interface InboxAttachment { name: string; reference: string; size: number }
 
@@ -333,7 +333,7 @@ async function agentChoices(): Promise<CatalogChoice[]> {
       public: {
         id: await invoke<string>("mobile_opaque_id", { domain: "agent", value: item.cmd }),
         label: item.label,
-        // Always empty: Eldrun no longer launches an agent into a permission
+        // Always empty: Tabtivity no longer launches an agent into a permission
         // mode, so there is no launch mode for the phone to pick. The phone can
         // still change the mode of a *running* session, which it does the way a
         // person would — pressing Shift+Tab and reading the TUI's own status
@@ -687,7 +687,7 @@ function tabPromptRows(projectId: string, tab: TabEntry): AgentTabPrompt[] {
   const ptyId = `${projectId}:${tab.key}`;
   const recent = models.recentByTab[ptyId] ?? [];
   // An agent whose transcript is not read (OpenCode, Gemini, …) is known to
-  // have been asked what Eldrun itself sent it: the composers here and on the
+  // have been asked what Tabtivity itself sent it: the composers here and on the
   // phone and the schedules all record into the prompt history.
   const sent = historyPromptsOf(projectId, tab);
   // Last, the prompt off the pane's own screen (`lib/agents/prompt/echo`); it
@@ -969,7 +969,7 @@ async function localChoices(scope: MobileScope): Promise<{ model: string; ready:
 }
 
 /** The agents the phone can open a sign-in tab for, each with the state of
- * its shared login where Eldrun keeps one (`services::agent_auth`). Every
+ * its shared login where Tabtivity keeps one (`services::agent_auth`). Every
  * built-in qualifies: one without a login command signs in as it starts. */
 async function signInOptions(): Promise<MobileSignInOption[]> {
   // A login store that cannot be read leaves the states unknown, never the
@@ -2176,7 +2176,7 @@ const TRANSCRIPT_AGENTS = new Set(["claude", "codex", "opencode"]);
  * transcript records it, read by the backend (`agent_tab_transcript`,
  * `services::agent_transcript`) for the tab's launch id — the same resolution
  * the Agents view's model tag and last-prompt line use, live id first. A tab
- * with no session id (an agent Eldrun does not resume) has no transcript to
+ * with no session id (an agent Tabtivity does not resume) has no transcript to
  * name, and says so rather than answering with somebody else's. `subagent`
  * is the handle on one of its `agent` entries, read instead.
  */
@@ -2205,7 +2205,7 @@ async function agentTranscriptFor(
   const transcript = await invoke<MobileAgentTranscript>("agent_tab_transcript", {
     agent: tab.cmd,
     projectId: scope.id,
-    // OpenCode records no session id Eldrun can follow; its session is the
+    // OpenCode records no session id Tabtivity can follow; its session is the
     // newest one of the folder the tab runs in — for a tab opened fresh rather
     // than restored with `--continue`, the newest one begun since it launched,
     // so a new tab is a new chat and not the folder's last conversation.

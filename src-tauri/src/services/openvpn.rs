@@ -1,17 +1,17 @@
 //! OpenVPN tunnel lifecycle for remote (SSH) projects.
 //!
 //! Some remote hosts are only reachable through a VPN. When a project carries an
-//! `OpenVpnSpec` (a `.ovpn` config path), Eldrun brings the tunnel up *before*
+//! `OpenVpnSpec` (a `.ovpn` config path), Tabtivity brings the tunnel up *before*
 //! the sshfs mount / ssh sessions and tears it down at app exit.
 //!
 //! OpenVPN needs root to create the tun device and adjust routing, so it is
 //! launched via `pkexec` (the user authenticates through the system polkit
-//! agent) — that local password is the system's to collect, never Eldrun's.
+//! agent) — that local password is the system's to collect, never Tabtivity's.
 //!
 //! **That prompt is paid once, on connect.** Stopping the tunnel used to cost a
 //! second one — the daemon is root-owned, so `kill` had to be `pkexec kill` — which
 //! is one password too many and landed worst on the app-close path. Every tunnel
-//! Eldrun starts now carries a `--management` socket instead, and teardown asks the
+//! Tabtivity starts now carries a `--management` socket instead, and teardown asks the
 //! daemon to signal *itself* over it. See the "management interface" section below
 //! for the endpoint, its access control, and why every caller still falls back to
 //! the elevated kill.
@@ -80,13 +80,13 @@ fn registry() -> &'static Mutex<HashMap<String, VpnProc>> {
 
 /// Registry of **interactive** tunnels (`connections_headless: false`), keyed by
 /// config path → the pidfile OpenVPN writes. Value is a pidfile rather than a
-/// `Child` because Eldrun does not spawn these: they run as `pkexec openvpn` (or
+/// `Child` because Tabtivity does not spawn these: they run as `pkexec openvpn` (or
 /// `sudo openvpn`) inside a *terminal tab*, typed into by the user, so there is no
 /// child handle to hold — only the pid the daemon records.
 ///
 /// Without this, an interactive tunnel was invisible and unkillable: absent from
 /// [`registry`], it could not be seen by [`is_connected`] / [`active_configs`], nor
-/// killed by [`disconnect`] / [`disconnect_all`] — so it **outlived Eldrun with the
+/// killed by [`disconnect`] / [`disconnect_all`] — so it **outlived Tabtivity with the
 /// machine's routing still changed**. [`interactive_connect_command`] now appends a
 /// `--writepid` we own and registers it here, which closes all four gaps at once.
 ///
@@ -228,11 +228,11 @@ fn mark_signalled(pid: i32) {
 /// prompt) once already during this run. [`disconnect_checked`] is the one caller
 /// that asks — on the app-close path, while the window is still on screen — and it
 /// is meant to ask exactly once: a "no" there means the user has already decided,
-/// not that Eldrun should try again the moment the window is gone. Every later
+/// not that Tabtivity should try again the moment the window is gone. Every later
 /// best-effort pass ([`disconnect_all`], run from `RunEvent::Exit` with no window
 /// left to hold a polkit dialog) checks this set and leaves a declined tunnel
 /// running rather than re-prompting — which is what used to raise a parentless
-/// pkexec dialog after Eldrun had already vanished.
+/// pkexec dialog after Tabtivity had already vanished.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn declined_configs() -> &'static Mutex<std::collections::HashSet<String>> {
     static SET: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
@@ -335,7 +335,7 @@ fn configs_dir() -> PathBuf {
     runtime_dir().join("configs")
 }
 
-/// Copy a selected `.ovpn` config into Eldrun's storage and return the stored
+/// Copy a selected `.ovpn` config into Tabtivity's storage and return the stored
 /// absolute path, so the project's config survives the original being moved or
 /// deleted. Idempotent: a `src` already inside the configs dir is returned
 /// unchanged. The stored copy is owner-only (0600) since configs may inline
@@ -363,7 +363,7 @@ pub fn store_config(src: &str) -> Result<String, String> {
     Ok(dest.to_string_lossy().into_owned())
 }
 
-/// A previously-used `.ovpn` config copied into Eldrun's store, offered for
+/// A previously-used `.ovpn` config copied into Tabtivity's store, offered for
 /// reuse so a config need only be browsed for once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StoredConfig {
@@ -373,7 +373,7 @@ pub struct StoredConfig {
     pub name: String,
 }
 
-/// List the `.ovpn` configs Eldrun has previously stored, newest first (by file
+/// List the `.ovpn` configs Tabtivity has previously stored, newest first (by file
 /// mtime). Every config passed through [`store_config`] lands here, so the dir
 /// doubles as the "recently used" history. Returns empty if nothing is stored.
 pub fn list_configs() -> Vec<StoredConfig> {
@@ -407,7 +407,7 @@ pub fn list_configs() -> Vec<StoredConfig> {
     items.into_iter().map(|(_, c)| c).collect()
 }
 
-/// Remove a stored `.ovpn` config from Eldrun's store. Deletes only Eldrun's
+/// Remove a stored `.ovpn` config from Tabtivity's store. Deletes only Tabtivity's
 /// copy — the path must be inside [`configs_dir`], so the user's original file
 /// is never touched. Refused while the config's tunnel is up: the row offering
 /// removal should be a dead tunnel's, and a live one must be disconnected
@@ -443,7 +443,7 @@ fn display_name(file_name: &str) -> String {
 
 /// Build a ready-to-run shell command string that brings up the OpenVPN tunnel
 /// for `config` **interactively**, so the encrypted-key passphrase is typed
-/// directly into a visible terminal (no `--askpass` temp file, nothing for Eldrun
+/// directly into a visible terminal (no `--askpass` temp file, nothing for Tabtivity
 /// to handle). Typed into a root-scope shell tab (see the frontend
 /// `openConnectionInRoot`) when headless connections are turned off.
 ///
@@ -455,7 +455,7 @@ fn display_name(file_name: &str) -> String {
 ///
 /// **Side effect (deliberate):** every variant appends `--writepid <pidfile>` and
 /// registers that pidfile in [`interactive_registry`] via [`arm_interactive`]. The
-/// tunnel this command starts is not Eldrun's child, so the pid it records is the
+/// tunnel this command starts is not Tabtivity's child, so the pid it records is the
 /// *only* handle on a root process that is rerouting the whole machine. Without it,
 /// the tunnel is invisible to [`is_connected`] / [`active_configs`] and unkillable
 /// by [`disconnect`] / [`disconnect_all`] — it outlives the app with the routing
@@ -656,7 +656,7 @@ pub fn openvpn_args(
         // so logging must be deterministic no matter what the config says: a
         // config's `mute N` suppresses consecutive same-category lines — the
         // marker follows a burst of route additions, so it was exactly the line
-        // a `mute 16` swallowed, and Eldrun then "timed out" on (and killed) a
+        // a `mute 16` swallowed, and Tabtivity then "timed out" on (and killed) a
         // tunnel that was up. `verb 0` would hide the marker the same way.
         // Command-line options are applied after `--config`, so these override.
         "--verb".to_string(),
@@ -691,7 +691,7 @@ pub fn config_requires_userpass(config: &str) -> bool {
 
 /// Whether `config` declares its own `management` socket. Such a config is left
 /// **alone**: OpenVPN rejects `--management` given twice, and even where it did not,
-/// the socket would be on terms Eldrun does not know (its own port, and a password
+/// the socket would be on terms Tabtivity does not know (its own port, and a password
 /// file it cannot read). Those tunnels simply keep the elevated teardown — the one
 /// place the second password prompt survives, and the reason every management caller
 /// treats the endpoint as optional.
@@ -849,7 +849,7 @@ pub fn explain_openvpn_error(log: &str) -> Option<String> {
     // `TLS key negotiation failed` window, takes `SIGUSR1[soft,tls-error]`, and
     // restarts — so what the user sees is a tunnel retrying forever and a log
     // whose loudest line ("check your network connectivity") points at the one
-    // thing that is fine. The warning is many screens above by then, and Eldrun's
+    // thing that is fine. The warning is many screens above by then, and Tabtivity's
     // own tail may not even reach back to it, which is exactly why this is worth
     // naming rather than leaving to be read.
     if s.contains("your certificate has expired") {
@@ -891,7 +891,7 @@ pub fn explain_openvpn_error(log: &str) -> Option<String> {
     }
 
     // Elevation: the polkit / macOS admin prompt was dismissed or unavailable. No
-    // credential the user types into Eldrun can fix this one.
+    // credential the user types into Tabtivity can fix this one.
     if s.contains("authorization was declined")
         || s.contains("request dismissed")
         || s.contains("not authorized")
@@ -927,7 +927,7 @@ pub fn explain_openvpn_error(log: &str) -> Option<String> {
             "The VPN server refused the connection — check the config's port/protocol.".to_string(),
         );
     }
-    // #868: Eldrun always passes `--script-security 1`, so a config whose `up`/
+    // #868: Tabtivity always passes `--script-security 1`, so a config whose `up`/
     // `down` script is required (commonly `update-resolv-conf`) stops at the
     // script. Say so — otherwise it reads like a network failure.
     if s.contains("may not be called unless '--script-security 2'") {
@@ -969,7 +969,7 @@ fn safe_stem(config: &str) -> String {
 
 /// Write `password` to an owner-only (0600) askpass file and return its path.
 /// On Windows the 0600 mode is skipped (no `mode()`); the file lives under the
-/// per-user `%APPDATA%\eldrun\openvpn` dir, which is already user-scoped, and is
+/// per-user `%APPDATA%\tabtivity\openvpn` dir, which is already user-scoped, and is
 /// deleted as soon as OpenVPN has read it.
 fn write_askpass(stem: &str, password: &str) -> Result<PathBuf, String> {
     let dir = runtime_dir();
@@ -1017,11 +1017,11 @@ fn write_userpass(stem: &str, username: &str, password: &str) -> Result<PathBuf,
 // cost a *second* one, because the daemon is root-owned and a plain `kill` gets
 // EPERM — so teardown had to be `pkexec kill`, and polkit authenticates per
 // invocation. That is one password too many. The user already authorized this exact
-// tunnel; re-authorizing to stop the process Eldrun itself started is pure friction,
+// tunnel; re-authorizing to stop the process Tabtivity itself started is pure friction,
 // and it is worst on the app-close path, where it lands as a prompt in front of
 // someone who has already decided to quit.
 //
-// OpenVPN's own management interface removes it. Eldrun controls the argv for every
+// OpenVPN's own management interface removes it. Tabtivity controls the argv for every
 // tunnel it starts — the headless one AND the one typed into a terminal tab — so
 // each connect now appends `--management 127.0.0.1 <port> <pwfile>`, and teardown
 // simply opens that loopback socket and sends `signal SIGTERM`. **The daemon signals
@@ -1029,12 +1029,12 @@ fn write_userpass(stem: &str, username: &str, password: &str) -> Result<PathBuf,
 //
 // The endpoint is recorded on disk beside the pidfile (`{stem}.mgmt` = port,
 // `{stem}.mgmt.pw` = password) rather than only in memory, for the same reason the
-// pidfile is: a tunnel started by a previous Eldrun run must still be stoppable
+// pidfile is: a tunnel started by a previous Tabtivity run must still be stoppable
 // after a restart.
 //
 // Access control: the socket is loopback-only and gated by a 32-byte CSPRNG password
 // in an owner-only (0600) file. Another process running as this user could read it
-// and stop the tunnel — but that process could equally kill Eldrun outright or read
+// and stop the tunnel — but that process could equally kill Tabtivity outright or read
 // its state dir, so this grants it nothing it did not already have.
 //
 // Every caller treats management as an **optimization, never a guarantee**: a
@@ -1058,7 +1058,7 @@ fn management_portfile(config: &str) -> PathBuf {
 }
 
 /// The password file OpenVPN reads to guard its management socket — and that
-/// Eldrun reads back to authenticate against it.
+/// Tabtivity reads back to authenticate against it.
 #[cfg(any(unix, test))]
 fn management_pwfile(config: &str) -> PathBuf {
     runtime_dir().join(format!("{}.mgmt.pw", safe_stem(config)))
@@ -1353,22 +1353,22 @@ pub fn active_configs() -> Vec<String> {
     keys.into_iter().filter(|c| is_connected(c)).collect()
 }
 
-/// Re-adopt tunnels a **previous run of Eldrun** (or a crash) left running, so the
+/// Re-adopt tunnels a **previous run of Tabtivity** (or a crash) left running, so the
 /// VPN lamp reflects the machine's *actual* routing at launch instead of a blank
 /// slate.
 ///
 /// Every live-tunnel registry — [`registry`] (headless), [`interactive_registry`],
 /// and macOS's `mac_registry` — is **in-memory only**. Nothing rebuilds them from
-/// disk. So after a full restart Eldrun has no record of a tunnel it started before,
+/// disk. So after a full restart Tabtivity has no record of a tunnel it started before,
 /// yet the OpenVPN daemon runs as **root** and survives the app dying (a renderer
 /// SIGBUS that takes the process down, an OOM kill, a refused polkit prompt at quit,
 /// a plain crash): it is reparented to init and keeps rerouting the whole machine.
 /// The machines then still connect over SSH — exactly the "lamp is grey but the
 /// machines are up" symptom — because the routing the tunnel installed is genuinely
-/// still there; only Eldrun's memory of it is gone.
+/// still there; only Tabtivity's memory of it is gone.
 ///
 /// This closes that gap. For every **stored** config it looks for the pidfiles
-/// Eldrun writes to [`runtime_dir`] — `{stem}.pid` (headless) and
+/// Tabtivity writes to [`runtime_dir`] — `{stem}.pid` (headless) and
 /// `{stem}.interactive.pid` (interactive) — and, when the recorded pid is still
 /// alive, re-registers the tunnel; a pidfile whose pid is dead is a stale leftover
 /// and is removed. Recovered tunnels are seated in [`interactive_registry`]
@@ -1378,9 +1378,9 @@ pub fn active_configs() -> Vec<String> {
 /// one, and it makes the recovered tunnel visible ([`is_connected`]/[`active_configs`])
 /// and killable ([`disconnect`]/[`disconnect_all`]) just like any other.
 ///
-/// Only tunnels for configs Eldrun *stored* are recoverable: a tunnel brought up
-/// entirely outside Eldrun (NetworkManager, systemd, a manual `sudo openvpn`) has no
-/// Eldrun-owned pidfile to map back to a config, so it is out of scope here.
+/// Only tunnels for configs Tabtivity *stored* are recoverable: a tunnel brought up
+/// entirely outside Tabtivity (NetworkManager, systemd, a manual `sudo openvpn`) has no
+/// Tabtivity-owned pidfile to map back to a config, so it is out of scope here.
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub fn adopt_orphans() {
     for cfg in list_configs() {
@@ -1859,20 +1859,20 @@ pub fn disconnect_all_checked() -> Result<(), String> {
 // the spawned pid on success, an error code + text otherwise. The service also
 // ties the tunnel to the client: when the pipe drops or the process exits, it
 // reverts the routes/DNS it applied (its undo lists) — a service-started
-// tunnel can never outlive Eldrun with the machine's routing still changed.
+// tunnel can never outlive Tabtivity with the machine's routing still changed.
 //
 // `connect_streaming` therefore tries the service FIRST. The service owns the
 // spawned process's stdio, so the handshake is followed by tailing a `--log`
 // file (`wait_for_ready_logfile`, shared with macOS). Authorization caveat: a
 // user who is neither elevated nor a member of the "OpenVPN Administrators"
 // local group may only use configs inside the machine config directory —
-// Eldrun's stored configs live under %APPDATA%, so [`explain_service_refusal`]
+// Tabtivity's stored configs live under %APPDATA%, so [`explain_service_refusal`]
 // turns that refusal into the one-time `net localgroup` fix.
 //
 // Only when the service pipe does not exist (service not installed / not
 // running) does the old path run: spawn `openvpn.exe` directly with the same
 // `--askpass`-file credential flow as Linux, parsing stdout for the ready
-// marker — which only works when Eldrun itself is elevated (creating the
+// marker — which only works when Tabtivity itself is elevated (creating the
 // TAP/Wintun adapter needs Administrator rights), and the error messages say so.
 
 /// Quote one argument for a Windows command line so `CommandLineToArgvW` —
@@ -1975,7 +1975,7 @@ pub fn svc_response_pid(resp: &SvcResponse) -> Option<u32> {
 }
 
 /// Turn a service refusal into an actionable message. The refusal a non-admin
-/// actually hits is the authorization check (Eldrun's stored configs are not
+/// actually hits is the authorization check (Tabtivity's stored configs are not
 /// inside the machine config directory), and the fix is the one-time group
 /// membership the official OpenVPN GUI also sets up — so say exactly that,
 /// keeping the raw service text for everything else. The group's member list
@@ -2311,7 +2311,7 @@ pub fn connect_streaming(
     };
 
     // Service first: its verdict is final. Only a missing service (no pipe)
-    // falls through to the direct spawn, which needs an elevated Eldrun.
+    // falls through to the direct spawn, which needs an elevated Tabtivity.
     match svc_connect_streaming(config, &stem, &args, &pidfile, &on_line) {
         SvcAttempt::Done(result) => {
             remove_credfiles();
@@ -2742,10 +2742,10 @@ pub fn disconnect_all_checked() -> Result<(), String> {
 
 // ── The VPN gate for network accounts ───────────────────────────────────────
 
-/// True while at least one tunnel Eldrun knows about is up — headless,
+/// True while at least one tunnel Tabtivity knows about is up — headless,
 /// service-started, or typed into a terminal tab. This is the whole definition
 /// of "VPN on" for a VPN-gated mail or CalDAV account, and its limit is worth
-/// stating: a tunnel brought up outside Eldrun (NetworkManager, WireGuard, a
+/// stating: a tunnel brought up outside Tabtivity (NetworkManager, WireGuard, a
 /// hand-run `openvpn`) is invisible here, so an account gated on it never
 /// connects. The account dialogs say so.
 pub fn any_tunnel_up() -> bool {
@@ -2829,7 +2829,7 @@ mod tests {
         clear_management(config);
     }
 
-    /// The interactive command must carry a `--writepid` Eldrun chose, and claim it.
+    /// The interactive command must carry a `--writepid` Tabtivity chose, and claim it.
     /// This is the whole fix for #83: without the pid, a root tunnel started in a
     /// terminal tab is invisible to `is_connected`/`active_configs` and unkillable by
     /// `disconnect`/`disconnect_all` — it outlives the app still owning the routing.
@@ -3344,7 +3344,7 @@ mod tests {
     /// "Initialization Sequence Completed" marker, so the argv must pin the
     /// logging knobs a config could otherwise sabotage it with: a `mute 16`
     /// (as shipped in real configs) suppresses the marker — it follows a burst
-    /// of same-category route-addition lines — and Eldrun then reported
+    /// of same-category route-addition lines — and Tabtivity then reported
     /// "timed out" on, and killed, a tunnel that was actually up. `verb 0`
     /// hides the marker outright. Both are overridden because command-line
     /// options are applied after `--config`.
@@ -3645,7 +3645,7 @@ mod tests {
 
     #[test]
     fn remove_config_refuses_paths_outside_the_store() {
-        // It deletes Eldrun's copy only — pointed at anything else (the user's
+        // It deletes Tabtivity's copy only — pointed at anything else (the user's
         // original .ovpn, or worse), it must refuse before touching the fs.
         let err = remove_config("/home/u/office.ovpn").unwrap_err();
         assert!(err.contains("not a stored"), "{err}");

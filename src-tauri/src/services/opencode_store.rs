@@ -49,7 +49,7 @@ use crate::services::prompt_blame::epoch_ms_to_iso;
 const MESSAGE_TAIL: i64 = 2000;
 
 /// The scope's OpenCode database: `.local/share/opencode/opencode.db` of its
-/// Eldrun-owned agent home — where OpenCode's `xdg-basedir` puts it under the
+/// Tabtivity-owned agent home — where OpenCode's `xdg-basedir` puts it under the
 /// `$HOME` the tab runs with.
 pub fn db_path_for(scope_id: Option<&str>) -> PathBuf {
     crate::services::agent_home::scope_home(scope_id)

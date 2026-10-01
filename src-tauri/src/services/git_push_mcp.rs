@@ -3,13 +3,13 @@
 //!
 //! A fenced agent tab can commit but cannot push: the project's access token
 //! lives in the keyring, and nothing readable from inside the fence may hold
-//! it. So the agent *asks*, and Eldrun pushes from outside the fence under
+//! it. So the agent *asks*, and Tabtivity pushes from outside the fence under
 //! rules read from the trusted `projects.json` entry — never from anything in
 //! the project folder. Two phases keep project code and the token apart:
 //!
 //! 1. **Preflight, fenced, no token.** The repo's `pre-push` hook runs inside
 //!    the tab's own fence with git's normal arguments and stdin line, plus
-//!    `ELDRUN_PUSH_PREFLIGHT=1`. Its commits (a version bump) are picked up.
+//!    `TABTIVITY_PUSH_PREFLIGHT=1`. Its commits (a version bump) are picked up.
 //! 2. **Transport, host, hooks off.** One explicit refspec to one pinned URL
 //!    through `commands::git::push_transport`, the token offered only to the
 //!    project's token origins. No repo hook runs while the token is in `env`.

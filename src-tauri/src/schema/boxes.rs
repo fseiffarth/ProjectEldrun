@@ -22,7 +22,7 @@ pub struct BoxRelation {
     pub extra: HashMap<String, Value>,
 }
 
-/// One entry in `~/.local/share/eldrun/boxes.json`.
+/// One entry in `~/.local/share/tabtivity/boxes.json`.
 ///
 /// Named `ProjectBox` (not `Box`) to avoid shadowing `std::boxed::Box`; the file
 /// and JSON name stay `boxes`. Back-compat: only `id`/`name` are required, so an
@@ -41,7 +41,7 @@ pub struct ProjectBox {
     #[serde(default)]
     pub position: i64,
     // ── #41 workspace metadata (Phase 2: stored; Phase 3/4: surfaced) ──
-    /// Absolute path to the box folder under `~/eldrun/boxes/<name>/`. Filled in
+    /// Absolute path to the box folder under `~/tabtivity/boxes/<name>/`. Filled in
     /// lazily on first box open (Phase 2). Absent for grouping-only boxes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
@@ -49,12 +49,12 @@ pub struct ProjectBox {
     /// Phase 4: surfaced + auto-detected).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<BoxRelation>,
-    /// Eldrun Mobile reach (#31aa): whether this box's `box:<id>` scope is
+    /// Tabtivity Mobile reach (#31aa): whether this box's `box:<id>` scope is
     /// listed on a paired phone. Off by default and absent from disk while off,
-    /// exactly like a project's `eldrun_mobile_access` — the sidecar reads this
+    /// exactly like a project's `tabtivity_mobile_access` — the sidecar reads this
     /// file directly, so the bit lives here and nowhere else.
     // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
-    #[serde(default, rename = "tabtivity_mobile_access", alias = "eldrun_mobile_access", skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, rename = "tabtivity_mobile_access", skip_serializing_if = "std::ops::Not::not")]
     pub app_mobile_access: bool,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,

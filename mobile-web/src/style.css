@@ -1116,7 +1116,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 /* The pill the sheets' headings wear (`.option-sheet h2 small`). */
 .question-recommended { margin-left:6px; color:#8fb8ff; font-size:.62rem; font-style:normal; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
 /* Launch curtain — the desktop app's `.startup-splash` ported (see base.css):
-   the Eldrun mark inside two counter-rotating orbit rings, over the brand name,
+   the Tabtivity mark inside two counter-rotating orbit rings, over the brand name,
    the state, and a sweeping progress hairline. The colours are literals rather
    than tokens because this bundle has no theme layer; they are the desktop
    accent (#6c8dff → the mobile purple) and the mark's own gold. */

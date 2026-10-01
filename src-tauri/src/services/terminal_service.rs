@@ -77,7 +77,7 @@ fn write_terminal_session(
     allow_clear: bool,
 ) -> Result<(), String> {
     // An empty layout is DESTRUCTIVE — it drops `tab_layout`/`tab_groups` from
-    // project.json *and* overwrites the `.eldrun` mirror with an empty one, in a
+    // project.json *and* overwrites the `.tabtivity` mirror with an empty one, in a
     // single call. The two are written from the same array, so the mirror is not a
     // backup: one empty save takes both copies, and a persisted agent tab's
     // `sessionId` is the only handle on its conversation.
@@ -147,7 +147,7 @@ fn write_terminal_session(
     Ok(())
 }
 
-/// Write the project-tree copy of the layout: `<project>/.eldrun/sessions/
+/// Write the project-tree copy of the layout: `<project>/.tabtivity/sessions/
 /// terminals.json`.
 ///
 /// **Export-only.** Nothing reads this file on its own — not on relaunch, not on
@@ -182,7 +182,7 @@ fn write_export_copy(local_file: &str, session: &TerminalSession) {
 /// the state dir. **The only automatic read of layout state there is.**
 ///
 /// It reads `<state_dir>/sessions/<key>/terminals.json` and nothing else — in
-/// particular not `<project>/.eldrun/sessions/terminals.json` and not
+/// particular not `<project>/.tabtivity/sessions/terminals.json` and not
 /// `project.json`, both of which sit inside the project container's writable rw
 /// mount and inside any repository that gets cloned or imported as a project.
 /// That was the escape: the frontend rehydrates `cmd` / `resumeArgs` / `env` /
@@ -399,7 +399,7 @@ pub fn sanitize_tab_layout(
 }
 
 /// Drop a persisted `localLaunch` unless it is a local-model tab's launch line
-/// Eldrun itself builds for the driver and model it names
+/// Tabtivity itself builds for the driver and model it names
 /// (`commands::ollama::local_launch_line_ok`). The field is what lets such a
 /// tab restore at all — the frontend relaunches it with `localLaunch.args` —
 /// so, like `resumeArgs`, it is an argv for a host-bound agent CLI and is never
@@ -415,7 +415,7 @@ fn keep_valid_local_launch(tab: &mut TabEntry) {
 }
 
 /// Whether a persisted `localLaunch` value (`{driver, model, args}`) is a line
-/// Eldrun builds for `cmd`. Shared with the phone's catalog, which reads the
+/// Tabtivity builds for `cmd`. Shared with the phone's catalog, which reads the
 /// same file raw.
 pub(crate) fn local_launch_ok(launch: &Value, cmd: &str) -> bool {
     let (Some(driver), Some(model), Some(args)) = (
@@ -489,7 +489,7 @@ pub fn load_open_apps(project_id: &str) -> Vec<OpenApp> {
 // adopt). Both sanitize what they read before it is stored or returned.
 
 /// Read the project-tree export copy, or the legacy `project.json` fields if no
-/// export copy exists (Eldrun wrote both before the move).
+/// export copy exists (Tabtivity wrote both before the move).
 ///
 /// **Untrusted.** Every caller must sanitize.
 fn read_project_tree_session(local_file: &str) -> Option<TerminalSession> {
@@ -502,7 +502,7 @@ fn read_project_tree_session(local_file: &str) -> Option<TerminalSession> {
         }
     }
     // Legacy: the layout used to be duplicated into project.json itself, and a
-    // project last written by an older Eldrun may only have that copy.
+    // project last written by an older Tabtivity may only have that copy.
     let project: crate::schema::project::Project =
         storage::read_json(&PathBuf::from(local_file)).ok()?;
     let tab_layout = project.tab_layout.unwrap_or_default();
@@ -646,7 +646,7 @@ const SCHEDULE_TARGET_KEY: &str = "scheduleTargetId";
 /// persisted so it restores. Validated on every load; never adopted.
 const LOCAL_LAUNCH_KEY: &str = "localLaunch";
 
-/// `<project>/.eldrun/sessions/` — where the **export** copies of the session
+/// `<project>/.tabtivity/sessions/` — where the **export** copies of the session
 /// files live (and where `filetabs.json` / `layout.json` / `windows.json` still
 /// live outright; none of those is executable intent).
 pub fn app_sessions_dir(local_file: &str) -> Option<PathBuf> {

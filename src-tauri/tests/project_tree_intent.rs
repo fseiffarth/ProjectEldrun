@@ -1,7 +1,7 @@
 //! Tripwire: **nothing may read executable intent out of the project tree.**
 //!
 //! `docs/sandbox_hardening_plan.md` Phase 1d. The audit found the same bug twice
-//! for the same reason: Eldrun's own control files live inside the project
+//! for the same reason: Tabtivity's own control files live inside the project
 //! container's writable mount (and inside any repository that gets cloned or
 //! imported as a project), while the host reads them back as commands to run —
 //! `project.json`'s `open_apps` became a host-side `spawn_reaped` on every

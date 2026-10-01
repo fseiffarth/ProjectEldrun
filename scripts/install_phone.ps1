@@ -1,4 +1,4 @@
-# Eldrun Mobile phone-install handoff (Windows). The PowerShell twin of
+# Tabtivity Mobile phone-install handoff (Windows). The PowerShell twin of
 # install_phone.sh: verifies that Tailscale Serve maps the verified private
 # origin onto the configured loopback port, then prints the trusted URL and a
 # scannable QR code. It does not enable Mobile or change your Tailscale
@@ -65,4 +65,4 @@ if (Get-Command qrencode -ErrorAction SilentlyContinue) {
 } else {
   Write-Output 'Install qrencode (winget install qrencode, or scoop) to print a terminal QR code.'
 }
-Write-Output 'Then use Install app / Add to Home Screen and pair it from Eldrun Settings.'
+Write-Output 'Then use Install app / Add to Home Screen and pair it from Tabtivity Settings.'

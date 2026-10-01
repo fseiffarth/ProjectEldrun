@@ -147,7 +147,7 @@ export const useTimerStore = create<TimerStore>((set, get) => ({
     ]);
     // Reload committed secs from the backend so day-boundary crossings are
     // handled correctly (in-memory accumulation would carry yesterday's total
-    // into today once Eldrun runs past midnight).
+    // into today once Tabtivity runs past midnight).
     if (!s.paused) {
       const [newAppSecs, newProjSecs] = await Promise.all([
         invoke<number>("get_time_today", { projectId: APP_TIMER_ID }).catch(

@@ -48,7 +48,7 @@ export const FEATURED_AGENT_IDS = ["claude", "codex", "gemini"] as const;
 export type FeaturedAgentId = (typeof FEATURED_AGENT_IDS)[number];
 
 /** What the optional "sign in now" button runs in a terminal tab: each CLI's
- *  own first-run login (Eldrun does no agent login itself; the first agent tab
+ *  own first-run login (Tabtivity does no agent login itself; the first agent tab
  *  would ask the same). Interactive — a browser handoff or a pasted key — which
  *  is why it is a visible terminal and never a headless call. */
 export const AGENT_SIGN_IN_CMD: Record<FeaturedAgentId, string> = {

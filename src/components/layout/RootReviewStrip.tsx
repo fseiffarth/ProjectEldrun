@@ -97,7 +97,7 @@ const NONE_DRAFTS: ReturnType<typeof useMailStore.getState>["agentDrafts"] = [];
  * (`RootOverlay`), which is why it keeps its own heading and empty line — a
  * panel that opens on nothing must still say so.
  *
- * It is built out of what Eldrun already uses for a list of objects, and adds
+ * It is built out of what Tabtivity already uses for a list of objects, and adds
  * no surface of its own: the menu family's pinned accent title over a
  * `.menu-scroll-region` (the VPN/machines menus' shape), and inside it the
  * settings design system's object list — a `.settings-list` of

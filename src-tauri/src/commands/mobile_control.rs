@@ -81,7 +81,7 @@ pub fn mobile_opaque_id(domain: String, value: String) -> Result<String, String>
 // clipboard, which needs a display connection — and writes through the same
 // `inbox::store` a file sent from the phone goes through.
 
-/// The platform's screenshot and picture folders plus Eldrun's own screenshot
+/// The platform's screenshot and picture folders plus Tabtivity's own screenshot
 /// staging area, where a shot taken through the Screenshot app waits for its
 /// filing answer. Linux honours `user-dirs.dirs`, so a localized `~/Bilder`
 /// is found.
@@ -372,8 +372,8 @@ pub async fn mobile_host_status() -> MobileHostRuntimeStatus {
     }
 }
 
-/// The sidecar is the Eldrun binary itself, run with `--mobile-host`. A
-/// separate `eldrun-mobile-host` bin target used to exist, but it linked the
+/// The sidecar is the Tabtivity binary itself, run with `--mobile-host`. A
+/// separate `tabtivity-mobile-host` bin target used to exist, but it linked the
 /// whole `app_lib` anyway (same size, nothing gained) and Tauri's
 /// `universal-apple-darwin` build never lipo-merges secondary cargo binaries,
 /// which broke every macOS bundle at the copy step.
@@ -381,7 +381,7 @@ pub async fn mobile_host_status() -> MobileHostRuntimeStatus {
 /// On Linux that source is the magic link itself, not the path
 /// `std::env::current_exe()` resolves it to. The two differ exactly when the
 /// running image's path no longer holds it — a dev rebuild over
-/// `target/debug/eldrun`, a re-run of `package:dev`, an in-app update swapping
+/// `target/debug/tabtivity`, a re-run of `package:dev`, an in-app update swapping
 /// the AppImage — where the kernel appends ` (deleted)` and the resolved path
 /// opens as `ENOENT`. [`mobile_host_apply`] then fails at its copy step with
 /// `read mobile host: No such file or directory (os error 2)` *before* it
@@ -457,10 +457,10 @@ fn systemd_unit(binary: &Path, state_dir: &Path) -> Result<String, String> {
 ///
 /// The sidecar is versioned per directory so an install can never write over the
 /// executable a running host is executing (see [`install_mobile_binary`]) — but
-/// nothing removed the superseded ones, so every Eldrun version the user has
+/// nothing removed the superseded ones, so every Tabtivity version the user has
 /// ever enabled Mobile under left a full copy of the binary behind forever. On a
 /// packaged build that is ~40 MB apiece; in a dev session it is whatever
-/// `target/debug/eldrun` weighs, because [`mobile_binary_source`] is
+/// `target/debug/tabtivity` weighs, because [`mobile_binary_source`] is
 /// `current_exe` and a debug binary carries its DWARF — 700 MB each, three of
 /// them, 2.0 GB of the 3.3 GB state dir measured on 2026-09-01.
 ///
@@ -771,7 +771,7 @@ async fn enable_host_service(target: &Path, _config: &HostConfig) -> Result<(), 
 }
 
 /// The Mobile host's lifetime is the app's, and these two are the pair that
-/// make it so. The service manager still supervises the sidecar *while Eldrun
+/// make it so. The service manager still supervises the sidecar *while Tabtivity
 /// runs* (a Tailscale Serve verification failure exits non-zero and
 /// `Restart=on-failure` brings it back), but a host with no desktop behind it
 /// can create no tab and — since the clean quit now reaps every local tmux
@@ -1057,7 +1057,7 @@ mod tests {
     use std::path::Path;
 
     /// The install must read the running *image*, not a path that may no longer
-    /// name it: a rebuild or an update over a live Eldrun makes
+    /// name it: a rebuild or an update over a live Tabtivity makes
     /// `current_exe()` resolve to `… (deleted)`, and the reinstall behind
     /// Reconnect then dies at its copy step with `os error 2` before the
     /// service manager is asked for anything.

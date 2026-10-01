@@ -46,7 +46,7 @@ export function HeaderBar() {
       onMouseDown={handleDrag}
     >
       {/* The bar opens on the project strip itself: its leading box chip is the
-          leftmost thing in the window. Its Eldrun logo is the window's move
+          leftmost thing in the window. Its Tabtivity logo is the window's move
           handle (the ⠿ grip that stood ahead of it is gone; every empty
           stretch of the bar still drags too) and its ▾ opens the root/box
           list on hover. The clock moved to the far right, by the controls.

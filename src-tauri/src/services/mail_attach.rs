@@ -2,14 +2,14 @@
 //! Phase 1): `{project, path}` pairs resolved under the **same-roots rule** and
 //! read without following a link.
 //!
-//! Eldrun (the MCP process) is not fenced, so every path an agent names makes
-//! Eldrun read on the agent's behalf. What holds that to the tab's own view:
+//! Tabtivity (the MCP process) is not fenced, so every path an agent names makes
+//! Tabtivity read on the agent's behalf. What holds that to the tab's own view:
 //!
 //! - the caller's session recorded at spawn that its fence shows the projects
 //!   (`root_mcp::Session::projects_grant`) — checked by `root_mcp_mail`;
 //! - the roots are the ones a fenced tab *of that project* would get
 //!   ([`agent_fence::attach_roots`]), minus any at `/`, at or above `$HOME`, or
-//!   inside Eldrun's state (the fence masks those);
+//!   inside Tabtivity's state (the fence masks those);
 //! - the path is checked component by component before any I/O, and opened by
 //!   an `openat(O_NOFOLLOW)` walk from the root: a link at any component is
 //!   refused, and there is no window between a check and the read;
@@ -63,7 +63,7 @@ pub struct Resolved {
     pub bytes: Vec<u8>,
 }
 
-/// What resolution reads from: the trusted lists and where Eldrun's own
+/// What resolution reads from: the trusted lists and where Tabtivity's own
 /// state and the user's home are.
 pub struct Lists<'a> {
     pub projects: &'a ProjectsList,
@@ -73,7 +73,7 @@ pub struct Lists<'a> {
     /// The project paths the calling tab's fence exposed when it was spawned
     /// (`root_mcp::ProjectsGrant::Paths`); `None` for an unfenced tab, which
     /// already reads everything. A project added after the spawn is in
-    /// `projects.json` but not in the tab's sandbox, and Eldrun never reads
+    /// `projects.json` but not in the tab's sandbox, and Tabtivity never reads
     /// what the tab's fence hides.
     pub granted: Option<&'a [PathBuf]>,
 }
@@ -159,7 +159,7 @@ fn within_grant(granted: Option<&[PathBuf]>, root: &Path) -> bool {
 }
 
 /// Why a root is not attachable from at all: `/`, `$HOME` or an ancestor of it
-/// (the fence shows neither), or a place inside Eldrun's state (masked).
+/// (the fence shows neither), or a place inside Tabtivity's state (masked).
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn root_refusal(root: &Path, home: &Path, state_dir: &Path) -> Option<&'static str> {
     let forms: Vec<PathBuf> = [Some(root.to_path_buf()), root.canonicalize().ok()].into_iter().flatten().collect();

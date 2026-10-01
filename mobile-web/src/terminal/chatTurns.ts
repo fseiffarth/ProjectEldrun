@@ -191,7 +191,7 @@ function isInputBox(lines: readonly { text: string }[], index: number): boolean 
     // gemini-2.5-pro  25% used`), and their mode indicator sits *above* the
     // box where this never looks. Two *columns* carrying status means the row
     // is printed in columns, which an answer's sentence is not — counting
-    // fields instead scored `~/eldrun/projects/app (main)` two on its own and
+    // fields instead scored `~/tabtivity/projects/app (main)` two on its own and
     // handed the prompt above it to the agent.
     return isFooterRow(text) || statusColumns(text) >= 2;
   }

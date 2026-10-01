@@ -29,7 +29,7 @@ fn rust_bytes(bytes: &[u8]) -> String {
 /// the only thing that lets `live_pwa` refuse an overlay that is *older* than
 /// what it would shadow. Without it a stale `target/mobile-pwa/` left behind by
 /// an abandoned branch would keep serving itself to the phone after the user
-/// upgraded to a newer Eldrun — the exact staleness this whole mechanism exists
+/// upgraded to a newer Tabtivity — the exact staleness this whole mechanism exists
 /// to end, only harder to see.
 fn newest_mtime(dir: &Path) -> i64 {
     let Ok(entries) = fs::read_dir(dir) else {
@@ -78,7 +78,7 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<(String, Vec<u8>)>) {
 ///
 /// The phone can never request one, so they are not baked in. The only trigger
 /// for a dictionary load is `ensureDict(cachedLang())`, `cachedLang()` reads the
-/// `eldrun-lang` localStorage key, and that key is written only by
+/// `tabtivity-lang` localStorage key, and that key is written only by
 /// `applyLanguage` — desktop code the PWA never imports (it takes `useT` and
 /// `TranslationKey` from i18n, nothing else) — on the desktop webview's own
 /// origin, not the sidecar's. So on the phone the language is always `en`.
@@ -170,7 +170,7 @@ fn watch_frontend_dist() {
     );
 }
 
-/// Bake the commit this binary is compiled from in as `ELDRUN_BUILD_COMMIT`,
+/// Bake the commit this binary is compiled from in as `TABTIVITY_BUILD_COMMIT`,
 /// for the side panel's version footer. It is the backend's commit on purpose:
 /// the dev window's frontend hot-reloads and its vite server restarts on a
 /// config edit, but the binary is what the window was launched as. Reruns when

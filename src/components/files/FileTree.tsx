@@ -656,7 +656,7 @@ export function FileTree({
   // Same shared, persisted map the open-editor's Run/Debug toolbar reads/writes
   // (`FileViewerPane.tsx`'s `pyArgs`/`setPyArgs`) — keyed by absolute path in
   // global settings, not local component state, so it survives this tree
-  // unmounting (side-panel hide/close) and an Eldrun restart. Shell scripts
+  // unmounting (side-panel hide/close) and a Tabtivity restart. Shell scripts
   // (`.sh` & co.) share the map: it is keyed by path, and the name predates them.
   const runArgsByPath = useSettingsStore((s) => s.settings?.python_run_args ?? EMPTY_PY_ARGS);
   const setRunArgs = useCallback((path: string, v: string) => {
@@ -1381,7 +1381,7 @@ export function FileTree({
   // tree), so a remote-side edit wouldn't flip a file to amber until the user
   // re-lists — and the local-mirror view has no re-list button at all. Re-stat
   // the SELECTED files (cheap metadata over the pooled ControlMaster — NOT a
-  // tree re-list) whenever Eldrun regains focus and on a light interval, so a
+  // tree re-list) whenever Tabtivity regains focus and on a light interval, so a
   // remote-only divergence surfaces on its own shortly after it happens instead
   // of silently going stale. Gated on a live pool so a cold connection never
   // re-stats (which would report stale green); runs for both the remote-source
@@ -1406,7 +1406,7 @@ export function FileTree({
     const id = primaryIsHpc || fastMode
       ? undefined
       : window.setInterval(() => {
-          // Only tick while Eldrun is focused: a backgrounded window doesn't need
+          // Only tick while Tabtivity is focused: a backgrounded window doesn't need
           // to keep re-stat'ing the host every 15 s (the `focus` listener re-stats
           // on return anyway), which keeps an idle remote project off the wire.
           if (document.hasFocus()) refresh();
@@ -2004,14 +2004,14 @@ export function FileTree({
     //    release out there drops into the external app.
     //  - coming back INTO the window → the OS drag is cancelled and the in-app
     //    ghost/hover resumes, so re-entering never leaves the user staring at
-    //    an OS drag icon over Eldrun's own window.
+    //    an OS drag icon over Tabtivity's own window.
     // While the OS owns the drag the webview sees no pointer events at all, so
     // the boundary test runs off the OS-cursor poll (physical px → this
     // window's client px via the frame snapshot), which keeps ticking
     // regardless of who holds the pointer grab.
     let nativeActive = false;
     let frame: WindowFrame | null = null;
-    // The `eldrun:file-drag-ended` subscription (registered below, once the
+    // The `tabtivity:file-drag-ended` subscription (registered below, once the
     // gesture is real) and whether the gesture has already ended — `listen` is
     // async, so it can resolve after cleanup and must then unsubscribe at once.
     let unlistenEnded: (() => void) | null = null;
@@ -2216,7 +2216,7 @@ export function FileTree({
     const commitRelease = async (shiftKey: boolean) => {
       const releasedAt = Date.now();
       // The OS owns the drag: it is dropping into an external app, and the
-      // in-app drop targets don't apply. `eldrun:file-drag-ended` ends the
+      // in-app drop targets don't apply. `tabtivity:file-drag-ended` ends the
       // gesture instead (a stray pointerup here must not ALSO spawn a tab or a
       // window on top of the export).
       if (nativeActive) return;
@@ -4408,7 +4408,7 @@ export function FileTree({
                   #107). Gated on the same experimental flag the PDF button is.
 
                   Captioned as its own group rather than left loose under "New
-                  File": a `.eldeck.json` is Eldrun's own format, not a file type
+                  File": a `.eldeck.json` is Tabtivity's own format, not a file type
                   the OS or the generic new-file path knows how to make, and the
                   caption is what says so at the point of choosing. */}
               {deckEnabled && (

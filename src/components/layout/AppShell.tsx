@@ -209,7 +209,7 @@ function clampPanelWidth(px: number): number {
 }
 
 /**
- * A small launch curtain gives the otherwise-empty WebView a clear "Eldrun is
+ * A small launch curtain gives the otherwise-empty WebView a clear "Tabtivity is
  * starting" state while the settings and project records arrive over IPC. It
  * has a minimum display time so a warm launch does not flash a single frame.
  */
@@ -313,7 +313,7 @@ export function AppShell() {
   const scope = useTabsStore((s) => s.scope);
   // The side panel also opens for an active box scope (multi-root file view),
   // even when no project is the current activeId — and for the ROOT scope, whose
-  // `~/eldrun/root` is the app's unfiled/scratch area: the place data lands while
+  // `~/tabtivity/root` is the app's unfiled/scratch area: the place data lands while
   // it is only being looked at, or before it belongs to any one project. That
   // folder had a terminal but no file view, so the only way to see what was in it
   // was to `ls`. Gated on `rootDir` because it arrives with the projects load —
@@ -714,7 +714,7 @@ export function AppShell() {
       // Tear down any live OpenVPN tunnel *before* anything else and before the window
       // goes away. The backend also does this in RunEvent::Exit, but that runs only
       // after destroy(), so its elevated pkexec kill raised the polkit password prompt
-      // against an already-gone window. Awaiting it here keeps Eldrun on screen until
+      // against an already-gone window. Awaiting it here keeps Tabtivity on screen until
       // the prompt is answered — asked exactly once: if the user dismisses it, the
       // backend marks that tunnel declined so RunEvent::Exit won't re-prompt for it
       // with the window already gone (that used to raise a parentless pkexec dialog
@@ -747,8 +747,8 @@ export function AppShell() {
       if (localFile) {
         await useTabsStore.getState().saveLayout(localFile).catch(() => {});
       }
-      // A clean Eldrun quit ends only the local tmux sessions named and owned by
-      // Eldrun. It runs after the layout flush so an abnormal close still has a
+      // A clean Tabtivity quit ends only the local tmux sessions named and owned by
+      // Tabtivity. It runs after the layout flush so an abnormal close still has a
       // durable tab/session pairing to restore, but before `destroy()` causes the
       // backend's general PTY teardown. A crash never reaches this path: its tmux
       // sessions remain alive and the saved tabs reattach on the next launch.
@@ -845,7 +845,7 @@ export function AppShell() {
   // its local mirror; one with no mirror is not watchable at all, since inotify
   // cannot see an SFTP tree, and records no file stats).
   //
-  // The ROOT scope is a scope like any other here — `~/eldrun/root` is a real
+  // The ROOT scope is a scope like any other here — `~/tabtivity/root` is a real
   // local tree, its terminals already file every other counter under `"root"`
   // (`stores/usage`), and it is where a file that has not found a project yet
   // gets worked on. This used to send `""`, the backend's "watch nothing", so
@@ -1447,7 +1447,7 @@ export function AppShell() {
           both open their tab in it. After the overlay family and the settings
           surfaces in DOM order, so it lands on top of the dialog that started
           the install or the login. Its host also persists the root scope and merges the rows a
-          root agent wrote through Eldrun's MCP tools — both while closed. */}
+          root agent wrote through Tabtivity's MCP tools — both while closed. */}
       <RootOverlayHost />
       {/* The shortcut cheat sheet (F1, `?` in steering mode, or the ⚙ menu) —
           after the overlay family above so the sheet, openable from the

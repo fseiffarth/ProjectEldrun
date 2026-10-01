@@ -10,7 +10,7 @@ The shared loopback listener dispatches `/mcp/schedule` separately from `/mcp`
 before reading request bodies. Only `Caller::Scheduler` tokens enter the former;
 they never enter the root tool registry. A token binds one project, tab and stable
 schedule target at spawn. Claude and Codex receive their existing per-invocation
-MCP flag recipes with the server name `eldrun-schedule`; opted-in Vibe models get
+MCP flag recipes with the server name `tabtivity-schedule`; opted-in Vibe models get
 their env configuration. Other CLIs get the inert URL/token env pair only.
 Remote hosts (including workers), VM and container projects receive no token.
 Local tmux launcher scripts omit schedule secrets just as they omit root secrets.

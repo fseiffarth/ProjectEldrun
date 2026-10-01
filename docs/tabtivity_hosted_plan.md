@@ -1,4 +1,4 @@
-# Eldrun Hosted — one server, several users, desktop and phone as thin clients
+# Tabtivity Hosted — one server, several users, desktop and phone as thin clients
 
 *Plan only. Nothing here is implemented. The desktop-side groundwork (the
 headless owner, P1) is split out into
@@ -11,7 +11,7 @@ question and delegated Q5.
 number and file reference was measured at one of those two commits; re-verify
 before building on one.*
 
-The request: **an Eldrun server on which several users create their own
+The request: **a Tabtivity server on which several users create their own
 projects and open them to others, with one agent login shared by the different
 agents as today, and where connecting from phone or desktop gives the same view
 as now — but every operation runs on the server, not on the local desktop.**
@@ -21,23 +21,23 @@ as now — but every operation runs on the server, not on the local desktop.**
 ## 0. What this replaces
 
 This plan **replaces** the earlier sync-server design (2026-07-29, removed
-2026-09-29). Read it with `git show 1441eb0e:docs/eldrun_server_plan.md`;
+2026-09-29). Read it with `git show 1441eb0e:docs/tabtivity_server_plan.md`;
 "the sync plan" below means that file. It designed a **different product**: a
 Raspberry Pi holding bare git repos and a CalDAV server, reached over SSH, with
-each person's own desktop Eldrun doing all the work. It explicitly ruled out
+each person's own desktop Tabtivity doing all the work. It explicitly ruled out
 most of what is asked here:
 
 | That plan says | Why it does not carry over to this request |
 |---|---|
 | "Not a work host. No agent tabs, no builds" (§14) | Running the work on the server **is** the request. |
-| "Desktop app in headless server mode — rejected hard", because the crate links WebKitGTK/GTK/Secret Service (§3.2) | Right for a Pi and for a multi-user service, so this plan never *ships* the desktop crate as the multi-user server: from P3 on, a Tauri-free core is split out of it (§3.2). The single-user server (P2) does run the WebKit-linked binary without a window, because the Mobile sidecar already does exactly that (`eldrun --mobile-host`, `main.rs:21-45`). The target is a real x86_64/aarch64 Linux server. |
-| "No HTTP server… the codebase has no server framework at all" (§3.2) | **Stale.** Eldrun Mobile has since added one: `axum 0.8` with `ws` (`src-tauri/Cargo.toml:217`), a 49-route API (`services/mobile_control/host.rs:3409`), device-key pairing, rate limits, a baked PWA, and a tmux PTY bridge. |
-| "No inbound listening socket in the client. Ever." (§14) | Already broken, deliberately, by `eldrun --mobile-host` (`src-tauri/src/main.rs:21`). |
+| "Desktop app in headless server mode — rejected hard", because the crate links WebKitGTK/GTK/Secret Service (§3.2) | Right for a Pi and for a multi-user service, so this plan never *ships* the desktop crate as the multi-user server: from P3 on, a Tauri-free core is split out of it (§3.2). The single-user server (P2) does run the WebKit-linked binary without a window, because the Mobile sidecar already does exactly that (`tabtivity --mobile-host`, `main.rs:21-45`). The target is a real x86_64/aarch64 Linux server. |
+| "No HTTP server… the codebase has no server framework at all" (§3.2) | **Stale.** Tabtivity Mobile has since added one: `axum 0.8` with `ws` (`src-tauri/Cargo.toml:217`), a 49-route API (`services/mobile_control/host.rs:3409`), device-key pairing, rate limits, a baked PWA, and a tmux PTY bridge. |
+| "No inbound listening socket in the client. Ever." (§14) | Already broken, deliberately, by `tabtivity --mobile-host` (`src-tauri/src/main.rs:21`). |
 | "No shared agent sessions, no shared terminals" | **Kept** (§13). Sharing a *project* is not sharing a *session*. |
 | Sharing through a bare repo per project, one clone per member (§6.1) | **Kept, moved onto the server** (§6). The first draft of this plan replaced it with a group-writable shared tree and a worktree per member; review showed that shape opens cross-user code execution through `.git` and cannot be enforced (§14). |
-| Writable sharing gated on hooks / agent-surface review / containers (§9) | **Kept in intent, rewritten** (§6.5). Eldrun's own git already runs hookless; what is left is git typed in shells and run by agents. The container gate is replaced by the uid boundary plus the fence, and §6.5 says why. |
+| Writable sharing gated on hooks / agent-surface review / containers (§9) | **Kept in intent, rewritten** (§6.5). Tabtivity's own git already runs hookless; what is left is git typed in shells and run by agents. The container gate is replaced by the uid boundary plus the fence, and §6.5 says why. |
 
-`docs/eldrun_remote_plan.md` is also superseded, and now says so: Mobile
+`docs/tabtivity_remote_plan.md` is also superseded, and now says so: Mobile
 shipped its shape, and this plan covers the rest.
 
 The sync plan's backlog, `todo/group-z-server.md`, has already been rewritten
@@ -49,26 +49,26 @@ design-independent prerequisites #169–#172 remain (**Q10**, answered).
 ## 1. The design in one page
 
 ```
-  desktop browser / Eldrun shell            phone PWA (unchanged)
+  desktop browser / Tabtivity shell            phone PWA (unchanged)
           │  HTTPS + WSS                         │  HTTPS
           └──────────────┬───────────────────────┘
-                   eldrun-gateway               (one per server, user eldrun-gw)
+                   tabtivity-gateway               (one per server, user tabtivity-gw)
                    TLS · device auth · routing · shares DB · audit · static assets
-                   │ /run/eldrun/users/<uid>.sock  (0660 user:eldrun-gw, SO_PEERCRED)
+                   │ /run/tabtivity/users/<uid>.sock  (0660 user:tabtivity-gw, SO_PEERCRED)
         ┌──────────┴──────────────────┐
-  eldrun-user-alice.slice        eldrun-user-bob.slice       (MemoryMax, TasksMax)
-   ├ eldrun-serverd@alice          ├ eldrun-serverd@bob      (runs AS that uid; restartable)
+  tabtivity-user-alice.slice        tabtivity-user-bob.slice       (MemoryMax, TasksMax)
+   ├ tabtivity-serverd@alice          ├ tabtivity-serverd@bob      (runs AS that uid; restartable)
    │   workspace owner, core cmds  │
-   └ eldrun-tmux@alice             └ eldrun-tmux@bob         (tmux -L eldrun; agents live here)
-  ~alice/.local/share/eldrun      ~bob/.local/share/eldrun
-  ~alice/eldrun/projects/*        ~bob/eldrun/projects/*    (clones; private, 0700 homes)
-        └──── fetch ── /srv/eldrun/shared/<id>.git ── push via eldrun-hub (ref rules)
+   └ tabtivity-tmux@alice             └ tabtivity-tmux@bob         (tmux -L tabtivity; agents live here)
+  ~alice/.local/share/tabtivity      ~bob/.local/share/tabtivity
+  ~alice/tabtivity/projects/*        ~bob/tabtivity/projects/*    (clones; private, 0700 homes)
+        └──── fetch ── /srv/tabtivity/shared/<id>.git ── push via tabtivity-hub (ref rules)
 ```
 
 Seven decisions carry it:
 
 1. **One daemon per user, running as that user's Unix uid.** The OS, not
-   Eldrun, keeps users apart. This is the JupyterHub shape (a hub, a spawner,
+   Tabtivity, keeps users apart. This is the JupyterHub shape (a hub, a spawner,
    and one single-user server per person), and it is right for the same
    reason: every per-user assumption in the codebase stays true inside one
    daemon. That covers `state_dir`, agent homes, the fence, `projects.json`,
@@ -104,12 +104,12 @@ Seven decisions carry it:
    terminal, fires every timer, saves the tab set as one whole snapshot and
    answers the phone, so with no client nothing is scheduled and with two
    every schedule fires twice. **The owner is the existing per-user Mobile
-   sidecar** (`eldrun --mobile-host`), grown into a `workspace` service. That
+   sidecar** (`tabtivity --mobile-host`), grown into a `workspace` service. That
    work is desktop work, worth doing with no server, and has its own plan:
    [`headless_owner_plan.md`](headless_owner_plan.md). On the server the same
    code becomes the daemon (§3.4).
 
-4. **The backend becomes `eldrun-core`, a Tauri-free crate, plus two thin
+4. **The backend becomes `tabtivity-core`, a Tauri-free crate, plus two thin
    hosts, by P3.** The count at `923e0202`:
    - `generate_handler!` registers **658** commands (`lib.rs:1333`).
    - About **388** take no Tauri type at all.
@@ -139,7 +139,7 @@ Seven decisions carry it:
    them from every agent, as today (`agent_fence.rs:1170`).
    - **Mail is always private**; there is no mail sharing of any kind.
    - A user can **open a calendar or a todo list** to named users, as viewer
-     or editor. The shared copy then lives in a small `eldrun-calendar`
+     or editor. The shared copy then lives in a small `tabtivity-calendar`
      service that checks each caller's uid, never in another user's daemon.
    - The admin (server-wide) and each user (for themselves) can **switch any
      of the three off**.
@@ -148,8 +148,8 @@ Seven decisions carry it:
      2026-09-29.)
 
 7. **A shared project is a bare hub repo on the server, and every member works
-   in their own clone.** `/srv/eldrun/shared/<id>.git` is owned by a service
-   uid, `eldrun-hub`. Members fetch through a named-user read ACL and push
+   in their own clone.** `/srv/tabtivity/shared/<id>.git` is owned by a service
+   uid, `tabtivity-hub`. Members fetch through a named-user read ACL and push
    through the hub service, which enforces who may move which ref (the
    gitolite shape). The owner's project never moves. No working tree is ever
    writable by two uids, no `.git/config` or hook is ever writable by another
@@ -169,7 +169,7 @@ standalone throughout, and server mode is additive.
 
 | Capability | Where | What it gives |
 |---|---|---|
-| **A headless per-user Eldrun process** | `eldrun --mobile-host` (`main.rs:21-45`, runs `eldrun_lib::services::mobile_control::host::run`), a systemd user unit | The P1 owner and the P2 server start as this process. It already runs without a window and survives the desktop closing. |
+| **A headless per-user Tabtivity process** | `tabtivity --mobile-host` (`main.rs:21-45`, runs `tabtivity_lib::services::mobile_control::host::run`), a systemd user unit | The P1 owner and the P2 server start as this process. It already runs without a window and survives the desktop closing. |
 | **HTTP + WebSocket server** | `services/mobile_control/host.rs` (5721 lines, 49 routes, router `:3409`) | axum routing, body limits, security headers, static assets, WebSocket upgrade. It reads the user's state directly, so at P3 it **splits**: pairing, auth, limits, router and push go to the gateway; `discovery`, `pty_bridge`, `files`, `inbox`, `outbox` and `desktop_images` go to the daemon (§3.1). It keeps serving standalone Mobile: one codebase, not a fork. |
 | **Sidecar ↔ desktop bridge** | `commands/mobile_control.rs` (unix socket plus token) | The shape of gateway ↔ daemon, already in use. |
 | **Device pairing + challenge login** | `mobile_control/auth.rs`, routes `/api/v1/pair`, `/auth/challenge`, `/auth/session` | Single-use pair code → **ECDSA P-256** device key (`mobile-web/src/auth.ts:191`) → signed-nonce session, with separate rate budgets so a pair flood cannot starve logins. **The v1 identity system, already written.** |
@@ -178,13 +178,13 @@ standalone throughout, and server mode is additive.
 | Web Push | `mobile_control/push.rs` | Phone notifications without the desktop. |
 | TLS via Tailscale Serve | `mobile_control/config.rs:286` `verify_tailscale_serve` | Real HTTPS without a PKI or a self-signed override. |
 | **Every tab can live in tmux** | `services/tmux_local.rs`; `docs/context/tmux_sessions.md` | Process lifetime independent of any client, reattach by name, and a launch-script fallback past the 16 KB argv limit. Uses the **default** tmux socket today; only tests pass `-L` (`tmux_local.rs:899`). |
-| **Per-scope agent homes, shared login, Eldrun-wide layer** | `services/agent_home`, `agent_auth.rs`, `agent_global` | "Log in once, every agent tab uses it" for one user. Runs unchanged inside each user's daemon: per-user sign-in is the server default (§5). |
+| **Per-scope agent homes, shared login, Tabtivity-wide layer** | `services/agent_home`, `agent_auth.rs`, `agent_global` | "Log in once, every agent tab uses it" for one user. Runs unchanged inside each user's daemon: per-user sign-in is the server default (§5). |
 | **Sign-in tabs** | `mobile_control/sign_in.rs` (QA 31bk) | A tab running a CLI's login command from a remote client, with a `sign-in-callback` relay for OAuth redirects to `localhost`. The per-user sign-in flow on the server (§5.1). |
-| **Per-user mail, calendar, todo** | `commands/calendar.rs` (`<state_dir>/calendar.json`, events and tasks), `commands/mail.rs:94` (`mail_dir()`, never inside a project), `services/mail_crypt.rs` | Already per `state_dir` and hidden from agents (`agent_fence.rs:1170`). Separation between users comes from the uid. New on the server: calendar/todo sharing through `eldrun-calendar`, opt-out switches, and mail's store key (§6.7–6.8). |
+| **Per-user mail, calendar, todo** | `commands/calendar.rs` (`<state_dir>/calendar.json`, events and tasks), `commands/mail.rs:94` (`mail_dir()`, never inside a project), `services/mail_crypt.rs` | Already per `state_dir` and hidden from agents (`agent_fence.rs:1170`). Separation between users comes from the uid. New on the server: calendar/todo sharing through `tabtivity-calendar`, opt-out switches, and mail's store key (§6.7–6.8). |
 | Fence, fail-closed | `services/agent_fence.rs` | Per-scope containment inside a user's uid. Mounts `/` read-only (`:1101-1103`) and gives agents a private `/run` (`:1122-1125`). |
 | Spawn authority from `projects.json` | `commands/terminal.rs:257` `pty_spawn` → `sandbox::enforce_spawn_authority` | The renderer can't declare its own authority. On a server the "renderer" is a remote browser, so that property becomes load-bearing. |
-| `state_dir` from `$HOME` / `ELDRUN_STATE_DIR` | `storage.rs:153` | A daemon started as uid `alice` gets `~alice/.local/share/eldrun` with no code change. |
-| Hardened git, `exec_trust`, `local_loss` | `commands::git::hardened_git_command_in` (pins `core.hooksPath=` on every call that isn't trust-gated, `git.rs:95-111`), `services::exec_trust` (`<state_dir>/exec_trust.json`), `services::local_loss` | Per user. Eldrun's own git already runs hookless. |
+| `state_dir` from `$HOME` / `TABTIVITY_STATE_DIR` | `storage.rs:153` | A daemon started as uid `alice` gets `~alice/.local/share/tabtivity` with no code change. |
+| Hardened git, `exec_trust`, `local_loss` | `commands::git::hardened_git_command_in` (pins `core.hooksPath=` on every call that isn't trust-gated, `git.rs:95-111`), `services::exec_trust` (`<state_dir>/exec_trust.json`), `services::local_loss` | Per user. Tabtivity's own git already runs hookless. |
 | Terminal event bus | `src/lib/terminal/terminalBus.ts:47`; `src-tauri/src/terminal/mod.rs` (16 ms batching, hidden-pane digests, `route_scrollback` sharing one offset timeline with live output, `:434`) | One stream per client; byte-offset resume on reconnect (§3.5). |
 | `__TAURI_INTERNALS__` seam | `src/dev/perfMonitor.ts:20`, `src/test-setup.ts:21,28-29` | Proof that the IPC surface can be intercepted at two objects. |
 | Opaque ids for the phone | `mobile_control/discovery.rs` catalog | "Raw ids/paths never cross the browser API", built for one client type. |
@@ -199,14 +199,14 @@ standalone throughout, and server mode is additive.
 anything with a browser.
 
 ```
-/etc/systemd/system/eldrun-gateway.service     User=eldrun-gw, the only listening port
-/etc/systemd/system/eldrun-users.slice         ceiling for the whole population
-/etc/systemd/system/eldrun-user-@.slice        per user: MemoryMax, TasksMax, CPUWeight
-/etc/systemd/system/eldrun-serverd@.service    User=%i, Slice=eldrun-user-%i.slice
-/etc/systemd/system/eldrun-tmux@.service       User=%i, Slice=eldrun-user-%i.slice, tmux -L eldrun
-/etc/systemd/system/eldrun-hub.service         User=eldrun-hub, push service for shared repos (§6)
-/etc/systemd/system/eldrun-calendar.service    User=eldrun-cal, shared calendars and todo lists (§6.7)
-/etc/systemd/system/eldrun-auth-keeper.service User=eldrun-auth, only if the admin offers credentials (§5.4)
+/etc/systemd/system/tabtivity-gateway.service     User=tabtivity-gw, the only listening port
+/etc/systemd/system/tabtivity-users.slice         ceiling for the whole population
+/etc/systemd/system/tabtivity-user-@.slice        per user: MemoryMax, TasksMax, CPUWeight
+/etc/systemd/system/tabtivity-serverd@.service    User=%i, Slice=tabtivity-user-%i.slice
+/etc/systemd/system/tabtivity-tmux@.service       User=%i, Slice=tabtivity-user-%i.slice, tmux -L tabtivity
+/etc/systemd/system/tabtivity-hub.service         User=tabtivity-hub, push service for shared repos (§6)
+/etc/systemd/system/tabtivity-calendar.service    User=tabtivity-cal, shared calendars and todo lists (§6.7)
+/etc/systemd/system/tabtivity-auth-keeper.service User=tabtivity-auth, only if the admin offers credentials (§5.4)
 ```
 
 These are **system** template units, so no `enable-linger` is needed.
@@ -218,9 +218,9 @@ These are **system** template units, so no `enable-linger` is needed.
   audit log. It links no core services, and it reads no user files: every data
   path (`discovery`, `pty_bridge`, `files`, `inbox`, `outbox`) moves into the
   daemon at the host.rs split.
-- **The daemon socket** `/run/eldrun/users/<uid>.sock` is `0660
-  <user>:eldrun-gw`. The daemon accepts a connection only when `SO_PEERCRED`
-  says it comes from `eldrun-gw`, so the user's own unfenced shells cannot
+- **The daemon socket** `/run/tabtivity/users/<uid>.sock` is `0660
+  <user>:tabtivity-gw`. The daemon accepts a connection only when `SO_PEERCRED`
+  says it comes from `tabtivity-gw`, so the user's own unfenced shells cannot
   forge a `caller`. Fenced agents cannot see it at all, because they get a
   private `/run`.
 - **The gateway is a router, not a trust root for the daemon.** When a
@@ -228,7 +228,7 @@ These are **system** template units, so no `enable-linger` is needed.
   the daemon checks the signature against the device public keys in its own
   `state_dir`. A compromised gateway can intercept live sessions, but it can
   neither mint new ones nor act as a user who is not connected (§4.4).
-- **Privileged operations go to `eldrun-admin-helper`**, never the gateway:
+- **Privileged operations go to `tabtivity-admin-helper`**, never the gateway:
   - creating or linking a Unix account and making its home `0700`;
   - starting and stopping a user's units (the gateway cannot run `systemctl
     start` unprivileged);
@@ -242,14 +242,14 @@ These are **system** template units, so no `enable-linger` is needed.
   - **It never copies or chowns a user's tree.** It creates empty targets,
     and any copy runs as the owning uid.
   - Every walk uses `openat` and `O_NOFOLLOW`.
-  - It links only accounts with uid ≥ 1000 in the `eldrun-users` group, and
+  - It links only accounts with uid ≥ 1000 in the `tabtivity-users` group, and
     refuses root, system accounts and sudoers.
 - **Per-user daemons** are started through the helper on the user's first
   login. A daemon with no client is stopped after an idle timeout. The agents
-  are unaffected, because they live in `eldrun-tmux@`, not in the daemon.
-- **tmux runs on a dedicated socket, `tmux -L eldrun`, in its own unit.**
+  are unaffected, because they live in `tabtivity-tmux@`, not in the daemon.
+- **tmux runs on a dedicated socket, `tmux -L tabtivity`, in its own unit.**
   With the default socket, a user who also SSHes in and runs tmux could end up
-  hosting Eldrun's sessions in their SSH-started server, outside every limit.
+  hosting Tabtivity's sessions in their SSH-started server, outside every limit.
   `tmux_local` and `pty_bridge` take the socket name from one place. Because
   tmux has its own unit inside the user's slice:
   - the slice's `MemoryMax`/`TasksMax` still cover every agent;
@@ -273,10 +273,10 @@ These are **system** template units, so no `enable-linger` is needed.
 
 ```
 Cargo.toml (workspace; today members = ["src-tauri"])
-  eldrun-core/      schema, storage, paths, services/*, terminal/, command bodies
+  tabtivity-core/      schema, storage, paths, services/*, terminal/, command bodies
   src-tauri/        the desktop app: Tauri wrappers + a Tauri EventSink, window-only commands
-  eldrun-serverd/   per-user daemon: frames over a unix socket, EventSink pushing to clients
-  eldrun-gateway/   auth/router half of mobile_control/host.rs; no core services linked
+  tabtivity-serverd/   per-user daemon: frames over a unix socket, EventSink pushing to clients
+  tabtivity-gateway/   auth/router half of mobile_control/host.rs; no core services linked
 ```
 
 **`CoreCtx`** is the only thing a command body may use in place of Tauri. It
@@ -294,7 +294,7 @@ pub struct CoreCtx {
 **One command table** replaces the list at `lib.rs:1333`:
 
 ```rust
-eldrun_commands! {
+tabtivity_commands! {
     core:   settings::get_settings, fs::read_dir, terminal::pty_set_visible, …,
     client: clipboard::*, print_native::*, screenshot::*, subwindow::*, …,
     admin:  openvpn::*, global_machines::*, vm::*, …,
@@ -366,7 +366,7 @@ daemon. What the server adds to that plan:
 - **Spawn policy follows `HOST_OS`**, taken from `server_capabilities`, never
   the connected client's OS (§1.2).
 - **Todo, calendar, alerts and the mail overview** live in the user's own
-  daemon. Shared calendars and todo lists go through `eldrun-calendar`. Mail
+  daemon. Shared calendars and todo lists go through `tabtivity-calendar`. Mail
   never leaves the user's daemon; no presence event or gateway record carries
   any of it (§6.7).
 - **Per-client layout** (decided, Q4): the tab set is shared across a user's
@@ -457,24 +457,24 @@ checklist row in `docs/third_party_update_checklist.md`.
 
 ```
 /home/<user>/                                0700 — other users see nothing
-  .local/share/eldrun/                        state_dir: projects.json, sessions/, agent-homes/,
+  .local/share/tabtivity/                        state_dir: projects.json, sessions/, agent-homes/,
                                               agent-auth/ (the user's own logins), agent-global/,
                                               exec_trust.json, calendar.json (events + tasks),
                                               mail/ + secrets/ (sealed, §6.8), devices/ (device
                                               signing keys, ECDH keys and key wraps, §3.1, §6.8) …
-  eldrun/projects/<slug>/                     own projects and clones of shared ones
-/srv/eldrun/shared/<id>.git                   bare hub, owned by eldrun-hub; config/hooks/info
+  tabtivity/projects/<slug>/                     own projects and clones of shared ones
+/srv/tabtivity/shared/<id>.git                   bare hub, owned by tabtivity-hub; config/hooks/info
                                               root-owned read-only; members get named-user ACLs
-/opt/eldrun/agents/                           server-wide CLI installs, owned by eldrun-cli,
+/opt/tabtivity/agents/                           server-wide CLI installs, owned by tabtivity-cli,
                                               read-only to users, bound read-only into fences
-/var/lib/eldrun-auth/                         0700 eldrun-auth: admin-provided credentials only (§5.4)
-/var/lib/eldrun-calendar/                     0700 eldrun-cal: shared calendars/todo lists + ACLs (§6.7)
-/var/lib/eldrun-gateway/                      0700 eldrun-gw
+/var/lib/tabtivity-auth/                         0700 tabtivity-auth: admin-provided credentials only (§5.4)
+/var/lib/tabtivity-calendar/                     0700 tabtivity-cal: shared calendars/todo lists + ACLs (§6.7)
+/var/lib/tabtivity-gateway/                      0700 tabtivity-gw
   gateway.db                                  users, devices, shares, invites (SQLite, WAL —
                                               the mail_store precedent)
   audit/                                      append-only, bounded retention (§8)
-/run/eldrun/users/<uid>.sock                  daemon sockets, 0660 <user>:eldrun-gw
-/run/eldrun/calendar.sock                     eldrun-calendar, SO_PEERCRED
+/run/tabtivity/users/<uid>.sock                  daemon sockets, 0660 <user>:tabtivity-gw
+/run/tabtivity/calendar.sock                     tabtivity-calendar, SO_PEERCRED
 ```
 
 **Home directories must be `0700`.** Many distributions default to `0755`, which
@@ -495,9 +495,9 @@ prerequisite (#172, H0 of [`headless_owner_plan.md`](headless_owner_plan.md)).
 
 ### 4.1 Accounts
 
-- **A gateway user is one Unix account.** `eldrun-gateway user add <name>`
+- **A gateway user is one Unix account.** `tabtivity-gateway user add <name>`
   (admin CLI) goes through the helper. It creates or links the Unix user
-  (uid ≥ 1000, in `eldrun-users`, not a sudoer), makes the home `0700`,
+  (uid ≥ 1000, in `tabtivity-users`, not a sudoer), makes the home `0700`,
   installs the user's slice and units, and prints a **single-use invite
   code**.
 - **Login method v1: device keys, reusing mobile pairing.** The invite code
@@ -512,7 +512,7 @@ prerequisite (#172, H0 of [`headless_owner_plan.md`](headless_owner_plan.md)).
   identity *is* the right trust root. OIDC still only **binds a device key**;
   the session model does not change.
 - **Passwords:** none for the web login. The standing "passwords are never
-  persisted by default" rule concerns credentials Eldrun *uses* (SSH, VPN,
+  persisted by default" rule concerns credentials Tabtivity *uses* (SSH, VPN,
   mail), and is §9's business.
 
 ### 4.2 Sessions and the browser
@@ -546,7 +546,7 @@ The consequences:
   bounds what the owner can reach.
 - The gateway's own authorization surface is small and testable: who may pair
   devices, who may create or accept shares, and who is admin.
-- **The daemon is its user's, not Eldrun's.** Anything it tells the gateway,
+- **The daemon is its user's, not Tabtivity's.** Anything it tells the gateway,
   the helper, the hub or the credential keeper is untrusted:
   - presence is attributed by the socket's peer uid, not the payload;
   - share requests name share ids, not paths;
@@ -566,13 +566,13 @@ The consequences:
 |---|---|---|---|
 | **Another user** (B, about A) | Anything their uid can, including an unfenced shell | Separate uid, `0700` homes, `0660` daemon sockets with a peer-uid check, gateway routing | Anything world-readable on the host; shared-project content by design (§6) |
 | **Another user, through host-shared channels** | Loopback TCP ports, abstract unix sockets, other users' `/proc/*/cmdline`, `/tmp`, `/dev/shm` | An inventory of every loopback listener: each needs a token or moves to a unix socket (root MCP `commands/root_mcp.rs:385` has a token; `vm_proxy.rs:178`, CLI OAuth callbacks, per-user ollama on `127.0.0.1:11434` must be checked). Also `/proc` mounted `hidepid=invisible`, `PrivateTmp=` on the units, and the sign-in relay (`sign_in.rs:57-60`, which today fetches any loopback port ≥ 1024) restricted to a listener owned by the caller's uid (§5.1) | Abstract sockets have no permissions (the fence's Landlock helper covers agents, not shells); kernel privilege escalation, since every user has a shell |
-| **A co-member of a shared project** | Push commits to their own branch in the hub | Their writes land only in the hub, through `eldrun-hub`'s ref rules; nobody else's tree or `.git` is writable to them; `exec_trust` is per user | Content you merge. Instruction-level steering of your agent through `CLAUDE.md` etc. once merged (§6.5, gate 2) |
+| **A co-member of a shared project** | Push commits to their own branch in the hub | Their writes land only in the hub, through `tabtivity-hub`'s ref rules; nobody else's tree or `.git` is writable to them; `exec_trust` is per user | Content you merge. Instruction-level steering of your agent through `CLAUDE.md` etc. once merged (§6.5, gate 2) |
 | **A co-member, via a file served to the browser** | Author HTML/SVG in the project | Separate user-content origin with `CSP: sandbox`, active types as attachment (§3.5) | None known |
 | **A web page the user visits** | Make the browser send requests with the user's cookie | `SameSite=Strict`, Origin check on WS and on every state-changing POST, CSP | A browser 0-day |
 | **Stolen unlocked laptop** | The device key in IndexedDB | Per-device revocation, which closes live sockets | The window until revocation |
-| **A prompt-injected agent** | Everything its fence allows, as its user | The fence (scope), the uid (user); the fence hides `/srv/eldrun/shared` except its own project's hub (§6.3) | The user's own data in that scope, as today |
+| **A prompt-injected agent** | Everything its fence allows, as its user | The fence (scope), the uid (user); the fence hides `/srv/tabtivity/shared` except its own project's hub (§6.3) | The user's own data in that scope, as today |
 | **Another user, about your agent logins, mail, private calendars and tasks** | Nothing beyond "another user" above | They live only in your `0700` `state_dir`; presence, audit and admin status never carry them (§6.7) | None beyond the host-channel row |
-| **A user you opened a calendar or todo list to** | Read it (viewer), or add, edit and delete its events and tasks (editor) | `eldrun-calendar`'s per-uid ACL; mail and file links stripped; their text rendered as plain text with size limits; agents read-only (§6.7) | What they copied before a revoke; an editor can vandalise the shared calendar |
+| **A user you opened a calendar or todo list to** | Read it (viewer), or add, edit and delete its events and tasks (editor) | `tabtivity-calendar`'s per-uid ACL; mail and file links stripped; their text rendered as plain text with size limits; agents read-only (§6.7) | What they copied before a revoke; an editor can vandalise the shared calendar |
 | **Any user, about an admin-provided credential** (only if the admin offers one, §5.4) | Read the key or login replica their own agents are given | Nothing: the CLI must read it. Broker tokens (P5) or access-only replicas bound it | Per-use cost on the admin's key; a shared consumer login's terms (§5.4) |
 | **A compromised gateway** | Intercept and act inside live sessions; see every device's traffic | Daemons verify device signatures themselves (§3.1); the gateway links no core services and runs no root verbs directly | Live-session interception while connected |
 | **Server admin** | Everything | Nothing technical, except for mail and saved passwords: they are sealed with a key the user's devices release (§6.8), so the admin reads them only while the user's daemon holds the key unlocked | The admin can read everything else, and enrolment says so in one sentence |
@@ -615,8 +615,8 @@ still *offer* a credential per CLI (§5.4), but a user never depends on it.
 - **Installing CLIs.** A user can install a CLI for themselves, as today, into
   `<state_dir>/agents/install/` (`agent_install.rs:1-13`). The admin can also
   install a CLI once for everyone into the **server-wide install root**,
-  `/opt/eldrun/agents/`, owned by `eldrun-cli`:
-  - the install runs as `eldrun-cli` through a helper verb, never as root,
+  `/opt/tabtivity/agents/`, owned by `tabtivity-cli`:
+  - the install runs as `tabtivity-cli` through a helper verb, never as root,
     because vendor install scripts are code;
   - the root is readable by every user and bound read-only into every fence;
   - its version pins (`services::agent_versions`) are server-wide.
@@ -651,8 +651,8 @@ The admin can offer a credential per CLI in an admin-only **Agent
 credentials** panel. Users opt in per CLI (§5.2).
 
 - **API key, delivered directly (P3b).**
-  - **Storage:** `/var/lib/eldrun-auth/<cli-id>/api-key`, mode `0600`, owned
-    by `eldrun-auth`. It is never written to `settings.json`, which already
+  - **Storage:** `/var/lib/tabtivity-auth/<cli-id>/api-key`, mode `0600`, owned
+    by `tabtivity-auth`. It is never written to `settings.json`, which already
     holds one plaintext token too many (`git_token`).
   - **Delivery:** the daemon passes the key the way the CLI takes one: an
     environment variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) or the
@@ -661,8 +661,8 @@ credentials** panel. Users opt in per CLI (§5.2).
     `agent_bin` shim sets it the same way for a CLI typed into a shell tab.
   - **Exposure:** every agent of an opted-in user can read the key, and
     direct mode has no per-user budget.
-- **API key through a broker (P5).** `eldrun-keybroker`, running as
-  `eldrun-auth`, holds the key. Agents get a base URL pointing at the broker
+- **API key through a broker (P5).** `tabtivity-keybroker`, running as
+  `tabtivity-auth`, holds the key. Agents get a base URL pointing at the broker
   plus a **per-user broker token** (for Claude Code, `ANTHROPIC_BASE_URL`).
   The broker:
   - checks the token and adds the real key;
@@ -679,7 +679,7 @@ credentials** panel. Users opt in per CLI (§5.2).
   to anyone else, and OpenAI's terms are similar. One suspension stops every
   user who opted in. The panel quotes those terms before the admin can enable
   this. If it is built, it keeps the review's hardening:
-  - **Only a central keeper** (`eldrun-auth-keeper`, `/run/eldrun/auth.sock`,
+  - **Only a central keeper** (`tabtivity-auth-keeper`, `/run/tabtivity/auth.sock`,
     `SO_PEERCRED`) **refreshes**, proactively, in its scratch home, and pushes
     new generations to opted-in daemons.
   - **A user's refreshed file is never adopted.** The first draft's checks,
@@ -702,7 +702,7 @@ credentials** panel. Users opt in per CLI (§5.2).
 ### 6.1 Own projects
 
 Creating, importing and cloning projects is today's flow inside the user's
-daemon, landing under `~/eldrun/projects/`. `projects.json`, `exec_trust`,
+daemon, landing under `~/tabtivity/projects/`. `projects.json`, `exec_trust`,
 boxes and schedules are all per user and unchanged.
 
 ### 6.2 Sharing: a bare hub and a clone per member
@@ -710,7 +710,7 @@ boxes and schedules are all per user and unchanged.
 The owner shares a project with user B as **viewer** or **editor**.
 
 1. **The owner's project never moves.** The helper creates an empty bare repo
-   `/srv/eldrun/shared/<id>.git`, owned by `eldrun-hub`. The hub's
+   `/srv/tabtivity/shared/<id>.git`, owned by `tabtivity-hub`. The hub's
    `config`, `hooks/` and `info/` are root-owned and read-only, and it has
    no hooks. The owner's daemon adds it as a remote and pushes, as the owner,
    through the hub service. (The first draft moved the tree. The real mover,
@@ -722,23 +722,23 @@ The owner shares a project with user B as **viewer** or **editor**.
    checked on every access, so a grant or revoke takes effect at once, with
    no daemon restart. Supplementary groups, by contrast, are fixed at login
    and survive a revoke in every running process.
-3. **Pushes go through `eldrun-hub`**, a small service on a unix socket.
+3. **Pushes go through `tabtivity-hub`**, a small service on a unix socket.
    It identifies the pusher by `SO_PEERCRED` and applies ref rules from the
    gateway database: editors may move `refs/heads/<user>/*`, and only the
    owner may move `main` (or whatever branch the owner protects). Viewers
    cannot push. A member never runs `receive-pack` as themselves against a
    writable hub, because a hook planted there would run as the next pusher.
 4. **B's client lists "Shared with me"** from the gateway. Adding one clones
-   the hub into `~B/eldrun/projects/` through the ordinary add-project path
+   the hub into `~B/tabtivity/projects/` through the ordinary add-project path
    (`find_project_conflict`, `check_project_site`). From then on it is an
    ordinary entry in **B's own** `projects.json`, with B's own tabs, trust
    decisions and agent homes, all in B's `state_dir`. The clone writes
-   `.eldrun/` into its `.git/info/exclude`, so session files (still written
-   in-tree today: `.eldrun/sessions/terminals.json`, `windows.json`,
+   `.tabtivity/` into its `.git/info/exclude`, so session files (still written
+   in-tree today: `.tabtivity/sessions/terminals.json`, `windows.json`,
    `state.json`, `terminal_service.rs:145`, `project_runtime.rs:162/274`)
    are never committed to the hub. A test pins that.
 5. **Git's ownership check.** The hub is owned by another uid, so git
-   (≥ 2.45.1) may refuse to fetch from it. Eldrun passes `-c
+   (≥ 2.45.1) may refuse to fetch from it. Tabtivity passes `-c
    safe.directory=<exact hub path>` per call, never a global `*`. That is
    safe only because the hub's config and hooks cannot be written by any
    member (step 1). The exact scope of the check needs a test.
@@ -751,7 +751,7 @@ assume one human, as the sync plan's §6.1-6.2 already required.
 
 - B commits on `B/main` in B's clone and pushes it through the hub. The
   owner, or any member, fetches and merges or rebases in their own clone.
-  Eldrun reports divergence and does not resolve it (inheriting "no merge
+  Tabtivity reports divergence and does not resolve it (inheriting "no merge
   UI").
 - An agent B starts in the shared project runs in **B's clone**, as B, in
   B's fence, on B's own login (§5). B's `.git` is B's alone, so nothing
@@ -760,11 +760,11 @@ assume one human, as the sync plan's §6.1-6.2 already required.
   so without a change every hub B can read would be readable from every one
   of B's scopes. A co-member of project X could then steer B's agent into
   leaking project Y, which B shares with C. The fence puts a tmpfs over
-  `/srv/eldrun/shared` and binds back, read-only, only the hub of the
+  `/srv/tabtivity/shared` and binds back, read-only, only the hub of the
   scope's own project. A test pins it.
-- **Pushes from a fenced agent** can't reach `eldrun-hub`'s socket, because
-  the fence has a private `/run`. They go through an Eldrun-side proxy of
-  the same shape as `eldrun-git`'s `git_push`.
+- **Pushes from a fenced agent** can't reach `tabtivity-hub`'s socket, because
+  the fence has a private `/run`. They go through a Tabtivity-side proxy of
+  the same shape as `tabtivity-git`'s `git_push`.
 - **Later options (P5):** pair mode (one shared tree, for people who accept
   the hazards) and worktrees inside a shared tree. Both need the in-tree
   session files moved into `state_dir` first. Neither is ever the default.
@@ -778,7 +778,7 @@ assume one human, as the sync plan's §6.1-6.2 already required.
 - Busy state (`hostBusy`, the tmux Sessions view) gains a "whose" label.
   Members **cannot** attach to each other's tmux sessions. The sessions
   belong to another uid's tmux server, so the socket is unreachable anyway.
-  The kernel enforces that, not a check Eldrun has to remember.
+  The kernel enforces that, not a check Tabtivity has to remember.
 
 ### 6.5 The gates, rewritten
 
@@ -787,7 +787,7 @@ containers. This plan keeps the intent, but the mechanics change. All three
 gates below must be closed before **editor** shares ship; viewer shares can
 ship first.
 
-1. **Hooks and repo config.** Eldrun's own git already pins `core.hooksPath=`
+1. **Hooks and repo config.** Tabtivity's own git already pins `core.hooksPath=`
    on every call that isn't trust-gated (`git.rs:95-111, 2427-2435`, #862).
    With per-member clones, no member can write another's `.git`, and the hub
    runs no hooks. What is left:
@@ -857,10 +857,10 @@ and by each user for themselves.
   columns, because a task's `column` must mean the same thing to everyone.
   Today columns are one set per user (`task_columns`).
 - **Where it lives.** Shared calendars do not live in any user's home. They
-  move into **`eldrun-calendar`**, a small service running as its own user
-  `eldrun-cal`, with its store in `/var/lib/eldrun-calendar/` (SQLite, WAL)
-  and a socket `/run/eldrun/calendar.sock`. It is the calendar counterpart of
-  `eldrun-hub` (§6.2):
+  move into **`tabtivity-calendar`**, a small service running as its own user
+  `tabtivity-cal`, with its store in `/var/lib/tabtivity-calendar/` (SQLite, WAL)
+  and a socket `/run/tabtivity/calendar.sock`. It is the calendar counterpart of
+  `tabtivity-hub` (§6.2):
   - it identifies each caller's uid by `SO_PEERCRED`;
   - it checks that uid's role for the calendar in its own ACL table;
   - it applies per-operation changes with a revision number
@@ -910,8 +910,8 @@ and by each user for themselves.
 - **Existing shares are unaffected.** The user's own shares stay until they
   stop them; the switch dialog lists them and offers that. Incoming shares
   are hidden.
-- **Where it is enforced.** Eldrun enforces the admin's switches where it
-  holds the authority: the gateway routes, `eldrun-calendar`, and push.
+- **Where it is enforced.** Tabtivity enforces the admin's switches where it
+  holds the authority: the gateway routes, `tabtivity-calendar`, and push.
   Inside a user's own daemon a switch is policy only, since a user with a
   shell can run their own mail client regardless.
 
@@ -982,12 +982,12 @@ availability**.
     test proves it.
 - **Locked state.** After a reboot, mail and saved passwords stay locked
   until any of the user's devices connects. The UI and one push notification
-  say "mail locked since reboot; open Eldrun on any device". Calendar and
+  say "mail locked since reboot; open Tabtivity on any device". Calendar and
   todo hold no secrets and keep working.
 - **Revoking a device** deletes its wrap.
 - **Recovery.** At mail setup the user gets a one-time **recovery code**, a
   random key under which one more wrap of K is kept. It is shown once and
-  never stored by Eldrun. If every device and the code are lost, the sealed
+  never stored by Tabtivity. If every device and the code are lost, the sealed
   store is lost. Mail itself is refetched from IMAP, so what is lost is the
   saved passwords and local-only data (filters, drafts), and the setup
   dialog says so.
@@ -1019,7 +1019,7 @@ entry, served by the gateway.
 | Global shortcuts | Browsers reserve Ctrl+T, Ctrl+W and Ctrl+N, so the chords that collide get web alternatives in `lib/shortcuts`, keyed by `CLIENT_OS`. Installing the app as a PWA helps only partly. **This is the main argument for 7.2.** |
 | WebKitGTK workarounds (scrollbars, box-shadow, DMABUF) | harmless in Chromium and Firefox; nothing removed |
 
-### 7.2 Eldrun shell (later, P5)
+### 7.2 Tabtivity shell (later, P5)
 
 The existing desktop binary gets a **Connect to server** mode. It loads the
 same web bundle from the gateway and keeps every `client` command local:
@@ -1041,8 +1041,8 @@ terminal on the phone takes that tab over from any other viewer (§3.5).
 
 ## 8. Operations
 
-- **Resource limits:** `eldrun-users.slice` caps the whole population. Each
-  per-user slice, `eldrun-user-<uid>.slice`, sets `MemoryMax`, `CPUWeight`
+- **Resource limits:** `tabtivity-users.slice` caps the whole population. Each
+  per-user slice, `tabtivity-user-<uid>.slice`, sets `MemoryMax`, `CPUWeight`
   and `TasksMax` and holds both the daemon and the tmux unit, so every agent
   counts. One user's runaway build cannot starve the others.
 - **Deployment prerequisites, checked at install and in P3's exit:**
@@ -1054,7 +1054,7 @@ terminal on the phone takes that tab over from any other viewer (§3.5).
     available (`CONFIG_PERSISTENT_KEYRINGS`) (§6.8).
   - Units run with `PrivateTmp=`.
   - Every home is `0700`.
-- **Disk:** filesystem quotas per user, and a quota for `/srv/eldrun/shared`.
+- **Disk:** filesystem quotas per user, and a quota for `/srv/tabtivity/shared`.
   The existing big-folder census (`big_folders`, `duscan`) runs per user
   inside the daemon, never across `/srv`.
 - **GPU:** `gpustat` shows the server's GPUs to everyone. Allocating them
@@ -1070,8 +1070,8 @@ terminal on the phone takes that tab over from any other viewer (§3.5).
   - The tmux unit restarts only when the user's sessions end.
   - The phone PWA already copes with version skew.
 - **Backups:**
-  - `/srv/eldrun/shared`, homes, `/var/lib/eldrun-gateway`,
-    **`/var/lib/eldrun-auth`** and **`/var/lib/eldrun-calendar`**.
+  - `/srv/tabtivity/shared`, homes, `/var/lib/tabtivity-gateway`,
+    **`/var/lib/tabtivity-auth`** and **`/var/lib/tabtivity-calendar`**.
   - A backup can't open anyone's mail or saved passwords: their key lives
     only in memory and on the users' devices (§6.8).
   - A restore must keep uids, gids and ACLs.
@@ -1088,22 +1088,22 @@ terminal on the phone takes that tab over from any other viewer (§3.5).
 
 ### 8.1 Install and packaging
 
-- **Build targets:** `eldrun-gateway`, `eldrun-serverd`, `eldrun-admin-helper`,
-  `eldrun-hub`, `eldrun-calendar` and `eldrun-auth-keeper`, all Linux x86_64 and aarch64, plus
-  the web bundle. Until P3 the single-user server is the existing `eldrun`
+- **Build targets:** `tabtivity-gateway`, `tabtivity-serverd`, `tabtivity-admin-helper`,
+  `tabtivity-hub`, `tabtivity-calendar` and `tabtivity-auth-keeper`, all Linux x86_64 and aarch64, plus
+  the web bundle. Until P3 the single-user server is the existing `tabtivity`
   binary in `--mobile-host` mode.
 - **What ships:** a `.deb`/`.rpm`, or a tarball plus an install script. It
   carries:
   - the systemd units and slices;
   - the polkit rule for the helper;
-  - the service users (`eldrun-gw`, `eldrun-hub`, `eldrun-cal`,
-    `eldrun-auth`, `eldrun-cli`);
-  - `/opt/eldrun/agents`;
+  - the service users (`tabtivity-gw`, `tabtivity-hub`, `tabtivity-cal`,
+    `tabtivity-auth`, `tabtivity-cli`);
+  - `/opt/tabtivity/agents`;
   - the web bundle.
 - **Signing:** the server artifacts go through the same release-signing
   lane as the desktop (`docs/context/release_signing.md`).
 - **Migrating an existing desktop user** to a server goes one project at a
-  time through `project_transfer` (`.eldrunproj`); agent logins are redone
+  time through `project_transfer` (`.tabtivityproj`); agent logins are redone
   on the server (Q13).
 
 ---
@@ -1117,18 +1117,18 @@ terminal on the phone takes that tab over from any other viewer (§3.5).
 | Remote/VPN auto-connect never prompts | OpenVPN is `admin`. Per-user remote projects work by SSH from the daemon; auto-connect needs keys (an `ssh-agent` per daemon), never a stored password. |
 | Hardened git, `exec_trust` | Hold; shared clones refuse hooked verbs, and config sanitizing fails closed (§6.5). |
 | `agent_fence` fails closed; the Host session is the one unfenced agent | Holds, provided user namespaces work (§8). The fence also hides other shared hubs (§6.3). The Host session is offered (**Q6**): under a per-user uid it equals the user's own SSH login, with no sudo. |
-| Agents live only in Eldrun (agent homes, `agent_auth`, `agent_global`) | Holds per user, unchanged: each user signs in to their own CLIs (§5). Config, skills, hooks and MCP entries stay per user and per scope. CLI binaries come from the user's own install or the server-wide root. |
+| Agents live only in Tabtivity (agent homes, `agent_auth`, `agent_global`) | Holds per user, unchanged: each user signs in to their own CLIs (§5). Config, skills, hooks and MCP entries stay per user and per scope. CLI binaries come from the user's own install or the server-wide root. |
 | `services/` stays `AppHandle`-free | **Not true today:** seven modules and `terminal/mod.rs` break it. P1 fixes them first (§3.2). |
 | `mobile_control`: raw ids/paths never cross the browser API | Holds for the phone API. **Relaxed** for the web desktop client toward its own user, on a separate route prefix (§4.3). Never crosses users. |
 | Terminal kill reaps the whole subtree | Holds. Stopping the user's slice reaps everything, and a daemon restart does not touch agents (§3.1). |
 | Remoteness explicit; `services::remote` source of truth | Holds; "remote" now means remote *from the server*. Remote projects can't be shared in v1 (§6.2). |
 | Containers: one per local project via `services::sandbox` | `admin`/off in v1: the Docker socket is root on the host. Rootless Podman per user is **P5**. |
 | `hpc_hosts`, `careful_hosts` | Hold, per user. |
-| Permission mode is the CLI's own; Eldrun injects none | Holds. Neither a user's login nor an admin-provided credential carries a mode. |
+| Permission mode is the CLI's own; Tabtivity injects none | Holds. Neither a user's login nor an admin-provided credential carries a mode. |
 | Gate remote probes on connected; gate hidden panes | Hold, plus the global server-link gate and poller pause (§3.5). |
 | Never animate blurred `box-shadow`; WebKitGTK paths | Irrelevant in other browsers; kept for the Tauri shell. |
 | All strings through `i18n.ts`; `UntestedTag` on new surfaces | Hold for every new surface in this plan. |
-| Eldrun never edits another app's paths or config | The admin helper edits **system** config (users, ACLs, units) on a server Eldrun is administering. That needs an explicit, documented exception, as sync plan **Q2** found for Radicale. |
+| Tabtivity never edits another app's paths or config | The admin helper edits **system** config (users, ACLs, units) on a server Tabtivity is administering. That needs an explicit, documented exception, as sync plan **Q2** found for Radicale. |
 
 ---
 
@@ -1173,7 +1173,7 @@ comes.
 
 **P3: multi-user.**
 - Finish the crate split. Split `host.rs` into the gateway (auth, router,
-  push) and the daemon (data paths), and build `eldrun-serverd` on
+  push) and the daemon (data paths), and build `tabtivity-serverd` on
   `CoreCtx`.
 - The admin helper and its hard rules, the per-user slices and units, the
   tmux unit, `0700` homes, the invite flow, per-user device keys verified by
@@ -1203,14 +1203,14 @@ comes.
 
 **P4: sharing.**
 - *P4a, viewer shares:* hub creation, named-user ACLs, clone-to-add, "Shared
-  with me", presence, revocation, the fence tmpfs over `/srv/eldrun/shared`,
+  with me", presence, revocation, the fence tmpfs over `/srv/tabtivity/shared`,
   the `safe.directory` pin, and session files kept out of commits. Remote,
   VM and container projects are refused.
-- *P4b, editor shares, **gated on §6.5**:* `eldrun-hub` with ref rules, the
+- *P4b, editor shares, **gated on §6.5**:* `tabtivity-hub` with ref rules, the
   agent-facing surface review at merge time, hooked verbs refused in
   shared clones, sanitizing that fails closed, and trust re-asked on merge.
 - *P4c, calendar and todo sharing* (independent of P4a/b; needs only P3):
-  `eldrun-calendar`, the move-on-first-share, viewer/editor roles, link
+  `tabtivity-calendar`, the move-on-first-share, viewer/editor roles, link
   stripping, per-viewer alarms, read-only agent access, and the sharing
   switch.
   - *Exit:* A opens a calendar's events to B as viewer and its todo list to
@@ -1258,10 +1258,10 @@ i18n and `UntestedTag` rows land inside each phase, never after it.
   - an editor can't move another member's refs or `main`;
   - revoking stops the next fetch;
   - the hub's config and hooks can't be written by any member;
-  - `.eldrun/` never reaches a commit;
+  - `.tabtivity/` never reaches a commit;
   - one scope's fence can't read another project's hub.
 - **Calendar/todo sharing tests (P4c):**
-  - a non-member's request to `eldrun-calendar` is refused, and so is a
+  - a non-member's request to `tabtivity-calendar` is refused, and so is a
     viewer's write;
   - two editors' concurrent edits converge by revision;
   - mail and file links never reach the service;
@@ -1307,7 +1307,7 @@ option is enabled for it (§5.4):
   token revoked?
 
 **Q3. Editing together.** *Answered (user, 2026-09-29):* per-member clones
-through the `eldrun-hub` bare repo (§6). A shared tree with worktrees stays a
+through the `tabtivity-hub` bare repo (§6). A shared tree with worktrees stays a
 P5 option and is never the default.
 
 **Q4. The tab set across a user's clients.** *Answered (user, 2026-09-29):*
@@ -1352,13 +1352,13 @@ and offline projects, server projects open in the browser client, and both
 can run at once. One window holding both waits for the P5 shell (§7.2).
 
 **Q13. Migrating an existing user.** *Answered (user, 2026-09-29):* one
-project at a time through `project_transfer` (`.eldrunproj`); the user
+project at a time through `project_transfer` (`.tabtivityproj`); the user
 chooses what moves, and agent logins are redone on the server. No
 whole-`state_dir` import in v1.
 
 **Q14. The sync plan's shared calendar and board.** *Answered (user,
 2026-09-29):* a user can open a calendar or a todo list to other users, as
-viewer or editor, through `eldrun-calendar`. Mail is never shared (§6.7).
+viewer or editor, through `tabtivity-calendar`. Mail is never shared (§6.7).
 
 ---
 
@@ -1371,11 +1371,11 @@ viewer or editor, through `eldrun-calendar`. Mail is never shared (§6.7).
 - **No request of one user ever reaches another user's daemon.**
 - **No shared mail, ever.** Calendars and todo lists are private unless
   their owner opens one to named users (§6.7).
-- **No mode Eldrun chooses for an agent** (permission-mode invariant).
+- **No mode Tabtivity chooses for an agent** (permission-mode invariant).
 - **No Windows or macOS server.**
 - **No self-signed-certificate override**, in the gateway as everywhere.
 - **No team dashboards** of usage or time. Both stay per person.
-- **The desktop app does not become server-dependent.** Standalone Eldrun
+- **The desktop app does not become server-dependent.** Standalone Tabtivity
   remains the default product.
 
 ---
@@ -1391,7 +1391,7 @@ discussion round.** All three agreed on every change below.
   "one headless owner", with group 0 ahead of the read-only ports (§1.3,
   §3.4, §10).
 - **P2 grows out of the sidecar**, which is already a headless per-user
-  `eldrun_lib` process. The gateway/daemon split and the crate split move to
+  `tabtivity_lib` process. The gateway/daemon split and the crate split move to
   P3. Nothing is exposed beyond localhost before the class table and the CSP
   review.
 - **Sharing is a bare hub and per-member clones**, replacing the
@@ -1410,7 +1410,7 @@ discussion round.** All three agreed on every change below.
   - the fence hides other shared hubs;
   - host-shared channels are added to the threat model;
   - user content is served from a sandboxed origin (§3.1, §4).
-- **tmux** runs on `-L eldrun` in its own unit inside a per-user slice. A
+- **tmux** runs on `-L tabtivity` in its own unit inside a per-user slice. A
   daemon restart no longer kills agents, and security releases restart
   daemons at once (§3.1, §8).
 - **Transport:** per-client terminal size, offset resume, bounded queues,
@@ -1423,7 +1423,7 @@ discussion round.** All three agreed on every change below.
   - the command split is 388/57/211 of 658 registered;
   - host.rs has 49 routes;
   - the fsync is half done;
-  - the worktree root is `.eldrun/worktrees`;
+  - the worktree root is `.tabtivity/worktrees`;
   - CI can create users;
   - the units are system templates, with no linger;
   - Q10 is answered;
@@ -1437,7 +1437,7 @@ discussion round.** All three agreed on every change below.
   that keeps the review's hardening.
 - **Q7/Q14:** mail, calendar and todo are on the server, per user. Mail is
   always private. A calendar or todo list can be opened to other users
-  through a new `eldrun-calendar` service (P4c). The admin and each user can
+  through a new `tabtivity-calendar` service (P4c). The admin and each user can
   switch each feature off (§6.7).
 - **Q5 (delegated):** a device-released key, held only in the kernel
   keyring, seals mail and the opt-in saved passwords. It was chosen over a
@@ -1456,10 +1456,10 @@ discussion round.** All three agreed on every change below.
   moves from `off` to `core` under the user's own uid (§3.3, §9); TLS is
   Tailscale Serve only; GPUs are first come, first served; standalone and
   server run side by side as separate apps; migration is per project via
-  `.eldrunproj` (§8).
+  `.tabtivityproj` (§8).
 
 - **Follow-ups outside this file, done 2026-09-29:**
-  - `docs/eldrun_remote_plan.md` is marked superseded;
+  - `docs/tabtivity_remote_plan.md` is marked superseded;
   - `docs/mcp_control_plan.md` decision 2 gained a "revisit when P1 lands"
     note;
   - the summary line in `todo/group-z-server.md` now matches §5–§6.7.

@@ -77,6 +77,8 @@
         "type": "downloadBootstrapper"
       }
     },
-    "category": "Development"
+    "category": "Development",
+    "shortDescription": "A tab for each project. A tab for everything in it.",
+    "longDescription": "Tabtivity keeps each project in a tab of its own, and every agent, terminal, file, mail and viewer of that project in a tab inside it."
   }
 }

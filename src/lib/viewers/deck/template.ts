@@ -4,12 +4,12 @@ import { BRAND } from "../../brand";
  *
  * This is the "from blank" entry point: it exists so that **making a deck does
  * not require knowing TeX**, while leaving a real `.tex` on disk for anyone who
- * does. Eldrun never writes to it again — the deck's layers live in the sidecar —
+ * does. Tabtivity never writes to it again — the deck's layers live in the sidecar —
  * so the author owns the file from the moment it is created.
  *
  * Beamer is used because it is what an academic audience already has installed
- * and already knows how to edit; nothing in Eldrun understands `\frame` or
- * `\pause`, and nothing needs to. The one Eldrun-specific choice is `aspectratio=169`:
+ * and already knows how to edit; nothing in Tabtivity understands `\frame` or
+ * `\pause`, and nothing needs to. The one Tabtivity-specific choice is `aspectratio=169`:
  * the deck's normalized geometry adapts to any page box, but a 4:3 default in
  * 2026 is a worse first impression than any layer editor can rescue.
  */

@@ -28,7 +28,7 @@ const MENU_ID = "settings";
  *
  * Every entry is a `window` event, so this component owns no dialog: the
  * settings dialog stays mounted in `ProjectSwitcher`, which already listened
- * for `eldrun:open-settings` (once the Local Model button's door into a
+ * for `tabtivity:open-settings` (once the Local Model button's door into a
  * specific panel; that button now opens the Models & agents overlay instead)
  * long before the gear left it.
  */

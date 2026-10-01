@@ -44,7 +44,7 @@ describe("newTmuxSessionName", () => {
   });
 
   it("embeds the tab kind AFTER the scope separator so the project prefix is untouched", () => {
-    // The kind token sits at the front of the uuid half, so the `eldrun-<scope>--`
+    // The kind token sits at the front of the uuid half, so the `tabtivity-<scope>--`
     // prefix the Sessions view filters by is exactly as it was before the token.
     expect(newTmuxSessionName("p1", "agent")).toMatch(new RegExp(String.raw`^${BRAND.slug}-p1--agent-`));
     expect(newTmuxSessionName("p1", "shell")).toMatch(new RegExp(String.raw`^${BRAND.slug}-p1--shell-`));
@@ -216,7 +216,7 @@ describe("attach tab restore", () => {
 
   it("mints a stable tmuxSession for a restorable remote agent tab, in the shell-tab format", () => {
     // A resumable remote agent tab (claude, with a sessionId) persisted before the
-    // feature: on restore it mints a persisted name in the SAME eldrun-<scope>--<uuid>
+    // feature: on restore it mints a persisted name in the SAME tabtivity-<scope>--<uuid>
     // format shell tabs use, so it reattaches on every subsequent relaunch.
     useTabsStore.getState().loadFromLayout(
       [

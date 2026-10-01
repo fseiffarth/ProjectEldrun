@@ -1,4 +1,4 @@
-//! Full project export / import — moving one Eldrun project to another computer.
+//! Full project export / import — moving one Tabtivity project to another computer.
 //!
 //! A project is not just a folder. Its files live wherever the user put them,
 //! but its *identity* (`projects.json` entry: git label, remote spec, compute
@@ -7,16 +7,16 @@
 //! (`time_summary.json`) and its box membership (`boxes.json`) are all elsewhere
 //! — four stores keyed by project id. Copying the folder to a second machine and
 //! importing it there rebuilds none of that; the user re-answers every question
-//! Eldrun ever asked them about the project. This module is the one operation
+//! Tabtivity ever asked them about the project. This module is the one operation
 //! that carries all five pieces at once.
 //!
 //! ## The bundle
 //!
-//! A `.eldrunproj` file is a zip (same crate `commands::fs` already extracts
+//! A `.tabtivityproj` file is a zip (same crate `commands::fs` already extracts
 //! dropped archives with) laid out as:
 //!
 //! ```text
-//! eldrun-export.json   the manifest — everything that is NOT files
+//! tabtivity-export.json   the manifest — everything that is NOT files
 //! dir/…                a local project's folder
 //! state/…              a remote project's local state dir (project.json only)
 //! mirror/…             a remote project's local mirror tree
@@ -24,10 +24,10 @@
 //!
 //! ## Which half is trusted
 //!
-//! The manifest is written by Eldrun and holds the registry entry, the
+//! The manifest is written by Tabtivity and holds the registry entry, the
 //! `project.json` body and the tab layout. The payload sections are just files.
 //! A bundle is a *file*, though — it can be mailed, dropped in a shared folder,
-//! or fetched from anywhere — so "written by Eldrun" is a claim, not a fact, and
+//! or fetched from anywhere — so "written by Tabtivity" is a claim, not a fact, and
 //! import treats the whole thing as untrusted input:
 //!
 //! - the tab layout goes through the same sanitizer a cloned repository's does
@@ -49,7 +49,7 @@
 //! ## What deliberately does not travel
 //!
 //! - **Passwords / tokens.** They live in the OS keychain keyed by host, never
-//!   in any file Eldrun writes (`services::remote_credentials`). The remote spec
+//!   in any file Tabtivity writes (`services::remote_credentials`). The remote spec
 //!   travels; the secret is re-entered on the new machine.
 //! - **Host-bound sync state** (`sync.json`, `git_peer.json`). Both describe a
 //!   relationship between *this* machine's mirror and a host; carrying them to a
@@ -80,14 +80,14 @@ use super::projects::{
     resolve_remote_mirror, sanitize_name, uuid_v4, validate_project_id, ProjectSite,
 };
 
-/// Bundle format version. Bumped only for a change an older Eldrun could not
+/// Bundle format version. Bumped only for a change an older Tabtivity could not
 /// read correctly; import refuses anything newer than it understands, because
 /// silently dropping a section it does not know about is how a "full" export
 /// stops being full without anyone noticing.
 pub const BUNDLE_FORMAT: u32 = 1;
 
 /// The manifest entry name inside the zip. Its presence is what makes a zip an
-/// Eldrun project bundle.
+/// Tabtivity project bundle.
 pub const BUNDLE_MANIFEST: &str = crate::brand::EXPORT_MANIFEST;
 
 /// The extension the save dialog suggests. A plain `.zip` would also import
@@ -117,9 +117,9 @@ const PROGRESS_EVENT: &str = "project-export";
 /// everything else in the tree put together.
 ///
 /// A near-twin of `commands::search`'s and `commands::fs`'s skip lists, and
-/// deliberately not shared with them: those two also skip `.git` and `.eldrun`
+/// deliberately not shared with them: those two also skip `.git` and `.tabtivity`
 /// unconditionally, and both of those *must* be exportable — `.git` is the
-/// project's history and `.eldrun` is its scaffold. The overlap is the cheap
+/// project's history and `.tabtivity` is its scaffold. The overlap is the cheap
 /// half; the difference is the whole point.
 const REBUILDABLE_DIRS: &[&str] = &[
     "node_modules",
@@ -155,12 +155,12 @@ pub struct BundleContents {
     pub bytes: u64,
 }
 
-/// `eldrun-export.json`. Everything about the project that is not a file.
+/// `tabtivity-export.json`. Everything about the project that is not a file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportManifest {
     pub format: u32,
-    /// The Eldrun that wrote it — informational, for a "made by a newer build"
+    /// The Tabtivity that wrote it — informational, for a "made by a newer build"
     /// message that is more useful than a bare version number mismatch.
     pub app_version: String,
     pub exported_at: String,
@@ -309,7 +309,7 @@ pub struct ImportBundleRequest {
     #[serde(default)]
     pub name: Option<String>,
     /// Parent folder the project's tree lands in. Absent → the managed
-    /// `eldrun/projects/` root.
+    /// `tabtivity/projects/` root.
     #[serde(default)]
     pub target_parent: Option<String>,
     /// Remote bundles only: parent for the recreated local mirror.
@@ -535,7 +535,7 @@ fn tally(root: &Path) -> Result<SizeTally, String> {
     Ok(out)
 }
 
-/// A filename for the save dialog: `name-YYYY-MM-DD.eldrunproj`.
+/// A filename for the save dialog: `name-YYYY-MM-DD.tabtivityproj`.
 pub fn suggested_bundle_name(name: &str) -> String {
     let safe = sanitize_name(name);
     let stem = if safe.is_empty() { "project" } else { &safe };
@@ -980,7 +980,7 @@ fn open_bundle(path: &str) -> Result<(Bundle, ExportManifest), String> {
     });
     let manifest: ExportManifest = {
         let entry = zip.by_name(&manifest_name).map_err(|_| {
-            concat!("That file is not an ", crate::app_name!(), " project export (no ", crate::app_slug!(), "-export.json inside)").to_string()
+            concat!("That file is not a ", crate::app_name!(), " project export (no ", crate::app_slug!(), "-export.json inside)").to_string()
         })?;
         serde_json::from_reader(entry).map_err(|e| format!("read {BUNDLE_MANIFEST}: {e}"))?
     };
@@ -1613,7 +1613,7 @@ mod tests {
             zip.finish().unwrap();
         }
         let err = open_bundle(path.to_str().unwrap()).unwrap_err();
-        assert!(err.contains(concat!("not an ", crate::app_name!(), " project export")), "{err}");
+        assert!(err.contains(concat!("not a ", crate::app_name!(), " project export")), "{err}");
     }
 
     /// The zip-slip guard, on the extractor this module owns: an entry naming

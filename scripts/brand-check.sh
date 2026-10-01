@@ -11,8 +11,7 @@
 #
 # What is checked: every tracked text file's content, and every tracked path,
 # case-insensitively, for the name's lowercase form — the current one and the
-# old one (`app_slug!` / `legacy_slug!` in brand.rs; the same word until the
-# rename's flip).
+# old one (`app_slug!` / `legacy_slug!` in brand.rs).
 #
 # What is let through:
 #   * a path on the ALLOW list below. Each entry says why it is there and which
@@ -20,8 +19,10 @@
 #   * a line carrying `brand-check: allow` (with the reason), or the line right
 #     after one. For the few spellings no constant can reach — a serde key, an
 #     `include_bytes!` path;
-#   * comments (see COMMENTS_ARE_PROSE). They tell the code's history and are
-#     prose like the docs; the flip rewrites both with one sed.
+#   * the current name in a comment: comments are prose, like the docs. The
+#     OLD name in a comment is reported (see COMMENTS_ARE_PROSE);
+#   * the release repository's name (`app_repo!` in brand.rs), which carries
+#     the old name until the repository itself is renamed.
 #
 # Runs in CI next to privacy-check.sh, and by hand with the other gates.
 set -euo pipefail
@@ -31,9 +32,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT/scripts/lib/brand.sh"
 cd "$ROOT"
 
-# Phase 3 (the flip): set to 0 once the prose sed has rewritten the comments,
-# so that a comment naming the old brand fails like any other line.
-COMMENTS_ARE_PROSE=1
+# 0 since the rename's prose pass rewrote the comments: a comment may name the
+# app (comments are prose, like the docs), but one that still names the OLD
+# brand fails like any other line. 1 lets comments say anything.
+COMMENTS_ARE_PROSE=0
 
 # ---------------------------------------------------------------------------
 # The allowlist. One bash `case` pattern per entry (`*` also matches `/`),
@@ -41,21 +43,23 @@ COMMENTS_ARE_PROSE=1
 # keep it as narrow as the reason: a whole directory only where every file in
 # it has the same reason.
 #
-# "flip" = the name-carrying spot `scripts/brand-flip.sh` rewrites in the
-# phase-3 flip commit; "prose" = text the phase-3 sed rewrites. Entries marked
-# "stays" survive release B.
+# Since the flip (release A) the entries fall in two kinds: places that MUST
+# spell the current name themselves (they stay for good), and places that
+# still spell the OLD name on purpose — marked "until release B", the cleanup
+# release that deletes the old-name lookups.
 # ---------------------------------------------------------------------------
 ALLOW=(
   # --- The brand modules: the one place per language the name is written. ---
-  # Stays. After the flip they hold the new name and the LEGACY_* old one.
+  # Stays. They hold the current name and the LEGACY_* old one.
   'src-tauri/src/brand.rs'
   'src/lib/brand.ts'
 
-  # --- Prose: documentation and notes. Phase 3 (prose sed). -----------------
-  # History prose ("formerly …") in README/changelog stays after release B.
-  # `*.md` covers README, DOCUMENTATION, AGENTS, todo/, docs/help, …, and the
-  # frozen scaffold texts in src-tauri/src/commands/scaffold_history/, which
-  # stay byte-identical for good (they recognise an unedited copy in a project).
+  # --- Prose: documentation and notes. Stays. -------------------------------
+  # `*.md` covers README, DOCUMENTATION, AGENTS, todo/, docs/help, …; the
+  # history they tell ("formerly …", the rename's handoffs, the frozen
+  # file-map rationale) keeps the old name. It also covers the frozen scaffold
+  # texts in src-tauri/src/commands/scaffold_history/, which stay
+  # byte-identical for good (they recognise an unedited copy in a project).
   '*.md'
   # The docs folder's non-markdown files: sample launchers and desktop entries.
   'docs/*'
@@ -68,12 +72,15 @@ ALLOW=(
   # Signed-release test fixtures (checksums over asset names). Stays.
   'src-tauri/src/services/app_update.rs'
   # Recorded state and inputs older builds wrote, for round-trip tests. Stays
-  # (the phase-2 migrator's tests read old-shaped data on purpose).
+  # (the migrator's tests read old-shaped data on purpose).
   'test-fixtures/*'
   'src/__tests__/fixtures/*'
   'src-tauri/tests/fixtures/*'
 
-  # --- Flip points: package and bundle metadata. Phase 3 (brand-flip.sh). ---
+  # --- Flip points: package and bundle metadata (scripts/brand-flip.sh). -----
+  # They spell the current name because nothing can fill it in. Stays.
+  # tauri.conf.json also names the OLD deb package it replaces (until
+  # release B).
   'Cargo.toml'
   'Cargo.lock'
   'src-tauri/Cargo.toml'
@@ -85,59 +92,61 @@ ALLOW=(
   'src-tauri/gen/*'
   'src-tauri/entitlements.plist'
   # Static pages and manifests no module can fill in. BrandMirror.test.ts
-  # holds each to the brand module. Phase 3.
+  # holds each to the brand module. Stays. index.html also reads the storage
+  # keys an older build wrote, before any module runs (until release B).
   'index.html'
   'mobile-web/index.html'
   'mobile-web/terminal-preview.html'
   'mobile-web/public/manifest.webmanifest'
   'mobile-web/public/sw.js'
-  # Artwork: the name in <title>/aria-label and the wordmark. Phase 3.
+  # Artwork: the name in <title>/aria-label and the wordmark. Stays.
   '*.svg'
-  # Blob ids of reviewed binaries, listed with their paths. Phase 3, when the
-  # renamed files are re-recorded.
+  # Blob ids of reviewed binaries, with what was seen in each. A record: the
+  # old entries keep the old name. Stays.
   'scripts/privacy-reviewed-binaries.txt'
 
-  # --- Flip points: files NAMED after the app. Phase 3 (renamed, with a ------
-  # forwarding stub under the old name until release B). Their contents read
-  # the name through scripts/lib/brand.sh already, unless listed further down.
+  # --- Files NAMED after the app. --------------------------------------------
+  # The launchers, the Windows dev launcher and the send command's static
+  # scripts (embedded with `include_bytes!`, so they run with no repo around
+  # them and spell the names themselves). Stays.
+  "start-$APP_SLUG-*.sh"
+  "scripts/$APP_SLUG-dev.cmd"
+  "scripts/$APP_SLUG-send.sh"
+  "scripts/$APP_SLUG-send.ps1"
+  "scripts/$APP_SLUG-send.cmd"
+  # Their forwarding stubs under the old name, for desktop entries and habits
+  # that still point there. Until release B.
   # Spelled with the helper's old-name variable: this script is checked too.
-  "start-$APP_LEGACY_SLUG-dev-build.sh"
-  "start-$APP_LEGACY_SLUG-dev-sandbox.sh"
-  "start-$APP_LEGACY_SLUG-tauri-hotreload.sh"
+  "start-$APP_LEGACY_SLUG-*.sh"
+  "scripts/$APP_LEGACY_SLUG-dev.cmd"
+  # The README's picture of the window. Not renamed: a binary under a new path
+  # needs a fresh privacy review, and the picture shows the old name anyway.
+  # Until it is retaken.
   "screenshots/$APP_LEGACY_SLUG-current.png"
 
-  # --- Flip points: tooling that cannot source the brand helper. Phase 3. ---
-  # Git hooks: run in any state of the tree, so they stay self-contained. The
-  # plan renames their environment variables at the flip.
+  # --- Tooling that cannot source the brand helper. --------------------------
+  # Git hooks: run in any state of the tree, so they stay self-contained, and
+  # read their switches under both names (the old one until release B).
   '.githooks/*'
-  # CI: artifact names, the dmg rename and release-note text. Phase 3; the
-  # repository URL in it moves in phase 4.
+  # CI: artifact names, the dmg name and release-note text. Stays.
   '.github/*'
   # The sandbox image's build context: runs inside `docker build`, away from
-  # the repo. Phase 3.
+  # the repo. Stays.
   'docker/*'
-  # Ignore lists name the app's folders literally. Phase 3.
+  # Ignore lists name the app's folders literally, under both names (the old
+  # ones until release B).
   '.gitignore'
   'eslint.config.js'
-  # The shims the app copies into agent homes (`include_bytes!`, so they run
-  # with no repo around them), and the Windows dev launcher. Phase 3 renames
-  # them and ships the old send name as a logging alias (phase 2 builds it).
-  "scripts/$APP_LEGACY_SLUG-send.sh"
-  "scripts/$APP_LEGACY_SLUG-send.ps1"
-  "scripts/$APP_LEGACY_SLUG-send.cmd"
-  "scripts/$APP_LEGACY_SLUG-dev.cmd"
-  # Standalone scripts that still spell the name, the state dir or a persisted
-  # key themselves. Phase 2 for the lookups (state dir and the phone-host
-  # settings key need the old-name fallback there), phase 3 for the text.
+  # Standalone scripts that spell the name, the state dir or a persisted key
+  # themselves: the phone-install scripts are embedded and written into the
+  # state dir; the others are run by hand with no need for the helper. Stays.
   'scripts/install_phone.sh'
   'scripts/install_phone.ps1'
   'scripts/take-screenshot.sh'
   'scripts/copilot-probe.py'
   'scripts/parse-qa.mjs'
-  'scripts/release-signing-keygen.sh'
-  # Finds the app's own block in Cargo.lock by package name. Phase 3.
-  'scripts/bump-version.sh'
-  # The privacy scan's own per-user config dir and a fixture address. Phase 3.
+  # The privacy scan's per-user config dir (current name; the old one carries
+  # an allow marker).
   'scripts/privacy-check.sh'
 
   # --- The rename's own tooling. Removed when the rename is finished. --------
@@ -159,6 +168,9 @@ needle="$APP_LEGACY_SLUG"
 if [ "$APP_SLUG" != "$APP_LEGACY_SLUG" ]; then
   needle="$APP_LEGACY_SLUG|$APP_SLUG"
 fi
+# The release repository's name, lowercase: not a spelling of the app's name.
+repo_name="$(_brand_sh_macro app_repo)"
+repo_name="$(printf '%s' "${repo_name#*/}" | tr '[:upper:]' '[:lower:]')"
 
 # Index of the ALLOW entry covering a path, or nothing.
 allow_index() {
@@ -204,7 +216,7 @@ if [ "${#scan[@]}" -gt 0 ]; then
   # reporting: `//` and `#` open a comment only at the start of a line or
   # after whitespace (not the `//` of a URL in a string, not `$#`), and `/*`
   # only there or after `{` / `(` (not the `/*` of a glob like `**/*.ts`).
-  hits="$(awk -v needle="$needle" -v prose="$COMMENTS_ARE_PROSE" '
+  hits="$(awk -v needle="$needle" -v legacy="$APP_LEGACY_SLUG" -v repo="$repo_name" -v prose="$COMMENTS_ARE_PROSE" '
     function style_of(name,   base, ext) {
       base = name; sub(/^.*\//, "", base)
       if (base !~ /\./ || base ~ /^\.[^.]*$/ || base == "Dockerfile") return "hash"
@@ -252,7 +264,6 @@ if [ "${#scan[@]}" -gt 0 ]; then
       }
     }
     function strip(s) {
-      if (!prose) return s
       if (style == "c") return strip_c(s)
       if (style == "xml") return strip_xml(s)
       if (style == "hash") { if (match(s, /(^|[ \t])#/)) return substr(s, 1, RSTART - 1); return s }
@@ -262,8 +273,11 @@ if [ "${#scan[@]}" -gt 0 ]; then
     FNR == 1 { inblock = 0; marked = 0; style = style_of(FILENAME) }
     {
       mark = index($0, "brand-check: allow") > 0
-      code = strip($0)
-      if (!mark && !marked && tolower(code) ~ needle) printf "%s:%d: %s\n", FILENAME, FNR, $0
+      code = tolower(strip($0))
+      whole = tolower($0)
+      if (repo != "") { gsub(repo, "", code); gsub(repo, "", whole) }
+      # Code may spell neither name; a comment may not spell the old one.
+      if (!mark && !marked && (code ~ needle || (!prose && whole ~ legacy))) printf "%s:%d: %s\n", FILENAME, FNR, $0
       marked = mark
     }
   ' "${scan[@]}")"

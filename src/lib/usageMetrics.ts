@@ -50,7 +50,7 @@ export function sub(prefix: string, leaf: string): string {
  * (`claude`), or the model name for a local one (`qwen3:8b`).
  *
  * A `local_agent` tab's model is not a field on the tab — it is carried in the
- * env Eldrun sets when spawning it (`ELDRUN_LOCAL_MODEL`, set at both local-model
+ * env Tabtivity sets when spawning it (`TABTIVITY_LOCAL_MODEL`, set at both local-model
  * launch routes in `TabBar`/`NewTabMenu`), with `VIBE_ACTIVE_MODEL` as the
  * fallback for the vibe route. Returns `null` for a tab that is not an agent.
  *

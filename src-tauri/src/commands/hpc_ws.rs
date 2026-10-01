@@ -11,7 +11,7 @@
 //! so nothing here is site-specific: the host is *asked* what it offers
 //! (`ws_list -l`) and the tooling's own output is parsed.
 //!
-//! This module is what lets Eldrun put a remote project's tree **in a workspace
+//! This module is what lets Tabtivity put a remote project's tree **in a workspace
 //! instead of `$HOME`** before a single byte is uploaded or synced — the wizard's
 //! Workspace step simply makes the allocated path the project's remote root, so
 //! every existing transport (SFTP upload, byte-sync, git lockstep) lands on the
@@ -118,7 +118,7 @@ pub struct HpcWsAllocate {
 
 /// Run `script` at the target and return its stdout. A project target reuses
 /// `commands::slurm`'s dispatch verbatim (pooled ControlMaster for a remote
-/// project, a local shell for a login node Eldrun runs on); a bare-host target
+/// project, a local shell for a login node Tabtivity runs on); a bare-host target
 /// authenticates ad-hoc like `global_machine_usage_check`.
 fn run_ws_script(target: &HpcWsTarget, script: &str) -> Result<String, String> {
     if let Some(dir) = target
@@ -607,7 +607,7 @@ pub async fn hpc_ws_release(
 /// `$HOME` (code, git) and only the bulk data lives in the workspace, so a job
 /// script can write to `./<link_name>` without knowing the site's path.
 ///
-/// **The link is for the host's own tools, not for Eldrun's byte-sync**, which
+/// **The link is for the host's own tools, not for Tabtivity's byte-sync**, which
 /// never follows a symlink (`remote_sync::walk_host_files`, guard G3): files the
 /// job writes under it are not mirrored. That is exactly why the wizard's default
 /// is instead to put the project *in* the workspace, where every transport
@@ -753,7 +753,7 @@ pub struct HpcAnchor {
     pub link: Option<String>,
 }
 
-/// A `$HOME`-relative anchor location (`eldrun/my-project`): plain path segments,
+/// A `$HOME`-relative anchor location (`tabtivity/my-project`): plain path segments,
 /// no absolute path, no `..`, no metacharacters. Validated rather than merely
 /// quoted so a slip can't write outside the user's home.
 fn validate_anchor_rel(rel: &str) -> Result<String, String> {
@@ -928,7 +928,7 @@ pub async fn hpc_ws_pull_logs(
 // ── Moving the project to another workspace (Phase 2) ────────────────────────
 
 /// Re-point a remote project's **primary** root at `new_root` — the action a
-/// workspace expiry makes inevitable, and which nothing else in Eldrun could do
+/// workspace expiry makes inevitable, and which nothing else in Tabtivity could do
 /// (a primary's `remote_path` is fixed at creation; the remote-machines hub's
 /// path field only adds worker hosts).
 ///

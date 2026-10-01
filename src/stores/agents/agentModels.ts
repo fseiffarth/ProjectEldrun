@@ -17,11 +17,11 @@ import { useTabsStore, type TabEntry } from "../tabs";
  *
  * The backend reads both from the agent's own transcript (`agent_tab_model` /
  * `agent_tab_last_prompt`, `services::agent_session`) — the CLIs tell their
- * hooks nothing about the model, Eldrun passes no model flag, and a prompt
- * typed into the terminal never passes through Eldrun as a prompt (keystrokes
+ * hooks nothing about the model, Tabtivity passes no model flag, and a prompt
+ * typed into the terminal never passes through Tabtivity as a prompt (keystrokes
  * reach the PTY, the TUI's input box edits them, only the agent knows what was
  * submitted), so the transcript is the one honest source for both. An agent
- * whose transcript Eldrun cannot read (Gemini, Qwen, Codex on a release that
+ * whose transcript Tabtivity cannot read (Gemini, Qwen, Codex on a release that
  * keeps no messages) falls back to the prompt echoed on the pane's own screen
  * (`lib/agents/prompt/echo`) — the same parse the phone's Focus chat does. They
  * are re-read whenever a tab starts a turn (the activity store's `busyByTab` edge
@@ -29,9 +29,9 @@ import { useTabsStore, type TabEntry } from "../tabs";
  * — the only moment the model can change), and on demand from the views that
  * show them, throttled so a 30-second tick and a 5-second phone poll cost one
  * tail read between them. A prompt that *changed* at a turn's start was
- * submitted by a route Eldrun did not see — typed into the terminal — and is
+ * submitted by a route Tabtivity did not see — typed into the terminal — and is
  * adopted into the prompt history (`lib/agents/prompt/adopt`), which is what the
- * prompt chart draws; one Eldrun sent itself is already there and is not
+ * prompt chart draws; one Tabtivity sent itself is already there and is not
  * recorded twice.
  */
 const REFRESH_FLOOR_MS = 10_000;
@@ -55,14 +55,14 @@ interface AgentModelsStore {
    *  line in front of this. */
   byTab: Record<string, string>;
   /** Composed PTY id → the last prompt the tab was given, one cleaned line,
-   *  however it was submitted. Absent when the transcript holds none Eldrun
+   *  however it was submitted. Absent when the transcript holds none Tabtivity
    *  can read. */
   promptByTab: Record<string, string>;
   /** Composed PTY id → the same tail the prompt above is the end of, oldest
    *  first, each with the transcript's own time. The phone's project overview
    *  draws the whole list under an agent card, so it is kept rather than
    *  reduced to its last entry — and it comes from the read that already
-   *  happens, not a second one. Absent for an agent whose transcript Eldrun
+   *  happens, not a second one. Absent for an agent whose transcript Tabtivity
    *  cannot read: the screen-echo fallback yields one line with no time, which
    *  belongs in `promptByTab` alone. */
   recentByTab: Record<string, TranscriptPrompt[]>;

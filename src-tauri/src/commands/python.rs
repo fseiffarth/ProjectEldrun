@@ -2,7 +2,7 @@
 //!
 //! Naming the interpreter is the whole problem. Running a project's script with a
 //! bare `python3` when its dependencies live in a venv fails with
-//! `ModuleNotFoundError`, and that reads to the user as "Eldrun's Run button is
+//! `ModuleNotFoundError`, and that reads to the user as "Tabtivity's Run button is
 //! broken" rather than "wrong interpreter" — so getting this right is what makes
 //! Run trustworthy at all.
 //!
@@ -57,7 +57,7 @@ fn auto_rank(kind: &str) -> u8 {
     match kind {
         "venv" => 0,   // in the project tree: unambiguous
         "poetry" => 1, // this project's env, per poetry itself
-        "active" => 2, // the shell Eldrun was launched from
+        "active" => 2, // the shell Tabtivity was launched from
         "pyenv" => 3,  // usually pinned by an in-tree .python-version
         "system" => 5,
         _ => 4, // "conda" (named): offered, never auto-selected
@@ -238,7 +238,7 @@ pub fn discover_local(dir: &Path) -> Vec<PyInterpreter> {
         }
     }
 
-    // 3. The environment Eldrun itself was launched inside.
+    // 3. The environment Tabtivity itself was launched inside.
     for (var, kind) in [("VIRTUAL_ENV", "active"), ("CONDA_PREFIX", "active")] {
         if let Ok(root) = std::env::var(var) {
             if root.is_empty() {

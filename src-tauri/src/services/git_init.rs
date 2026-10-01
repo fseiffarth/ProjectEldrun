@@ -1,8 +1,8 @@
-//! The default branch name for repositories **Eldrun creates**, and the one
+//! The default branch name for repositories **Tabtivity creates**, and the one
 //! place that policy is written down.
 //!
 //! Git's own built-in default is still `master`, and it only changes when a
-//! user has set `init.defaultBranch` — most have not. So every repo Eldrun
+//! user has set `init.defaultBranch` — most have not. So every repo Tabtivity
 //! created (project scaffold, scaffold repair, re-enabling git, the host repo a
 //! remote import seeds) started on `master`, and publishing pushes `HEAD`:
 //! `gh`/`glab` take the first branch they receive as the new repository's
@@ -36,7 +36,7 @@
 use std::path::Path;
 use std::process::Command;
 
-/// The branch new Eldrun repositories start on.
+/// The branch new Tabtivity repositories start on.
 pub const DEFAULT_BRANCH: &str = "main";
 
 /// `git init` for a remote shell: prefers `-b`, falls back for git < 2.28.

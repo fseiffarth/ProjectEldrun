@@ -4,7 +4,7 @@ interface LogoIconProps {
 }
 
 /**
- * Eldrun logo — a circuit "tree of life" inside a ring, crowned by a gold
+ * Tabtivity logo — a circuit "tree of life" inside a ring, crowned by a gold
  * compass star. Same geometry as `src/assets/logo.svg`.
  * Inlined (vs. an <img> src) so the ring/branch strokes can use `currentColor`
  * and stay legible across themes; the hexagon nodes and the star keep their

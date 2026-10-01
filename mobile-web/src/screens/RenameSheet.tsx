@@ -6,7 +6,7 @@ import { BRAND } from "../../../src/lib/brand";
 
 /** Rename one agent tab from the phone. The label is the only thing that
  * crosses: the tab is named by its opaque id, and the desktop resolves that
- * back onto the tab layout it owns. Nothing here works without desktop Eldrun
+ * back onto the tab layout it owns. Nothing here works without desktop Tabtivity
  * open, which is why the failure says so rather than "request failed". */
 export function RenameSheet({ tab, onClose, onRenamed }: {
   tab: TabRow;

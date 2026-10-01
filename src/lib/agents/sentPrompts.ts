@@ -1,5 +1,5 @@
 /**
- * Prompts Eldrun just typed into an agent tab (`sendSteeringPrompt`: the
+ * Prompts Tabtivity just typed into an agent tab (`sendSteeringPrompt`: the
  * Reader's composer, steering's prompt box), told to whoever shows that tab's
  * chat — the desktop Reader draws each one as sending at once, not only when
  * the CLI records it (a prompt queued while the agent works is recorded only

@@ -92,7 +92,7 @@ impl TerminalRegistry {
 
 fn tmux_attach_command(tmux_name: &str) -> CommandBuilder {
     // The sidecar is a headless service with a bare inherited PATH, so tmux is
-    // resolved on Eldrun's effective PATH (Homebrew's on a Mac, `~/.local/bin`)
+    // resolved on Tabtivity's effective PATH (Homebrew's on a Mac, `~/.local/bin`)
     // and the child gets that PATH too — the same tmux the desktop's sessions
     // were started by, since tmux refuses a client of another protocol version.
     // Absolute, so neither std's nor portable-pty's PATH lookup semantics matter.
@@ -121,14 +121,14 @@ fn tmux_attach_command(tmux_name: &str) -> CommandBuilder {
 
 /// A tmux attach only redraws its current screen. Capture the pane first so a
 /// phone's xterm buffer actually contains the shell history it is asked to
-/// scroll. One number with the tmux retention Eldrun sets on its sessions
+/// scroll. One number with the tmux retention Tabtivity sets on its sessions
 /// (`ssh_exec::TMUX_HISTORY_LINES`) and the browser terminal's `scrollback`
 /// (`PHONE_SCROLLBACK` in `mobile-web`): what tmux retains is what the replay
 /// carries and what the phone can hold.
 const MOBILE_SCROLLBACK_LINES: usize = crate::services::ssh_exec::TMUX_HISTORY_LINES as usize;
 
 fn tmux_capture_command(tmux_name: &str) -> Command {
-    // Eldrun's effective PATH, as for the attach (see `tmux_attach_command`).
+    // Tabtivity's effective PATH, as for the attach (see `tmux_attach_command`).
     let mut command = crate::paths::command_no_window("tmux");
     command.args([
         "-u",
@@ -693,7 +693,7 @@ mod tests {
         assert_eq!(command.get_env("TERM"), Some(OsStr::new("vt100")));
         assert_eq!(command.get_env("COLORTERM"), Some(OsStr::new("truecolor")));
         let argv = command.get_argv();
-        // The program is tmux resolved on Eldrun's PATH (absolute when installed).
+        // The program is tmux resolved on Tabtivity's PATH (absolute when installed).
         let program = std::path::Path::new(&argv[0]);
         assert_eq!(
             program.file_stem().and_then(OsStr::to_str),

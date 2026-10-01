@@ -1,12 +1,12 @@
 ---
 id: keyboard
-title: Keyboard shortcuts and Eldrun navigation
-keywords: [keyboard, shortcut, hotkey, keys, eldrun navigation, steering, chord, rebind, f1, cheat sheet, navigation]
+title: Keyboard shortcuts and Tabtivity navigation
+keywords: [keyboard, shortcut, hotkey, keys, tabtivity navigation, steering, chord, rebind, f1, cheat sheet, navigation]
 ---
 
-Every key below is a default — the Eldrun navigation keys included. Rebind any
+Every key below is a default — the Tabtivity navigation keys included. Rebind any
 of them in Settings → General → Keyboard Shortcuts: click a key and press the
-new one, **×** turns a chord off (or drops one Eldrun navigation key), Reset brings the
+new one, **×** turns a chord off (or drops one Tabtivity navigation key), Reset brings the
 default back, and the panel warns about collisions. On macOS, ⌘ takes the
 place of Ctrl. **F1** opens the cheat sheet with every effective binding.
 
@@ -27,7 +27,7 @@ place of Ctrl. **F1** opens the cheat sheet with every effective binding.
 | Alt+Shift+← | Previous project |
 | Ctrl+Shift+PageDown / PageUp | Next / previous box |
 | Ctrl+Shift+R | Open / close the root console |
-| Shift+Space | Enter Eldrun navigation |
+| Shift+Space | Enter Tabtivity navigation |
 | F1 | Shortcut help |
 
 ## Tabs and panes
@@ -63,7 +63,7 @@ To choose which agent each number opens, reorder them with ↑/↓ in
 its chord there. Once you have moved one, the list order is the numbering —
 Ctrl+1 is the top agent rather than the default one.
 
-## Eldrun navigation
+## Tabtivity navigation
 
 Press **Shift+Space**. A legend appears at the bottom and the app answers
 single keys, even while a terminal has focus. (Mid-word, with Shift still held
@@ -87,7 +87,7 @@ current project's tabs; **E S D F** work like **↑ ← ↓ →** throughout.
 | Q / R / X | Next tab waiting for an answer / working / done (Shift: previous) |
 | , | Open Settings and walk it: ← → pages, E D controls |
 | ? | Open the cheat sheet: E D scroll it |
-| Space / Esc / Enter | Leave Eldrun navigation (Esc inside a panel or menu backs out of it) |
+| Space / Esc / Enter | Leave Tabtivity navigation (Esc inside a panel or menu backs out of it) |
 
 Dialogs and menus don't end the mode. Whatever comes up on top — a confirm, the
 New project dialog, a right-click menu, a top-bar menu, the root console — gets
@@ -97,8 +97,8 @@ opened. On the top bar, S F walk its buttons and D drops a button's menu.
 Enter on a text field leaves the mode so you can type there; Shift+Space brings
 it back on the same dialog.
 
-Each Eldrun navigation action takes up to two keys (a letter and its arrow, say),
-rebound in the same settings page under *Inside Eldrun navigation*, one list per
+Each Tabtivity navigation action takes up to two keys (a letter and its arrow, say),
+rebound in the same settings page under *Inside Tabtivity navigation*, one list per
 level. A letter can mean one thing on the projects level and another inside a
 pane; the legend and the cheat sheet always show the keys you have.
 

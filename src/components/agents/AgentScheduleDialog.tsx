@@ -97,7 +97,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
   // side panel composer's chips and model pick, on the schedule form, because a
   // prompt that needs `/clear` and a model at 9:00 needs them every 9:00. They
   // are the agent's own slash commands, submitted one at a time before the
-  // message; Eldrun still chooses nothing (see `lib/agents/agentPrefaces`).
+  // message; Tabtivity still chooses nothing (see `lib/agents/agentPrefaces`).
   const [selected, setSelected] = useState<string[]>([]);
   const [model, setModel] = useState("");
   // Commands a saved rule carries that this agent no longer offers. Kept as

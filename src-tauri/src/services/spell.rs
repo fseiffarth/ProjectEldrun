@@ -143,7 +143,7 @@ fn libreoffice_dict_dirs_under(roots: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// An installed dictionary. `removable` when it lives in the first directory
-/// (the state dir, the one place Eldrun writes) — a system dictionary is the
+/// (the state dir, the one place Tabtivity writes) — a system dictionary is the
 /// package manager's and is never deleted from here.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct InstalledEntry {

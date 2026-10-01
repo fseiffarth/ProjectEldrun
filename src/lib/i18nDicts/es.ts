@@ -998,6 +998,7 @@ export const dict: Dict = {
   "nav.updates.title": "Actualizaciones",
   "nav.updates.blurb": "Buscar en GitHub un {app} más reciente e instalarlo.",
   "updates.help": "{app} consulta la página de releases del proyecto en GitHub — solo cuando se lo pides. No se descarga nada hasta que haces clic, y reiniciar siempre te corresponde a ti.",
+  "brand.tagline": "Una pestaña para cada proyecto. Una pestaña para todo lo que contiene.",
   "updates.installedVersion": "Versión instalada",
   "updates.checking": "Comprobando…",
   "updates.checkNow": "Comprobar ahora",

@@ -31,7 +31,7 @@ else
     # Bundle failed before linking — do a plain cargo build. `--features
     # custom-protocol` is what the tauri CLI would have supplied: without it the
     # app compiles in dev mode, embeds no frontend, and opens devUrl — i.e. an
-    # installed Eldrun showing "Could not connect to localhost" (2026-09-02).
+    # installed Tabtivity showing "Could not connect to localhost" (2026-09-02).
     export PATH="$HOME/.cargo/bin:$PATH"
     cargo build --release --features custom-protocol \
       --manifest-path "$ROOT/src-tauri/Cargo.toml"
@@ -45,7 +45,7 @@ cat >"$DESKTOP_STABLE_DEST" <<EOF
 [Desktop Entry]
 Type=Application
 Name=$APP_DISPLAY
-Comment=Terminal workspace manager
+Comment=A tab for each project. A tab for everything in it.
 Exec=$BINARY_DEST
 Icon=$ROOT/src-tauri/icons/128x128.png
 Terminal=false

@@ -1,4 +1,4 @@
-//! Regression guard: Eldrun must NEVER write into another application's config
+//! Regression guard: Tabtivity must NEVER write into another application's config
 //! to redirect its behavior — specifically, it must not edit a browser's
 //! download directory (Firefox `prefs.js`, Chromium `Preferences`).
 //!
@@ -18,7 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Substrings that only make sense if we're editing a browser's config. None of
-/// these legitimately appear in Eldrun's own source; the read-only downloads
+/// these legitimately appear in Tabtivity's own source; the read-only downloads
 /// feature (`list_recent_downloads` / `download_sources`) uses none of them.
 const FORBIDDEN_MARKERS: &[&str] = &[
     "browser.download.", // Firefox download-dir prefs (dir/folderList/useDownloadDir)

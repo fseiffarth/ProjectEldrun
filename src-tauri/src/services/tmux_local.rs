@@ -2,9 +2,9 @@
 //!
 //! The remote half of persistent sessions runs tmux on the SSH host; this runs it
 //! on the **local machine** so a local project's shell/script tab (a Python run, a
-//! long build) keeps going if Eldrun **crashes** — and reattaches on restart —
+//! long build) keeps going if Tabtivity **crashes** — and reattaches on restart —
 //! instead of dying with the PTY. It works because the tmux **server** is a
-//! daemon: the PTY only holds a tmux *client*, so when Eldrun (and the client)
+//! daemon: the PTY only holds a tmux *client*, so when Tabtivity (and the client)
 //! goes away the session and its processes live on under the server, and a
 //! respawn's `tmux new-session -A` reattaches them.
 //!
@@ -24,10 +24,10 @@ use std::collections::HashMap;
 use crate::services::ssh_exec::{is_valid_env_key, shell_quote, TMUX_HISTORY_LINES};
 use crate::terminal::PtyOptions;
 
-/// Prefix reserved for tmux sessions Eldrun creates on the local machine.
+/// Prefix reserved for tmux sessions Tabtivity creates on the local machine.
 ///
 /// It is deliberately broad enough to include sessions created by a previous
-/// Eldrun run and whose tabs have not been opened in this run yet. A clean app
+/// Tabtivity run and whose tabs have not been opened in this run yet. A clean app
 /// quit reaps these sessions ([`kill_app_sessions`]), while a crash leaves
 /// them available for restore.
 pub const LOCAL_TMUX_PREFIX: &str = crate::brand::TMUX_PREFIX;
@@ -55,7 +55,7 @@ pub fn argv_bytes(args: &[String]) -> usize {
 }
 
 /// Which of a `tmux ls` listing's sessions a clean quit ends: every session
-/// Eldrun minted, and nothing else. Pure, so the ownership rule is tested
+/// Tabtivity minted, and nothing else. Pure, so the ownership rule is tested
 /// without a tmux server.
 pub fn sessions_to_reap<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     names
@@ -74,14 +74,14 @@ pub fn kill_failure_is_already_gone(stderr: &str) -> bool {
         || stderr.contains("failed to connect to server")
 }
 
-/// End every tmux session Eldrun created on the local machine — the clean-quit
+/// End every tmux session Tabtivity created on the local machine — the clean-quit
 /// reap (TODO #85). Blocking; callers off the main thread wrap it in
 /// `spawn_blocking`, the exit path runs it inline.
 ///
 /// This deliberately lists the daemon rather than only the tabs currently
 /// hydrated in the frontend: a session recovered from an earlier crash may
 /// belong to an inactive project and therefore have no mounted tab in this run
-/// yet. The `eldrun-` prefix is reserved for sessions Eldrun mints, so
+/// yet. The `tabtivity-` prefix is reserved for sessions Tabtivity mints, so
 /// user-managed sessions are never affected.
 ///
 /// Reached from two places on purpose: the frontend's close handler (the
@@ -120,7 +120,7 @@ pub fn kill_app_sessions() -> Result<(), String> {
             }
         }
     }
-    // Every Eldrun session is ending here, so every launcher is stale too.
+    // Every Tabtivity session is ending here, so every launcher is stale too.
     let _ = std::fs::remove_dir_all(crate::storage::state_dir().join("tmux-launch"));
     if failures.is_empty() {
         Ok(())
@@ -132,9 +132,9 @@ pub fn kill_app_sessions() -> Result<(), String> {
     }
 }
 
-/// Whether a local tmux session is owned by Eldrun.
+/// Whether a local tmux session is owned by Tabtivity.
 ///
-/// Session names are minted by the frontend as `eldrun-<scope>--…`; keeping the
+/// Session names are minted by the frontend as `tabtivity-<scope>--…`; keeping the
 /// ownership rule here means the quit path never touches a user-created session
 /// such as `train` or `work`.
 pub fn is_app_local_tmux_session(session: &str) -> bool {
@@ -253,7 +253,7 @@ pub fn tmux_available() -> bool {
 /// when the server started), not from the client that creates the session, so
 /// every tab after the first inherited the founding tab's variables. That is what
 /// silently broke agent resume — Claude's `SessionStart` hook keys by
-/// `$ELDRUN_TAB_UID`, saw the wrong value or none, wrote no
+/// `$TABTIVITY_TAB_UID`, saw the wrong value or none, wrote no
 /// `live_sessions/<uid>` record, and `agent_session::resolve_*` then had nothing
 /// to resume but the tab's original launch id (i.e. the conversation as it was
 /// when the tab was first opened). See [`local_tmux_args_with`] for how the
@@ -390,7 +390,7 @@ const SECRET_ENV: &[&str] = &[
     crate::services::copilot_auth::TOKEN_ENV,
 ];
 
-/// First `update-environment` array slot Eldrun claims for [`SECRET_ENV`] (one
+/// First `update-environment` array slot Tabtivity claims for [`SECRET_ENV`] (one
 /// slot per key, fixed, so every tab re-sets the same entries instead of growing
 /// the list). Far above tmux's defaults (0–8) and any hand-written list.
 const SECRET_UPDATE_ENV_SLOT: usize = 8630;
@@ -513,7 +513,7 @@ fn local_tmux_args_for(
         session,
         "allow-passthrough",
         "on",
-        // No prefix key on an Eldrun session: nothing of Eldrun's binds it,
+        // No prefix key on a Tabtivity session: nothing of Tabtivity's binds it,
         // and without one a phone's raw keystrokes reach the pane only, never
         // tmux's own command line (`docs/context/root_console.md`).
         ";",
@@ -999,7 +999,7 @@ mod tests {
 
     #[test]
     fn quit_reaps_every_app_session_and_no_foreign_one() {
-        // A user's own `train`/`work` sessions are never touched; every Eldrun-
+        // A user's own `train`/`work` sessions are never touched; every Tabtivity-
         // minted one goes.
         let listed = [
             "train",

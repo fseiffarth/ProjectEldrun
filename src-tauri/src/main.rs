@@ -5,7 +5,7 @@ fn main() {
     // Before anything looks a name up: where a lookup that only finds the old
     // name is counted (`<state>/legacy-hits.json`).
     app_lib::services::brand_migration::hits::install();
-    // `eldrun --agent-shim <cli> [args…]`: the shell-tab shim
+    // `tabtivity --agent-shim <cli> [args…]`: the shell-tab shim
     // (`services::agent_shim`) — builds the calling tab's fence and execs it.
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--agent-shim")) {
         let args: Vec<String> = std::env::args().skip(2).collect();
@@ -15,7 +15,7 @@ fn main() {
         };
         std::process::exit(app_lib::services::agent_shim::run(cli, rest));
     }
-    // `eldrun --fence-scope <bwrap> [args…]`: the agent fence's step before
+    // `tabtivity --fence-scope <bwrap> [args…]`: the agent fence's step before
     // bwrap (`services::fence_scope`) — enters the Landlock scope and execs.
     #[cfg(target_os = "linux")]
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--fence-scope")) {
@@ -31,7 +31,7 @@ fn main() {
         // Every exit is announced, including the clean ones. A sidecar that
         // stops with `Restart=on-failure` watching it is gone until somebody
         // presses Reconnect, so "why did Mobile stop?" has to be answerable
-        // from `journalctl --user -u eldrun-mobile-host` alone — a silent exit 0
+        // from `journalctl --user -u tabtivity-mobile-host` alone — a silent exit 0
         // leaves a dead process, a stale socket, and a desktop that can only
         // report `Connection refused (os error 111)`.
         match runtime.block_on(app_lib::services::mobile_control::host::run(state_dir)) {

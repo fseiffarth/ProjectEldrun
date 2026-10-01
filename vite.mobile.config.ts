@@ -58,7 +58,7 @@ function stampServiceWorker(): Plugin {
 }
 
 /** The short commit HEAD points at, or "" outside git — the same hash the
- * desktop's `ELDRUN_BUILD_COMMIT` bakes in. */
+ * desktop's `TABTIVITY_BUILD_COMMIT` bakes in. */
 function headCommit(): string {
   try {
     return execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();

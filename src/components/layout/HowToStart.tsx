@@ -22,7 +22,7 @@ import { AskAppPage } from "./intro/AskAppPage";
 /**
  * The first-run intro: a paged wizard shown once on the first launch of an
  * empty install and re-openable from Settings / the gear menu. Welcome →
- * Projects → Agent CLIs → Local models → Ask Eldrun → Done.
+ * Projects → Agent CLIs → Local models → Ask Tabtivity → Done.
  *
  * Chrome is the Settings dialog's, down to the class names: `.settings-dialog
  * .settings-with-navigation` with the category rail on the left (the step rail
@@ -158,7 +158,7 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** Page 1: what Eldrun is, and the four basics — `HOW_TO_START_STEPS`, the same
+/** Page 1: what Tabtivity is, and the four basics — `HOW_TO_START_STEPS`, the same
  *  copy the Feature Guide shows, so the two stay in lockstep. */
 function WelcomePage() {
   const t = useT();

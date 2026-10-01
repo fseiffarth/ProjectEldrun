@@ -61,7 +61,7 @@ pub(crate) const AGENT_AUTH_ENV: &[&str] = &[
 ];
 
 /// Directory holding ssh ControlMaster sockets, created on demand.
-/// `<state_dir>/ssh-control` (e.g. `~/.local/share/eldrun/ssh-control`). The
+/// `<state_dir>/ssh-control` (e.g. `~/.local/share/tabtivity/ssh-control`). The
 /// single shared `cm-%C` master socket here is reused by every remote path —
 /// agent tabs, the pooled SFTP session (`services::remote`/`services::sftp`),
 /// git-over-ssh, and an interactive login — so authentication happens once.
@@ -174,7 +174,7 @@ fn parse_ps_row(row: &str) -> Option<(i32, &str)> {
 
 /// The machine's process table as `(pid, argv)` rows. One `ps` spawn, which works
 /// the same on Linux and macOS — deliberately not a `/proc` walk, which would be
-/// Linux-only and would need a second implementation for the other Unix Eldrun
+/// Linux-only and would need a second implementation for the other Unix Tabtivity
 /// ships on.
 #[cfg(not(target_os = "windows"))]
 fn process_rows() -> Vec<(i32, String)> {
@@ -232,7 +232,7 @@ fn reap_masters_for(path: &std::path::Path, rows: &[(i32, String)]) -> usize {
 /// Such a master is also unusable *as* a master: nobody can adopt a socket that
 /// is gone, so we pay the open connection and get none of the warm-reconnect
 /// benefit `RunEvent::Exit` deliberately leaves them up for. The predicate is safe
-/// by construction, including against a **concurrent** Eldrun, whose masters all
+/// by construction, including against a **concurrent** Tabtivity, whose masters all
 /// still have their files.
 ///
 /// The two halves are also each other's fix. [`control_master_alive`] keeps its
@@ -316,7 +316,7 @@ pub(crate) fn shell_quote(s: &str) -> String {
 /// gate which keys may be `export`ed into the remote `$SHELL -c` string: the
 /// value is `shell_quote`d, but the key is not (it sits left of `=`), so a key
 /// containing shell metacharacters (e.g. `A; rm -rf ~ #`) would break out of the
-/// assignment and run as a separate statement. Every key Eldrun sets today is a
+/// assignment and run as a separate statement. Every key Tabtivity sets today is a
 /// valid identifier; this enforces that property rather than trusting it.
 pub(crate) fn is_valid_env_key(k: &str) -> bool {
     let mut chars = k.chars();
@@ -329,7 +329,7 @@ pub(crate) fn is_valid_env_key(k: &str) -> bool {
 
 /// How a remote tab is wrapped in a **tmux** session on the host (TODO #85), so
 /// the work is decoupled from the disposable ssh channel and survives a drop /
-/// laptop sleep / Eldrun relaunch.
+/// laptop sleep / Tabtivity relaunch.
 #[derive(Debug, Clone)]
 pub enum TmuxWrap {
     /// Start-or-attach a per-tab session (`tmux new-session -A`) that runs this
@@ -344,7 +344,7 @@ pub enum TmuxWrap {
     Attach(String),
 }
 
-/// tmux scrollback depth for Eldrun-created sessions — and therefore the depth
+/// tmux scrollback depth for Tabtivity-created sessions — and therefore the depth
 /// the phone replay (`mobile_control::pty_bridge`) and the phone's own xterm
 /// buffer are sized to: the three are one number by design, so what tmux
 /// retains is what a reattach can show. tmux's own default is 2000 lines, which
@@ -363,7 +363,7 @@ pub const TMUX_HISTORY_LINES: u32 = 10_000;
 /// plain exec (today's behavior) plus a one-line notice, instead of failing —
 /// tmux is usually preinstalled on a compute/HPC host but cannot be assumed. The
 /// session gets [`TMUX_HISTORY_LINES`] of scrollback (set before `new-session`,
-/// since a pane copies the limit at creation), `status off` (Eldrun already
+/// since a pane copies the limit at creation), `status off` (Tabtivity already
 /// draws tabs/layout, so tmux's status bar is redundant chrome) and `mouse on`
 /// (wheel scrolls tmux history, so scrollback still feels native), chained as
 /// extra tmux commands around a literal `;` argv separator.
@@ -383,7 +383,7 @@ fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap, env_prefix: &str) -> String 
             let q = shell_quote(name);
             // Session-scoped, unlike the two globals above: the prefix is the
             // one key a user's own tmux sessions on the same server depend on.
-            // Eldrun's sessions have no use for it — both clients run with
+            // Tabtivity's sessions have no use for it — both clients run with
             // `status off` and nothing binds the prefix — and with it off a
             // phone's raw keystrokes can reach only the pane, never tmux's own
             // command line (`docs/context/root_console.md`).
@@ -573,7 +573,7 @@ pub fn tmux_kill_session_script(session: &str) -> String {
     )
 }
 
-/// Kill every tmux session owned by the connected SSH user. Used when Eldrun
+/// Kill every tmux session owned by the connected SSH user. Used when Tabtivity
 /// deliberately disconnects a remote machine, so its persistent runs do not
 /// continue without their machine connection.
 pub fn tmux_kill_server_script() -> &'static str {
@@ -628,7 +628,7 @@ const IDLE_SHELL_COMMANDS: &[&str] = &[
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TmuxSession {
-    /// Session name (`eldrun-<uid>` for one Eldrun started, else a foreign name).
+    /// Session name (`tabtivity-<uid>` for one Tabtivity started, else a foreign name).
     pub name: String,
     /// Number of windows in the session.
     pub windows: u32,
@@ -721,7 +721,7 @@ fn sanitize_tmux_key(id: &str) -> String {
     }
 }
 
-/// The `eldrun-<project>--` prefix a session minted for `project_id` carries
+/// The `tabtivity-<project>--` prefix a session minted for `project_id` carries
 /// (`lib/terminal/tmuxSession.ts`'s `newTmuxSessionName`). The `--` cannot occur inside
 /// either half (a project id and a uuid are each single-hyphenated), so it
 /// unambiguously separates the project id from the trailing uuid.
@@ -748,10 +748,10 @@ fn path_within(path: &str, root: &str) -> bool {
 /// Two signals, in order:
 ///
 /// 1. **The name.** A session minted after session names carried a project id is
-///    `eldrun-<project>--<uuid>`, which attributes it outright: this project's
+///    `tabtivity-<project>--<uuid>`, which attributes it outright: this project's
 ///    prefix ⇒ shown, another project's ⇒ hidden. Nothing else can override this.
 /// 2. **The working directory**, for every session the name cannot attribute —
-///    the `eldrun-<uuid>` ones minted before scoping existed (which on a
+///    the `tabtivity-<uuid>` ones minted before scoping existed (which on a
 ///    long-running cluster host outlive the fix by weeks) and every
 ///    hand-started/foreign session. A session whose active pane sits inside the
 ///    project's own tree belongs to it; one running elsewhere does not.
@@ -1092,7 +1092,7 @@ pub fn remote_git_init(spec: &RemoteSpec) -> Result<(), String> {
 ///
 /// Typed into a root-scope shell tab (see the frontend `openConnectionInRoot`)
 /// when the user has turned **off** headless connections: the password is entered
-/// directly in the visible terminal — Eldrun never handles it — and because the
+/// directly in the visible terminal — Tabtivity never handles it — and because the
 /// login shares `cm-%C` with [`ssh_pty_args`], the pooled SFTP session, file
 /// browse, and git-over-ssh all ride the authenticated master without a second
 /// prompt. On Unix this enables `ControlMaster=auto`; on Windows
@@ -1109,7 +1109,7 @@ pub fn interactive_login_command(
 
 /// The argv behind [`interactive_login_command`], before quoting — so a caller
 /// that needs to append to it (a remote command to run in that same login, see
-/// [`interactive_exec_command`]) builds on one definition of "how Eldrun opens
+/// [`interactive_exec_command`]) builds on one definition of "how Tabtivity opens
 /// an interactive ssh" rather than a second copy of the option list.
 fn interactive_login_args(
     user: &Option<String>,

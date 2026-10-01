@@ -1,6 +1,6 @@
 /**
- * The project screen's way to what was sent this project with `eldrun-send`
- * (`.eldrun/outbox/`): the 🖼 in the dropdown under its name, which opens the same gallery
+ * The project screen's way to what was sent this project with `tabtivity-send`
+ * (`.tabtivity/outbox/`): the 🖼 in the dropdown under its name, which opens the same gallery
  * sheet the Focus screen does. There is no shelf under the tab cards any more
  * — it showed the same files a second time, under another name.
  *

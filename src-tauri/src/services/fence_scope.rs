@@ -1,5 +1,5 @@
 //! Landlock's abstract-socket scope for the agent fence:
-//! `eldrun --fence-scope <bwrap> [args…]`.
+//! `tabtivity --fence-scope <bwrap> [args…]`.
 //!
 //! bubblewrap unshares only the pid namespace, so a fenced agent shares the
 //! host's network namespace and with it every abstract Unix socket
@@ -8,13 +8,13 @@
 //! one that matters: only its cookie check stands behind it, and a host that
 //! ran `xhost +local:` or `+si:localuser:$USER` (or an unauthenticated
 //! `startx`) lets any fenced agent log keystrokes and type into unfenced
-//! windows — the Eldrun window and shell tabs included. Landlock's
+//! windows — the Tabtivity window and shell tabs included. Landlock's
 //! `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET` (ABI 6, Linux 6.12) refuses every
 //! connect to an abstract socket created outside the domain; sockets the
 //! agent creates inside it keep working, and the network is untouched.
 //!
 //! No spawn path can run code between fork and exec (see
-//! `agent_fence::seccomp_launcher`), so the Eldrun binary itself is the step
+//! `agent_fence::seccomp_launcher`), so the Tabtivity binary itself is the step
 //! before bwrap: it enters the domain and execs bwrap. Best-effort per host:
 //! an older kernel, or a setuid bwrap (the domain needs `no_new_privs`, which
 //! would strip it), launches without the step as before. Where the step is
@@ -96,7 +96,7 @@ fn is_setuid(path: &Path) -> bool {
 
 /// The running binary by path, or by `/proc/<pid>/exe` once a rebuild or an
 /// update has replaced it on disk (`current_exe` then ends in ` (deleted)`).
-/// The helper is exec'd at once, by Eldrun or its tmux server, while Eldrun
+/// The helper is exec'd at once, by Tabtivity or its tmux server, while Tabtivity
 /// still runs.
 fn helper_path(exe: Option<PathBuf>, pid: u32) -> String {
     match exe {
@@ -105,7 +105,7 @@ fn helper_path(exe: Option<PathBuf>, pid: u32) -> String {
     }
 }
 
-/// `eldrun --fence-scope <prog> [args…]`: enter the domain, then exec `prog`.
+/// `tabtivity --fence-scope <prog> [args…]`: enter the domain, then exec `prog`.
 /// Returns only on failure, with the exit code.
 pub fn run(args: &[std::ffi::OsString]) -> i32 {
     use std::os::unix::process::CommandExt;

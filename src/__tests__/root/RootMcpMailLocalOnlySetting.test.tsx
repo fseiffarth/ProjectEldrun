@@ -7,7 +7,7 @@ import type { Settings } from "../../types";
 import { BRAND } from "../../lib/brand";
 
 // The mail tools' local-only companion (`Settings::root_mcp_mail_local_only`):
-// a switch under "Agents get Eldrun's mail tools" that the backend enforces
+// a switch under "Agents get Tabtivity's mail tools" that the backend enforces
 // per request. These pin the Settings side of it: where it sits, when it can
 // be flipped, and the one key it writes.
 

@@ -115,7 +115,7 @@ async function notifyOs(alarm: DueAlarm) {
 
 /**
  * The same reminder as a push notice on every phone that switched reminders
- * on (Eldrun Mobile's Calendar → Reminders). The sidecar holds the
+ * on (Tabtivity Mobile's Calendar → Reminders). The sidecar holds the
  * subscriptions and encrypts per phone; with Mobile off or no phone
  * subscribed the call has nowhere to go, which is not an error here.
  */
@@ -130,7 +130,7 @@ function notifyPhone(alarm: DueAlarm) {
  * The reminder engine.
  *
  * A single ticker scans the calendar for reminders that have come due and shows
- * each one **twice over**: an OS notification (which reaches the user when Eldrun
+ * each one **twice over**: an OS notification (which reaches the user when Tabtivity
  * is not focused, or not even visible) and an in-app popup (which offers snooze
  * and dismiss) — plus a push notice to a subscribed phone. All channels are
  * driven from one fire-once record, so a reminder cannot double-show or re-show

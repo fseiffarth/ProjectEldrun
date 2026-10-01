@@ -10,14 +10,14 @@ pub struct AppResourceUsage {
     /// the Ollama server is down or no model is resident on the GPU. This is
     /// Ollama's *share* of the GPU — one line of the readout's breakdown, and
     /// the whole readout only on a machine whose GPU we cannot read (`gpus`
-    /// empty). It is not part of Eldrun's own process tree.
+    /// empty). It is not part of Tabtivity's own process tree.
     pub vram_bytes: u64,
     /// Every GPU in the machine and its memory, Ollama's models or not. Empty
     /// when no GPU can be read; see [`crate::gpustat`].
     pub gpus: Vec<GpuSample>,
 }
 
-/// Debug-only live resource usage for Eldrun's own process tree.
+/// Debug-only live resource usage for Tabtivity's own process tree.
 ///
 /// In `tauri dev`, the useful total is the npm/tauri/vite tree that owns the
 /// running app process. In a packaged build, this naturally resolves to the app
@@ -71,7 +71,7 @@ pub fn app_build_commit() -> Option<&'static str> {
     option_env!(crate::app_env!("BUILD_COMMIT"))
 }
 
-/// The background "Eldrun (dev)" freeze, for the header's dev-build chip; `None`
+/// The background "Tabtivity (dev)" freeze, for the header's dev-build chip; `None`
 /// when this binary was not built from a checkout (see `services::dev_build`).
 /// Blocking-pool, because it reads a log tail and runs `git rev-list`. Each
 /// poll also queues a freeze of a HEAD the commit hook could not queue from
@@ -87,7 +87,7 @@ pub async fn dev_build_status() -> Option<crate::services::dev_build::DevBuildSt
         .flatten()
 }
 
-/// Pause (cancelling a running compile) or resume the background "Eldrun
+/// Pause (cancelling a running compile) or resume the background "Tabtivity
 /// (dev)" auto-builds, from the dev-build chip's switch. User-clicked only.
 #[tauri::command]
 pub async fn dev_build_set_paused(paused: bool) -> Result<(), String> {
@@ -96,7 +96,7 @@ pub async fn dev_build_set_paused(paused: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
-/// Close this frozen "Eldrun (dev)" window and reopen it on the newest
+/// Close this frozen "Tabtivity (dev)" window and reopen it on the newest
 /// snapshot: a detached helper waits for the exit and runs the launcher, which
 /// adopts the snapshot. The close goes through the main window, so the quit is
 /// the ordinary one (layout flush, tmux reap, `RunEvent::Exit`) and tabs
@@ -200,7 +200,7 @@ pub struct RendererRss {
     /// [`webview_renderer_claim`]). Empty until a window has claimed it.
     pub label: String,
     /// The claiming window's title, for a readout: a label is not a name a
-    /// user recognises, "Eldrun win-1" is. Empty when unclaimed.
+    /// user recognises, "Tabtivity win-1" is. Empty when unclaimed.
     pub title: String,
     pub pid: u32,
     pub rss_kib: u64,
@@ -436,7 +436,7 @@ fn restart_renderer(_window: &tauri::WebviewWindow, label: &str) -> Result<(), S
     ))
 }
 
-/// A webview *content* process, across the engines Eldrun ships on: WebKitGTK
+/// A webview *content* process, across the engines Tabtivity ships on: WebKitGTK
 /// (Linux), WebKit (macOS: `com.apple.WebKit.WebContent`), WebView2 (Windows:
 /// `msedgewebview2`). Matched on the command line, not `comm` — Linux truncates
 /// the latter to 15 bytes (`WebKitWebProces`), so a `comm` match would miss it.

@@ -856,7 +856,7 @@
   color: var(--accent);
   font-weight: 600;
 }
-/* A CLI Eldrun cannot hand the MCP server to at all is dimmed further than an
+/* A CLI Tabtivity cannot hand the MCP server to at all is dimmed further than an
    off chip — "off" and "impossible" should not look alike. */
 .local-model-role-chip.local-model-role-chip-unwired {
   opacity: 0.5;
@@ -1445,7 +1445,7 @@
   gap: 8px;
 }
 
-/* One installed model in the "Load on Eldrun start" list: switch, name, size.
+/* One installed model in the "Load on Tabtivity start" list: switch, name, size.
    Rounded, with hover and armed states, like every other card list in Settings
    (.archived-project-row, .remote-machine-card) — the whole label is the hit
    target, so it has to look like one rather than like a bare bordered strip. */

@@ -25,17 +25,17 @@ pub fn monitor_rects(
         .collect()
 }
 
-/// The Tauri label of Eldrun's primary window (`tauri.conf.json`).
+/// The Tauri label of Tabtivity's primary window (`tauri.conf.json`).
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
 /// Labels of the windows that must be torn down when the MAIN window closes.
 ///
-/// Every secondary window Eldrun opens — a detached popout (`detached-*`), the
+/// Every secondary window Tabtivity opens — a detached popout (`detached-*`), the
 /// deck presenter (`present-*`), a live browser page (`browser-*`) — is a
 /// SIBLING of the main window in the same process, not a child of it: neither
 /// the OS nor Tauri closes it when `main` goes away. Left alone it strands on
 /// screen *and* keeps the process alive, because Tauri only exits once the LAST
-/// window is gone — so quitting Eldrun would leave an unreachable popout and a
+/// window is gone — so quitting Tabtivity would leave an unreachable popout and a
 /// live headless app behind it. The main window's own close path
 /// (`shutdownDetachedWindows` in the shell) already does this for popouts it
 /// still tracks, and does it *before* `destroy()` so bounds reach project.json;
@@ -143,7 +143,7 @@ pub fn project_tracked_ids(
         .collect()
 }
 
-/// Persist the project-owned window registry IDs to `.eldrun/sessions/windows.json`.
+/// Persist the project-owned window registry IDs to `.tabtivity/sessions/windows.json`.
 pub fn save_window_session(local_file: &str, registry_ids: &[String]) {
     if let Some(sessions_dir) = app_sessions_dir(local_file) {
         let session = WindowSession {
@@ -156,7 +156,7 @@ pub fn save_window_session(local_file: &str, registry_ids: &[String]) {
     }
 }
 
-/// Load the window session from `.eldrun/sessions/windows.json`.
+/// Load the window session from `.tabtivity/sessions/windows.json`.
 /// Returns an empty session if the file is absent or unreadable.
 pub fn load_window_session(local_file: &str) -> WindowSession {
     if let Some(sessions_dir) = app_sessions_dir(local_file) {
@@ -183,12 +183,12 @@ pub fn load_window_session(local_file: &str) -> WindowSession {
 /// already resolved their id are left exactly as-is.
 ///
 /// Detached subwindows (#42) are deliberately EXCLUDED even though they are
-/// project-owned: they carry Eldrun's OWN pid (subwindow.rs), so resolving by
-/// pid here could match an arbitrary Eldrun-owned top-level (the main window or
+/// project-owned: they carry Tabtivity's OWN pid (subwindow.rs), so resolving by
+/// pid here could match an arbitrary Tabtivity-owned top-level (the main window or
 /// another detached window) and back-populate the wrong HWND. They resolve their
 /// own id by Tauri label and park via the separate `hide()`/`show()` path
 /// (project_runtime steps 5b/8b), so they never need — and must not undergo —
-/// pid-based re-resolution. This keeps the never-touch-the-wrong-Eldrun-window
+/// pid-based re-resolution. This keeps the never-touch-the-wrong-Tabtivity-window
 /// invariant structural rather than reliant on label resolution always succeeding.
 pub fn resolve_missing_window_ids(
     windows: &mut HashMap<String, TrackedWindow>,
@@ -208,7 +208,7 @@ pub fn resolve_missing_window_ids(
 
 /// Everything the Apps view lists (`is_project_opened_origin`) parks on a
 /// project switch, plus detached subwindows — which park but are never listed
-/// (they are Eldrun's own windows, not launched apps).
+/// (they are Tabtivity's own windows, not launched apps).
 fn is_project_owned(origin: &str) -> bool {
     crate::commands::apps::is_project_opened_origin(origin) || origin == ORIGIN_DETACHED_SUBWINDOW
 }
@@ -373,8 +373,8 @@ mod tests {
 
     #[test]
     fn resolve_missing_window_ids_never_touches_detached_subwindows() {
-        // Detached subwindows carry Eldrun's OWN pid, so pid-based resolution
-        // could match an arbitrary Eldrun top-level. They must be excluded from
+        // Detached subwindows carry Tabtivity's OWN pid, so pid-based resolution
+        // could match an arbitrary Tabtivity top-level. They must be excluded from
         // re-resolution even though they are project-owned (they park via the
         // Tauri label path instead). A resolver that would resolve anything must
         // still leave a None-id detached window untouched.

@@ -149,7 +149,7 @@ function filesReserveStyle(files: GroupFiles | undefined): React.CSSProperties |
  * must run while it is closed: the **persist** of the root scope (`CenterPanel`
  * saves the *active* scope only, and root no longer becomes active), and the
  * **`root-mcp-changed`** listener — a root agent that adds a calendar entry
- * through Eldrun's MCP tools wrote `calendar.json` behind the window's back, so
+ * through Tabtivity's MCP tools wrote `calendar.json` behind the window's back, so
  * the row is merged into the store here and announced through the same hook a
  * dialog edit uses, which is what carries it to CalDAV.
  */
@@ -195,7 +195,7 @@ export function RootOverlayHost() {
         void useMailStore.getState().loadAgentDrafts();
         return;
       }
-      // A new calendar is Eldrun's own: merged, never pushed anywhere.
+      // A new calendar is Tabtivity's own: merged, never pushed anywhere.
       if (payload.kind === "calendar") {
         const row = payload.row;
         useCalendarStore.setState((s) => ({ calendars: payload.op === "delete" ? s.calendars.filter((c) => c.id !== row.id) : upsert(s.calendars, row) }));
@@ -248,7 +248,7 @@ export function RootOverlayHost() {
  * Three things a floating window needs and this one lacked. Every subwindow
  * docks the **file viewer** on its right edge through the same ◫ a project's
  * subwindows carry (`SubwindowFilesSidebar` → `ProjectFilesTab`, so no fourth
- * copy of the viewer), rooted at `~/eldrun/root` — the folder that belongs to no
+ * copy of the viewer), rooted at `~/tabtivity/root` — the folder that belongs to no
  * project and until now could only be read with `ls` from inside the console.
  * The state is the group node's own (`filesOpen`/`filesWidth`/`filesFolder`),
  * written through the `…InScope` actions because root is not the active scope.
@@ -708,7 +708,7 @@ function RootOverlay() {
 
   /** The docked file column of one subwindow — the SAME component the center
    *  panel's subwindows dock (`ProjectFilesTab` under it), rooted at
-   *  `~/eldrun/root`: the folder that belongs to no project. */
+   *  `~/tabtivity/root`: the folder that belongs to no project. */
   const filesColumn = (group: GroupFiles & { id: string }) => (
     <SubwindowFilesSidebar
       scope={ROOT_SCOPE}

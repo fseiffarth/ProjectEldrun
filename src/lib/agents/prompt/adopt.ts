@@ -4,14 +4,14 @@ import type { TabEntry } from "../../../stores/tabs";
 
 /**
  * Prompts typed straight into an agent's terminal, adopted into the prompt
- * history so the prompt chart shows them beside the ones Eldrun sent.
+ * history so the prompt chart shows them beside the ones Tabtivity sent.
  *
- * Eldrun sees a prompt go by only when it sends one itself (the composer, a
+ * Tabtivity sees a prompt go by only when it sends one itself (the composer, a
  * schedule): keystrokes into the terminal reach the PTY, the TUI's input box
  * edits them, and what was finally submitted is known to the agent alone —
  * and written to its transcript. `stores/agents/agentModels` reads that transcript's
  * last prompt when a turn starts, and hands a *changed* one here. A prompt
- * Eldrun sent is already on the history (the composer archives at send time,
+ * Tabtivity sent is already on the history (the composer archives at send time,
  * the scheduler records at delivery, both before the agent's first output
  * flips the tab busy), so the newest history row for the tab is compared
  * first and a match is left alone rather than recorded twice.
@@ -41,7 +41,7 @@ export function rowOfTab(row: SentAgentPrompt, tab: TabEntry): boolean {
 }
 
 /** The id a tab's history rows carry as `tab_id`: its launch id, or — for a
- * tab without one (a CLI Eldrun cannot resume) — its schedule target id,
+ * tab without one (a CLI Tabtivity cannot resume) — its schedule target id,
  * which a restore keeps too. */
 export function historyTabId(tab: Pick<TabEntry, "sessionId" | "scheduleTargetId">): string | undefined {
   return tab.sessionId ?? tab.scheduleTargetId;
@@ -59,7 +59,7 @@ function newestFor(history: readonly SentAgentPrompt[], tab: TabEntry): SentAgen
 }
 
 /** Whether `prompt` (a transcript's folded, possibly cut line) is the tab's
- * newest recorded prompt already — i.e. Eldrun sent it. */
+ * newest recorded prompt already — i.e. Tabtivity sent it. */
 export function alreadyRecorded(history: readonly SentAgentPrompt[], prompt: string, tab: TabEntry): boolean {
   const newest = newestFor(history, tab);
   if (!newest) return false;

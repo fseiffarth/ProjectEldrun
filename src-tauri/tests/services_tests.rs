@@ -29,7 +29,7 @@ use app_lib::schema::TerminalSession;
 /// Needed since `docs/sandbox_hardening_plan.md` Phase 1: per-project session
 /// state (tab layout, `open_apps`, host-bound markers) moved OUT of the project
 /// tree and INTO the state dir, so these tests write there now — and a suite that
-/// writes into the developer's real `~/.local/share/eldrun/` would clobber their
+/// writes into the developer's real `~/.local/share/tabtivity/` would clobber their
 /// running workspace. Set once and never changed, so the parallel test threads
 /// all agree on the value.
 fn isolated_state_dir() -> &'static std::path::Path {
@@ -529,8 +529,8 @@ fn save_writes_the_state_dir_copy_and_the_project_tree_export() {
 
 /// The Phase 1 property, stated as a test: a layout planted in the project tree —
 /// by a cloned repository, or by an agent writing inside the container's rw mount —
-/// is **not** read. Both plantable locations are covered, because Eldrun used to
-/// read `.eldrun/sessions/terminals.json` first and `project.json` as a fallback.
+/// is **not** read. Both plantable locations are covered, because Tabtivity used to
+/// read `.tabtivity/sessions/terminals.json` first and `project.json` as a fallback.
 #[test]
 fn a_layout_planted_in_the_project_tree_is_never_loaded() {
     let tmp = TempDir::new().unwrap();

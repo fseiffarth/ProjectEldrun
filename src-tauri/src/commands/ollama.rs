@@ -327,7 +327,7 @@ use crate::paths::binary_on_path;
 /// True when the `ollama` binary is available. Checks PATH first, then (on
 /// Windows) the well-known per-user install location, since winget/the GUI
 /// installer drop `ollama.exe` under `%LOCALAPPDATA%\Programs\Ollama` and a
-/// running Eldrun's inherited PATH won't pick it up until a new session.
+/// running Tabtivity's inherited PATH won't pick it up until a new session.
 #[tauri::command]
 pub async fn ollama_is_installed() -> bool {
     if binary_on_path("ollama") {
@@ -483,7 +483,7 @@ pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
 pub struct OllamaInstallStrategy {
     /// "windows" | "macos" | "linux" | "unknown".
     pub os: String,
-    /// The exact command Eldrun runs / the user can copy-paste.
+    /// The exact command Tabtivity runs / the user can copy-paste.
     pub command: String,
     /// Whether one-click `install_ollama` is supported on this OS.
     pub auto: bool,
@@ -546,7 +546,7 @@ pub fn vibe_install_cmd() -> &'static str {
 
 /// True when the `vibe` binary is reachable. Checks `PATH` (cross-platform, via
 /// `where`/`which`) and the well-known user install locations the installer uses,
-/// since Eldrun's inherited `PATH` may omit `~/.local/bin` even when a login shell
+/// since Tabtivity's inherited `PATH` may omit `~/.local/bin` even when a login shell
 /// would include it.
 #[tauri::command]
 pub async fn vibe_is_installed() -> bool {
@@ -675,7 +675,7 @@ pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
 pub struct VibeInstallStrategy {
     /// "windows" | "macos" | "linux" | "unknown".
     pub os: String,
-    /// The exact command Eldrun runs / the user can copy-paste.
+    /// The exact command Tabtivity runs / the user can copy-paste.
     pub command: String,
     /// Whether one-click `install_vibe` is supported on this OS.
     pub auto: bool,
@@ -894,7 +894,7 @@ pub async fn stop_ollama_model(model: String) -> Result<(), String> {
 }
 
 // ── Interrupted-pull tracking ─────────────────────────────────────────────
-// A pull that is in flight is recorded in a small JSON file so that if Eldrun
+// A pull that is in flight is recorded in a small JSON file so that if Tabtivity
 // exits or crashes mid-download the model can be resumed on the next launch
 // (Ollama's /api/pull continues a partially-fetched model). The entry is added
 // when a pull starts and removed only on success; a caught error or a crash
@@ -925,7 +925,7 @@ fn mark_pending_pull(model: &str, active: bool) {
     let _ = crate::storage::write_json(&pending_pulls_path(), &list);
 }
 
-/// Model refs whose download was interrupted (Eldrun closed/crashed mid-pull).
+/// Model refs whose download was interrupted (Tabtivity closed/crashed mid-pull).
 /// The UI reconciles these against the installed list and offers to resume them.
 #[tauri::command]
 pub async fn list_pending_ollama_pulls() -> Vec<String> {
@@ -958,7 +958,7 @@ fn ollama_blob_dirs() -> Vec<std::path::PathBuf> {
     .into_iter()
     .map(|dir| dir.join("blobs"))
     .collect::<Vec<_>>();
-    // The user's configured dir belongs here too: it is where a server *Eldrun*
+    // The user's configured dir belongs here too: it is where a server *Tabtivity*
     // spawns downloads to, but it is not on this process's `OLLAMA_MODELS`, so
     // the env-var candidate above would miss it and a paused download in the
     // custom dir would have no resumable partial to find.
@@ -2356,7 +2356,7 @@ const IGPU_ENABLE_VAR: &str = "OLLAMA_IGPU_ENABLE";
 /// it.
 #[derive(serde::Serialize, Clone, Default)]
 pub struct OllamaGpuStatus {
-    /// This machine has at least one GPU Eldrun can read (`gpustat`). The
+    /// This machine has at least one GPU Tabtivity can read (`gpustat`). The
     /// frontend gates the whole CPU/GPU choice on this: with no GPU there is no
     /// choice to offer.
     pub gpu_present: bool,
@@ -2379,7 +2379,7 @@ pub struct OllamaGpuStatus {
     /// unit — a shell export or a login-session variable would not be read.
     pub systemd_service: bool,
     /// The one-click fix, for `runInstallInTab`. Empty when we have nothing
-    /// honest to offer (no supported flag, or a server Eldrun itself spawns and
+    /// honest to offer (no supported flag, or a server Tabtivity itself spawns and
     /// already sets the variable for), in which case the UI states the variable
     /// rather than running something that would not help.
     pub fix_cmd: String,
@@ -2423,7 +2423,7 @@ fn igpu_flag_supported() -> bool {
 #[cfg(target_os = "linux")]
 fn igpu_fix_command(systemd: bool) -> (String, String) {
     if !systemd {
-        // Eldrun's own `ollama serve` already sets the variable (see
+        // Tabtivity's own `ollama serve` already sets the variable (see
         // `ensure_ollama_running`), so there is nothing to install — restarting
         // the server is the whole fix, and that is not ours to do behind the
         // user's back while their models are resident.
@@ -2533,7 +2533,7 @@ pub async fn ollama_gpu_status() -> OllamaGpuStatus {
 /// escaped through three nested quoting layers (shell → `printf` → systemd
 /// `Environment="…"`, where `%` is a specifier): such a path is not a real
 /// Ollama models directory, so the honest answer is to withhold the drop-in and
-/// leave the setting itself — which reaches an Eldrun-spawned server through a
+/// leave the setting itself — which reaches a Tabtivity-spawned server through a
 /// plain `Command::env`, with no shell — unaffected.
 fn models_path_is_safe(path: &str) -> bool {
     !path.is_empty()
@@ -2549,7 +2549,7 @@ fn sh_single_quote(s: &str) -> String {
 
 /// The terminal command that points the **running service** at `path`, plus the
 /// shell it needs. Empty when there is nothing to run — no service (a server
-/// Eldrun spawns already honours the setting via `ensure_ollama_running`), or a
+/// Tabtivity spawns already honours the setting via `ensure_ollama_running`), or a
 /// path too exotic to embed (`models_path_is_safe`).
 ///
 /// A systemd drop-in, mirroring `igpu_fix_command`: additive, survives the
@@ -2648,17 +2648,17 @@ fn ollama_listening() -> bool {
         .unwrap_or(false)
 }
 
-// ── What Eldrun started, and therefore may stop ───────────────────────────
+// ── What Tabtivity started, and therefore may stop ───────────────────────────
 
 /// How the Ollama server currently answering came to be running — recorded by
 /// [`ensure_ollama_running`] and read by nothing but [`shutdown_owned_server`].
 ///
 /// The whole point is the *absence* of a third variant: a server that was
-/// already listening when Eldrun asked, or one running on another machine, is
+/// already listening when Tabtivity asked, or one running on another machine, is
 /// never recorded, so exit-time teardown cannot reach it. Ollama is a machine
-/// service as often as it is an Eldrun detail — a terminal running `ollama run`,
+/// service as often as it is a Tabtivity detail — a terminal running `ollama run`,
 /// another editor's completion plugin, a unit the user enabled at boot — and
-/// killing one Eldrun merely *used* would take those down with it.
+/// killing one Tabtivity merely *used* would take those down with it.
 enum OwnedServer {
     /// An `ollama serve` this process spawned (`spawn_reaped`, so the pid is
     /// ours and its subtree is walkable).
@@ -2682,7 +2682,7 @@ fn record_owned_server(owned: OwnedServer) {
 }
 
 /// Stop the Ollama server **this run started**, if any. Called once from
-/// `RunEvent::Exit`; a server Eldrun only talked to is left alone (see
+/// `RunEvent::Exit`; a server Tabtivity only talked to is left alone (see
 /// [`OwnedServer`]).
 ///
 /// A spawned server is TERMed with its whole subtree — the `ollama runner` child
@@ -2801,7 +2801,7 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         .stderr(std::process::Stdio::null());
 
     // The user's chosen download location wins over the system dir: they asked
-    // for it explicitly, and this is the one server whose `OLLAMA_MODELS` Eldrun
+    // for it explicitly, and this is the one server whose `OLLAMA_MODELS` Tabtivity
     // controls. Create it first — Ollama would otherwise fail its first pull
     // against a directory that does not exist. A systemd-managed server never
     // reaches this branch (it is started via the unit above), which is what the
@@ -2823,7 +2823,7 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
     // Ollama ≥0.32 drops **integrated** GPUs unless this is set, and answers on
     // the CPU instead — which on a machine whose only GPU is the APU turns every
     // model that ran on the GPU yesterday into a CPU one after an update, with
-    // nothing but a `size_vram: 0` to say so. A server *Eldrun* starts is one we
+    // nothing but a `size_vram: 0` to say so. A server *Tabtivity* starts is one we
     // are entitled to configure, so it opts in. An explicit value in the
     // environment is left alone: a user who set `0` meant it (an iGPU that is
     // genuinely slower than the CPU is a real machine, just not this one).
@@ -3489,7 +3489,7 @@ pub struct LocalAgentPrep {
 
 /// Prepare a dedicated per-model VIBE_HOME for a local Ollama tab.
 ///
-/// Creates `~/.local/share/eldrun/vibe_local/{alias}/config.toml` with:
+/// Creates `~/.local/share/tabtivity/vibe_local/{alias}/config.toml` with:
 /// - `active_model = "{alias}"` so vibe selects the correct model even when
 ///   the `VIBE_ACTIVE_MODEL` env var is shadowed by the global `~/.vibe/config.toml`.
 /// - `enabled_tools = ["__no_tools__"]` to disable tool calls for local models.
@@ -3816,7 +3816,7 @@ fn non_thinking_override(driver: &LocalDriver, thinking: Option<bool>) -> &[&'st
 //
 // OpenCode's `ollama` provider lists whatever models its config names — a list
 // that goes stale the moment another model is loaded (`ollama launch opencode`
-// appends to it and never prunes). Eldrun never edits OpenCode's config, so an
+// appends to it and never prunes). Tabtivity never edits OpenCode's config, so an
 // OpenCode spawn gets `OPENCODE_CONFIG_CONTENT` instead: an inline config
 // OpenCode deep-merges over the user's own, naming the models resident in
 // Ollama right now and whitelisting only those.
@@ -3904,12 +3904,12 @@ pub(crate) fn opencode_loaded_models_config(requested: Option<&str>) -> Option<S
     Some(opencode_ollama_config(&addr, &loaded, requested))
 }
 
-/// One local-model driver plus whether Eldrun currently has a way to launch it.
+/// One local-model driver plus whether Tabtivity currently has a way to launch it.
 #[derive(serde::Serialize)]
 pub struct LocalDriverInfo {
     pub id: String,
     pub label: String,
-    /// True when the agent's binary is installed, Eldrun has a way to wire it to
+    /// True when the agent's binary is installed, Tabtivity has a way to wire it to
     /// the local model (`ollama launch` supports it, or a direct fallback
     /// exists), **and** the model given to [`list_local_drivers`] can actually
     /// drive it. The menu hides drivers that aren't available.
@@ -4097,7 +4097,7 @@ fn local_catalog_args(model: &str, thinking: Option<bool>) -> Vec<String> {
 
 /// `-c model_catalog_json=<toml string>` for `path`. A JSON string literal is
 /// a valid TOML basic string, and serde does the escaping — the path is
-/// Eldrun's own but it descends from `$HOME`, which we do not get to assume is
+/// Tabtivity's own but it descends from `$HOME`, which we do not get to assume is
 /// free of quotes or backslashes.
 fn catalog_arg_pair(path: &std::path::Path) -> Vec<String> {
     vec![
@@ -4117,7 +4117,7 @@ fn local_catalog_path(model: &str) -> std::path::PathBuf {
         .join("model.json")
 }
 
-/// Write the model-metadata catalog Codex asks for, into **Eldrun's own** state
+/// Write the model-metadata catalog Codex asks for, into **Tabtivity's own** state
 /// dir — never `~/.codex`, which is another application's to manage.
 ///
 /// Without it Codex prints `Model metadata for '<model>' not found. Defaulting
@@ -4241,7 +4241,7 @@ fn validate_model_name(model: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Return the per-model VIBE_HOME path: `~/.local/share/eldrun/vibe_local/{alias}/`.
+/// Return the per-model VIBE_HOME path: `~/.local/share/tabtivity/vibe_local/{alias}/`.
 /// Each Ollama tab gets its own subdirectory so the configs are independent
 /// and `active_model` is always unambiguous.
 fn app_vibe_local_dir_for(alias: &str) -> Result<std::path::PathBuf, String> {
@@ -4258,7 +4258,7 @@ fn dirs_vibe_config() -> Result<std::path::PathBuf, String> {
 }
 
 /// The `vibe` provider stanza. `api_base` follows `ollama_host`, because a
-/// config file naming 11434 while Eldrun's own reads go to 11500 is the same
+/// config file naming 11434 while Tabtivity's own reads go to 11500 is the same
 /// class of bug as the setting doing nothing — it just fails one layer further
 /// out, inside the agent, where the message is somebody else's.
 fn ollama_provider_block() -> String {
@@ -4853,7 +4853,7 @@ mod tests {
         .unwrap();
         assert!(local_launch_line_ok("codex", m, "codex", &codex.args));
         // Codex's catalog pair rides after either form, and only the path
-        // Eldrun writes it to.
+        // Tabtivity writes it to.
         let mut with_catalog = codex.args.clone();
         with_catalog.extend(catalog_arg_pair(&local_catalog_path(m)));
         assert!(local_launch_line_ok("codex", m, "codex", &with_catalog));
@@ -5466,7 +5466,7 @@ mod tests {
     #[test]
     fn service_command_is_a_drop_in_only_under_systemd() {
         let path = "/data/ollama/models";
-        // No service to reconfigure → nothing to run (an Eldrun-spawned server
+        // No service to reconfigure → nothing to run (a Tabtivity-spawned server
         // already honours the setting).
         assert_eq!(
             models_dir_service_command(path, false),

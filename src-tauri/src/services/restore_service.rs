@@ -23,7 +23,7 @@ use crate::schema::project::OpenApp;
 ///    entry of `default_apps.json` / the per-project `default_apps` map / the
 ///    installed-application scan.
 ///
-/// Nothing in Eldrun writes `open_apps` any more (see the `commands::apps` module
+/// Nothing in Tabtivity writes `open_apps` any more (see the `commands::apps` module
 /// doc — it is legacy best-effort restore metadata), so the filter can be strict:
 /// the worst outcome for a legitimate user is that a stale entry is not reopened.
 ///

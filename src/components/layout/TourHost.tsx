@@ -72,7 +72,7 @@ function sameRect(a: DOMRect | null, b: DOMRect | null): boolean {
 
 /**
  * Drives the guided walkthroughs — the lessons, the two tours among them:
- * listens for the `eldrun:start-tour` event, measures the active step's anchor (re-measuring as
+ * listens for the `tabtivity:start-tour` event, measures the active step's anchor (re-measuring as
  * the layout shifts), pulses the highlighted element, owns the keyboard
  * navigation, and renders the `TourCoachmark` overlay.
  *

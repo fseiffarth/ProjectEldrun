@@ -71,7 +71,7 @@ function MobileIcon({ tone }: { tone: StatusTone }) {
 }
 
 /**
- * Eldrun Mobile is a machine-wide companion host, so its status belongs beside
+ * Tabtivity Mobile is a machine-wide companion host, so its status belongs beside
  * the battery and VPN controls rather than in a project pill. The sidecar is
  * the authority: a green phone means its authenticated admin socket replied,
  * not merely that the setting says it ought to be running.
@@ -166,11 +166,11 @@ export function MobileIndicator() {
   };
 
   // Reconnect and Update are one step: reinstall the sidecar from this window's
-  // image and restart it. Eldrun Mobile is a PWA embedded in that sidecar, so
+  // image and restart it. Tabtivity Mobile is a PWA embedded in that sidecar, so
   // the phone then picks up fresh assets through its service-worker update
   // path. Update is offered only while the installed host is behind this
   // window (`update_available`, the same test as Settings' "Update mobile
-  // host"); Eldrun's own start already replaces an older host.
+  // host"); Tabtivity's own start already replaces an older host.
   const restartHost = async (kind: "reconnect" | "update") => {
     // Ignore an earlier focus/interval probe while restart replaces the socket.
     // Without this generation bump, that old `ECONNREFUSED` can land after the

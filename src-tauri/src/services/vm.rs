@@ -1,6 +1,6 @@
 //! Project-VM lifecycle (`docs/vm_projects_plan.md`): the third trust tier.
 //! A VM project's whole tree lives inside a locally booted QEMU/KVM guest that
-//! Eldrun reaches **exclusively over SSH/SFTP** on a forwarded loopback port —
+//! Tabtivity reaches **exclusively over SSH/SFTP** on a forwarded loopback port —
 //! no shared filesystem, no virtiofs/9p, deliberately. From the moment the VM
 //! is up, the project is an ordinary remote project (`services::remote` pool,
 //! `ssh -tt` tabs, optional git lockstep); this module owns only what a real
@@ -27,7 +27,7 @@
 //!
 //! State layout (`<state_dir>/vm/`):
 //! ```text
-//! images/<stock cloud image>, images/eldrun-base-<ver>.qcow2
+//! images/<stock cloud image>, images/tabtivity-base-<ver>.qcow2
 //! <project-id>/disk.qcow2      # per-project qcow2 overlay (copy-on-write)
 //! <project-id>/seed/…,seed.iso # cloud-init NoCloud seed (user, key, proxy env)
 //! <project-id>/id_ed25519(.pub)# per-VM generated keypair
@@ -511,7 +511,7 @@ fn qemu_install_hint() -> &'static str {
 /// installable — a kvm permission problem or a full disk is not.
 ///
 /// Only the *packages* appear here. The Linux line follows the same apt
-/// convention as the rest of Eldrun's install buttons; a non-apt distro's user
+/// convention as the rest of Tabtivity's install buttons; a non-apt distro's user
 /// still has the doctor's sentences above the button.
 fn install_command_for(host: HostOs, arch: GuestArch, p: &VmDoctorProbes) -> Option<String> {
     if !p.supported {
@@ -932,7 +932,7 @@ power_state:
 /// command. The bake boots the stock image once with `-serial stdio`, so the
 /// guest's own cloud-init output streams into the tab as build progress;
 /// cloud-init powers the VM off when done and the script converts the overlay
-/// into `eldrun-base-<ver>.qcow2`.
+/// into `tabtivity-base-<ver>.qcow2`.
 pub fn build_base_command() -> Result<String, String> {
     let root = vm_root();
     let bake = root.join("bake");
@@ -1111,7 +1111,7 @@ fn vm_hostname_for(names: &VmNames, project_name: &str) -> String {
     }
 }
 
-/// The per-project NoCloud `user-data`: the `eldrun` account with the per-VM
+/// The per-project NoCloud `user-data`: the `tabtivity` account with the per-VM
 /// public key, the project dir, and — under `Proxy` egress — the proxy env
 /// pointing at the fixed guest-side `guestfwd` address. Pure.
 pub fn cloud_init_user_data(hostname: &str, pubkey: &str, proxy: bool) -> String {

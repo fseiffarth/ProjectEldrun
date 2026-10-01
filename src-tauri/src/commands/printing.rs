@@ -4,7 +4,7 @@
 //! It replaces the `print_manager` *global app* slot — the button that launched
 //! whatever external printer GUI the user had configured — for the reason the
 //! mail/calendar/file-manager roles were retired before it: the thing behind the
-//! button is a list and a handful of verbs, and Eldrun can render a list.
+//! button is a list and a handful of verbs, and Tabtivity can render a list.
 //!
 //! Two backends, picked by target OS, both **read-only by default**:
 //!
@@ -901,7 +901,7 @@ fn set_default_impl(printer: &str) -> Result<(), String> {
     check_printer_name(printer)?;
     // `lpoptions -d` sets the *user's* default (~/.cups/lpoptions), which needs
     // no admin rights — deliberately not `lpadmin -d`, which sets it for the
-    // whole machine and would ask for a password Eldrun has no business asking.
+    // whole machine and would ask for a password Tabtivity has no business asking.
     let (ok, out, err) = run_capped("lpoptions", &["-d", printer])?;
     action_error("lpoptions", ok, out, err)
 }
@@ -1238,7 +1238,7 @@ pub async fn print_set_enabled(printer: String, enabled: bool) -> Result<(), Str
 /// Send a small text page to `printer`, so "is this thing actually connected?"
 /// has an answer that does not involve finding a document first.
 ///
-/// The page is written by Eldrun into the OS temp dir rather than taken from a
+/// The page is written by Tabtivity into the OS temp dir rather than taken from a
 /// path the frontend supplies: the print manager deliberately has no
 /// print-this-file command at all, so no caller can turn it into one.
 #[tauri::command]

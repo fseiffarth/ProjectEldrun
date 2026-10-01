@@ -40,7 +40,7 @@ export async function vibeLocalTabSpec(
     label: model,
     cmd: "vibe",
     args: [],
-    // ELDRUN_LOCAL_MODEL records WHICH model this tab is driving, so the usage
+    // TABTIVITY_LOCAL_MODEL records WHICH model this tab is driving, so the usage
     // recap can break local agent tabs down by model — and ONLY that (#150): the
     // right to run outside the project's container is granted by `hostBoundUid`
     // below, registered as a file in the state dir, so a display-only change here

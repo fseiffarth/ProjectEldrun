@@ -24,7 +24,7 @@
  *
  * SHAPE OF THE SOLUTION. One fixed-position layer per window holds every thumb;
  * the app's own DOM is never wrapped or restructured (a wrapper element around
- * arbitrary scroll containers is what breaks React reconciliation, and Eldrun
+ * arbitrary scroll containers is what breaks React reconciliation, and Tabtivity
  * has scroll containers in dozens of components). A container opts IN simply by
  * being scrollable — discovery is automatic — and opts OUT by already setting
  * `scrollbar-width: none`, which is how the app already says "this strip
@@ -237,7 +237,7 @@ export function largestOverlap(spans: Span[], start: number, end: number): Span 
  * and no thumb of ours either. The tab strip, the project pill row and the
  * address display are the surfaces that mean it.
  *
- * The signal is `--eldrun-scrollbar: none`, a property registered in themes.css
+ * The signal is `--tabtivity-scrollbar: none`, a property registered in themes.css
  * so it does not inherit. It used to be `scrollbar-width: none`, which read the
  * decision straight off the stylesheet where it was made — but that stopped
  * distinguishing anything once every element had to be born with the native bar

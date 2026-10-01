@@ -136,7 +136,7 @@ describe("commitFileDrop — dragged out of the window (detachBounds)", () => {
       // on the monitor the file was actually dragged onto.
       { x: bounds.x, y: bounds.y },
     );
-    // No standalone Eldrun window was spawned for it.
+    // No standalone Tabtivity window was spawned for it.
     expect(useTabsStore.getState().detachedGroupsByScope["p"] ?? []).toHaveLength(0);
   });
 

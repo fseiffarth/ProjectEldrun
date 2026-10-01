@@ -22,7 +22,7 @@ import { ageLabel, sizeLabel } from "../terminal/fileLabels";
  * Delete is on the tile as well, behind a confirm that replaces the row rather
  * than a dialog over it — a thumb reaching the ✕ of a picture it wanted to keep
  * is exactly the tap that must cost a second one, and nothing here can be
- * undone: the file is unlinked from the project's `.eldrun/outbox/`.
+ * undone: the file is unlinked from the project's `.tabtivity/outbox/`.
  */
 export function OutboxGrid({ scope, files, onOpen, onDetails, onDelete }: {
   scope: OutboxScope;

@@ -5,7 +5,7 @@
  *
  * The scoping is the same as `statusLine`'s, and for the reason `readableScreen`
  * dropped the semantic parser it replaced: this never runs over ordinary
- * output. The caller reads it only while Eldrun itself has just sent the
+ * output. The caller reads it only while Tabtivity itself has just sent the
  * command that opens the dialog, and only a shape it positively recognizes — a
  * contiguous run of numbered rows, numbered from 1, carrying exactly one
  * highlight marker — becomes a list. Anything else returns `null`, the dialog

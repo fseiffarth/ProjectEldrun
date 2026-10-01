@@ -89,7 +89,7 @@ describe("persistScope — the root scope persists like a project", () => {
   });
 
   it("treats a root holding only the seeded 3D-blob as empty (vouches for a clear)", async () => {
-    // The blob is Eldrun's own default tab: not restorable, never persisted. A
+    // The blob is Tabtivity's own default tab: not restorable, never persisted. A
     // root at only its default IS empty, so it must license the clear — otherwise
     // a root closed back to default would resurrect its old tabs next launch.
     seedRoot([blobTab()]);

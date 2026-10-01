@@ -285,7 +285,7 @@ export const useTodoStore = create<TodoStore>((set, get) => ({
 // the shared answer.
 //
 // Callers own the gate: `loadUrgentMail` reaches `mail_priority_page`, and
-// opening the mail store's backend creates `~/.local/share/eldrun/mail/` as a
+// opening the mail store's backend creates `~/.local/share/tabtivity/mail/` as a
 // side effect — so retain ONLY behind the `mail_client` check (plus whatever
 // surface gate applies), exactly where the per-instance intervals sat.
 

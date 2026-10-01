@@ -476,7 +476,7 @@ interface SettingsStore {
 /**
  * Resolve once settings have loaded — or after `timeoutMs`, whichever comes first.
  *
- * Every gate that decides whether Eldrun may reach a host **without a gesture**
+ * Every gate that decides whether Tabtivity may reach a host **without a gesture**
  * reads settings (`lib/remote/hpc/hpcHost`'s `mayAutoTouch`, `machines_enabled`) and every one
  * of them fails closed on an unloaded store. That is the right default, and its
  * consequence is that the launch sweeps must *wait* rather than fire into the gap:

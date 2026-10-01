@@ -1742,7 +1742,7 @@ function PdfCanvas({
   /** The blackout tool is armed — a drag over a page marks an area. */
   const [redacting, setRedacting] = useState(false);
   /** The region-capture mode is armed — a drag over a page writes that crop to
-   *  the native system clipboard (and into the project's eldrun-screenshots/
+   *  the native system clipboard (and into the project's tabtivity-screenshots/
    *  folder).
    *  Armed by the global Screenshot app rather than a toolbar button: pressing
    *  Screenshot while a PDF is on screen means this document, at document
@@ -1760,7 +1760,7 @@ function PdfCanvas({
   );
   // The project the viewed file belongs to (the longest project directory that is
   // a prefix of `path`), so a capture files its PNG into the right
-  // eldrun-screenshots/ folder and the merge picker lists the right tree even in
+  // tabtivity-screenshots/ folder and the merge picker lists the right tree even in
   // a detached window.
   // It must stay project-scoped: the backend confines every write and read to the
   // scope's tree, so an arbitrary path would simply be refused.
@@ -3308,7 +3308,7 @@ function PdfCanvas({
       } else if (mod && key === "p" && !e.altKey && !e.shiftKey) {
         // Print what is in front of the reader. `preventDefault` unconditionally,
         // even while a print is already being prepared: the chord otherwise reaches
-        // the webview, whose own Ctrl+P prints the WHOLE Eldrun window — the app's
+        // the webview, whose own Ctrl+P prints the WHOLE Tabtivity window — the app's
         // chrome, tabs and all — which is never what was meant here. (The palette's
         // global Ctrl+P yields to a focused PDF; see QuickOpen.)
         e.preventDefault();
@@ -3474,7 +3474,7 @@ function PdfCanvas({
     // Same-path reload (a recompile): remember where the reader was so we can
     // restore it once the fresh pages have laid out, instead of jumping to the
     // top. A genuine file switch starts fresh. On the FIRST load, instead restore
-    // the position persisted from a prior session (#viewerpos) so an Eldrun
+    // the position persisted from a prior session (#viewerpos) so a Tabtivity
     // restart reopens the PDF where the reader left it.
     const el = scrollRef.current;
     let firstRestore: { top: number; left: number } | null = null;

@@ -30,7 +30,7 @@ struct ProjectRecord {
     #[serde(default)]
     vm: Option<Value>,
     // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
-    #[serde(default, rename = "tabtivity_mobile_access", alias = "eldrun_mobile_access")]
+    #[serde(default, rename = "tabtivity_mobile_access")]
     app_mobile_access: bool,
 }
 
@@ -47,7 +47,7 @@ struct BoxRecord {
     #[serde(default)]
     folder: Option<String>,
     // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
-    #[serde(default, rename = "tabtivity_mobile_access", alias = "eldrun_mobile_access")]
+    #[serde(default, rename = "tabtivity_mobile_access")]
     app_mobile_access: bool,
 }
 
@@ -225,8 +225,8 @@ pub struct PublicTab {
 pub struct ResolvedTab {
     pub public: PublicTab,
     pub tmux_name: String,
-    /// The desktop's session id for an agent tab — the `ELDRUN_TAB_UID` its
-    /// processes run with, which `eldrun-send` stamps on what it sends. Never
+    /// The desktop's session id for an agent tab — the `TABTIVITY_TAB_UID` its
+    /// processes run with, which `tabtivity-send` stamps on what it sends. Never
     /// crosses the browser API.
     pub session_id: Option<String>,
     /// The tab's `agent_tasks.json` binding, for answering its schedules with
@@ -400,7 +400,7 @@ impl RootEnv {
 /// so flipping any of its inputs needs no sidecar restart and an open root
 /// terminal detaches at `pty_bridge`'s next re-check.
 ///
-/// Off unless `eldrun_mobile_host.root_access` is set. Then: a root agent
+/// Off unless `tabtivity_mobile_host.root_access` is set. Then: a root agent
 /// without the MCP tools holds no right a project agent lacks, so root is
 /// open; with them, only while every write is staged (`root_mcp_review` =
 /// all, the default and the reading of any unknown value) behind a fence the
@@ -521,7 +521,7 @@ fn mobile_local(project: &ProjectRecord) -> bool {
         && !enabled(&project.vm)
 }
 
-/// `tmux ls` through Eldrun's effective PATH, the one the desktop's own tmux
+/// `tmux ls` through Tabtivity's effective PATH, the one the desktop's own tmux
 /// spawns use (`services::tmux_local`). A headless sidecar (launchd/systemd
 /// user service) inherits a bare PATH, so a bare `tmux` misses Homebrew's on a
 /// Mac, or picks `/usr/bin/tmux` against a server a `~/.local/bin/tmux` started
@@ -812,6 +812,24 @@ mod tests {
         assert!(project.app_mobile_access);
         let b: super::BoxRecord = serde_json::from_str(&format!(r#"{{"id":"b","name":"B","{key}":true}}"#)).unwrap();
         assert!(b.app_mobile_access);
+    }
+
+    /// The phone's access is read under the current key only. A key an older
+    /// build left behind must not open a project the window (which reads the
+    /// current key) shows as closed; and a record with both keys still parses.
+    #[test]
+    fn a_leftover_old_access_key_opens_nothing() {
+        if !crate::brand::PAIR.renamed() {
+            return;
+        }
+        let old = crate::brand::LEGACY_MOBILE_ACCESS_KEY;
+        let new = crate::brand::MOBILE_ACCESS_KEY;
+        let project: super::ProjectRecord =
+            serde_json::from_str(&format!(r#"{{"id":"p","name":"P","status":"active","{old}":true}}"#)).unwrap();
+        assert!(!project.app_mobile_access);
+        let b: super::BoxRecord =
+            serde_json::from_str(&format!(r#"{{"id":"b","name":"B","{old}":true,"{new}":false}}"#)).unwrap();
+        assert!(!b.app_mobile_access);
     }
 
     use crate::brand::SLUG;
@@ -1145,7 +1163,7 @@ mod tests {
     }
 
     /// Local-model tabs reach the phone as agent tabs (#31bl): Mistral's by its
-    /// resumable session, the other drivers by a `localLaunch` line Eldrun
+    /// resumable session, the other drivers by a `localLaunch` line Tabtivity
     /// builds — never by one it does not, and never without the `agent` token
     /// every agent tab's tmux name carries.
     #[test]
@@ -1191,7 +1209,7 @@ mod tests {
                 "tabLayout": [
                     tab("1", "vibe", serde_json::json!({ "sessionId": "s1" })),
                     tab("2", "ollama", launch(serde_json::json!(["launch", "claude", "--model", "qwen3:8b"]))),
-                    // Not a line Eldrun builds.
+                    // Not a line Tabtivity builds.
                     tab("3", "ollama", launch(serde_json::json!(["serve"]))),
                     // Neither resumable nor relaunchable.
                     tab("4", "ollama", serde_json::json!({})),

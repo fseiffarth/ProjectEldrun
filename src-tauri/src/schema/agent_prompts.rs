@@ -4,7 +4,7 @@
 //! The `*Input` ones arrive over IPC from a frontend built from this same tree,
 //! so they `deny_unknown_fields` and a caller's typo is loud. The persisted
 //! ones are read back off disk, and a state file outlives the build that wrote
-//! it: a packaged Eldrun, a frozen `package:dev` snapshot and a dev window all
+//! it: a packaged Tabtivity, a frozen `package:dev` snapshot and a dev window all
 //! read the same file, so the newest of them adding one optional field would
 //! otherwise make every older build reject the whole library with
 //! `unknown field ...` and show the user nothing. They tolerate unknown fields
@@ -106,7 +106,7 @@ pub struct SentAgentPrompt {
     /// it (`services::agent_session::agent_session_model`) — read with the
     /// blame, once the tab is idle again, because that is the first moment the
     /// transcript's last answer is *this* prompt's. The chart wears it as a
-    /// `model:` tag. Absent for an agent whose transcript Eldrun does not read,
+    /// `model:` tag. Absent for an agent whose transcript Tabtivity does not read,
     /// and on rows written before it was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,

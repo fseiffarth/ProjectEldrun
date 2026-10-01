@@ -87,7 +87,7 @@ export interface KeyboardChord {
 /**
  * A user-defined "custom agent" — an arbitrary CLI the user wants offered in the
  * add-tab menu's Agents group alongside the built-in agents (Claude, Codex, …).
- * It is just a launch command: Eldrun spawns `cmd` (+ `args`, `env`) in the
+ * It is just a launch command: Tabtivity spawns `cmd` (+ `args`, `env`) in the
  * project directory as an `agent` tab. Persisted in `Settings.custom_agents` and
  * added/removed from the "＋ Add agent…" dialog.
  *
@@ -115,7 +115,7 @@ export interface CustomAgent {
   resumeArgs?: string[];
   /** Optional one-line install command (e.g. `npm install -g @scope/pkg`). When
    *  the agent's binary isn't found, the manage dialog offers a one-click button
-   *  that runs this in a fresh root terminal tab (Eldrun's install-via-tab
+   *  that runs this in a fresh root terminal tab (Tabtivity's install-via-tab
    *  policy — never a copy-it-yourself step). */
   installCmd?: string;
 }
@@ -156,7 +156,7 @@ export interface Settings {
      * files. Unset is off; read by the sidecar per request. */
     project_files?: boolean;
   };
-  /** Show Eldrun Mobile's host-connection control in the desktop header. This
+  /** Show Tabtivity Mobile's host-connection control in the desktop header. This
    * defaults to on when Mobile itself is enabled; an explicit false hides it. */
   mobile_indicator?: boolean;
   /** Is the header's machine-state cluster (connection, battery, Mobile, VPN,
@@ -170,7 +170,7 @@ export interface Settings {
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
-  /** UI language for Eldrun's interface. Unset/unknown falls back to English.
+  /** UI language for Tabtivity's interface. Unset/unknown falls back to English.
    *  Applied live via `lib/i18n` (`applyLanguage`); the backend round-trips it. */
   language?: "en" | "de" | "es" | "fr" | "it";
   /** App-wide clock: `true` = 24-hour, `false` = 12-hour AM/PM. **Unset is not
@@ -250,14 +250,14 @@ export interface Settings {
    *  — and `experimental()` additionally means "on in debug", which would put a
    *  third header button in every developer's window unasked. */
   todo_board?: boolean;
-  /** Root console: whether Eldrun serves its own MCP tools to root agents
+  /** Root console: whether Tabtivity serves its own MCP tools to root agents
    *  (`services::root_mcp`). **Default true** — absent means on. Off hands new
    *  root agents no endpoint and refuses the ones already holding the token. */
   root_mcp?: boolean;
   schedule_mcp?: boolean;
   /** Agent-requested pushes (`services::git_push_mcp`). Absent means off. */
   git_push_mcp?: boolean;
-  /** The read-only "Ask Eldrun" help MCP (`eldrun-help`) in local agent tabs.
+  /** The read-only "Ask Tabtivity" help MCP (`tabtivity-help`) in local agent tabs.
    *  **Default true** — absent means on. Switched in the intro wizard. */
   help_mcp?: boolean;
   root_mcp_review?: "all" | "destructive" | "off";
@@ -373,7 +373,7 @@ export interface Settings {
    *  `browser_open_live` without this, so the hidden control is the courtesy and
    *  not the boundary. */
   browser_live_pages?: boolean;
-  /** The agent Eldrun picks on its own when a feature needs exactly one and the
+  /** The agent Tabtivity picks on its own when a feature needs exactly one and the
    *  user hasn't chosen per-instance — an agent id/cmd from `AGENT_ITEMS`
    *  (`"claude"`, `"codex"`, …). Set from the 🧠 menu's Agents section; every
    *  reader falls back to `"claude"` when unset. */
@@ -458,7 +458,7 @@ export interface Settings {
   ollama_allow_remote_host?: boolean;
   /** Where Ollama saves the models it downloads — its `OLLAMA_MODELS`
    *  directory. Unset/empty means Ollama's own default (`~/.ollama/models`, or a
-   *  system-service dir when one holds models). It reaches only a server Eldrun
+   *  system-service dir when one holds models). It reaches only a server Tabtivity
    *  starts itself; a systemd-managed one is pointed at the same folder by the
    *  Settings panel's one-click drop-in (`ollama_models_dir_plan`). */
   ollama_models_path?: string | null;
@@ -477,7 +477,7 @@ export interface Settings {
   code_completion_provider?: "ollama" | "copilot";
   /** Experimental entry point; this alone never authorizes cloud context. */
   copilot_completion?: boolean;
-  /** Eldrun-owned consent, bound to both project id and canonical directory. */
+  /** Tabtivity-owned consent, bound to both project id and canonical directory. */
   completion_project_policies?: Record<string, {
     directory: string;
     copilot: boolean;
@@ -497,7 +497,7 @@ export interface Settings {
    *  machine. Read in the backend sync (it gates per-account autoclassify) and in
    *  the UI via `lib/mail`'s `mailAiResolvable`. */
   mail_ai_allow?: boolean;
-  /** Local models to load into memory when Eldrun starts (🧠 menu "on start"
+  /** Local models to load into memory when Tabtivity starts (🧠 menu "on start"
    *  chip / Ollama settings). Loading is what makes a model *usable* without a
    *  manual step, so a feature that wants one waiting — mail-importance scoring,
    *  autocomplete — finds it warm at launch. Sequential, in list order. Unset or
@@ -514,7 +514,7 @@ export interface Settings {
    *  Run button's right-click popover, keyed by the file's absolute path. Kept
    *  per file (not per tab) so every viewer of the same script shares one set of
    *  args, and here (global settings) so they survive closing the viewer and an
-   *  Eldrun restart. Round-trips through the backend's `extra` catch-all — no Rust
+   *  Tabtivity restart. Round-trips through the backend's `extra` catch-all — no Rust
    *  field needed. An entry set to "" means "cleared" and is pruned. */
   python_run_args?: Record<string, string>;
   /** Cached "is this a runnable script" verdicts for `.py` files (#py), keyed by
@@ -591,17 +591,17 @@ export interface Settings {
   project_remarks?: boolean;
   /** Persistent LOCAL (tmux) sessions (TODO #85): when true (the default on Unix),
    *  a local project's shell/script tabs run inside a tmux session on the machine,
-   *  so a long run keeps going if Eldrun crashes and the tab reattaches on restart.
+   *  so a long run keeps going if Tabtivity crashes and the tab reattaches on restart.
    *  `undefined`/`true` = on; `false` = off. No effect on Windows (no tmux). */
   persist_local_sessions?: boolean;
   /** When true (the default), remote SSH/OpenVPN connections are made headlessly
-   *  in the background (Eldrun handles the password transiently). When false, they
-   *  are launched as interactive terminal tabs in the Eldrun root scope, so the
-   *  password is typed directly into the live terminal and Eldrun never handles
+   *  in the background (Tabtivity handles the password transiently). When false, they
+   *  are launched as interactive terminal tabs in the Tabtivity root scope, so the
+   *  password is typed directly into the live terminal and Tabtivity never handles
    *  it. Default ON (headless) preserves existing behaviour. */
   connections_headless?: boolean;
   /** Hosts marked **careful** — "this machine is shared and policed, keep
-   *  Eldrun's background load off it" — keyed by canonical SSH target
+   *  Tabtivity's background load off it" — keyed by canonical SSH target
    *  (`lib/remote/machineSync`'s `targetKey`, i.e. `user@host:port`), because one login
    *  node is simultaneously a primary `remote`, a worker and a global machine.
    *  The value is the user's EXPLICIT answer; a target absent from the map is
@@ -613,7 +613,7 @@ export interface Settings {
   /** Machines tagged **HPC** — a shared cluster login node — keyed by the same
    *  SSH target as `careful_hosts`. Ticked on the login form and shown as a badge
    *  on the machine's row in the Machines menu. Where `careful_hosts` governs how
-   *  much Eldrun *looks at*, this governs what it *does*: a tagged host is careful
+   *  much Tabtivity *looks at*, this governs what it *does*: a tagged host is careful
    *  regardless, and its disk-usage scan, giant-folder census, background sync +
    *  lockstep loops, silent auto-connect and unannounced login-node compute are
    *  all gated behind it. See `lib/remote/hpc/hpcHost.ts`. */
@@ -623,7 +623,7 @@ export interface Settings {
    *  tunnel starts by itself. Only one config can be armed: a tunnel reroutes the
    *  whole machine, so two would fight over the routing. */
   vpn_auto_connect?: string | null;
-  /** The `.ovpn` configs the user asked Eldrun to remember the credentials of.
+  /** The `.ovpn` configs the user asked Tabtivity to remember the credentials of.
    *  No secret here — those live in the OS keychain; this is the *intent*, kept
    *  because a locked keychain answers every read like an empty one, so the
    *  toggle and the connect path would otherwise read "nothing saved" over a
@@ -641,7 +641,7 @@ export interface Settings {
   remote_features_prompted?: boolean;
   /** Energy-saver mode. "off" never throttles; "battery" (the default) throttles
    *  only while running on battery; "always" throttles regardless of power. When
-   *  active, Eldrun pauses the blob auto-spin, collapses idle animations, and
+   *  active, Tabtivity pauses the blob auto-spin, collapses idle animations, and
    *  widens always-on UI timers to reduce CPU/battery drain. */
   energy_saver?: "off" | "battery" | "always";
   /** Fast mode: drop the display aids that cost a directory walk, a standing
@@ -741,7 +741,7 @@ export interface Settings {
    *  skipped. Cosmetic only (never auto-launches the tour); the tour is always
    *  replayable from the gear menu / Settings. */
   tour_completed?: boolean;
-  /** Where the main window was when Eldrun last ran, so it reopens on the same
+  /** Where the main window was when Tabtivity last ran, so it reopens on the same
    *  monitor in the same place. Written by the debounced save in `AppShell`;
    *  consumed by the backend at startup, never rendered. */
   window_state?: WindowState;
@@ -784,7 +784,7 @@ export interface SshProbe {
   error: string;
 }
 
-/** A previously-used `.ovpn` config copied into Eldrun's store, offered for
+/** A previously-used `.ovpn` config copied into Tabtivity's store, offered for
  *  reuse so a config need only be browsed for once. */
 export interface StoredVpnConfig {
   /** Absolute path to the stored copy (passed to `openvpn_connect`). */
@@ -825,7 +825,7 @@ export interface MachineImportEntry {
  *  the UI shows exactly the fields that config will be asked for. The two are
  *  independent — a config can need both, and OpenVPN prompts for them separately,
  *  so supplying only one hangs the handshake on the other prompt. The local root
- *  password is a third secret, but polkit/`pkexec` collects that one, not Eldrun. */
+ *  password is a third secret, but polkit/`pkexec` collects that one, not Tabtivity. */
 export interface VpnAuthNeeds {
   /** Bare `auth-user-pass`: server-side account auth, so a username is required. */
   username: boolean;
@@ -886,13 +886,13 @@ export interface RemoteSpec {
   label?: string;
   /** Persistent remote sessions (TODO #85): run this project's remote shell/script
    *  AND remote agent tabs inside a **tmux** session on the host, so a long run (or a
-   *  live agent) survives an SSH drop, a laptop sleep, or Eldrun quitting. **Default
+   *  live agent) survives an SSH drop, a laptop sleep, or Tabtivity quitting. **Default
    *  ON** — `undefined`/`true` mean enabled; only an explicit `false` (the pill's
    *  toggle) opts out. An agent tab's tmux persistence composes with its `--resume`
    *  restore (`tmux new-session -A` reattaches the live process, else runs `--resume`).
    *  See `persistSessionsEnabled`. */
   persist_sessions?: boolean;
-  /** This spec reaches a **project VM** Eldrun itself booted
+  /** This spec reaches a **project VM** Tabtivity itself booted
    *  (`docs/vm_projects_plan.md`): host is loopback and port the per-boot QEMU
    *  forward. Written by the backend at creation/boot, never user-set. What a
    *  VM-aware surface (the pill glyph, the spawn guard) dispatches on. */
@@ -986,7 +986,7 @@ export interface ComputeHost extends RemoteSpec {
    *  outputs stay on the worker). */
   pull_outputs?: boolean;
   /** This machine reaches the project over a **shared filesystem**: it already
-   *  sees the primary's project folder at `remote_path`, so Eldrun copies no code
+   *  sees the primary's project folder at `remote_path`, so Tabtivity copies no code
    *  to it and never runs git on it — shells just `cd` into the shared tree and
    *  run there. The default for a newly added machine (untick "Sync a copy" for
    *  the synced-copy worker instead). Schema default false for back-compat. */
@@ -1016,7 +1016,7 @@ export interface SandboxSpec {
   scope?: SandboxScope;
   image?: string;
   /** In-repo Dockerfile (relative to the project dir); when set, the container
-   *  is built from it (`eldrun-<id>:latest`) instead of pulling `image`. */
+   *  is built from it (`tabtivity-<id>:latest`) instead of pulling `image`. */
   dockerfile?: string;
   /** `--pids-limit` (fork-bomb guard). Unset = generous built-in default. */
   pids_limit?: number;
@@ -1178,7 +1178,7 @@ export interface ProjectEntry {
   git_provider?: GitProvider;
   /** Provider sniffed from the local `origin` host at load time (host-only, no
    *  network). Decorates the pill badge for repos pushed to a host outside
-   *  Eldrun's Publish flow. Transient — never persisted to projects.json. */
+   *  Tabtivity's Publish flow. Transient — never persisted to projects.json. */
   detected_provider?: GitProvider;
   /** Raw `origin` remote URL sniffed alongside `detected_provider`. Shown as the
    *  git address in the project hover. Transient — never persisted. */
@@ -1193,7 +1193,7 @@ export interface ProjectEntry {
 }
 
 /** A row in the Settings "Archived projects" list (from `list_archived_projects`).
- *  Archived projects live under `~/eldrun/archive/<id>/` until restored or
+ *  Archived projects live under `~/tabtivity/archive/<id>/` until restored or
  *  permanently cleared. */
 export interface ArchivedProject {
   id: string;
@@ -1223,7 +1223,7 @@ export interface UnsyncedReport {
 
 /* ── Project export / import (docs/context/project_transfer.md) ───────────── */
 
-/** What a `.eldrunproj` bundle actually carries (Rust `BundleContents`). */
+/** What a `.tabtivityproj` bundle actually carries (Rust `BundleContents`). */
 export interface BundleContents {
   dir: boolean;
   state: boolean;
@@ -1371,7 +1371,7 @@ export interface ProjectBox {
   folder?: string;
   /** Directed inter-project relations (#41 Phase 2 stored, Phase 4 surfaced). */
   relations?: BoxRelation[];
-  /** Eldrun Mobile reach (#31aa): the box's `box:<id>` scope is listed on a
+  /** Tabtivity Mobile reach (#31aa): the box's `box:<id>` scope is listed on a
    *  paired phone. Off/absent by default, like a project's switch. */
   [MOBILE_ACCESS_KEY]?: boolean;
   /** User-picked colour (`#rrggbb`); absent = hashed from the id
@@ -1471,7 +1471,7 @@ export interface Rrule {
    * not hold all of it (an `HOURLY` part, `BYSETPOS` over several days, several
    * `BYMONTHDAY`s…). Export writes it back verbatim while the rule still says
    * what it said on import, so a CalDAV push never replaces the server's rule
-   * with Eldrun's reduced reading of it. Any edit to the rule drops it.
+   * with Tabtivity's reduced reading of it. Any edit to the rule drops it.
    */
   ics_value?: string | null;
 }
@@ -1650,7 +1650,7 @@ export interface CalendarTask {
   /** Local wall-clock stamp minted at creation (`"YYYY-MM-DDTHH:MM"`). */
   created?: string;
   /** The CalDAV resource this card was synced from, and its ETag. Everything
-   *  above from `column` down is Eldrun's own and is **never** overwritten by a
+   *  above from `column` down is Tabtivity's own and is **never** overwritten by a
    *  sync — that is the whole point of matching on the href. */
   caldav_href?: string;
   caldav_etag?: string;

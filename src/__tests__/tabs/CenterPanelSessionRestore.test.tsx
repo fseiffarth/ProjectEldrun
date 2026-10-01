@@ -325,7 +325,7 @@ describe("loadFromLayout — resume args", () => {
     useTabsStore.getState().loadFromLayout(layout, "/project-r-dir", "project-r");
 
     const tab = useTabsStore.getState().tabsByScope["project-r"]![0];
-    // Codex's sessionId is only the ELDRUN_TAB_UID key, not a Codex session id,
+    // Codex's sessionId is only the TABTIVITY_TAB_UID key, not a Codex session id,
     // so the frontend passes no resume args; the backend resolves the live id.
     expect(tab.args).toEqual([]);
     expect(tab.sessionId).toBe(sid);

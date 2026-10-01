@@ -2,7 +2,7 @@
 //!
 //! SSH-sync Phase 1 (`docs/ssh_sync_plan.md`). Every remote project has a local
 //! paired **mirror** — by default a `<name>` subfolder of the top-level
-//! `eldrun/projects-ssh/` root
+//! `tabtivity/projects-ssh/` root
 //! (legacy/fallback: `<state_dir>/remote-projects/<id>/mirror/`), relocatable per
 //! project via `extra["mirror"]` (see [`mirror_dir`]) — that starts empty and is
 //! populated only by **explicit, user-chosen** sync. This module is
@@ -159,7 +159,7 @@ pub fn default_mirror_dir_in(state_dir: &Path, project_id: &str) -> PathBuf {
 
 /// A remote project's explicitly-chosen mirror root, read from the always-local
 /// `projects.json` entry's flattened `extra["mirror"]` (written at import — where
-/// it defaults to a `<name>` subfolder of the top-level `eldrun/projects-ssh/` root — and rewritten
+/// it defaults to a `<name>` subfolder of the top-level `tabtivity/projects-ssh/` root — and rewritten
 /// when the user relocates a deleted mirror). `None` when unset. Read from the
 /// global list rather than the per-project `project.json` for the same reason as
 /// `remote::remote_target_for`: the global list is always on the local disk.
@@ -628,7 +628,7 @@ async fn walk_inner(
         return Ok(());
     }
     for entry in entries {
-        // Skip Eldrun's internal runtime dir, mirroring the local/remote listers.
+        // Skip Tabtivity's internal runtime dir, mirroring the local/remote listers.
         // `.git` is likewise never byte-mirrored: git state is kept in step
         // *semantically* by `services::git_peer` (lockstep), so copying its bytes
         // would fight that layer and risk corrupting a repo mid-write.
@@ -1088,8 +1088,8 @@ fn walk_mirror_inner(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(
         if ft.is_symlink() {
             continue; // G3: never follow symlinks out of the mirror
         }
-        // `.git`/`.eldrun` are never byte-mirrored (git is kept in step semantically
-        // by `services::git_peer`; `.eldrun` is Eldrun's own runtime dir).
+        // `.git`/`.tabtivity` are never byte-mirrored (git is kept in step semantically
+        // by `services::git_peer`; `.tabtivity` is Tabtivity's own runtime dir).
         if entry.file_name() == *".git" || entry.file_name().to_str().is_some_and(crate::brand::is_project_dir) {
             continue;
         }

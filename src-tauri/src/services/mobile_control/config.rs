@@ -58,7 +58,7 @@ impl Default for MobileHostSettings {
 #[derive(Deserialize, Default)]
 struct SettingsFile {
     // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_HOST_KEY
-    #[serde(default, rename = "tabtivity_mobile_host", alias = "eldrun_mobile_host")]
+    #[serde(default, rename = "tabtivity_mobile_host")]
     app_mobile_host: Option<MobileHostSettings>,
 }
 
@@ -92,7 +92,7 @@ pub fn validate_origin(raw: &str) -> Result<String, String> {
 /// The Tailscale CLI to run. PATH first; then the CLI the platform's own
 /// Tailscale app ships where PATH does not reach it — the macOS App Store /
 /// standalone app bundles its CLI inside `Tailscale.app` and adds nothing to a
-/// GUI app's PATH, and a Windows install made after Eldrun started is on the
+/// GUI app's PATH, and a Windows install made after Tabtivity started is on the
 /// machine but not yet on this process's PATH (the MiKTeX/Codex gap `paths`
 /// already covers). Falls back to the bare name so the spawn error stays the
 /// ordinary "not installed" one.
@@ -152,7 +152,7 @@ pub struct DetectedServeSettings {
     pub origin: String,
 }
 
-/// Find the one private HTTPS root handler that points at Eldrun's supported
+/// Find the one private HTTPS root handler that points at Tabtivity's supported
 /// loopback listener shape. Detection is deliberately as strict as activation:
 /// a Funnel, non-root handler, non-loopback proxy, or ambiguous set is never
 /// turned into settings merely because it appeared in Tailscale's JSON.

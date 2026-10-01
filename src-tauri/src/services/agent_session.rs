@@ -1,4 +1,4 @@
-//! Per-tab Claude session tracking so Eldrun can resume the *current* session
+//! Per-tab Claude session tracking so Tabtivity can resume the *current* session
 //! after a `/clear` — and resume it in the permission mode it was left in.
 //!
 //! Claude is launched with a deterministic launch id (`--session-id <uuid>`),
@@ -6,12 +6,12 @@
 //! to the launch id — so resuming the launch id brings back the pre-`/clear`
 //! conversation. To follow the live id we install a global Claude `SessionStart`
 //! hook (fires on startup / resume / clear / compact) that records the live
-//! `session_id` — and, beside it, that `source` — keyed by `$ELDRUN_TAB_UID`,
-//! an env var Eldrun sets on the spawned agent to the stable launch id (see
+//! `session_id` — and, beside it, that `source` — keyed by `$TABTIVITY_TAB_UID`,
+//! an env var Tabtivity sets on the spawned agent to the stable launch id (see
 //! `terminal::resolve_claude_session`). The prompt history reads the same
 //! record at write time (`services::agent_prompts`), so a prompt sent after a
 //! `/clear` is filed under the session it actually reached.
-//! The hook no-ops for any Claude not launched by Eldrun (no `ELDRUN_TAB_UID`),
+//! The hook no-ops for any Claude not launched by Tabtivity (no `TABTIVITY_TAB_UID`),
 //! so it is safe to install once, globally.
 
 use crate::brand::{DISPLAY, UPPER};
@@ -51,7 +51,7 @@ pub fn resolve_agent_session(opts: PtyOptions) -> PtyOptions {
 }
 
 /// Vibe chooses its own session ID. Its post-agent hook records that ID under
-/// Eldrun's stable tab key, including after an in-app `/resume` or `/branch`.
+/// Tabtivity's stable tab key, including after an in-app `/resume` or `/branch`.
 /// Old tabs without a hook record retain their project-scoped `--continue`.
 fn resolve_vibe_session(opts: PtyOptions) -> PtyOptions {
     let remote = !opts.local_only && opts.project_id.as_deref()
@@ -74,7 +74,7 @@ fn vibe_home_for(opts: &PtyOptions) -> PathBuf {
     let Some(candidate) = opts.env.get("VIBE_HOME").map(PathBuf::from) else {
         return default;
     };
-    // The renderer supplies env. Only Eldrun's dedicated local-model homes may
+    // The renderer supplies env. Only Tabtivity's dedicated local-model homes may
     // select another session store; never read an arbitrary renderer path.
     if is_local_vibe_home(&candidate) {
         candidate
@@ -129,7 +129,7 @@ fn vibe_session_exists(home: &std::path::Path, id: &str) -> bool {
 
 /// Resolve a Codex tab's session args. Unlike Claude, Codex mints its own session
 /// id (no launch-time `--session-id`), so the only stable per-tab key is the
-/// `ELDRUN_TAB_UID` env var Eldrun sets from the tab's id. The global Codex
+/// `TABTIVITY_TAB_UID` env var Tabtivity sets from the tab's id. The global Codex
 /// `SessionStart` hook records the live session id under that key (see
 /// `install_session_start_hook`); here we read it and, when Codex still has that
 /// conversation, launch `codex resume <live-id>`. With no record yet (first
@@ -238,7 +238,7 @@ fn codex_session_log(root: &std::path::Path, uuid: &str) -> Option<PathBuf> {
 /// which doubles as the tab's stable key. We:
 ///
 /// 1. Expose that launch id to the global `SessionStart` hook via the
-///    `ELDRUN_TAB_UID` env var, so the hook can record this tab's *live* session
+///    `TABTIVITY_TAB_UID` env var, so the hook can record this tab's *live* session
 ///    id. The live id diverges from the launch id after `/clear` (Claude rolls
 ///    onto a fresh session with no recorded back-link), so this is the only
 ///    reliable way to follow it.
@@ -281,7 +281,7 @@ where
     resolve_claude_session_in(opts, &[projects], live_lookup, mode_lookup)
 }
 
-/// Env var naming the agent a tab runs, set beside `ELDRUN_TAB_UID` so the hook
+/// Env var naming the agent a tab runs, set beside `TABTIVITY_TAB_UID` so the hook
 /// script knows which continuity rule applies to a record — see
 /// [`hook_script_body`]. Every process under the tab inherits both.
 pub const TAB_AGENT_ENV: &str = crate::app_env!("TAB_AGENT");
@@ -339,7 +339,7 @@ where
             // no hook event; verified empirically against 2.1.251) — so a
             // respawned tab used to come back in the wrong mode. Re-apply the
             // last mode the Stop hook recorded. This is now the ONLY thing that
-            // carries a permission mode across a respawn — Eldrun launches the
+            // carries a permission mode across a respawn — Tabtivity launches the
             // plain command and has no mode toggle of its own — so what it
             // preserves is exactly what the user set inside the CLI. An explicit
             // mode flag already on the args (a custom agent's own flag) outranks
@@ -403,9 +403,9 @@ fn claude_session_log(projects: &std::path::Path, uuid: &str) -> Option<PathBuf>
 // Neither CLI tells its hooks which model it runs (the hook payload carries a
 // session id and a permission mode, nothing more), and asking the agent would
 // spend a turn. What both keep is a transcript in which every answer names the
-// model that produced it, so the tag Eldrun shows beside a tab is *the model
+// model that produced it, so the tag Tabtivity shows beside a tab is *the model
 // this session last answered with* — read from the tail of that file, never
-// inferred from a flag Eldrun did not pass. A tab whose agent keeps no readable
+// inferred from a flag Tabtivity did not pass. A tab whose agent keeps no readable
 // transcript (Gemini, a custom command) gets no tag rather than a guessed one.
 //
 // Codex 0.153.4 stopped writing that transcript as a file and keeps its threads
@@ -437,7 +437,7 @@ pub enum TranscriptKind {
 
 /// The model the tab launched as `cmd` with launch id `launch_id` last answered
 /// with, or `None` when there is no transcript, no answer in it yet, or the
-/// agent is one whose transcript Eldrun does not read.
+/// agent is one whose transcript Tabtivity does not read.
 pub fn agent_session_model(cmd: &str, project_id: Option<&str>, launch_id: &str) -> Option<String> {
     read_agent_transcript(
         cmd,
@@ -451,7 +451,7 @@ pub fn agent_session_model(cmd: &str, project_id: Option<&str>, launch_id: &str)
 /// The last prompt the tab launched as `cmd` with launch id `launch_id` was
 /// given — however it got there: typed into the terminal, pasted, sent from
 /// the Agents view's composer, or delivered by a schedule. Read from the same
-/// transcript as the model tag, because the terminal is the one place Eldrun
+/// transcript as the model tag, because the terminal is the one place Tabtivity
 /// cannot see a prompt go by (keystrokes reach the PTY, the TUI's input box
 /// edits them, and only the agent knows what was finally submitted), while
 /// the agent writes every submitted prompt to its transcript before it starts
@@ -459,7 +459,7 @@ pub fn agent_session_model(cmd: &str, project_id: Option<&str>, launch_id: &str)
 /// ([`clean_prompt_text`]).
 ///
 /// `None` when there is no transcript, no prompt in it, or the agent keeps
-/// none Eldrun reads. Codex 0.153.4's thread store records no messages at all
+/// none Tabtivity reads. Codex 0.153.4's thread store records no messages at all
 /// (only the thread's first one), so a Codex tab on that release has no answer
 /// here — nothing is guessed from the tab's output instead.
 ///
@@ -693,7 +693,7 @@ pub struct TranscriptPrompt {
 
 /// The newest prompts (oldest first) the tab launched as `cmd` with launch id
 /// `launch_id` was given, however they were submitted. Empty when there is no
-/// transcript Eldrun reads (Codex's thread store keeps no messages), and right
+/// transcript Tabtivity reads (Codex's thread store keeps no messages), and right
 /// after a `/clear` — the same no-fallback rule as [`agent_session_last_prompt`].
 pub fn agent_session_recent_prompts(
     cmd: &str,
@@ -1225,7 +1225,7 @@ pub(crate) fn clean_prompt_text(raw: &str) -> Option<String> {
     Some(cut)
 }
 
-/// `~/.local/share/eldrun/live_sessions/` — one file per tab (named by the
+/// `~/.local/share/tabtivity/live_sessions/` — one file per tab (named by the
 /// tab's stable launch uuid) holding that tab's current live Claude session id.
 ///
 /// This is where **host-run** (uncontained) agents record, via the hook script's
@@ -1261,7 +1261,7 @@ fn hook_script_path() -> PathBuf {
     storage::state_dir().join("hooks").join(HOOK_SCRIPT_NAME)
 }
 
-/// The `command` string Eldrun registers in the agents' SessionStart hook config
+/// The `command` string Tabtivity registers in the agents' SessionStart hook config
 /// (Claude `settings.json` / Codex `config.toml`). The agents run this through the
 /// OS shell, so it must be runnable there: on unix the bare `#!/bin/sh` script path
 /// suffices, but on Windows `cmd.exe` cannot execute that script, so we invoke the
@@ -1289,7 +1289,7 @@ pub fn is_uuidish(s: &str) -> bool {
 }
 
 /// Strict canonical-UUID shape (`8-4-4-4-12` hex). Used for the tab **key**, which
-/// becomes a path component: `ELDRUN_TAB_UID` arrives in the renderer-supplied
+/// becomes a path component: `TABTIVITY_TAB_UID` arrives in the renderer-supplied
 /// `PtyOptions.env`, so the looser [`is_uuidish`] (which happens to exclude `.`
 /// and `/`, and so blocked traversal by accident rather than by design) is not the
 /// check to rely on. Every real key is a `crypto.randomUUID()` / agent session id,
@@ -1391,7 +1391,7 @@ pub fn cleared_session_for(project_id: Option<&str>, uid: &str) -> Option<String
 pub enum UndoClearPlan {
     /// Type this into the running session (Claude's `/resume <id>`).
     Type { command: String },
-    /// Relaunch the tab the way a restart of Eldrun does: its resume resolves
+    /// Relaunch the tab the way a restart of Tabtivity does: its resume resolves
     /// through the record, which now names the cleared conversation.
     Relaunch,
 }
@@ -1558,7 +1558,7 @@ pub fn write_live_session_in(dir: &std::path::Path, uid: &str, id: &str) -> std:
 
 // ── Codex hook trust state ──────────────────────────────────────────────────
 
-/// What Eldrun's Codex `SessionStart` hook is actually doing right now.
+/// What Tabtivity's Codex `SessionStart` hook is actually doing right now.
 ///
 /// Codex gates *user-level* hooks behind a one-time trust approval (`/hooks`
 /// inside Codex), recording the verdict in a `[hooks.state."…"]` table. An
@@ -1580,7 +1580,7 @@ pub enum CodexHookState {
     Enabled,
 }
 
-/// Classify Eldrun's hook across the Eldrun-owned agent homes: the least
+/// Classify Tabtivity's hook across the Tabtivity-owned agent homes: the least
 /// trusted state any home that has run Codex is in (a `sessions/` dir), since
 /// Codex asks for the trust approval per config file. `NoCodex` when no home
 /// has run it yet.
@@ -1605,7 +1605,7 @@ pub fn codex_hook_state() -> CodexHookState {
     worst.unwrap_or(CodexHookState::NoCodex)
 }
 
-/// Eldrun's hook as the Codex of one agent home sees it.
+/// Tabtivity's hook as the Codex of one agent home sees it.
 fn codex_hook_state_of_home(home: &std::path::Path) -> CodexHookState {
     let config = home.join(".codex").join("config.toml");
     let src = std::fs::read_to_string(&config).unwrap_or_default();
@@ -1726,17 +1726,17 @@ pub fn codex_binder_enabled(scope_id: Option<&str>) -> bool {
 }
 
 /// Install (idempotently) the session hooks and their script for every agent
-/// Eldrun can track (Claude + Codex), so it learns each tab's live session id,
+/// Tabtivity can track (Claude + Codex), so it learns each tab's live session id,
 /// its live permission mode (Claude's `Stop`), and its turn state (see
 /// [`HOOK_EVENTS`] and `services::agent_turn`). Safe to call on every startup.
-/// The shared script keys by `$ELDRUN_TAB_UID` and reads `session_id` from the
+/// The shared script keys by `$TABTIVITY_TAB_UID` and reads `session_id` from the
 /// hook's stdin JSON — both CLIs use that schema.
 pub fn install_session_start_hook() -> std::io::Result<()> {
     write_hook_script()?;
     crate::services::agent_hint::write_script()
 }
 
-/// Register the hooks in one Eldrun-owned agent home (`services::agent_home`):
+/// Register the hooks in one Tabtivity-owned agent home (`services::agent_home`):
 /// Claude's `settings.json`, Codex's `config.toml`, Vibe's `hooks.toml`. Each
 /// is idempotent and keeps whatever else the file holds. Never a file in the
 /// user's own home, and never through a symlink: a fenced agent owns the home,
@@ -1768,7 +1768,7 @@ pub fn register_hooks_in_home(home: &std::path::Path) {
             eprintln!("agent_session: register vibe hook in {}: {e}", home.display());
         }
     }
-    // The other CLIs' `eldrun-send` hint (Claude and Codex get it from the
+    // The other CLIs' `tabtivity-send` hint (Claude and Codex get it from the
     // session hook above).
     crate::services::agent_hint::register_in_home(home);
 }
@@ -1776,8 +1776,8 @@ pub fn register_hooks_in_home(home: &std::path::Path) {
 /// Vibe's user hook runs after each completed turn and reports the live ID.
 /// Local-model homes have their own hooks.toml, so preparation calls this too.
 ///
-/// A local-model home (`<state>/vibe_local/<alias>`) is Eldrun's own, so its
-/// file is rewritten to hold Eldrun's hook alone: a hook a fenced agent planted
+/// A local-model home (`<state>/vibe_local/<alias>`) is Tabtivity's own, so its
+/// file is rewritten to hold Tabtivity's hook alone: a hook a fenced agent planted
 /// there before the fence made the file read-only must not survive into the
 /// next local-model tab (threat model gap 7).
 pub fn register_vibe_hook_in(home: &std::path::Path) -> std::io::Result<()> {
@@ -1818,7 +1818,7 @@ fn vibe_hook_block() -> std::io::Result<String> {
     ))
 }
 
-/// Whether `home` is one of Eldrun's local-model `VIBE_HOME`s — the same root
+/// Whether `home` is one of Tabtivity's local-model `VIBE_HOME`s — the same root
 /// and one-component rule [`vibe_home_for`] applies.
 fn is_local_vibe_home(home: &std::path::Path) -> bool {
     is_local_vibe_home_in(home, &storage::home_share_dir().join("vibe_local"))
@@ -1873,16 +1873,16 @@ fn container_hook_script_path() -> PathBuf {
 }
 
 /// POSIX-sh hook body. Reads the hook JSON on stdin and records, per tab key:
-/// `session_id` → `<live_dir>/<ELDRUN_TAB_UID>` (on `SessionStart`/`Stop`), —
+/// `session_id` → `<live_dir>/<TABTIVITY_TAB_UID>` (on `SessionStart`/`Stop`), —
 /// when the event carries it (`SessionStart` does not; `Stop` does) —
-/// `permission_mode` → `<live_dir>/<ELDRUN_TAB_UID>.mode`, and the turn state
-/// the event implies → `<live_dir>/<ELDRUN_TAB_UID>.turn` (`working` /
+/// `permission_mode` → `<live_dir>/<TABTIVITY_TAB_UID>.mode`, and the turn state
+/// the event implies → `<live_dir>/<TABTIVITY_TAB_UID>.turn` (`working` /
 /// `decision` / `done` / `idle` plus the epoch second, read by
 /// `services::agent_turn`). No jq dependency: one `sed` per field pulls the
 /// value out of the one-line JSON.
 ///
 /// **Only the tab's own session may move the record.** Every process under the
-/// tab inherits `ELDRUN_TAB_UID`, so a nested CLI — the tab's agent running
+/// tab inherits `TABTIVITY_TAB_UID`, so a nested CLI — the tab's agent running
 /// `claude -p …` through its own shell tool, verified live — fires this hook too,
 /// and used to overwrite both records with its one-shot session and its default
 /// mode: the next relaunch resumed a dead headless session and lost the
@@ -1904,7 +1904,7 @@ fn container_hook_script_path() -> PathBuf {
 /// from the tab's shell fires the same `clear` start after its own `/clear`,
 /// with a null `transcript_path` or a `rollout-…` one, and took the Claude
 /// tab's record over, so the phone read that Codex's rollout (2026-09-24). A Codex
-/// tab (`ELDRUN_TAB_AGENT=codex`) mints its own ids, so its record is free-form
+/// tab (`TABTIVITY_TAB_AGENT=codex`) mints its own ids, so its record is free-form
 /// — except that a Claude fired inside it (`CLAUDECODE` is set by Claude for its
 /// children, never by Codex) is refused outright.
 #[cfg(not(windows))]
@@ -2700,7 +2700,7 @@ mod tests {
             .insert(crate::app_env!("TAB_UID").to_string(), "tab-key".to_string());
         let out = resolve_codex_session_impl(opts, &root, &[], |_| None);
         assert!(out.args.is_empty());
-        // No ELDRUN_TAB_UID at all → cannot track → fresh launch.
+        // No TABTIVITY_TAB_UID at all → cannot track → fresh launch.
         let out2 =
             resolve_codex_session_impl(codex_opts(), &root, &[], |_| Some("x".to_string()));
         assert!(out2.args.is_empty());
@@ -2792,7 +2792,7 @@ mod tests {
 
     #[test]
     fn tab_keys_must_be_uuid_shaped_before_becoming_a_path_component() {
-        // `ELDRUN_TAB_UID` arrives in the renderer-supplied `PtyOptions.env`, so the
+        // `TABTIVITY_TAB_UID` arrives in the renderer-supplied `PtyOptions.env`, so the
         // key is validated by SHAPE rather than by "happens to contain no slash".
         assert!(is_uuid_shaped("11111111-2222-3333-4444-555555555555"));
         assert!(is_uuid_shaped("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"));

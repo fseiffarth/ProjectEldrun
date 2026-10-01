@@ -224,7 +224,7 @@ const UNDO_RELOADS = [2_000, 5_000, 10_000];
 const CODEX_AGENT = /codex/iu;
 
 /** Session lines the phone keeps. Matches the desktop sidecar's replay depth
- * (`pty_bridge::MOBILE_SCROLLBACK_LINES`) and the tmux `history-limit` Eldrun
+ * (`pty_bridge::MOBILE_SCROLLBACK_LINES`) and the tmux `history-limit` Tabtivity
  * sets on its sessions — the three are one number by design, so what tmux
  * retains is what the replay carries and what this buffer can hold. */
 const PHONE_SCROLLBACK = 10_000;
@@ -863,7 +863,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   const [desktopImages, setDesktopImages] = useState<DesktopImage[] | null>(null);
   const [desktopFailure, setDesktopFailure] = useState("");
   const [uploads, setUploads] = useState<InboxUpload[]>([]);
-  /** The pictures the agent left in the project's `.eldrun/outbox/` for this
+  /** The pictures the agent left in the project's `.tabtivity/outbox/` for this
    * phone (the desktop's `outbox.rs`), newest first — the gallery beside the
    * tab name, and the one way an image reaches the phone from a session: a
    * terminal carries none, and Focus classifies nothing, so a path printed
@@ -2441,13 +2441,13 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     setUndoNote("");
     if (codexBusy()) return;
     setClearedAt(clearMark(transcript?.entries ?? []));
-    // Every agent Eldrun resumes can take the clear back — the desktop decides
+    // Every agent Tabtivity resumes can take the clear back — the desktop decides
     // how, and says so when a tab is not one of them. Aider resumes nothing.
     setUndoable(slashCliKey !== "aider");
   };
   /** The Undo chip: the desktop brings back the conversation just cleared —
    * in-session for Claude, by relaunching the tab onto it for the others, as a
-   * restart of Eldrun would. Claude's hook records the clear a moment after the
+   * restart of Tabtivity would. Claude's hook records the clear a moment after the
    * command lands, so a tap that beats it is tried once more. */
   const undoClearConversation = () => {
     setUndoable(false);
@@ -2590,7 +2590,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   const sessionReset = shownLimits.session?.resets ? resetCountdown(shownLimits.session.resets, limitTime, readTime) : "";
   const weekReset = shownLimits.week?.resets ? resetCountdown(shownLimits.week.resets, limitTime, readTime) : "";
   /** The picker the model chip opened, read off the screen while the sheet is
-   * up — a list of the session's own rows, not a list of models Eldrun
+   * up — a list of the session's own rows, not a list of models Tabtivity
    * believes in. None of OpenCode's, Antigravity's or Cursor's is the numbered
    * dialog the others draw, so each is read by its own shape (`openCodeMini`,
    * `antigravity`, `cursorAgent`). */
@@ -3391,7 +3391,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     {focusMenu && chat && view === "focus" && <div className="focus-menu-backdrop" role="presentation" onClick={() => setFocusMenu(false)}>
       <div className="focus-menu" role="menu" aria-label={t("mobile.focus.source")} onClick={(event) => event.stopPropagation()}>
         {/* Dimmed when the stored session cannot be read (an agent whose
-            transcript Eldrun does not read, no session id yet); the row then
+            transcript Tabtivity does not read, no session id yet); the row then
             says which, rather than doing nothing. */}
         <button role="menuitemradio" aria-checked={sessionShown} aria-disabled={transcript?.available ? undefined : "true"} className={transcript?.available ? undefined : "unavailable"} onClick={() => {
           if (!transcript?.available) return;

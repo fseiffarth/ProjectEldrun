@@ -212,7 +212,7 @@ describe("the deck autosave (V #93 / #94)", () => {
       await Promise.resolve();
     });
     // The banner is gone and the label is back to the ordinary state — the write
-    // is now the author's decision rather than Eldrun's.
+    // is now the author's decision rather than Tabtivity's.
     expect(screen.queryByText("Not saving")).toBeNull();
   });
 

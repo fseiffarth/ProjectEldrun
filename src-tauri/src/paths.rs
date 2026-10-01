@@ -37,7 +37,7 @@ pub fn path_finder(os: OsKind) -> &'static str {
 /// each invocation pops a transient console window, and a single TeX compile
 /// spawns several. No-op on non-Windows targets.
 ///
-/// One of Eldrun's own helpers ([`TRUSTED_HELPERS`]) is taken from the
+/// One of Tabtivity's own helpers ([`TRUSTED_HELPERS`]) is taken from the
 /// root-owned system directories first — see [`helper_program`].
 pub fn command_no_window(bin: impl AsRef<OsStr>) -> Command {
     let bin = bin.as_ref();
@@ -60,14 +60,14 @@ fn hide_command_window(_cmd: &mut Command) {
     }
 }
 
-/// True when `bin` resolves on Eldrun's effective PATH on the current OS.
+/// True when `bin` resolves on Tabtivity's effective PATH on the current OS.
 /// Windows lookup expands PATHEXT and all platforms include supplemental
 /// per-user/package-manager directories.
 pub fn binary_on_path(bin: &str) -> bool {
     resolve_executable(bin).is_some()
 }
 
-/// Eldrun's own security-relevant helpers: they run with its full authority
+/// Tabtivity's own security-relevant helpers: they run with its full authority
 /// in project folders and against remote hosts, often in the background. By
 /// bare name they would resolve through [`effective_path`], which puts
 /// user-writable dirs (`~/.local/bin`, …) first — a planted `~/.local/bin/git`
@@ -132,7 +132,7 @@ pub fn system_executable(bin: &str) -> Option<PathBuf> {
     }
 }
 
-/// The program to spawn for one of Eldrun's own helpers ([`TRUSTED_HELPERS`]):
+/// The program to spawn for one of Tabtivity's own helpers ([`TRUSTED_HELPERS`]):
 /// its root-owned system copy when there is one. `None` for any other name,
 /// and for a helper the system lacks (Homebrew's tmux, Git for Windows), which
 /// then resolves on the effective `PATH` as before.
@@ -226,7 +226,7 @@ fn supplemental_path_dirs_for(
                 dirs.push(local.join("Programs").join("Ollama"));
                 // Per-user winget install of MiKTeX (`winget install --id
                 // MiKTeX.MiKTeX -e`, the command the "Install MiKTeX" button runs) —
-                // without this, a fresh install stays invisible to Eldrun's own
+                // without this, a fresh install stays invisible to Tabtivity's own
                 // process until it's relaunched, since a Windows PATH change made by
                 // an installer never reaches an already-running process's env.
                 dirs.push(
@@ -277,7 +277,7 @@ fn supplemental_path_dirs_for(
 /// commonly miss per-user package directories on every supported OS.
 pub fn extra_path_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![crate::services::agent_bin::bin_dir()];
-    // CLIs Eldrun installed itself, ahead of any host copy of the same name.
+    // CLIs Tabtivity installed itself, ahead of any host copy of the same name.
     dirs.extend(crate::services::agent_install::bin_dirs());
     dirs.extend(supplemental_path_dirs_for(
         OsKind::current(),
@@ -302,7 +302,7 @@ pub fn parse_node_version(raw: &str) -> Option<(u32, u32, u32)> {
 }
 
 /// The `bin` dir of nvm's default Node, the one an interactive shell gets once
-/// `nvm.sh` runs from its rc file. Eldrun's own processes never source that, so
+/// `nvm.sh` runs from its rc file. Tabtivity's own processes never source that, so
 /// without this a Node installed through nvm (the Manage Agents Node helper's
 /// route) stays invisible to agent installs and to the helper's recheck, which
 /// would keep finding an older system Node instead.
@@ -453,7 +453,7 @@ fn resolve_executable_in_dirs(
     resolve_in_dirs(dirs, bin, &refs, exists)
 }
 
-/// Resolve a command using the same effective PATH Eldrun applies at execution.
+/// Resolve a command using the same effective PATH Tabtivity applies at execution.
 /// Windows resolution follows PATHEXT, including script shims.
 pub fn resolve_executable(bin: &str) -> Option<PathBuf> {
     let current = std::env::var_os("PATH").unwrap_or_default();
@@ -526,7 +526,7 @@ pub fn spawn_reaped(mut cmd: Command) -> std::io::Result<u32> {
 /// in a well-known per-user location but is NOT on the inherited PATH. Returns
 /// `None` when the name already carries a path, already resolves on PATH (so the
 /// caller should keep using the bare name), or matches nowhere. This closes the
-/// gap where Eldrun *detects* a tool (ollama/vibe/agent CLIs) yet fails to
+/// gap where Tabtivity *detects* a tool (ollama/vibe/agent CLIs) yet fails to
 /// *launch* it on Windows because winget/uv/npm install dirs aren't on PATH.
 pub fn resolve_offpath_binary(bin: &str) -> Option<PathBuf> {
     if bin.is_empty() || bin.contains('/') || bin.contains('\\') {
@@ -579,14 +579,14 @@ where
     }
 }
 
-/// The `~/eldrun` tree: managed projects ([`projects_root`]), the root
+/// The `~/tabtivity` tree: managed projects ([`projects_root`]), the root
 /// workspace, boxes, and the project archive.
 ///
-/// `ELDRUN_HOME` overrides it so a sandboxed dev instance
-/// (`start-eldrun-dev-sandbox.sh`) keeps its projects and boxes
+/// `TABTIVITY_HOME` overrides it so a sandboxed dev instance
+/// (`start-tabtivity-dev-sandbox.sh`) keeps its projects and boxes
 /// symlink farm out of the daily-driver instance's real tree — an instance
 /// reconciling those folders against its own (empty) state must not be looking
-/// at another instance's folders. Set it together with `ELDRUN_STATE_DIR`:
+/// at another instance's folders. Set it together with `TABTIVITY_STATE_DIR`:
 /// overriding only one splits a single instance's world across the sandbox and
 /// the real data.
 pub fn app_home() -> PathBuf {
@@ -626,7 +626,7 @@ pub fn projects_root() -> PathBuf {
 }
 
 /// The default parent for remote (SSH) projects' local mirrors: a top-level
-/// `eldrun/projects-ssh/` sibling of [`projects_root`], rather than a nested
+/// `tabtivity/projects-ssh/` sibling of [`projects_root`], rather than a nested
 /// `projects/ssh/` subfolder. Keeps synced remote working copies out of the
 /// managed-local-projects tree.
 pub fn projects_ssh_root() -> PathBuf {
@@ -645,7 +645,7 @@ pub fn boxes_root() -> PathBuf {
     app_home().join("boxes")
 }
 
-/// Holding area for deleted projects: `~/eldrun/archive/<id>/`. A deleted
+/// Holding area for deleted projects: `~/tabtivity/archive/<id>/`. A deleted
 /// project's local folders (and a restore manifest) move here rather than being
 /// erased, so it can be restored or permanently cleared from Settings. Only ever
 /// emptied manually from the Settings "Archived projects" panel.

@@ -1813,7 +1813,7 @@ export function SettingsDialog({
             </>)}
 
             {section === "mobile" && (<>
-            {/* Eldrun Mobile runs its host sidecar on every desktop (systemd
+            {/* Tabtivity Mobile runs its host sidecar on every desktop (systemd
                 user unit, launchd agent, or the Windows Run key), so the
                 section is not platform-gated. */}
             <SettingsSection title={t("settings.mobile")} anchor={SETTINGS_ANCHORS.mobile} />

@@ -107,7 +107,7 @@ fn scope_root_for<'a>(local: &'a str, remote: Option<&'a str>, mirror: &'a str, 
 /// the no-local-fallback guard is testable: for a VM project a local spawn is
 /// refused outright (the untrusted agent stepping outside the boundary, never
 /// a downgrade), and a spawn while the VM is down refuses with the
-/// `ELDRUN_VM_DOWN` sentinel the frontend turns into a boot action. `None`
+/// `TABTIVITY_VM_DOWN` sentinel the frontend turns into a boot action. `None`
 /// (spawn proceeds) for every non-VM project.
 fn vm_spawn_refusal(
     is_vm: bool,
@@ -262,7 +262,7 @@ pub async fn pty_spawn(
     mut opts: PtyOptions,
     session_name: Option<String>,
 ) -> Result<PtySpawned, String> {
-    // Resolve empty cwd to Eldrun's root workspace directory.
+    // Resolve empty cwd to Tabtivity's root workspace directory.
     if opts.cwd.is_empty() {
         let root_dir = storage::root_work_dir();
         std::fs::create_dir_all(&root_dir).map_err(|e| {
@@ -516,7 +516,7 @@ pub async fn pty_spawn(
         None => false,
     };
 
-    // Codex resume, without the hook. Codex will not run Eldrun's SessionStart
+    // Codex resume, without the hook. Codex will not run Tabtivity's SessionStart
     // hook until the user trusts it (`/hooks`), and an untrusted hook fails
     // silently — so nothing recorded a tab's live session id and every restored
     // Codex tab came back blank. Follow Codex's own rollout logs instead and
@@ -568,7 +568,7 @@ pub async fn pty_spawn(
     // duplicates so a re-spawn never stacks the flag.
     // Never for the root console: `--remote-control` is what puts a session in
     // the Claude phone app, and the root scope's rights must not be reachable
-    // from a phone by any route (it is absent from Eldrun Mobile's catalog too).
+    // from a phone by any route (it is absent from Tabtivity Mobile's catalog too).
     // Nor for a subcommand (`claude auth login`, a sign-in tab), which refuses
     // the session's flags.
     if opts.cmd == "claude"
@@ -654,7 +654,7 @@ pub async fn pty_spawn(
     // Claude's `--name` rather than a `/rename` line typed a few seconds in —
     // which is what anything the user typed meanwhile ran into. Only a spawn
     // still running `claude` here reaches this, i.e. the host's own binary
-    // (fenced or not), the one whose version Eldrun has read; a container or
+    // (fenced or not), the one whose version Tabtivity has read; a container or
     // remote host has its own, and an older one exits on the unknown option.
     // Those, and a host CLI that is too old or not read yet, keep the typed line.
     let named = opts.cmd == "claude"
@@ -669,7 +669,7 @@ pub async fn pty_spawn(
     // cannot reach it — that tab's Codex then exits on start. `--no-daemon`
     // keeps every tab's Codex in-process, as fenced tabs have run so far. Same
     // seam and reasoning as `--name` above: only the host binary, whose
-    // version Eldrun has read, and only its TUI.
+    // version Tabtivity has read, and only its TUI.
     if opts.cmd == "codex"
         && crate::services::agent_versions::codex_runs_tui(&opts.args)
         && !opts.args.iter().any(|a| a == "--no-daemon")
@@ -713,7 +713,7 @@ pub async fn pty_spawn(
         let scope_id = crate::services::agent_home::scope_of(opts.project_id.as_deref());
         match decision {
             crate::services::agent_fence::FenceDecision::Fenced { .. } if local_agent => {
-                // The scope's Eldrun-owned home (`services::agent_home`), the
+                // The scope's Tabtivity-owned home (`services::agent_home`), the
                 // agent's `$HOME` from here on: bound by the Linux fence, set
                 // by environment where the fence cannot redirect a path.
                 let home = crate::services::agent_home::prepare_scope_home(&scope_id, roots)
@@ -736,7 +736,7 @@ pub async fn pty_spawn(
                 };
                 fenced_registration = Some((opts.id.clone(), scope_id));
             }
-            // The root console's Host session: unfenced, in Eldrun's own
+            // The root console's Host session: unfenced, in Tabtivity's own
             // `host` home, sharing the logins. Never a project's default.
             crate::services::agent_fence::FenceDecision::NotApplicable {
                 reason: crate::services::agent_fence::HOST_SESSION_REASON,
@@ -749,7 +749,7 @@ pub async fn pty_spawn(
                 crate::services::agent_auth::apply_fence_env(&opts.cmd, &mut opts.env);
                 opts.env.insert(crate::app_env!("HOST_SESSION").into(), "1".into());
             }
-            // No fence on this platform (Windows): the same Eldrun-owned home
+            // No fence on this platform (Windows): the same Tabtivity-owned home
             // and shared logins, by environment; the rights are the user's.
             crate::services::agent_fence::FenceDecision::NotApplicable { reason: "platform" }
                 if local_agent =>
@@ -781,7 +781,7 @@ pub async fn pty_spawn(
     // Persistent LOCAL (tmux) sessions (TODO #85): a tab that resolved to a LOCAL
     // spawn — i.e. ssh/docker wrapping did NOT rewrite it — and carries a
     // `tmux_session` name is wrapped in a tmux session on this machine, so the run
-    // survives an Eldrun crash and the tab reattaches on restart. A remote tab is
+    // survives a Tabtivity crash and the tab reattaches on restart. A remote tab is
     // now `cmd == "ssh"` (its tmux is inside the remote command) and a container tab
     // is `cmd == "docker"`, so both are skipped. No-op on Windows / without tmux.
     crate::brand::PAIR.export_both(&mut opts.env);
@@ -831,14 +831,14 @@ pub fn agent_fence_status(project_id: String) -> crate::services::agent_fence::A
     crate::services::agent_fence::status_for_scope(&project_id)
 }
 
-/// Whether fenced Copilot tabs have a sign-in Eldrun holds for them, and as
+/// Whether fenced Copilot tabs have a sign-in Tabtivity holds for them, and as
 /// whom. Never returns the token (see `services::copilot_auth`).
 #[tauri::command]
 pub async fn copilot_fence_auth_status() -> crate::services::copilot_auth::CopilotFenceAuth {
     crate::services::copilot_auth::status().await
 }
 
-/// Forget the Copilot sign-in Eldrun holds for fenced tabs.
+/// Forget the Copilot sign-in Tabtivity holds for fenced tabs.
 #[tauri::command]
 pub async fn copilot_fence_sign_out() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(crate::services::copilot_auth::sign_out)
@@ -923,10 +923,10 @@ pub async fn local_tmux_kill(session: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
-/// End every tmux session Eldrun created on the local machine during a clean
+/// End every tmux session Tabtivity created on the local machine during a clean
 /// application quit — the frontend close handler's half of
 /// `services::tmux_local::kill_app_sessions`, which owns the rule (every
-/// `eldrun-` session, no foreign one) and is also run by `RunEvent::Exit` as
+/// `tabtivity-` session, no foreign one) and is also run by `RunEvent::Exit` as
 /// the net for exits that never reach frontend code. A renderer or process
 /// crash reaches neither, leaving the sessions alive for restore.
 #[tauri::command]
@@ -990,7 +990,7 @@ pub async fn pty_write(
     id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
-    // Watch for an Eldrun-minted interactive login command being typed in, which is
+    // Watch for a Tabtivity-minted interactive login command being typed in, which is
     // what marks this PTY as a legitimate destination for the matching saved
     // credential (see `commands::credentials`).
     crate::commands::credentials::note_pty_input(&id, &data);

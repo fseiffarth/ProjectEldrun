@@ -486,7 +486,7 @@ export function statusFieldCount(text: string): number {
  * This is the question "is this row *columned*" — the path, model and context
  * a TUI prints under its box — asked so that a sentence of output cannot
  * answer it. A prompt or an answer is one segment however many fields can be
- * read out of it (`~/eldrun/projects/app (main)`, `Running /usr/bin/foo
+ * read out of it (`~/tabtivity/projects/app (main)`, `Running /usr/bin/foo
  * (again) now`); Gemini's under-box row is four (`~/proj  main
  * gemini-2.5-pro  25% used`). Two or more columns is a status row. */
 export function statusColumns(text: string): number {

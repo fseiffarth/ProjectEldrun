@@ -135,7 +135,7 @@ describe(`${BRAND.display} Mobile — a multi-step /model picker`, () => {
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
     await paint(MODEL_STEP);
 
-    // The heading is the session's, not Eldrun's: it says which step this is.
+    // The heading is the session's, not Tabtivity's: it says which step this is.
     expect(screen.getByRole("dialog").getAttribute("aria-label")).toBe("Select Model and Effort");
     expect(rows()[0]).toContain("gpt-6-astra (default)");
 

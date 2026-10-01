@@ -41,7 +41,7 @@ export function AppResourceDisplay() {
   const showRam = useSettingsStore((s) => s.settings?.show_ram_usage ?? true);
   const showGpu = useSettingsStore((s) => s.settings?.show_gpu_usage ?? true);
   // Fast mode withdraws the readout: a poll every 2.5 s, forever, for a figure
-  // that is by construction a readout of Eldrun's own overhead — so the reading
+  // that is by construction a readout of Tabtivity's own overhead — so the reading
   // and the cost of taking it are the same thing.
   const fastMode = useFastMode();
   const anyShown = (showCpu || showRam || showGpu) && !fastMode;

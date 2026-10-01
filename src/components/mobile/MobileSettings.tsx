@@ -329,7 +329,7 @@ export function MobileSettings() {
   const installOnPhone = async () => {
     setError(null);
     try {
-      // The backend materializes its embedded source so a packaged Eldrun has
+      // The backend materializes its embedded source so a packaged Tabtivity has
       // the same handoff script as a checkout. It answers with the script's
       // path because the state dir differs per OS (XDG on Linux, Application
       // Support on macOS) and must not be re-derived here.

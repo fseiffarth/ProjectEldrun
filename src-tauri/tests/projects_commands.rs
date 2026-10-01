@@ -51,7 +51,7 @@ fn test_lock() -> &'static Mutex<()> {
 /// `paths::home_dir`/`storage::state_dir` on Unix; on Windows `home_dir` reads
 /// `USERPROFILE` (then `HOMEDRIVE`/`HOMEPATH`) and `state_dir` reads `APPDATA` —
 /// overriding only `HOME` there sent every test write into the REAL
-/// `~\eldrun\projects` and `%APPDATA%\eldrun\projects.json` (junk projects in
+/// `~\tabtivity\projects` and `%APPDATA%\tabtivity\projects.json` (junk projects in
 /// the user's live store). All of them must point into the temp home.
 const HOME_ENV_KEYS: &[&str] = &["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA"];
 
@@ -921,7 +921,7 @@ fn export_import_roundtrip_carries_files_settings_and_tabs() {
 }
 
 /// A bundle is a file that can be mailed, so its tab layout is untrusted input:
-/// a tab naming a command Eldrun does not know is restored as a plain shell with
+/// a tab naming a command Tabtivity does not know is restored as a plain shell with
 /// its argv and environment stripped, and `open_apps` never comes back at all.
 #[test]
 fn imported_tabs_are_sanitized_and_open_apps_never_return() {
@@ -974,7 +974,7 @@ fn imported_tabs_are_sanitized_and_open_apps_never_return() {
     });
 }
 
-/// Replace `eldrun-export.json` inside an existing bundle, keeping every other
+/// Replace `tabtivity-export.json` inside an existing bundle, keeping every other
 /// entry — the test harness for "what if this file was written by someone else".
 fn rewrite_bundle_manifest(bundle: &Path, manifest: &serde_json::Value) {
     use std::io::Write;

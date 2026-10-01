@@ -257,10 +257,10 @@ pub fn close_presenter_window(app: AppHandle, label: String) -> Result<(), Strin
 /// through [`Inhibitor::release`].
 enum Inhibitor {
     /// A long-lived child whose lifetime *is* the inhibition. Killing it
-    /// releases. How a *crashed* Eldrun releases it differs per OS:
+    /// releases. How a *crashed* Tabtivity releases it differs per OS:
     ///
     /// - Linux: `systemd-inhibit … cat` with a piped stdin whose write end
-    ///   stays inside this `Child` (never taken). When Eldrun dies the kernel
+    ///   stays inside this `Child` (never taken). When Tabtivity dies the kernel
     ///   closes that end, `cat` reads EOF and exits, and `systemd-inhibit`
     ///   releases the lock and exits with it. Nothing else inherits the write
     ///   end: std's pipes are `O_CLOEXEC`. (A child does NOT die with its
@@ -274,7 +274,7 @@ enum Inhibitor {
     /// A thread holding `ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED`.
     /// The execution state is per-*thread* and stays asserted while the thread
     /// lives, so the thread parks on this channel and clears the state when the
-    /// sender is dropped. A crashed Eldrun takes the thread with it, and the
+    /// sender is dropped. A crashed Tabtivity takes the thread with it, and the
     /// kernel drops a dead thread's request.
     #[cfg(target_os = "windows")]
     Thread(std::sync::mpsc::Sender<()>),
@@ -314,7 +314,7 @@ fn inhibit_reason(reason: &str) -> String {
 }
 
 /// The `systemd-inhibit` argv (program excluded). The inhibited child is
-/// `cat`, which blocks on a stdin pipe Eldrun holds open — see
+/// `cat`, which blocks on a stdin pipe Tabtivity holds open — see
 /// [`Inhibitor::Child`] for why that, and not `sleep infinity`, is the
 /// lifetime tie. The reason is a single argv element (never a shell), since
 /// the desktop's own "what is keeping this machine awake" UI shows it.
@@ -338,7 +338,7 @@ fn acquire_inhibitor(reason: &str) -> Option<Inhibitor> {
     let child = crate::paths::command_no_window("systemd-inhibit")
         .args(linux_inhibit_argv(reason))
         // Piped, and the handle deliberately left in `child.stdin`: its write
-        // end closing (release's kill, or Eldrun dying) is what ends `cat`.
+        // end closing (release's kill, or Tabtivity dying) is what ends `cat`.
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -348,7 +348,7 @@ fn acquire_inhibitor(reason: &str) -> Option<Inhibitor> {
 }
 
 /// macOS: the system's own `caffeinate`, asserting "no display sleep" (`-d`) and
-/// "no idle sleep" (`-i`). `-w <pid>` ties its lifetime to Eldrun's: it exits on
+/// "no idle sleep" (`-i`). `-w <pid>` ties its lifetime to Tabtivity's: it exits on
 /// its own the moment this process is gone, which is the crash-safety the Linux
 /// child gets from its stdin pipe closing. Always present on macOS (it ships in
 /// `/usr/bin`), so a `None` here means the spawn itself failed.
@@ -608,7 +608,7 @@ mod tests {
 
     /// The lifetime tie itself, without logind: a `cat` on a piped stdin exits
     /// once the write end is gone — which is what the kernel does to it when
-    /// Eldrun dies holding the handle.
+    /// Tabtivity dies holding the handle.
     #[cfg(unix)]
     #[test]
     fn cat_exits_when_its_stdin_write_end_closes() {

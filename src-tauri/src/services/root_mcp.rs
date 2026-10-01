@@ -4,8 +4,8 @@
 //! The root scope is the cross-project management console (the Ctrl+Shift+R
 //! overlay). An agent there is asked for things no project agent should be able
 //! to do: "add a calendar entry on Friday at 14:00, one hour", "put a card on
-//! the board for project X", "which projects are there". Those are Eldrun's own
-//! stores, so Eldrun serves them itself, as MCP tools over loopback HTTP.
+//! the board for project X", "which projects are there". Those are Tabtivity's own
+//! stores, so Tabtivity serves them itself, as MCP tools over loopback HTTP.
 //!
 //! **Who may call it** is the whole design, and each spawn has a bearer token:
 //!
@@ -295,8 +295,8 @@ pub struct Session {
     /// What this spawn's fence lets it read of the projects: set once at spawn
     /// ([`mark_tab_projects_readable`]), never from the live setting or the
     /// live project list, so a switch flipped or a project added later does
-    /// not change what Eldrun reads for a running tab. The mail `attach`
-    /// argument reads only inside it — Eldrun never reads what the calling
+    /// not change what Tabtivity reads for a running tab. The mail `attach`
+    /// argument reads only inside it — Tabtivity never reads what the calling
     /// tab's fence hides.
     projects_grant: Arc<std::sync::Mutex<ProjectsGrant>>,
     pub permits: Arc<tokio::sync::Semaphore>,
@@ -430,17 +430,17 @@ pub const WIRED_CLIS: &[&str] = &["claude", "codex"];
 /// console *without* the tools — no server, no token, no env pair.
 ///
 /// The CLI is told about the server on its **own command line**, never through
-/// its config files — Eldrun does not write another application's config
+/// its config files — Tabtivity does not write another application's config
 /// (`feedback: no foreign app paths`), and a flag dies with the tab, so a
 /// project agent started later inherits nothing.
 ///
 /// - **Claude**: `--mcp-config <inline json>`, last in argv (the flag is
 ///   variadic; nothing positional may follow it). The header names the token
-///   as `${ELDRUN_ROOT_MCP_TOKEN}`, which Claude expands from its environment
+///   as `${TABTIVITY_ROOT_MCP_TOKEN}`, which Claude expands from its environment
 ///   (verified on 2.1.276), so the secret is never in its argv. That matters
 ///   beyond `ps`: a fenced argv is past tmux's message limit, so
 ///   `tmux_local` moves the whole command line into a launcher script on disk.
-/// - **Codex**: `-c mcp_servers.eldrun.…` overrides, first in argv so they
+/// - **Codex**: `-c mcp_servers.tabtivity.…` overrides, first in argv so they
 ///   precede a `resume <id>` subcommand. The token is named, not inlined.
 /// - **Vibe** (a local-model tab): `VIBE_MCP_SERVERS` / `VIBE_ENABLED_TOOLS`,
 ///   Vibe's own env layer, which outranks the per-model `config.toml`. An
@@ -546,7 +546,7 @@ fn is_local_model(opts: &PtyOptions) -> bool {
 }
 
 /// Whether a Vibe tab's local model wears the "MCP" chip. The tab names its
-/// model twice (`NewTabMenu`): `ELDRUN_LOCAL_MODEL` raw, `VIBE_ACTIVE_MODEL`
+/// model twice (`NewTabMenu`): `TABTIVITY_LOCAL_MODEL` raw, `VIBE_ACTIVE_MODEL`
 /// as the alias `prepare_local_agent` wrote — and a restored tab may carry
 /// only the alias (`CenterPanel` re-hydrates just that pair).
 fn local_model_has_tools(opts: &PtyOptions, tool_models: &[String]) -> bool {
@@ -592,7 +592,7 @@ pub fn enabled_in(settings: &Path) -> bool {
     Policy::load(settings).is_ok_and(|p| p.enabled)
 }
 pub const MAIL_OFF: &str = concat!("mail tools are switched off in ", crate::app_name!(), "'s Settings");
-/// A tool of the caller's class that the user took away in Eldrun's *MCP
+/// A tool of the caller's class that the user took away in Tabtivity's *MCP
 /// session access* (a family toggle, or writes switched off). Named, unlike a
 /// tool outside the class — which stays `unknown tool`, so a cloud tab never
 /// learns by name that mail read tools exist.
@@ -862,7 +862,7 @@ pub struct Change {
     /// `"upsert"` | `"delete"`.
     pub op: &'static str,
     pub row: Value,
-    /// The write touched only Eldrun's own board fields (`column`/`rank`), which
+    /// The write touched only Tabtivity's own board fields (`column`/`rank`), which
     /// no CalDAV server stores — the window merges the row and pushes nothing,
     /// exactly as a drag on the board does.
     pub local: bool,
@@ -886,7 +886,7 @@ pub struct Stores<'a> {
     pub projects: &'a Path,
     /// Read only, for the review level the writes answer to.
     pub settings: &'a Path,
-    /// The state directory itself (`~/.local/share/eldrun`), for the read-only
+    /// The state directory itself (`~/.local/share/tabtivity`), for the read-only
     /// stores addressed *per project id* — `remote-projects/<id>/{git_peer,sync,
     /// local_loss}.json` — and for the flat rollups beside it
     /// (`boxes.json`, `time_summary.json`, `usage_stats.json`). One field rather
@@ -1909,7 +1909,7 @@ fn updated_span(event: &CalendarEvent, args: &Value) -> Result<(String, String, 
         Some(raw) => normalize_stamp(raw)
             .ok_or_else(|| format!("'{raw}' is not a local YYYY-MM-DDTHH:MM time"))?,
         // An all-day event has no time of day to keep, so turning it into a timed
-        // one without saying when would be Eldrun inventing an hour.
+        // one without saying when would be Tabtivity inventing an hour.
         None if event.all_day => {
             return Err("give `start` as a local YYYY-MM-DDTHH:MM time when turning an all-day event into a timed one".into())
         }
@@ -1942,7 +1942,7 @@ fn calendar_update_event(stores: &Stores, args: &Value) -> Result<(Value, Vec<Ch
         .find(|e| e.id == id)
         .cloned()
         .ok_or_else(|| format!("event '{id}' not found"))?;
-    // A read-only calendar is one Eldrun shows but may not write back to; the
+    // A read-only calendar is one Tabtivity shows but may not write back to; the
     // window would refuse the CalDAV push this change asks for, so the edit is
     // refused here instead of half-landing in the local file.
     if data.calendars.iter().any(|c| c.id == event.calendar_id && c.readonly) {
@@ -2060,7 +2060,7 @@ fn calendar_create(stores: &Stores, args: &Value) -> Result<(Value, Change), Str
     };
     let created = crate::commands::calendar::create_calendar_at(stores.calendar, calendar)?;
     let row = serde_json::to_value(&created).map_err(|e| e.to_string())?;
-    // `local`: a calendar made here is Eldrun's own. CalDAV calendars are
+    // `local`: a calendar made here is Tabtivity's own. CalDAV calendars are
     // subscribed to from the server's side, never created from this one.
     Ok((row.clone(), Change { kind: "calendar", op: "upsert", row, local: true }))
 }
@@ -2349,7 +2349,7 @@ fn todo_delete(stores: &Stores, args: &Value) -> Result<(Value, Change), String>
 //
 // Five tools that answer a question about *every* project at once, which is the
 // one thing a project agent structurally cannot do. All of them are pure reads of
-// files Eldrun already owns, and none of them opens a connection: the git sweep
+// files Tabtivity already owns, and none of them opens a connection: the git sweep
 // runs `git` on the local working copy only, and `sync_status` reports the state
 // the last sync pass recorded rather than probing the host. That is deliberate —
 // a synchronous SSH round trip from a tool call would stall the handler for as
@@ -2424,7 +2424,7 @@ fn time_summary(stores: &Stores, args: &Value) -> Result<Value, String> {
             if !secs.is_finite() || *secs <= 0.0 {
                 continue;
             }
-            // Eldrun's own window time is not any project's work.
+            // Tabtivity's own window time is not any project's work.
             if id == crate::commands::timer::APP_TIMER_ID {
                 if stores.access.projects.all { app += secs; }
                 continue;
@@ -4376,7 +4376,7 @@ mod tests {
             assert!(changes.is_empty(), "{bad}");
         }
 
-        // A calendar Eldrun may show but not write back to.
+        // A calendar Tabtivity may show but not write back to.
         let mut data = crate::commands::calendar::read_data(&f.calendar).unwrap();
         data.calendars.push(crate::schema::calendar::Calendar {
             id: "sub".into(),
@@ -4491,7 +4491,7 @@ mod tests {
         let (listed, _) = f.call("calendar_list", json!({}));
         assert_eq!(text(&listed)["events"][0]["calendar_id"], "default", "the good id did not move either");
 
-        // Neither into nor out of a calendar Eldrun may not write back to.
+        // Neither into nor out of a calendar Tabtivity may not write back to.
         let mut data = crate::commands::calendar::read_data(&f.calendar).unwrap();
         data.calendars.push(crate::schema::calendar::Calendar {
             id: "sub".into(),

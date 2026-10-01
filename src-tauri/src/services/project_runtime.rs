@@ -160,7 +160,7 @@ pub fn switch(
     //     unordered against it, and a stale run could park the active scope's
     //     popout (or, on Wayland, un-park another scope's over it).
 
-    // 6. Save previous window session IDs to .eldrun/sessions/windows.json.
+    // 6. Save previous window session IDs to .tabtivity/sessions/windows.json.
     if let Some(local_file) = previous_local_file {
         let prev_reg_ids = {
             let wins = win_registry.lock().unwrap();
@@ -263,7 +263,7 @@ fn save_previous_sessions(
         eprintln!("ProjectRuntime: write layout session: {e}");
     }
 
-    // Write .eldrun/state.json one level up from sessions/.
+    // Write .tabtivity/state.json one level up from sessions/.
     if let Some(app_dir) = sessions_dir.parent() {
         if let Some(project_dir) = std::path::Path::new(local_file).parent() {
             let state = ProjectState {
@@ -286,7 +286,7 @@ pub fn load_side_panel_folder(local_file: &str) -> Option<String> {
 }
 
 /// Persist the side-panel subfolder for a project, preserving any other
-/// fields already stored in `.eldrun/sessions/filetabs.json`. Lets the active
+/// fields already stored in `.tabtivity/sessions/filetabs.json`. Lets the active
 /// project's panel view survive a restart even without a project switch.
 pub fn save_side_panel_folder(local_file: &str, folder: Option<String>) -> Result<(), String> {
     let Some(sessions_dir) = app_sessions_dir(local_file) else {
@@ -302,7 +302,7 @@ pub fn save_side_panel_folder(local_file: &str, folder: Option<String>) -> Resul
     storage::write_json(&path, &session).map_err(|e| e.to_string())
 }
 
-/// Load file tabs and side-panel folder from `.eldrun/sessions/filetabs.json`.
+/// Load file tabs and side-panel folder from `.tabtivity/sessions/filetabs.json`.
 /// Returns (file_tabs, side_panel_folder).
 fn load_file_tab_session(local_file: &str) -> (Vec<serde_json::Value>, Option<String>) {
     if let Some(sessions_dir) = app_sessions_dir(local_file) {
@@ -363,7 +363,7 @@ mod tests {
     }
 
     /// No session file yet: the panel folder is simply unknown, and saving one
-    /// creates `.eldrun/sessions/filetabs.json` beside the project file.
+    /// creates `.tabtivity/sessions/filetabs.json` beside the project file.
     #[test]
     fn the_side_panel_folder_round_trips_through_filetabs_json() {
         let dir = tempfile::tempdir().unwrap();
@@ -434,7 +434,7 @@ mod tests {
     }
 
     /// Leaving a project writes three files: the file tabs and layout under
-    /// `.eldrun/sessions/`, and `.eldrun/state.json` one level up naming the
+    /// `.tabtivity/sessions/`, and `.tabtivity/state.json` one level up naming the
     /// project id and its directory.
     #[test]
     fn leaving_a_project_writes_filetabs_layout_and_state() {

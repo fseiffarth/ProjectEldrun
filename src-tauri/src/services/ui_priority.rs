@@ -1,4 +1,4 @@
-//! The UI's threads outrank the work Eldrun's own tabs start.
+//! The UI's threads outrank the work Tabtivity's own tabs start.
 //!
 //! Typing into an agent terminal or the Reader's composer runs on two threads:
 //! this process's main thread (GTK, every IPC call) and each webview renderer's
@@ -21,7 +21,7 @@
 //!
 //! Best effort: no rtkit (other distros, containers), a polkit
 //! denial, and the threads simply stay at their nice — exactly what they had
-//! before. `ELDRUN_UI_PRIORITY=0` turns it off. Linux only (the module is
+//! before. `TABTIVITY_UI_PRIORITY=0` turns it off. Linux only (the module is
 //! compiled for nothing else).
 
 use std::collections::HashSet;

@@ -63,7 +63,7 @@ function Bar({ label, value, max, suffix }: { label: string; value: number; max:
 
 /**
  * Per-hour sparkline over a day's 24 UTC hour buckets — hand-rolled SVG, like
- * every other graph in Eldrun (there is no chart dependency, and this is not the
+ * every other graph in Tabtivity (there is no chart dependency, and this is not the
  * place to add one). Only meaningful for the Day period.
  */
 function HourSparkline({

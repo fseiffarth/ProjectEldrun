@@ -211,18 +211,21 @@ fn make_private_dir(dir: &Path) {
     }
 }
 
-/// State directory for Eldrun's JSON files.
+/// State directory for Tabtivity's JSON files.
 ///
-/// Linux: `~/.local/share/eldrun/` — matches the Python app's hard-coded path
-/// so that Python rollback finds the same files Rust wrote.
-/// Windows: `%APPDATA%\eldrun\`
-/// macOS:   `~/Library/Application Support/eldrun/`
+/// Linux: `~/.local/share/tabtivity/`
+/// Windows: `%APPDATA%\tabtivity\`
+/// macOS:   `~/Library/Application Support/tabtivity/`
+///
+/// An install made before the app was renamed has the folder under the old
+/// name until `services::brand_migration` has moved it; until then that
+/// folder is the state dir (`resolve_named_dir`).
 pub fn state_dir() -> std::path::PathBuf {
     // Test/sandbox override. The state dir is written to by tests (the
     // per-project session state moved here out of the project tree), and a test
-    // suite that writes into the developer's real `~/.local/share/eldrun/` is
-    // not a test suite. `start-eldrun-dev-sandbox.sh` sets it too, paired with
-    // `ELDRUN_HOME` (see `paths::app_home`), so a dev window keeps its state
+    // suite that writes into the developer's real `~/.local/share/tabtivity/` is
+    // not a test suite. `start-tabtivity-dev-sandbox.sh` sets it too, paired with
+    // `TABTIVITY_HOME` (see `paths::app_home`), so a dev window keeps its state
     // away from the packaged daily-driver instance's. Still not a user-facing
     // knob — whatever sets it for the app already owns the process.
     if let Some(dir) = state_dir_override() {

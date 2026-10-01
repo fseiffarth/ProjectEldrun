@@ -90,7 +90,7 @@ export async function confirmOnHpcHost(kind: HpcGuardKind, target: string): Prom
  * the ordinary path costs one map lookup and no dialog.
  *
  * Why ask rather than refuse: the login node is the right place for plenty of
- * work (editing, moving data, submitting jobs), and Eldrun cannot tell from a
+ * work (editing, moving data, submitting jobs), and Tabtivity cannot tell from a
  * command line which kind this is. What it can do is make sure nobody computes
  * there *by accident*, which is the whole of what the site's rule is about.
  *

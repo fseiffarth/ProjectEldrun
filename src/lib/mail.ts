@@ -742,15 +742,15 @@ export function mailAttachmentSave(
 }
 
 /** The project folder a saved attachment lands in, mirroring the backend's
- *  `commands::projects::EMAILS_DIR`. `eldrun-`prefixed so ignoring it in git can
+ *  `commands::projects::EMAILS_DIR`. `tabtivity-`prefixed so ignoring it in git can
  *  never swallow a folder the project itself owns. */
 export const APP_EMAILS_DIR = NAMES.emailsDir;
 
 /**
  * OUT (mail → project): save the attachment into the given project's
- * `eldrun-emails/` folder, creating it if absent, and resolve the full path written (for a
+ * `tabtivity-emails/` folder, creating it if absent, and resolve the full path written (for a
  * toast). The project is named by its **opaque id**, never a path — the backend
- * resolves that id to the project's own directory and fixes the `eldrun-emails/`
+ * resolves that id to the project's own directory and fixes the `tabtivity-emails/`
  * subfolder — so this wrapper honours the same boundary as the rest of the
  * surface. Rejects (never resolves a truthy path for a write that did not
  * happen) when the project has no local directory.

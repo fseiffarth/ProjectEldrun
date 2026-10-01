@@ -504,7 +504,7 @@ fn truncate_keeping_extension(name: &str) -> String {
 /// Three states, not two, and the third is the interesting one: an address on
 /// the machine or on the local network is not *wrong* to visit — a developer's
 /// own dev server is the obvious case — but it is the one place this browser is
-/// genuinely more dangerous than a normal one, because Eldrun may be holding a
+/// genuinely more dangerous than a normal one, because Tabtivity may be holding a
 /// VPN tunnel into a network the user's real browser cannot see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavDecision {
@@ -534,7 +534,7 @@ pub enum BlockReason {
     Scheme(String),
     /// `about:` something other than `blank`/`srcdoc`.
     AboutInternal,
-    /// Eldrun's own frontend origin — `tauri://`, the packaged app URL, or the
+    /// Tabtivity's own frontend origin — `tauri://`, the packaged app URL, or the
     /// dev server. See the module note on `is_local_url`.
     AppOrigin,
     /// An `https:` page navigating itself to `http:` on the same host.
@@ -628,7 +628,7 @@ pub const MAX_REDIRECTS: usize = 20;
 /// where it is hard to test is a rule nobody ever sees fail.
 const DEV_SERVER_PORT: u16 = 1420;
 
-/// Host suffixes that are Eldrun's (or Tauri's) own origin on some platform.
+/// Host suffixes that are Tabtivity's (or Tauri's) own origin on some platform.
 /// On Windows every custom protocol Tauri registers is served from
 /// `http://<name>.localhost`, and `is_local_url` treats all of them as local —
 /// which is why the whole `*.localhost` space is refused rather than the two
@@ -744,7 +744,7 @@ pub fn navigation_decision_str(raw: &str, ctx: &NavContext) -> (Option<Url>, Nav
     }
 }
 
-/// Eldrun's own frontend origin, on every platform and in every build profile.
+/// Tabtivity's own frontend origin, on every platform and in every build profile.
 ///
 /// Two normalizations are load-bearing here and both were bugs before they were
 /// written down, because each produces a name the *resolver* treats as the app

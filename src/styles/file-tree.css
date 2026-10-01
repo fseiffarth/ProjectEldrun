@@ -1396,7 +1396,7 @@
 }
 
 /* The row's own name label: a short, stable stand-in (`sessionDisplayName`)
-   for the raw `eldrun-<uuid>`, which lives in full in the hover stats card
+   for the raw `tabtivity-<uuid>`, which lives in full in the hover stats card
    instead of overflowing the row. */
 .tmux-session-label {
   overflow: hidden;

@@ -22,7 +22,7 @@ import { BRAND } from "../../lib/brand";
  * browsed folder with the per-row `→` button.
  *
  * It scans the machine-wide `download_sources` setting (default: the OS Downloads
- * dir), read-only — Eldrun never changes any browser's download path. The backend
+ * dir), read-only — Tabtivity never changes any browser's download path. The backend
  * `list_recent_downloads` command merges + recency-filters the folders; copying
  * reuses `import_external_file` (collision-safe). Local projects only: for a
  * remote project `import_external_file` can't reach the remote tree, so copy is

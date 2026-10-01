@@ -845,7 +845,7 @@ mod tests {
     }
 
     /// The real pinned server inside the real fence; needs an installation:
-    /// `ELDRUN_COPILOT_INSTALL=/dir cargo test --lib copilot -- --ignored`.
+    /// `TABTIVITY_COPILOT_INSTALL=/dir cargo test --lib copilot -- --ignored`.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     #[ignore]

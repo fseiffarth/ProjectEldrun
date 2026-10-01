@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Move the frozen "Eldrun (dev)" snapshot to the commit that was just made.
+# Move the frozen "Tabtivity (dev)" snapshot to the commit that was just made.
 #
 # The frozen window is where the day's real work happens, so it is only ever
 # as good as the last time somebody remembered to re-freeze it. A commit is the
@@ -33,17 +33,17 @@
 #   take in this project, because a 3-4 minute release build at full tilt is
 #   felt in every keystroke of the window it exists to serve.
 #
-# It builds and installs; it NEVER launches or stops Eldrun (user, 2026-07-29).
+# It builds and installs; it NEVER launches or stops Tabtivity (user, 2026-07-29).
 # A running frozen instance keeps its old inode and picks the new snapshot up
 # on its next launch, which is what the completion notification says.
 #
 # Off switch, in order of scope:
-#   git config eldrun.autoDevBuild false   # this clone, permanently
+#   git config tabtivity.autoDevBuild false   # this clone, permanently
 #   package-dev-auto.sh --pause            # until --resume (the dev-build chip's
 #                                          # "Pause auto-builds"); also cancels a
 #                                          # running compile to free the machine
-#   ELDRUN_NO_AUTO_DEV_BUILD=1 git commit  # one commit
-# Log: ~/.local/share/eldrun/package-dev-auto.log (the last build's output).
+#   TABTIVITY_NO_AUTO_DEV_BUILD=1 git commit  # one commit
+# Log: ~/.local/share/tabtivity/package-dev-auto.log (the last build's output).
 set -uo pipefail
 
 # A post-commit hook inherits git's own environment, and GIT_INDEX_FILE arrives
@@ -61,7 +61,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SELF="$ROOT/scripts/package-dev-auto.sh"
 # Beside the binary package-dev.sh installs, and for the same reason it hardcodes
 # that path: what is frozen here is per-user, not per-state-dir, so a sandbox
-# session's ELDRUN_STATE_DIR must not send these somewhere else.
+# session's TABTIVITY_STATE_DIR must not send these somewhere else.
 APP_DIR="$APP_SHARE_DIR"
 BINARY="$APP_DIR/$APP_DEV_BIN_NAME"
 LOCK_DIR="$APP_DIR/package-dev-auto.lock"

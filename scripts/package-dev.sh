@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a frozen release binary for the "Eldrun (dev)" desktop entry.
+# Build a frozen release binary for the "Tabtivity (dev)" desktop entry.
 #
 # A snapshot that edits cannot touch — no vite HMR, no `tauri dev` relaunch —
 # for working (and spotting bugs) undisturbed; the hot-reload window is where a
@@ -22,10 +22,10 @@
 #            default when run by hand (`npm run package:dev`): the explicit way
 #            to try an uncommitted change in the frozen window.
 #
-# Both share the cargo target dir, so the build lands at target/release/eldrun
+# Both share the cargo target dir, so the build lands at target/release/tabtivity
 # either way and the launcher adopts whichever was verified last.
 #
-# Compared with package-local.sh (the stable AppImage under the plain "Eldrun"
+# Compared with package-local.sh (the stable AppImage under the plain "Tabtivity"
 # entry) this skips bundling: the release binary is linked with the frontend
 # embedded and needs no FUSE/linuxdeploy.
 set -euo pipefail
@@ -174,7 +174,7 @@ else
   # The fallback is for one specific failure: tauri-cli builds a file watcher
   # before it does anything, even for `build`, and the watcher needs an inotify
   # INSTANCE — a per-user resource capped at 128 (`fs.inotify.max_user_instances`)
-  # that a desktop session with a running Eldrun, a vite dev server and a browser
+  # that a desktop session with a running Tabtivity, a vite dev server and a browser
   # routinely sits just under. tauri-cli unwraps that error and aborts (SIGABRT,
   # "Too many open files"), which is precisely the moment this script exists for:
   # freezing the tree WHILE working. `tauri build --no-bundle` is
@@ -190,7 +190,7 @@ else
   if ! npm run tauri -- build --no-bundle 2>&1 | tee "$build_log"; then
     # Two ways inotify runs dry: no instance left ("Too many open files") and no
     # *watch* left ("OS file watch limit reached", fs.inotify.max_user_watches —
-    # hit 2026-09-13 with the default 65536 and a dev server + Eldrun watching).
+    # hit 2026-09-13 with the default 65536 and a dev server + Tabtivity watching).
     if grep -qE "Too many open files|file watch limit reached" "$build_log"; then
       echo "package-dev: tauri-cli could not set up its file watcher; building without it." >&2
       npm run build
@@ -259,7 +259,7 @@ FROZEN_STAMP="$RAW_BIN.frozen"
 # desktop icon opened a two-day-old window while a dozen commits each reported
 # success (2026-09-04).
 #
-# So stop at the artifact and say so. start-eldrun-dev-build.sh adopts it at
+# So stop at the artifact and say so. start-tabtivity-dev-build.sh adopts it at
 # launch, in the user's own session, where no fence can swallow it.
 if [ "$(stat -f -c %T "$APP_DIR" 2>/dev/null || echo unknown)" = "tmpfs" ] ||
    [ "$(app_env AGENT_FENCE)" = "1" ]; then
@@ -279,7 +279,7 @@ fi
 # ("executable was modified after program start") — which is how all six
 # main-process heap-corruption crashes of 2026-09-17..23 left nothing to read.
 # A post-commit freeze almost always lands under a running window, so leave the
-# snapshot where it is: start-eldrun-dev-build.sh adopts it on the next launch,
+# snapshot where it is: start-tabtivity-dev-build.sh adopts it on the next launch,
 # and the dev-build chip already offers that relaunch.
 if pgrep -f "^$BINARY_DEST" >/dev/null 2>&1; then
   cat <<MSG
@@ -297,7 +297,7 @@ install -Dm755 "$RAW_BIN" "$BINARY_DEST"
 # The record travels with the binary: the launcher reads `<installed>.frozen`
 # to say which commit it is opening and whether that is behind HEAD.
 install -m644 "$FROZEN_STAMP" "$BINARY_DEST.frozen" 2>/dev/null || true
-# And keep this build under dev-builds/eldrun-<commit>: the next install
+# And keep this build under dev-builds/tabtivity-<commit>: the next install
 # replaces the path, and a crash in this snapshot is only symbolizable
 # against these exact bytes (scripts/crash-symbolize.sh).
 "$ROOT/scripts/retain-dev-build.sh" "$BINARY_DEST" "$COMMIT$DIRTY" || true

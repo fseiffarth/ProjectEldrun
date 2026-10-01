@@ -1,4 +1,4 @@
-//! What the background "Eldrun (dev)" freeze is doing, read for the header's
+//! What the background "Tabtivity (dev)" freeze is doing, read for the header's
 //! dev-build chip (`header/DevBuildIndicator.tsx`).
 //!
 //! The build is `scripts/package-dev-auto.sh`'s, queued by the `post-commit`
@@ -12,8 +12,8 @@
 //! step a pass has reached.
 //!
 //! Only a binary built from a checkout knows where that checkout is:
-//! `ELDRUN_DEV_SOURCE_ROOT` is exported by `package-dev.sh` and the hot-reload
-//! launcher and read at compile time, so a released Eldrun (CI builds, the
+//! `TABTIVITY_DEV_SOURCE_ROOT` is exported by `package-dev.sh` and the hot-reload
+//! launcher and read at compile time, so a released Tabtivity (CI builds, the
 //! AppImage) has no source root, reads nothing, and shows no chip.
 
 use std::fs;
@@ -37,7 +37,7 @@ pub enum BuildState {
     /// No build process alive.
     Idle,
     /// The build process is alive but waiting for commits to settle
-    /// (`ELDRUN_DEV_BUILD_SETTLE`) before its next pass.
+    /// (`TABTIVITY_DEV_BUILD_SETTLE`) before its next pass.
     Waiting,
     /// A pass is running.
     Building,
@@ -257,7 +257,7 @@ fn own_exe() -> Option<(PathBuf, bool)> {
 }
 
 /// The short commit of a finished snapshot in the tree that
-/// `start-eldrun-dev-build.sh` would adopt: `target/release/eldrun` newer than
+/// `start-tabtivity-dev-build.sh` would adopt: `target/release/tabtivity` newer than
 /// the installed binary, with the `.frozen` record `package-dev.sh` writes only
 /// after a verified build. A binary newer than its record is one cargo is still
 /// linking, or one that failed the check — not a snapshot.
@@ -339,7 +339,7 @@ pub fn status() -> Option<DevBuildStatus> {
 const PAUSED_FILE: &str = "package-dev-auto.paused";
 
 /// The HEAD this process last asked the script to freeze, so a HEAD the script
-/// declined (`eldrun.autoDevBuild false`) or already failed is asked for once,
+/// declined (`tabtivity.autoDevBuild false`) or already failed is asked for once,
 /// not on every poll.
 static LAST_QUEUED: Mutex<Option<String>> = Mutex::new(None);
 
@@ -362,7 +362,7 @@ pub fn needs_queue(
 
 /// Queue a freeze of HEAD when the `post-commit` hook could not. A commit made
 /// in an agent tab runs the hook inside the agent fence, whose `$HOME` is the
-/// agent's own: the script declines there (`ELDRUN_AGENT_FENCE`), since what it
+/// agent's own: the script declines there (`TABTIVITY_AGENT_FENCE`), since what it
 /// would lock, stamp and install is a throwaway copy and the real snapshot
 /// never moved (2026-09-25: 27 commits behind). This process runs on the host,
 /// so it asks instead, from the chip's poll. `SOURCE_ROOT` is this binary's
@@ -441,7 +441,7 @@ fn head_sha(root: &str) -> Option<String> {
     (!sha.is_empty()).then_some(sha)
 }
 
-/// Start the "Eldrun (dev)" launcher once this process has exited, detached so
+/// Start the "Tabtivity (dev)" launcher once this process has exited, detached so
 /// the quit's teardown does not take it along. The caller then closes the main
 /// window, which runs the ordinary quit (layout flush, tmux reap,
 /// `RunEvent::Exit`); the launcher refuses while this binary still runs, hence

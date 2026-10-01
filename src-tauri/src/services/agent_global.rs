@@ -1,4 +1,4 @@
-//! The Eldrun-wide agent config layer: one home-shaped tree the user edits,
+//! The Tabtivity-wide agent config layer: one home-shaped tree the user edits,
 //! laid into every agent home at every spawn.
 //!
 //! Agent homes are per scope (`services::agent_home`) so that config an agent
@@ -6,7 +6,7 @@
 //! instructions, skills, hooks and MCP servers reached no agent at all. This
 //! layer brings them back without giving up the isolation: it lives at
 //! `<state_dir>/agent-global/`, which no fence ever mounts (the state dir is
-//! masked; macOS denies it by name), so only the user — through Eldrun's
+//! masked; macOS denies it by name), so only the user — through Tabtivity's
 //! Settings or its folder — can change it. At every spawn
 //! [`apply_to_home`] copies its files into the scope's home and merges its
 //! config fragments into the files the CLIs themselves write. An agent can
@@ -14,7 +14,7 @@
 //!
 //! - Plain files (`.claude/CLAUDE.md`, `.claude/skills/…`, `.codex/AGENTS.md`,
 //!   hook scripts, …) are copied over the home's; a home file the layer
-//!   replaces for the first time is kept in `.eldrun-global-backup/`, and a
+//!   replaces for the first time is kept in `.tabtivity-global-backup/`, and a
 //!   file removed from the layer is removed from every home at its next spawn.
 //! - The config files a CLI writes itself ([`MERGED`]) are merged, never
 //!   replaced: objects/tables recurse, arrays gain the layer's elements, other
@@ -27,8 +27,8 @@
 //! `~/.codex` and `~/.gemini`, plus the hook and plugin files the other CLIs
 //! read (Cursor, Droid, Copilot, OpenCode, Pi, Mistral Vibe) — so a tool the
 //! user wired into their agents themselves (rtk's `rtk init -g`, say) reaches
-//! every Eldrun agent too. One click, the one direction that is safe.
-//! Eldrun's own session hooks are filtered out of what it imports; they are
+//! every Tabtivity agent too. One click, the one direction that is safe.
+//! Tabtivity's own session hooks are filtered out of what it imports; they are
 //! registered per home anyway. Every read and write into a home is relative
 //! to a directory handle (`services::home_io`): the home is agent-writable
 //! and the apply runs unfenced. AppHandle-free.
@@ -56,7 +56,7 @@ enum Format {
     Toml,
 }
 
-/// Config files the CLI itself writes (model picks, folder trust, Eldrun's
+/// Config files the CLI itself writes (model picks, folder trust, Tabtivity's
 /// hooks): merged into, never replaced.
 const MERGED: &[(&str, Format)] = &[
     (".claude/settings.json", Format::Json),
@@ -544,7 +544,7 @@ const IMPORT_DIRS: &[&str] = &[
     ".pi/agent/extensions",
     ".vibe/prompts",
 ];
-/// JSON hook configs of CLIs Eldrun registers nothing in, taken whole.
+/// JSON hook configs of CLIs Tabtivity registers nothing in, taken whole.
 const IMPORT_JSON: &[&str] = &[".cursor/hooks.json", ".factory/hooks.json"];
 /// Homes whose top-level `.md` files are instructions: `AGENTS.md` /
 /// `GEMINI.md` and the files they `@`-import (rtk's `RTK.md`).
@@ -591,7 +591,7 @@ fn take_dir(src: &Path, dst: &Path, depth: usize) -> usize {
     n
 }
 
-/// Whether a hook entry is one of Eldrun's own session hooks.
+/// Whether a hook entry is one of Tabtivity's own session hooks.
 ///
 /// Recognised by the hooks dir in the command. A user's own CLI config that
 /// an older build registered its hook in names that build's state dir, so
@@ -627,7 +627,7 @@ pub(crate) fn is_app_hook_for(pair: &crate::brand::Pair, command: &str, hooks_di
     matched
 }
 
-/// Drop Eldrun's own hook commands from a Claude/Gemini-style `hooks` map
+/// Drop Tabtivity's own hook commands from a Claude/Gemini-style `hooks` map
 /// (`{event: [{matcher, hooks: [{command}]}]}`), and the groups and events
 /// that leaves empty.
 pub(crate) fn strip_app_json_hooks(settings: &mut Value, hooks_dir: &str) {
@@ -655,7 +655,7 @@ pub(crate) fn strip_app_json_hooks(settings: &mut Value, hooks_dir: &str) {
 
 /// The part of the user's `~/.codex/config.toml` that is config rather than
 /// Codex's own per-machine state: folder trust (`projects`), notices and the
-/// hook-trust records go; Eldrun's own hooks go.
+/// hook-trust records go; Tabtivity's own hooks go.
 pub(crate) fn filtered_codex_config(text: &str, hooks_dir: &str) -> Option<String> {
     let mut doc: toml_edit::DocumentMut = text.parse().ok()?;
     let root = doc.as_table_mut();
@@ -700,7 +700,7 @@ pub(crate) fn filtered_codex_config(text: &str, hooks_dir: &str) -> Option<Strin
     (!out.trim().is_empty()).then_some(out)
 }
 
-/// The user's `~/.vibe/hooks.toml` minus Eldrun's own session hook, which
+/// The user's `~/.vibe/hooks.toml` minus Tabtivity's own session hook, which
 /// every home gets registered anyway (`agent_session::register_hooks_in_home`).
 pub(crate) fn filtered_vibe_hooks(text: &str, hooks_dir: &str) -> Option<String> {
     let mut doc: toml_edit::DocumentMut = text.parse().ok()?;
@@ -837,7 +837,7 @@ pub fn import_from_user_home() -> io::Result<ImportReport> {
     import_from_user_home_in(&storage::state_dir(), &crate::paths::home_dir())
 }
 
-/// Marks that the first start of the Eldrun-wide layer has run.
+/// Marks that the first start of the Tabtivity-wide layer has run.
 const IMPORTED_MARKER: &str = ".agent_global_imported";
 
 /// The import, done once for the user at the first start with the layer, so
@@ -884,7 +884,7 @@ pub fn status() -> LayerStatus {
 /// Codex's `approvals_reviewer` value that hands the requests Codex would ask
 /// the user about to a reviewer agent instead. The Manage CLIs switch writes
 /// it into the layer, so it is the user's own Codex config in every home, not
-/// a mode Eldrun picks: the approval policy and the sandbox stay Codex's.
+/// a mode Tabtivity picks: the approval policy and the sandbox stay Codex's.
 /// Fenced Linux Codex needs it most — its sandbox cannot nest under the fence,
 /// so every command asks to run outside it (`docs/context/agent_authority.md`).
 const CODEX_REVIEWER: &str = "approvals_reviewer";

@@ -3,7 +3,7 @@
  *
  * Both buttons do the same structural thing: open a **terminal tab** in the
  * project and type a command into it. That is deliberate, and it is what makes
- * the feature work everywhere Eldrun already works, for free — a shell tab on a
+ * the feature work everywhere Tabtivity already works, for free — a shell tab on a
  * remote (SSH) project runs on the host, and one on a containerised project runs
  * inside the container, because the tab is the thing that carries locality and
  * sandboxing. A bespoke "run" IPC path would have to re-derive both and would get

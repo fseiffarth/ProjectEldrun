@@ -1,4 +1,4 @@
-//! PTY lifecycle management for Eldrun terminals.
+//! PTY lifecycle management for Tabtivity terminals.
 //!
 //! Design constraints from TauriRust.md Phase 3:
 //! - portable-pty for cross-platform PTY creation.
@@ -675,7 +675,7 @@ pub struct PtyOptions {
     #[serde(default)]
     pub schedule_target_id: Option<String>,
     /// The root console's **Host session**: an agent that runs unfenced, with
-    /// the user's full rights, in Eldrun's `host` agent home
+    /// the user's full rights, in Tabtivity's `host` agent home
     /// (`docs/context/agent_authority.md`). Honoured only with no
     /// `project_id`; a project tab that sets it is fenced like any other.
     #[serde(default)]
@@ -689,7 +689,7 @@ pub struct PtyOptions {
     pub remote_host_id: Option<String>,
     /// Persistent remote session (TODO #85): the **stable tmux session name** to
     /// spawn-or-attach on the host, wrapping the spawn in `tmux new-session -A` so
-    /// the run survives an SSH drop / laptop sleep / Eldrun relaunch. The frontend
+    /// the run survives an SSH drop / laptop sleep / Tabtivity relaunch. The frontend
     /// mints it once per shell tab and **persists it** (`TabEntry.tmuxSession`), so
     /// it is stable across a relaunch even though the tab's PTY id (`scope:key`) is
     /// regenerated on restore — that stability is what makes reattach work. Set
@@ -711,7 +711,7 @@ pub struct PtyOptions {
     /// It is only an *index*: the grant itself is a file under
     /// `<state_dir>/sessions/<project>/host_bound/`, written when the tab is
     /// genuinely created. This replaced keying that decision on the tab's
-    /// `ELDRUN_LOCAL_MODEL` env var, which is a usage-recap label.
+    /// `TABTIVITY_LOCAL_MODEL` env var, which is a usage-recap label.
     #[serde(default)]
     pub host_bound_uid: Option<String>,
 }
@@ -971,7 +971,7 @@ impl PtyRegistry {
 
     /// Abort every live PTY and its process subtree. Called once at app exit so
     /// no terminal's inner process (a dev server, a build, a training run)
-    /// outlives Eldrun — dropping the registry alone kills only the shell
+    /// outlives Tabtivity — dropping the registry alone kills only the shell
     /// leaders and orphans everything they spawned. Uses [`ReapMode::Immediate`]
     /// because a delayed escalation thread would die with the exiting process.
     pub fn kill_all(&mut self) {
@@ -1405,14 +1405,14 @@ fn build_command(opts: &PtyOptions) -> CommandBuilder {
     } else {
         opts.cmd.clone()
     };
-    // A bare tool name (e.g. "vibe"/"ollama") that Eldrun detected as installed
+    // A bare tool name (e.g. "vibe"/"ollama") that Tabtivity detected as installed
     // may still not be launchable on Windows: winget/uv/npm install into per-user
     // dirs (%LOCALAPPDATA%\Programs, %USERPROFILE%\.local\bin, %APPDATA%\npm, …)
     // that the PATH this process inherited often omits. Resolve to an absolute
     // path so the spawn finds it. No-op when the name already resolves on PATH or
     // carries a path — so ssh/docker-wrapped tabs (cmd "ssh"/"docker", both on
     // PATH) keep their remote/in-container binary names, which live in `args`.
-    // Eldrun's own helpers (the `ssh` of a remote tab, the local `tmux`) come
+    // Tabtivity's own helpers (the `ssh` of a remote tab, the local `tmux`) come
     // from the root-owned system dirs first, never a user-writable one (#861).
     let resolved = crate::paths::helper_program(std::ffi::OsStr::new(&cmd_str))
         .or_else(|| crate::paths::resolve_offpath_binary(&cmd_str));
@@ -1437,10 +1437,10 @@ fn build_command(opts: &PtyOptions) -> CommandBuilder {
     {
         cmd.env_remove("GIO_LAUNCHED_DESKTOP_FILE");
         cmd.env_remove("GIO_LAUNCHED_DESKTOP_FILE_PID");
-        // Eldrun's own AT-SPI opt-out is about Eldrun's window (see
+        // Tabtivity's own AT-SPI opt-out is about Tabtivity's window (see
         // `services::webkit_a11y`); inherited, it would silently strip
         // accessibility from any other WebKitGTK app a tab launches. Dropped
-        // only when Eldrun set it — an address the user exported stays.
+        // only when Tabtivity set it — an address the user exported stays.
         if crate::services::webkit_a11y::installed() {
             cmd.env_remove(crate::services::webkit_a11y::BUS_ADDRESS_VAR);
         }

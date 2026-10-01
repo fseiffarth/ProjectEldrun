@@ -305,12 +305,12 @@ fn flag_enables_shell_escape(arg: &str) -> bool {
     a.contains("shell-escape") || a.contains("shellescape") || a.contains("write18")
 }
 
-/// Passed on every engine run Eldrun makes — builds (through latexmk, which
+/// Passed on every engine run Tabtivity makes — builds (through latexmk, which
 /// forwards it to the engine in `%O`, the cached-preamble override included),
 /// format dumps and hover previews (#867). Without it the distribution's
 /// `shell_escape` setting decides, and a `texmf.cnf` (or a `shell_escape=t`
 /// in the environment) with it on would let a document's `\write18` run on
-/// Build, or on merely hovering a formula. Nothing in Eldrun turns shell-escape
+/// Build, or on merely hovering a formula. Nothing in Tabtivity turns shell-escape
 /// on — [`filter_extra_flags`] drops every enabling flag — so there is no
 /// trusted opt-in for this to yield to. Last before the file name, so it is the
 /// engine's final word even after the user's extra flags.
@@ -425,13 +425,13 @@ fn log_shows_shell_escape(log: &str) -> bool {
 // errors *in the document*: an unresolved reference with `$warnings_as_errors`
 // set in a `latexmkrc`, `$max_repeat` reached, a `bibtex`/`biber` rule that
 // failed, a missing `.bib`. In every one of those the engine still typeset the
-// document and wrote a PDF — but Eldrun used to report the build as failed,
+// document and wrote a PDF — but Tabtivity used to report the build as failed,
 // withhold the fresh PDF, and (with no `file:line:` error to quote) title the
 // card with latexmk's trailing advisory, "Use the -f option to force complete
 // processing…". A configuration complaint shown as a compilation error.
 //
 // The discriminator is the log, not the exit code: TeX announces its own errors
-// as `!` lines and — under the `-file-line-error` Eldrun always passes — as
+// as `!` lines and — under the `-file-line-error` Tabtivity always passes — as
 // `file:line: message`. Neither appears when only the driver is unhappy.
 
 /// True when the log carries an error the *engine* raised: a `-file-line-error`
@@ -1075,7 +1075,7 @@ fn compile_tex_blocking(
         },
         shell_escape: log_shows_shell_escape(&log),
         log: tail(&log),
-        // Nothing to explain: there is no driver between Eldrun and the engine,
+        // Nothing to explain: there is no driver between Tabtivity and the engine,
         // so a failure here is the engine's own and the log already says it.
         driver_note: None,
     })
@@ -1084,7 +1084,7 @@ fn compile_tex_blocking(
 // ── Snippet hover preview ────────────────────────────────────────────────────
 //
 // The TeX editor's hover preview (#tex-hover-preview): rest the pointer on a
-// `$…$`, a `\[…\]` or an `equation`/`align`/`tikzpicture` body and Eldrun
+// `$…$`, a `\[…\]` or an `equation`/`align`/`tikzpicture` body and Tabtivity
 // typesets *that fragment alone* and shows the result over the source. It is the
 // same question a full Compile answers, asked about two lines instead of forty
 // pages — so it is deliberately NOT the same code path:

@@ -1,11 +1,11 @@
 //! Directory-handle-relative I/O inside an agent-writable home.
 //!
-//! Eldrun prepares every agent home **unfenced** — laying in the Eldrun-wide
+//! Tabtivity prepares every agent home **unfenced** — laying in the Tabtivity-wide
 //! layer, registering its hooks, reconciling logins, scrubbing leftovers —
 //! while a fenced agent of that scope may be rewriting the same tree. A path
 //! checked and then used is a race: between `lstat(~/.claude)` and
 //! `rename(tmp, ~/.claude/settings.json)` the agent can swap `.claude` for a
-//! link to the user's real home, and Eldrun's write lands there. Exclusive
+//! link to the user's real home, and Tabtivity's write lands there. Exclusive
 //! temporaries and a `O_NOFOLLOW` on the final component do not close that
 //! window; only doing every operation relative to a directory handle does.
 //!
@@ -93,7 +93,7 @@ impl HomeDir {
 
     #[cfg(unix)]
     fn open_root(path: &Path) -> io::Result<Self> {
-        // The home's own path is Eldrun's (under the state dir); a link in the
+        // The home's own path is Tabtivity's (under the state dir); a link in the
         // middle of *that* path — a symlinked temp dir on macOS, say — is the
         // user's own doing, so the root itself is opened by name.
         let c = cstr(path.as_os_str())?;

@@ -1,5 +1,5 @@
-//! Web Push for Eldrun Mobile (RFC 8030 delivery, RFC 8291 payload
-//! encryption, RFC 8292 VAPID) — `docs/eldrun_mobile_future_plan.md` §A.
+//! Web Push for Tabtivity Mobile (RFC 8030 delivery, RFC 8291 payload
+//! encryption, RFC 8292 VAPID) — `docs/tabtivity_mobile_future_plan.md` §A.
 //!
 //! The one channel that leaves the tailnet: a push subscription always routes
 //! through the browser vendor's push service (FCM, Apple, Mozilla, WNS). What

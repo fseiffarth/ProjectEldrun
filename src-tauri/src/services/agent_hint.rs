@@ -1,11 +1,11 @@
-//! The one-line `eldrun-send` hint for the agent CLIs past Claude and Codex.
+//! The one-line `tabtivity-send` hint for the agent CLIs past Claude and Codex.
 //!
-//! Claude and Codex learn the command from Eldrun's session hook
+//! Claude and Codex learn the command from Tabtivity's session hook
 //! (`agent_session`), which prints it on `SessionStart`. The project scaffold's
 //! `AGENTS.md` used to carry it for everyone else, but that file is the user's,
 //! committed and never rewritten, so the text froze in every project and
 //! reached collaborators' agents where the command doesn't exist. This module
-//! delivers it from Eldrun's own side instead, per CLI, in the one way each
+//! delivers it from Tabtivity's own side instead, per CLI, in the one way each
 //! one takes context at session start:
 //!
 //! - **A `SessionStart` hook** where the CLI has one that feeds the model:
@@ -15,16 +15,16 @@
 //!   Copilot (a file of its own in `.copilot/hooks/`, `additionalContext`).
 //!   All point at one script in `<state_dir>/hooks/`, read-only in the fence,
 //!   which prints the hint in the shape asked for and stays silent outside an
-//!   Eldrun project tab.
+//!   Tabtivity project tab.
 //! - **Instructions** where it has no such hook. Mistral Vibe loads its
-//!   user-level `.vibe/AGENTS.md` beside the project's, so Eldrun keeps a
+//!   user-level `.vibe/AGENTS.md` beside the project's, so Tabtivity keeps a
 //!   marker-delimited block there; only the text between the markers is
-//!   Eldrun's. OpenCode gets a file of Eldrun's in its `instructions` list
+//!   Tabtivity's. OpenCode gets a file of Tabtivity's in its `instructions` list
 //!   (`.config/opencode/opencode.json`) instead: its user-level `AGENTS.md`
 //!   would *replace* the `~/.claude/CLAUDE.md` it otherwise falls back to,
 //!   which is where the user's global instructions reach it.
 //!
-//! Everything is written into Eldrun's per-scope agent homes at each spawn,
+//! Everything is written into Tabtivity's per-scope agent homes at each spawn,
 //! after the global layer (`agent_global`) — never the user's own home — and
 //! through directory handles (`home_io`), as `agent_session` registers its
 //! hooks. AppHandle-free.
@@ -73,7 +73,7 @@ impl Shape {
         }
     }
 
-    /// What the hook prints in an Eldrun project tab.
+    /// What the hook prints in a Tabtivity project tab.
     fn output(self) -> String {
         match self {
             Shape::Plain => HINT.to_string(),
@@ -109,7 +109,7 @@ pub(crate) const SETTINGS_HOOKS: &[&str] = &[
 pub(crate) const DROID_HOOKS: &str = ".factory/hooks.json";
 pub(crate) const CURSOR_HOOKS: &str = ".cursor/hooks.json";
 /// Copilot loads every `*.json` in its user hooks directory, so this file is
-/// Eldrun's alone and simply rewritten.
+/// Tabtivity's alone and simply rewritten.
 const COPILOT_HOOKS: &str = crate::brand::COPILOT_HINT_HOOKS;
 /// Vibe's user-level instructions, loaded beside the project's `AGENTS.md`.
 pub(crate) const VIBE_INSTRUCTIONS: &str = ".vibe/AGENTS.md";
@@ -165,7 +165,7 @@ fn posix_script_body() -> String {
     }
     format!(
         "#!/bin/sh\n\
-         # {DISPLAY} agent hint (SessionStart): tells an agent in an {DISPLAY} project tab\n\
+         # {DISPLAY} agent hint (SessionStart): tells an agent in a {DISPLAY} project tab\n\
          # how to put a file on the user's phone, in the output shape its CLI reads\n\
          # ($1). Silent anywhere else. Managed by {DISPLAY}; do not edit.\n\
          {legacy_env}if [ -z \"${UPPER}_TAB_UID\" ] || [ -z \"${UPPER}_PROJECT_DIR\" ]; then\n\
@@ -221,7 +221,7 @@ pub fn write_script() -> io::Result<()> {
     Ok(())
 }
 
-/// Register the hint in one Eldrun agent home. Best effort per file, logged; a
+/// Register the hint in one Tabtivity agent home. Best effort per file, logged; a
 /// linked config dir is skipped, as for the session hooks.
 pub fn register_in_home(home: &std::path::Path) {
     let report = |rel: &str, result: io::Result<()>| {
@@ -277,7 +277,7 @@ fn write_if_changed(file: &HomeFile, bytes: &[u8]) -> io::Result<()> {
     file.write(bytes)
 }
 
-/// Read a JSON config, let `edit` add Eldrun's hook, write it back only when
+/// Read a JSON config, let `edit` add Tabtivity's hook, write it back only when
 /// that changed something. A file that is there but isn't plain JSON (some
 /// CLIs accept comments) is left alone rather than replaced.
 fn merge_json(file: &HomeFile, edit: impl FnOnce(&mut Value) -> bool) -> io::Result<()> {
@@ -340,7 +340,7 @@ fn add_cursor_hook(root: &mut Value, cmd: &str) -> bool {
 }
 
 /// Copilot's hook file. It runs the `bash` command on Linux/macOS and the
-/// `powershell` one on Windows; Eldrun registers the host's own.
+/// `powershell` one on Windows; Tabtivity registers the host's own.
 fn copilot_hooks(cmd: &str) -> String {
     let key = if cfg!(windows) { "powershell" } else { "bash" };
     let mut hook = json!({ "type": "command", "timeoutSec": 10 });
@@ -349,7 +349,7 @@ fn copilot_hooks(cmd: &str) -> String {
     serde_json::to_string_pretty(&file).expect("plain JSON") + "\n"
 }
 
-/// `current` with Eldrun's block in it: replaced in place when the markers are
+/// `current` with Tabtivity's block in it: replaced in place when the markers are
 /// there, appended otherwise. Nothing outside the markers changes.
 fn with_block(current: &str) -> String {
     let block = format!("{BLOCK_START}\n{HINT}\n{BLOCK_END}\n");

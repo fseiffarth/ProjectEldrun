@@ -62,7 +62,7 @@ pub const MAX_HTML_BYTES: usize = 5 * 1024 * 1024;
 /// Element budget of the sanitized output. Over this the body is truncated with
 /// a marker. This is a **WebKitGTK responsiveness** requirement as much as a
 /// security one: the message frame renders on the same GTK main loop as
-/// Eldrun's UI, so a 100k-node body janks the whole window (plan B §2.8).
+/// Tabtivity's UI, so a 100k-node body janks the whole window (plan B §2.8).
 pub const MAX_ELEMENTS: usize = 20_000;
 
 /// Nesting budget of the *input*, enforced before the parser sees it.
@@ -91,7 +91,7 @@ const MAX_LINK_TEXT: usize = 200;
 pub struct SanitizedBody {
     pub html: String,
     pub links: Vec<MailLink>,
-    /// How many remote references were dropped, for the "Eldrun blocked n
+    /// How many remote references were dropped, for the "Tabtivity blocked n
     /// remote images" banner.
     pub remote_refs: u32,
     pub truncated: bool,

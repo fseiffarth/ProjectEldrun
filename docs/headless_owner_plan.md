@@ -1,7 +1,7 @@
 # Headless owner — the desktop's live state moves into the sidecar
 
 *Split out on 2026-09-29 from
-[`eldrun_hosted_plan.md`](eldrun_hosted_plan.md) (§1 decision 3, §3.4, P0
+[`tabtivity_hosted_plan.md`](tabtivity_hosted_plan.md) (§1 decision 3, §3.4, P0
 and P1), because every step pays off on the desktop whether or not a server
 ever ships. File references were measured at `923e0202`; re-verify before
 building on one.*
@@ -51,7 +51,7 @@ app (`lib.rs:776-783`), so the owner cannot live in the Tauri process either.
 
 ## 2. The owner
 
-**The owner is the existing per-user Mobile sidecar** (`eldrun --mobile-host`,
+**The owner is the existing per-user Mobile sidecar** (`tabtivity --mobile-host`,
 `main.rs:21-45`, already a user systemd unit), grown into a `workspace`
 service. It already runs without a window and survives the desktop closing.
 On a server the same code becomes the per-user daemon (hosted plan §3.1).
@@ -104,7 +104,7 @@ Each phase ships on its own.
 
 **H1: group 0, tab set, spawning, whole-document saves.** The riskiest step.
 - Per-operation tab commands in the `workspace` service.
-- The owner spawns into `tmux -L eldrun`, and every client, the desktop
+- The owner spawns into `tmux -L tabtivity`, and every client, the desktop
   included, attaches. Today tmux uses the default socket; only tests pass
   `-L` (`tmux_local.rs:899`).
 - `save_tab_layout` is refused. Settings, boxes and default apps use

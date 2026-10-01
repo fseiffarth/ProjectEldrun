@@ -1,4 +1,4 @@
-//! Eldrun Mobile's AppHandle-free control plane.
+//! Tabtivity Mobile's AppHandle-free control plane.
 //!
 //! The sidecar reads only the state-dir project/session snapshots, resolves all
 //! client ids through a keyed catalog, and attaches only to exact tmux sessions

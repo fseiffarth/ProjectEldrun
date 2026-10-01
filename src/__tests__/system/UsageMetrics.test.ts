@@ -2,7 +2,7 @@
  * Locks how a tab is classified for the usage recap.
  *
  * "By model" is the whole point of the agent stats, and a local model is not a
- * field on the tab — it is carried in the env Eldrun spawns it with. The trap is
+ * field on the tab — it is carried in the env Tabtivity spawns it with. The trap is
  * that a local model driven through `vibe` still has `cmd: "vibe"`, so a
  * cmd-only classification would file every local model under "Mistral".
  */
@@ -44,8 +44,8 @@ describe("agentMetricLeaf", () => {
   });
 
   it("falls back to the vibe alias when only that is present", () => {
-    // Tabs restored from a layout written by an older Eldrun have no
-    // ELDRUN_LOCAL_MODEL; naming them by the alias beats losing them.
+    // Tabs restored from a layout written by an older Tabtivity have no
+    // TABTIVITY_LOCAL_MODEL; naming them by the alias beats losing them.
     expect(
       agentMetricLeaf({
         kind: "local_agent",

@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { fillBrand, storageDashKey } from "./brand";
 
 /**
- * Eldrun's in-house internationalization (i18n) — the ONE place every language
+ * Tabtivity's in-house internationalization (i18n) — the ONE place every language
  * lives, so adding a string or a whole language is a single edit here and never
  * a hunt through the component tree.
  *
@@ -760,14 +760,14 @@ export const enSource = {
   "settings.noDownloadFolders": "No folders added — the system Downloads folder is used.",
   "settings.addDownloadFolder": "Add download folder...",
 
-  // Settings — Eldrun Mobile (the phone PWA's host settings live in
+  // Settings — Tabtivity Mobile (the phone PWA's host settings live in
   // MobileSettings; these are the two lines the main panel owns).
   "settings.mobile": "Mobile",
   "settings.mobileIndicator": "Show Mobile connection in header",
   "settings.mobileIndicatorHelp":
     "Shows the {app} Mobile host status and quick reconnect controls beside the battery indicator.",
 
-  // ── Eldrun Mobile — the desktop surface (mobile/MobileSettings) and the
+  // ── Tabtivity Mobile — the desktop surface (mobile/MobileSettings) and the
   // header indicator (header/MobileIndicator). The lockdown confirm is ONE key
   // on purpose: both surfaces raise the same destructive question and their
   // wording must never drift apart.
@@ -915,7 +915,7 @@ export const enSource = {
   "mobile.indUpdateError": "Could not update the Mobile host: {reason}",
   "mobile.indRevokeError": "Could not revoke paired devices",
 
-  // Eldrun Mobile — the setup instruction behind the header's phone icon while
+  // Tabtivity Mobile — the setup instruction behind the header's phone icon while
   // Mobile is off (mobile/MobileSetupGuide). Same ground as the fold in Mobile
   // settings, written as the six things you do, in order.
   "mobile.setupTitle": "Set up {app} Mobile",
@@ -964,6 +964,7 @@ export const enSource = {
   "nav.updates.title": "Updates",
   "nav.updates.blurb": "Check GitHub for a newer {app} and install it.",
   "updates.help": "{app} checks the project’s GitHub releases page — only when you ask it to. Nothing is downloaded until you click, and restarting is always yours.",
+  "brand.tagline": "A tab for each project. A tab for everything in it.",
   "updates.installedVersion": "Installed version",
   "updates.checking": "Checking…",
   "updates.checkNow": "Check now",
@@ -1851,7 +1852,7 @@ export const enSource = {
   "agentPrompts.scheduledNone": "No prompt is scheduled.",
   // The per-tab composer (side panel → Agents). Prefix commands and the model
   // pick are typed into the agent as its OWN slash commands, so the wording
-  // says "before the prompt", never "mode" — Eldrun chooses nothing here.
+  // says "before the prompt", never "mode" — Tabtivity chooses nothing here.
   "agentPrompts.composerToggle": "Prompt",
   "agentPrompts.composerSend": "Send to this tab",
   "agentPrompts.composerSendTitle": "Send to this tab (Ctrl+Enter)",
@@ -2153,7 +2154,7 @@ export const enSource = {
   "intro.ask.statusOff": "Help server is off",
   "intro.ask.statusOldBackend": "This {app} build has no help server yet; it arrives with the next backend update.",
   "intro.ask.toggle": "Offer {app}'s help to agent tabs",
-  "intro.ask.reach": "Claude and Codex tabs get it, and Local Model tabs whose model has its MCP chip on in the Models & agents menu; other CLIs only get its address. Tabs that run on a remote host, in a VM or in a container do not reach it. Claude asks you to approve the tool the first time. New tabs pick up a change of this switch; tabs opened before an {app} update that added it do not have it.",
+  "intro.ask.reach": "Claude and Codex tabs get it, and Local Model tabs whose model has its MCP chip on in the Models & agents menu; other CLIs only get its address. Tabs that run on a remote host, in a VM or in a container do not reach it. Claude asks you to approve the tool the first time. New tabs pick up a change of this switch; tabs opened before a {app} update that added it do not have it.",
   "intro.ask.examplesTitle": "Things to ask your agent",
   "intro.ask.example1": "How do I create a remote project over SSH?",
   "intro.ask.example2": "Which local model fits my GPU, and how do I load it?",
@@ -3247,7 +3248,7 @@ export const enSource = {
   "remoteConnect.sshTermHint": "Log in below — the pooled connection comes up once you're authenticated.",
   "remoteConnect.killConfirmTitle": "Confirm: this kills every running tmux session on the host — it can't be undone.",
   "remoteConnect.killConfirmBtn": "Confirm: end all jobs",
-  "remoteConnect.killArmTitle": "Actively disconnect: end every running tmux job on this host and close the connection. Jobs are killed only on this click — never on an {app} restart.",
+  "remoteConnect.killArmTitle": "Actively disconnect: end every running tmux job on this host and close the connection. Jobs are killed only on this click — never on a {app} restart.",
   "remoteConnect.killArmBtn": "Disconnect & end jobs",
   "remoteConnect.forgetPasswordTitle": "Delete this host's saved password from your OS keychain. The current connection stays up; the next connect asks for the password again.",
   "remoteConnect.forgetPasswordBtn": "Forget saved password",
@@ -3926,7 +3927,7 @@ export const enSource = {
   "machines.retryAllAria": "Retry all",
   "machines.retryAllTitle": "Retry all — connect every machine that isn't already connected. Machines tagged as cluster login nodes are left out; connect those from their own row. A host that needs a password we don't have stays red to retry on its row.",
   "machines.disconnectAllAria": "Disconnect all",
-  "machines.disconnectAllTitle": "Disconnect all — actively disconnect every connected machine: end all their tmux jobs and close each SSH connection. Jobs are killed only on this click — never on an {app} restart.",
+  "machines.disconnectAllTitle": "Disconnect all — actively disconnect every connected machine: end all their tmux jobs and close each SSH connection. Jobs are killed only on this click — never on a {app} restart.",
   "machines.usageAria": "Remote host usage",
   "machines.usageTitle": "Remote host usage — check who's logged in and what's running on every machine here: CPU, memory, GPU and top processes, read right now.",
   "machines.tmuxJobs": "all tmux jobs",
@@ -3951,7 +3952,7 @@ export const enSource = {
   "machines.checkTitle": "Check whether this machine answers, right now. It is a real SSH login, so it happens only when you ask; otherwise the list checks each machine at most once a minute.",
   "machines.checkTitleHpc": "Check whether this machine answers, right now. It is tagged as a cluster login node, so no automatic check ever touches it — this button is its only reachability.",
   "machines.disconnectAria": "Disconnect",
-  "machines.disconnectTitle": "Actively disconnect: end every running tmux job on this host and close the SSH connection. Jobs are killed only on this click — never on an {app} restart.",
+  "machines.disconnectTitle": "Actively disconnect: end every running tmux job on this host and close the SSH connection. Jobs are killed only on this click — never on a {app} restart.",
   "machines.attachAria": "Add this machine to a project",
   "machines.attachTitle": "Add this machine to one of the open projects — as a compute host on a remote project, or as the primary host of a local one.",
   "machines.editAria": "Edit machine",
@@ -7437,7 +7438,7 @@ export const enSource = {
     "A remote project can reach several hosts: a cluster node that already sees the same folder, or a separate box {app} pushes tracked files to. Each host gets its own lamp, its own tabs, and GPU/SLURM readouts — and you pick which one new shells run on.",
   "tour.advanced.sessionsTitle": "Long runs that survive",
   "tour.advanced.sessionsBody":
-    "Shell tabs can run inside tmux, so a job keeps going through an SSH drop, a closed laptop, or an {app} restart. The Sessions view lists what is still running and reattaches a tab to it.",
+    "Shell tabs can run inside tmux, so a job keeps going through an SSH drop, a closed laptop, or a {app} restart. The Sessions view lists what is still running and reattaches a tab to it.",
   "tour.advanced.isolationTitle": "Containers and VMs",
   "tour.advanced.isolationBody":
     "Locally there are two stricter tiers: a per-project Docker container, where every shell and agent runs inside while the folder stays on the host, and a VM project with no shared filesystem at all — chosen when the project is created, not toggled later.",
@@ -7928,7 +7929,7 @@ export const enSource = {
   "lessons.persistentSessions.title": "Keep long runs alive with sessions",
   "lessons.persistentSessions.blurb": "Shell tabs run inside tmux, so a run survives an SSH drop, a laptop sleep, or {app} quitting.",
   "lessons.persistentSessions.whySessionsTitle": "Runs that outlive the tab",
-  "lessons.persistentSessions.whySessionsBody": "A shell or script tab — and, on a remote host, an agent tab (Claude, Codex, …) — runs inside a tmux session, decoupled from the connection. That means a long run, or a live agent, survives an SSH drop, a laptop sleep, a VPN drop, or {app} quitting; locally a shell run even survives an {app} crash. A reconnecting agent reattaches its still-running process, or resumes the conversation if the host session is gone. It's ON by default — nothing to enable.",
+  "lessons.persistentSessions.whySessionsBody": "A shell or script tab — and, on a remote host, an agent tab (Claude, Codex, …) — runs inside a tmux session, decoupled from the connection. That means a long run, or a live agent, survives an SSH drop, a laptop sleep, a VPN drop, or {app} quitting; locally a shell run even survives a {app} crash. A reconnecting agent reattaches its still-running process, or resumes the conversation if the host session is gone. It's ON by default — nothing to enable.",
   "lessons.persistentSessions.whichTabsTitle": "Which tabs are covered",
   "lessons.persistentSessions.whichTabsBody": "Shell and script tabs get a session (a Python run opens one too), and so does an agent tab that runs on a remote host — its tmux name and its resume compose, so reconnecting reattaches the still-running agent, or resumes the conversation if the host session is gone. A local agent tab never gets one, and neither does the root console. Locally it's Unix-only: there's no tmux on Windows.",
   "lessons.persistentSessions.closeDetachesTitle": "Closing a tab detaches it",

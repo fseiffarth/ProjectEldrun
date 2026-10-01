@@ -4,7 +4,7 @@
 //! without a hunt through a file picker on the wrong device.
 //!
 //! The list is drawn from the user's own screenshot and picture folders
-//! (XDG user dirs on Linux, the platform defaults elsewhere) plus Eldrun's own
+//! (XDG user dirs on Linux, the platform defaults elsewhere) plus Tabtivity's own
 //! screenshot staging area, one level deep, newest first, capped. The system
 //! clipboard's image is the caller's to add on top (`CLIPBOARD_ID`): reading
 //! it needs a display connection, which this module deliberately has not.

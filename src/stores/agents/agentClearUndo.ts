@@ -13,11 +13,11 @@ import {
 } from "../tabs";
 
 /**
- * "Undo clear" for every agent tab Eldrun can resume, on the desktop and —
+ * "Undo clear" for every agent tab Tabtivity can resume, on the desktop and —
  * through the mobile bridge — on the phone.
  *
  * A `/clear` (Codex's `/new`, …) starts a fresh conversation, but the one it
- * ended stays on disk, and taking it back is what a restart of Eldrun already
+ * ended stays on disk, and taking it back is what a restart of Tabtivity already
  * does for a tab: resume the conversation the tab was in.
  *
  *  - Claude resumes in-session: the hook keeps the cleared conversation's id
@@ -71,7 +71,7 @@ export const useAgentClearUndoStore = create<AgentClearUndoStore>((set, get) => 
   },
 }));
 
-/** Whether a tab's clear can be taken back at all: an agent Eldrun resumes. */
+/** Whether a tab's clear can be taken back at all: an agent Tabtivity resumes. */
 export function canUndoClear(tab: TabEntry): boolean {
   return isResumableAgentTab(tab);
 }

@@ -546,7 +546,7 @@ mod tests {
         assert!(validate(&narrow, &json!("12345678")).is_ok());
     }
 
-    /// Audit rows name a tool only when it is one Eldrun serves; anything else
+    /// Audit rows name a tool only when it is one Tabtivity serves; anything else
     /// — a method name an agent made up, private text included — is written
     /// down as `protocol`. The ring holds 500 rows, and the admission failures
     /// in it are bounded on their own so a probe flood cannot evict the rest.

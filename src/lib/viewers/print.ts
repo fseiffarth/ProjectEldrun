@@ -37,7 +37,7 @@ import { storageKey as brandStorageKey } from "../brand";
 // The preview overlay exposes the options a printer dialog normally would. They
 // are applied by injecting one stylesheet into the *already-loaded* preview
 // document (see `printDocument`) rather than by rebuilding it: the HTML/SVG/CSS
-// viewer prints a document Eldrun did not assemble (`buildPreviewDoc`), and an
+// viewer prints a document Tabtivity did not assemble (`buildPreviewDoc`), and an
 // injected sheet reaches that one too — and never costs an iframe reload.
 
 export type PaperSize = "A4" | "Letter" | "Legal" | "A3" | "A5";
@@ -348,7 +348,7 @@ const PRINTER_SVG =
 /**
  * The two kinds of print job, which want different *defaults* and remember their
  * settings apart:
- *  - `flow`: markdown, text, code, HTML — content Eldrun paginates, which needs
+ *  - `flow`: markdown, text, code, HTML — content Tabtivity paginates, which needs
  *    real margins or it prints edge-to-edge.
  *  - `page`: a document that already comes as sheets (the PDF and image viewers).
  *    Its natural margin is **none** — a PDF page carries the margins its author
@@ -545,9 +545,9 @@ export function printDocument(fullHtml: string, native?: NativePrint): Promise<v
     iframe.setAttribute("title", tr("print.title"));
     // The sandbox is load-bearing and the token list is exactly two, deliberately.
     //
-    // What lands in `srcdoc` is not always a document Eldrun assembled: for an
+    // What lands in `srcdoc` is not always a document Tabtivity assembled: for an
     // HTML/SVG file `buildPreviewDoc` returns the file's **own source** (plus,
-    // for HTML, one `<base>` line of Eldrun's — nothing that makes it safer),
+    // for HTML, one `<base>` line of Tabtivity's — nothing that makes it safer),
     // so a hostile file in a cloned repo reaches this frame the moment someone
     // hits Print. The rendered *preview* of that same file has always been
     // `sandbox=""` (`FileViewerPane`'s `RenderedPreview`); this frame is the same
@@ -1067,7 +1067,7 @@ export function printDocument(fullHtml: string, native?: NativePrint): Promise<v
       frameWin = win;
 
       // Injected last, so it wins over the document's own rules at equal
-      // specificity — including for documents Eldrun did not assemble.
+      // specificity — including for documents Tabtivity did not assemble.
       styleEl = doc.createElement("style");
       styleEl.id = "app-print-options";
       (doc.head ?? doc.documentElement).appendChild(styleEl);

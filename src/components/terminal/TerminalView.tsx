@@ -126,7 +126,7 @@ interface Props {
   tmuxAttach?: string | null;
   /** Host-bound marker id (#150) — see `lib/remote/hostBound.ts`. */
   hostBoundUid?: string | null;
-  /** The root console's Host session: spawned unfenced in Eldrun's `host`
+  /** The root console's Host session: spawned unfenced in Tabtivity's `host`
    *  home (`PtyOptions.host_session`). Honoured by the backend only with no
    *  project id. */
   hostSession?: boolean;
@@ -356,7 +356,7 @@ function terminalTheme(scheme: string | undefined) {
 // xterm — before the first open because xterm has no renderer to write into,
 // and for every hidden spell after it because a `display: none` pane still
 // pays full escape-sequence parsing + render scheduling per chunk. With many
-// parallel agent tabs streaming (Eldrun's normal shape) that made background
+// parallel agent tabs streaming (Tabtivity's normal shape) that made background
 // tabs the renderer's biggest standing cost. The buffer flushes when the pane
 // is next shown; agent TUIs repaint whole screens, so the flush converges on
 // the current frame. Cap the retained text so a chatty background agent can't
@@ -879,7 +879,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     };
 
     // What this tab counts as for the usage recap. A `local_agent` tab always
-    // carries its model in the env Eldrun spawned it with, and that is the only
+    // carries its model in the env Tabtivity spawned it with, and that is the only
     // signal here that distinguishes it from the cloud agent of the same command
     // (a local model driven through `vibe` still has cmd "vibe") — TerminalView
     // is handed cmd/env, not the TabEntry's kind.
@@ -1012,7 +1012,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     //
     // A Claude whose version takes `--name` never gets the line typed at all:
     // `pty_spawn` puts the name on the launch argv and answers `named`, and the
-    // hold lifts the moment it does. Only a Claude Eldrun cannot vouch for (a
+    // hold lifts the moment it does. Only a Claude Tabtivity cannot vouch for (a
     // container's or a remote host's, an old or not-yet-probed host CLI) is
     // still typed at. `launchNamed` is null until the spawn has answered.
     const launchName = attachOnly ? null : claudeLaunchName(cmd, initialInput);
@@ -1032,7 +1032,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // Wire keyboard input → PTY write. The input stamp is what licenses this
     // tab's later output to show as "working"/"done" (see noteUserInput).
     //
-    // This is also the one place Eldrun sees everything the user asks an agent,
+    // This is also the one place Tabtivity sees everything the user asks an agent,
     // so the usage recap's "you asked them N things" is counted here (see
     // lib/agents/promptCount): Enter with content pending = one submit.
     term.onData((data) => {
@@ -1081,7 +1081,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // itself". xterm parses OSC codes but performs no action on 52 without a
     // handler, so the CLI reports success (it only confirms the write *reached
     // the terminal*) while the OS clipboard silently keeps its old contents.
-    // `c` is the only target register Eldrun has one clipboard for; a `?`
+    // `c` is the only target register Tabtivity has one clipboard for; a `?`
     // query (read-back) is intentionally left unhandled — implementing it would
     // let any program read whatever the user last copied elsewhere.
     // Gated rather than trusted: the payload is sanitized and capped by
@@ -1425,7 +1425,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           if (!isClaudeCommand(cmd)) return true;
           try {
             // The scope decides which `.claude.json` the spawn reads — the
-            // fence's staged copy carries trust Eldrun recorded, the host
+            // fence's staged copy carries trust Tabtivity recorded, the host
             // file does not — so the probe needs it, not just the folder.
             return await invoke<boolean>("claude_folder_trusted", {
               cwd,
@@ -1569,7 +1569,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // identical options for a tab *restored at relaunch* (nobody asked for
         // that) and for a click. The backend's own comment says the frontend
         // should "offer connect and open"; nothing did, so the raw
-        // `ELDRUN_HPC_GUARD connect user@host:22` was printed into the pane.
+        // `TABTIVITY_HPC_GUARD connect user@host:22` was printed into the pane.
         //
         // Connecting the project is what actually lifts the refusal: the pool
         // holds a standing authorization once it is up
@@ -1991,7 +1991,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   }, [id, viewerId]);
 
   // The Reader over an agent pane (`TerminalReaderView`): offered only for a
-  // CLI whose transcript Eldrun reads, and only in the tab's own pane.
+  // CLI whose transcript Tabtivity reads, and only in the tab's own pane.
   const readerIds = splitPtyId(id);
   const readerTab = useTabsStore((state) => readerIds
     ? state.tabsByScope[readerIds.scope]?.find((entry) => entry.key === readerIds.key)

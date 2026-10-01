@@ -538,7 +538,7 @@ pub fn tool_schemas(caller: Caller, reads: bool) -> Vec<Value> {
         draft_fields.insert("to".into(), json!({ "type": "array", "items": { "type": "string" }, "description": "Only addresses already on the replied-to message, or the account's own. Leave empty otherwise; the user types the address." }));
         draft_fields.insert("cc".into(), json!({ "type": "array", "items": { "type": "string" }, "description": "Same rule as `to`." }));
     }
-    // A root tab only: it names files by project and path (Eldrun copies them
+    // A root tab only: it names files by project and path (Tabtivity copies them
     // under the same-roots rule), and it may *suggest* a recipient the user
     // adds with a click. Never a reader's or a local model's.
     if caller == Caller::Agent {
@@ -983,7 +983,7 @@ fn attach_files(mail: &ScopedMail, caller: Caller, args: &Value, before: Option<
         return Err(attach::WINDOWS_REFUSED.into());
     }
     // The tab's own fence, as recorded when it was spawned: with the projects
-    // hidden from the tab, Eldrun reading them for it is the widening the
+    // hidden from the tab, Tabtivity reading them for it is the widening the
     // `.ics` import rule forbids.
     let grant = mail.stores.session.map_or(super::root_mcp::ProjectsGrant::Hidden, |s| s.projects_grant());
     let granted: Option<Vec<std::path::PathBuf>> = match grant {

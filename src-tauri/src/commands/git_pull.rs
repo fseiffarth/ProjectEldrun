@@ -21,7 +21,7 @@
 //! and push (`require_hook_trust`) and are the only calls here that go through
 //! `run_git_hooked`; everything else — the fetch, the branch fast-forward, the
 //! merge-state probes, the abort — runs with hooks pinned off like every other
-//! Eldrun git call (#862: the conflicted-file probe rewrites the index and would
+//! Tabtivity git call (#862: the conflicted-file probe rewrites the index and would
 //! fire `post-index-change` on merely opening the Git panel).
 
 use std::path::{Path, PathBuf};

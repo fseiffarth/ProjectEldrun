@@ -8,7 +8,7 @@ import { api } from "./api";
  * edges); the sidecar encrypts it to every subscribed phone that asked for
  * that kind and posts it through the browser vendor's push service (the one
  * path off the tailnet — the service relays ciphertext only). `sw.js` shows
- * it, even with Eldrun Mobile closed.
+ * it, even with Tabtivity Mobile closed.
  */
 
 /** Which agent turns this phone is told about (`push::AgentNotices`). */

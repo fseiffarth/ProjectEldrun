@@ -1,7 +1,10 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="src/assets/logo-wordmark-white.svg">
-  <img alt="Eldrun logo" src="src/assets/logo-wordmark.svg">
+  <img alt="Tabtivity logo" src="src/assets/logo-wordmark.svg">
 </picture>
+
+**Tabtivity** — *A tab for each project. A tab for everything in it.*
+(Formerly Eldrun; an existing install is carried over on its first start.)
 
 # You open projects not applications
 
@@ -14,12 +17,12 @@
 
 ## Introduction
 
-Eldrun is a project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and especially AI agent terminals — as a single unit when you switch projects.
+Tabtivity is a project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and especially AI agent terminals — as a single unit when you switch projects.
 
-| **Who should try Eldrun** | **Who should look elsewhere** |
+| **Who should try Tabtivity** | **Who should look elsewhere** |
 | --- | --- |
 | You work across several projects and want each one to bring back its own desktop, files, apps, and agent sessions. | Your main need is an autonomous agent platform that dispatches, supervises, and recovers multi-day work without your involvement. |
-| You work on multiple remote machines or an HPC cluster over SSH and want easy reconnection and simple distribution of tasks across machines. | You want Eldrun to manage the agent workflow. Eldrun is a project workspace and control cockpit, not an autonomous agent scheduler. |
+| You work on multiple remote machines or an HPC cluster over SSH and want easy reconnection and simple distribution of tasks across machines. | You want Tabtivity to manage the agent workflow. Tabtivity is a project workspace and control cockpit, not an autonomous agent scheduler. |
 | You want to monitor or answer your agents from your phone independently of developer apps. | |
 | You need structure and control and are tired of switching between your agent tabs. You use many different models (claude, openai, meta, google, ...) in parallel. | |
 
@@ -31,7 +34,7 @@ Eldrun is a project-centric desktop layer that swaps your entire working context
    Nothing else is required; [optional tools](#optional-tools) unlock single
    features.
 2. **Add a project.** Click **+** in the project bar. **New project** creates
-   `~/eldrun/projects/<name>/` with Git and agent docs (`AGENTS.md`,
+   `~/tabtivity/projects/<name>/` with Git and agent docs (`AGENTS.md`,
    `CLAUDE.md`, `GEMINI.md`) already in place; **Import project** registers an
    existing folder in place, or copies or moves it.
 3. **Start working.** Opening a project gives you a tab running your default
@@ -42,12 +45,12 @@ Eldrun is a project-centric desktop layer that swaps your entire working context
    return.
 5. **Go further when you need it.** Point a project at an
    [SSH host or HPC cluster](#remote-machines--hpc-clusters-the-second-differentiator),
-   or opt a project into [Eldrun Mobile](#every-agent-from-your-phone-the-third-differentiator)
+   or opt a project into [Tabtivity Mobile](#every-agent-from-your-phone-the-third-differentiator)
    (**Settings**, needs Tailscale) to answer your agents from your phone.
 
 ## Three pillars
 
-**One project = one desktop.** Eldrun is a project-centric desktop layer, not
+**One project = one desktop.** Tabtivity is a project-centric desktop layer, not
 just an app that launches or embeds other apps: projects own their windows and
 desktop context, and selecting a project swaps that whole context — windows,
 files, apps, Git state, and layout — as a single unit. The AI agent terminals,
@@ -66,10 +69,10 @@ about as much ceremony as running it locally*. See
 [Remote machines & HPC clusters](#remote-machines--hpc-clusters-the-second-differentiator).
 
 **Every agent = one phone.** An opt-in companion PWA,
-**[Eldrun Mobile](#every-agent-from-your-phone-the-third-differentiator)**,
+**[Tabtivity Mobile](#every-agent-from-your-phone-the-third-differentiator)**,
 reaches the same agent and shell tabs from a phone over your own private
 tailnet — read what an agent is doing and answer it from another room. That is
-remote control for **every agent CLI Eldrun runs** — Claude, Codex, Gemini,
+remote control for **every agent CLI Tabtivity runs** — Claude, Codex, Gemini,
 Qwen, Grok, Cursor, Copilot, OpenCode and the rest — whether or not its vendor
 ships a phone app for it, and without any vendor's relay in between. See
 [Every agent from your phone](#every-agent-from-your-phone-the-third-differentiator).
@@ -82,7 +85,7 @@ and Windows/macOS are CI-built with real-hardware checks still pending
 
 **Contents:**
 [At a glance](#at-a-glance) ·
-[Why Eldrun](#why-eldrun) ·
+[Why Tabtivity](#why-tabtivity) ·
 [Download](#download) ·
 [Features](#features)
 ([project desktop](#project-desktop-the-first-differentiator) ·
@@ -105,14 +108,14 @@ See [STATUS.md](STATUS.md) for what has been live-verified and
 
 ## At a glance
 
-![Eldrun functionality map](screenshots/eldrun-functionality.svg)
+![Tabtivity functionality map](screenshots/tabtivity-functionality.svg)
 
 **①** pick a project — or a box, or the disposable trash project — and the
 desktop swaps to it. **②** inside, a tiling tab layout hosts agent terminals
 (27 built-in CLIs plus your own, with resume support depending on the CLI),
-shells, native file viewers, and the app tabs Eldrun renders itself instead of
+shells, native file viewers, and the app tabs Tabtivity renders itself instead of
 sending you to another window — every one of those agent tabs is also readable
-and answerable from a phone through Eldrun Mobile, whichever vendor it belongs
+and answerable from a phone through Tabtivity Mobile, whichever vendor it belongs
 to. Alongside them sit the side panel (Files · Git
 · Search · Apps · Agents) and the header, where mail, the calendar, the to-do board, the
 machine hub, and the VPN live. **③** the
@@ -124,19 +127,19 @@ container, or a VM without changing how any of the above works.
 
 And here's how that looks in the running app:
 
-![Current Eldrun screen](screenshots/eldrun-current.png)
+![Current Tabtivity screen](screenshots/eldrun-current.png)
 
-## Why Eldrun
+## Why Tabtivity
 
 Are you also annoyed by switching between agent tabs or apps, keeping track of
-which tab or agent works on which project? This is why Eldrun exists. When you
+which tab or agent works on which project? This is why Tabtivity exists. When you
 juggle several projects at once, every project's windows — browsers, terminals,
 file managers, docs, agent sessions — pile onto one desktop. Switching from
 project A to project B means digging through dozens of windows for the handful
 that belong where you're going, remembering which Claude or Codex tab was
 started for which repo, and losing the rest in the noise.
 
-Eldrun flips the model. **Select a project, and the desktop becomes that
+Tabtivity flips the model. **Select a project, and the desktop becomes that
 project:** its windows come forward, the previous project's windows park out of
 the way, the default-app mappings re-route, and time tracking switches. One
 project visible at a time, everything else cleanly out of sight. And if you
@@ -144,7 +147,7 @@ need to work on two projects at the same time, simply *box* them — the box
 behaves like one project with a shared desktop, file tree, and agent tabs —
 and unbox afterwards, leaving both projects exactly as they were.
 
-### How Eldrun compares
+### How Tabtivity compares
 
 Agent orchestrators (Vibe Kanban, Conductor, Claude Squad, the Claude Code
 desktop app) manage agent *processes inside a repo* — task delegation, git
@@ -166,18 +169,18 @@ step — stays a terminal exercise you repeat per project.
 The vendor phone apps and remote-control features (Claude Code's remote
 control, the Codex app, the Gemini app) each reach *their own* agent, and only
 through *their own* relay. An agent from a vendor without one — or the one you
-started in a plain terminal — cannot be reached at all. Eldrun Mobile reaches
+started in a plain terminal — cannot be reached at all. Tabtivity Mobile reaches
 every agent tab in every project from the phone over your own tailnet, because
 it attaches to the tab's session on your desktop rather than to a vendor
 service: one phone app for all agents, independent of whether one exists for
 that agent.
 
-Eldrun occupies the gap none of them fill: project ownership of *windows and
+Tabtivity occupies the gap none of them fill: project ownership of *windows and
 desktop context*, project ownership of *the machines the work runs on*, and one
 phone-side remote for every agent, with
 agent terminals built in throughout. It is complementary to the
-task orchestrators rather than a replacement — you can run one inside an Eldrun
-project terminal for parallel task delegation while Eldrun handles switching the
+task orchestrators rather than a replacement — you can run one inside a Tabtivity
+project terminal for parallel task delegation while Tabtivity handles switching the
 desktop between projects.
 
 ## Download
@@ -191,11 +194,11 @@ on macOS. The CI release workflow publishes each platform whose packaging job
 succeeds. To build from source instead, follow the requirements below.
 
 The macOS `.dmg` is neither signed nor notarized, so Gatekeeper refuses to open
-the app as downloaded ("damaged" or "cannot be opened"). After dragging Eldrun
+the app as downloaded ("damaged" or "cannot be opened"). After dragging Tabtivity
 into Applications, clear the download quarantine once:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/Eldrun.app
+xattr -dr com.apple.quarantine /Applications/Tabtivity.app
 ```
 
 The Linux packages are built on Ubuntu 24.04, so they need glibc 2.39 or newer
@@ -204,7 +207,7 @@ with `GLIBC_2.39 not found` — build from source there instead.
 
 Once it is installed, **Settings → Updates** checks the same releases page from
 inside the app and can download and install a newer build for you. It only
-looks when you open that screen — Eldrun never checks in the background — and
+looks when you open that screen — Tabtivity never checks in the background — and
 restarting is always yours to do. A copy installed from the `.deb` (or by any
 other package manager) downloads the new build but leaves installing it to you.
 
@@ -218,7 +221,7 @@ feature, and every one of them is optional:
   `openvpn` locally for VPN-gated hosts
 - Containerized projects: Docker. VM projects: QEMU/KVM
 - Print manager: CUPS on Linux/macOS — nothing to install on Windows
-- Eldrun Mobile: Tailscale on this machine and on the phone
+- Tabtivity Mobile: Tailscale on this machine and on the phone
 - Local model features — Vibe tabs, autocomplete, the mail
   assistant, the root console's agent tools (all off by default): Ollama
 
@@ -229,19 +232,19 @@ feature, and every one of them is optional:
 | **Linux — X11**           | Yes                | Two-desktop workspace parking model (EWMH/xcb). Primary development target.                  |
 | **Linux — KDE Wayland**   | Yes                | Per-project virtual desktop model via KWin DBus scripting. KDE 5 and KDE 6 supported.        |
 | **Linux — other Wayland** | Partial            | Null backend (no workspace switching, no sticky windows). Terminal and file management work. |
-| **Windows**               | Yes (alpha)        | Win32 `SW_HIDE`/`SW_SHOW` parking model (+ best-effort virtual-desktop pinning). Start-Menu app launch with `.lnk`/icon resolution, shell file associations, external-window tracking, OpenVPN, SSH/SFTP remote projects, Claude/Codex agent resume, project containers via Docker Desktop, project VMs via QEMU + WHPX, Eldrun Mobile (Run-key sidecar), in-app browser live pages (deny-all permission handler), DXGI GPU readouts, and a WebView2 renderer crash reporter. No agent fence (no unprivileged sandbox on Windows), no tmux session persistence, no ControlMaster link counters. CI-verified only. |
-| **macOS**                 | Yes (unverified)   | App-granular window parking via `NSRunningApplication` hide/unhide (no public per-window API), `.app` scanner, LaunchServices file defaults, Keychain, `caffeinate` presenter inhibitor, `sandbox-exec` agent fence, project containers (Docker Desktop), project VMs via QEMU + HVF (arm64 guests on Apple silicon), Eldrun Mobile (launchd agent), `nettop` SSH-link counters, IOKit GPU readouts. Compiles and tests on the CI macOS runner; not yet exercised on real hardware. |
+| **Windows**               | Yes (alpha)        | Win32 `SW_HIDE`/`SW_SHOW` parking model (+ best-effort virtual-desktop pinning). Start-Menu app launch with `.lnk`/icon resolution, shell file associations, external-window tracking, OpenVPN, SSH/SFTP remote projects, Claude/Codex agent resume, project containers via Docker Desktop, project VMs via QEMU + WHPX, Tabtivity Mobile (Run-key sidecar), in-app browser live pages (deny-all permission handler), DXGI GPU readouts, and a WebView2 renderer crash reporter. No agent fence (no unprivileged sandbox on Windows), no tmux session persistence, no ControlMaster link counters. CI-verified only. |
+| **macOS**                 | Yes (unverified)   | App-granular window parking via `NSRunningApplication` hide/unhide (no public per-window API), `.app` scanner, LaunchServices file defaults, Keychain, `caffeinate` presenter inhibitor, `sandbox-exec` agent fence, project containers (Docker Desktop), project VMs via QEMU + HVF (arm64 guests on Apple silicon), Tabtivity Mobile (launchd agent), `nettop` SSH-link counters, IOKit GPU readouts. Compiles and tests on the CI macOS runner; not yet exercised on real hardware. |
 
 ## Features
 
-Inside a project, Eldrun is an operational cockpit — a root control terminal for
+Inside a project, Tabtivity is an operational cockpit — a root control terminal for
 the workspace, agent terminals scoped to the project (Claude, Codex, Gemini, or
 a local Ollama model), a tiling tab layout, a hover-revealed file panel with
 built-in viewers, and cross-project app controls that follow you between
 projects. Around that core it has grown the surfaces you'd otherwise leave the
 window for: mail, a calendar with a to-do board, a reader-mode browser, a print
 manager, an Agent Skills library, TeX workspaces, a slide presenter, and a
-private daily recap — each of them a list and a handful of verbs Eldrun can
+private daily recap — each of them a list and a handful of verbs Tabtivity can
 render itself.
 
 ### Project desktop (the first differentiator)
@@ -255,12 +258,12 @@ render itself.
   shown in the side panel; macOS tracking and parking operate per application.
 - **Default app mapping**: file extensions use per-project overrides, global
   defaults, system MIME defaults, or a manual "Open With" picker.
-- **Time tracking**: Eldrun records active project sessions and shows today's
+- **Time tracking**: Tabtivity records active project sessions and shows today's
   elapsed time on project pills.
 
 ### Remote machines & HPC clusters (the second differentiator)
 
-Eldrun treats remote hosts as first-class: it **manages a fleet of machines** and
+Tabtivity treats remote hosts as first-class: it **manages a fleet of machines** and
 **runs your projects on them**, from a single SSH box to a full HPC cluster —
 with the same file tree, viewers, Git panel, and agent tabs you use locally, and
 without an sshfs/FUSE mount anywhere.
@@ -297,7 +300,7 @@ without an sshfs/FUSE mount anywhere.
   **shared filesystem** (e.g. an HPC compute node on a shared home) is used in
   place, with nothing copied and no Git run on it.
 - **Persistent sessions**: a long run lives in a tmux session per shell tab, so
-  a job survives an SSH drop, a laptop sleep, a VPN drop, or Eldrun quitting, and
+  a job survives an SSH drop, a laptop sleep, a VPN drop, or Tabtivity quitting, and
   the tab reattaches on relaunch. A **Sessions view** lists every running session
   across all connected machines, with per-row attach/rename/kill.
 - **Remote system monitor**: a host's CPU, memory, and GPUs (AMD + NVIDIA,
@@ -309,7 +312,7 @@ without an sshfs/FUSE mount anywhere.
   commands. A guided **HPC pipeline wizard** walks a cluster newcomer through
   login → project → data upload → job → watch.
 - **HPC workspaces** *(same QA caveat)*: on clusters that hand out scratch space
-  on the parallel filesystem via `hpc-workspace`, Eldrun allocates, lists,
+  on the parallel filesystem via `hpc-workspace`, Tabtivity allocates, lists,
   extends, and releases workspaces from the app, and can put the project's remote
   root *in* one — so the data lands off the quota'd `$HOME` before the first byte
   is uploaded. Nothing is site-specific: the host is asked which filesystems and
@@ -317,7 +320,7 @@ without an sshfs/FUSE mount anywhere.
 
 ### Every agent from your phone (the third differentiator)
 
-**Eldrun Mobile** is an **opt-in** phone/tablet companion that reaches this
+**Tabtivity Mobile** is an **opt-in** phone/tablet companion that reaches this
 desktop's *agent and shell tabs* — read what an agent is doing and answer it
 from another room. It is a compact terminal-control product, not a mobile copy
 of the workspace, and it is the same product for every agent CLI: the vendor
@@ -335,7 +338,7 @@ does not have to ship a phone app for the agent you are running.
   one question a phone is picked up to ask. Tapping a row lands in that
   session.
 - A loopback-only sidecar on the desktop, published to your own **Tailscale
-  tailnet** with `tailscale serve`; there is no public endpoint and no Eldrun
+  tailnet** with `tailscale serve`; there is no public endpoint and no Tabtivity
   server in the middle. Devices are paired and authenticated explicitly, and the
   desktop mediates every tab creation.
 - Raw project ids, paths, commands, and tmux targets never cross the browser
@@ -344,21 +347,21 @@ does not have to ship a phone app for the agent you are running.
 - **Reader** presents a chat view of a session. For Claude and Codex it reads
   stored prompts and answers, with explicit truncation limits; when that record
   is unavailable it falls back to the terminal screen. Model selection,
-  scheduled prompts, closing tabs, and the `eldrun-send` file outbox are also
+  scheduled prompts, closing tabs, and the `tabtivity-send` file outbox are also
   available from the phone.
 - **Files from the agent to the phone**: a picture the agent wants you to see —
-  a screenshot it took, a plot it rendered — it runs `eldrun-send <file>`, and
+  a screenshot it took, a plot it rendered — it runs `tabtivity-send <file>`, and
   the phone shows it. Local and container tabs can send any file up to 24 MiB:
   images open full screen, text opens a preview, PDFs open a browser tab, and
   other files download. Every tile offers Save and Delete, and the project
   screen reaches the whole gallery from its header as well as from the shelf
   under its tab cards. Share is available where the phone browser supports
-  file sharing; stdin works with `command | eldrun-send -n tests.log`.
+  file sharing; stdin works with `command | tabtivity-send -n tests.log`.
 - **Project files, read-only** (opt-in, off by default): a left→right swipe on
   the phone's project screen, or from the left third of a tab's Focus view,
   opens a drawer that walks the project's folders
   and opens files in the same viewer. Folders and files travel as sealed
-  tokens, never paths; `.git`, `.eldrun`, `.env…` and symlinks are left out,
+  tokens, never paths; `.git`, `.tabtivity`, `.env…` and symlinks are left out,
   and nothing can be changed.
 - The phone gets a touch terminal (readable-screen mode, touch scrolling, a
   composer, voice input), a to-do board, Alerts with Done actions, opt-in mail
@@ -381,7 +384,7 @@ remain; some Mobile UI has been live-tested.*
   Agents group is searchable, its quick picks are configurable, and you can
   register your own agent CLI through "＋ Add agent…". Tab layout is persisted
   per project. Settings shows installed CLI versions against the versions
-  Eldrun was checked with.
+  Tabtivity was checked with.
 - **Agents view and prompt chart** *(implemented, live QA pending)*: inspect
   each tab's activity, latest prompt, and model from the side panel; open a
   project-scoped chart tab with a zoomable timeline of sent, queued, and
@@ -406,7 +409,7 @@ remain; some Mobile UI has been live-tested.*
   Dock it back with the ⤓ button (re-docks into the main layout; session-only, so
   it re-docks on restart too). Closing the popped-out window instead closes its
   tabs for good — they are not docked back and do not restore on next launch.
-- **Root control terminal**: opens in `~/eldrun/root/` with workspace-level
+- **Root control terminal**: opens in `~/tabtivity/root/` with workspace-level
   context files.
 - **Project terminals**: each active project gets a PTY tab scoped to its
   directory, with best-effort project-local XDG sandbox paths.
@@ -416,7 +419,7 @@ remain; some Mobile UI has been live-tested.*
 
 #### Agent CLIs, resume, and tools
 
-Eldrun launches agents in xterm.js PTY tabs. The table below describes the
+Tabtivity launches agents in xterm.js PTY tabs. The table below describes the
 current integration state.
 
 | Agent | Resume behavior | Live verification |
@@ -436,7 +439,7 @@ built-in or custom CLI. The agent fence and project runtime tier determine
 filesystem access; project-local XDG paths alone are not an isolation boundary.
 
 **Session resume.** Claude and Codex track each tab's own conversation across
-restarts. Eldrun installs session hooks keyed by `ELDRUN_TAB_UID`, so a
+restarts. Tabtivity installs session hooks keyed by `TABTIVITY_TAB_UID`, so a
 `/clear` can update the recorded live session. Codex also has hook-free binding,
 including its SQLite-backed session index; its hooks may need one-time `/hooks`
 trust. Qwen, OpenCode, Copilot, Cursor, Grok, Gemini, Antigravity, and Vibe have
@@ -445,15 +448,15 @@ in the same directory as precisely as Claude/Codex. Custom agents can supply
 resume arguments; agents without a supported resume path are not restored.
 
 **Permission and activity.** Set permission mode inside the agent CLI. On Claude
-resume, Eldrun reapplies the mode its hook recorded to preserve that choice.
+resume, Tabtivity reapplies the mode its hook recorded to preserve that choice.
 Claude/Codex turn hooks also drive working, decision-needed, and finished states;
 agents without a hook verdict use terminal-output heuristics.
 
-**Eldrun's tools (MCP).** Agents opened in the root console are the one kind
-that get Eldrun's own tools: calendar, to-do board, project sweeps, and the
+**Tabtivity's tools (MCP).** Agents opened in the root console are the one kind
+that get Tabtivity's own tools: calendar, to-do board, project sweeps, and the
 "open this overlay" verbs (see [Workspace apps](#workspace-apps)). Claude gets
-an inline `--mcp-config`, Codex a `-c mcp_servers.eldrun.*` override, and every
-other CLI the `ELDRUN_ROOT_MCP_URL`/`ELDRUN_ROOT_MCP_TOKEN` environment — on
+an inline `--mcp-config`, Codex a `-c mcp_servers.tabtivity.*` override, and every
+other CLI the `TABTIVITY_ROOT_MCP_URL`/`TABTIVITY_ROOT_MCP_TOKEN` environment — on
 the command line, never in the CLI's own config files. Reads are annotated
 read-only and writes destructive, so a CLI that asks before tools asks for the
 right ones; approval itself stays the CLI's own. Settings has the single
@@ -463,7 +466,7 @@ switch, on by default.
 the tab menu and then appears in the Agents group like the built-ins.
 
 Local Ollama models are available from the tab `+` menu when Ollama is
-installed and reachable. Eldrun can start the Ollama service, list installed
+installed and reachable. Tabtivity can start the Ollama service, list installed
 models, and create a `vibe` tab for a selected model. The per-model `VIBE_HOME`
 config pins `active_model`, registers the Ollama provider, and disables Vibe
 tool calls for local models so local tabs do not mutate global `~/.vibe`
@@ -487,7 +490,7 @@ with availability and model capability checks.
   pill menu's Boxes group, Ctrl-click multi-select → "Box these…", the box
   editor, or by dropping a pill on a box; a box only ever disappears through
   the editor's explicit, confirmed Dissolve. Opening a box lands in a per-box
-  folder under `~/eldrun/boxes/<name>/`, which carries managed
+  folder under `~/tabtivity/boxes/<name>/`, which carries managed
   `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks plus one symlink per member
   (Unix), so agent CLIs can traverse into every member's tree; hover the pill
   to list members and click one to jump to it. Box membership lives in a
@@ -496,7 +499,7 @@ with availability and model capability checks.
   covered by the agent fence and access derived from the box's member roots.
 - **Publish to GitHub / GitLab**: a local (or SSH-remote) git project can be
   published to a new GitHub or GitLab repository from the project pill menu.
-  Choose the provider and public/private; Eldrun runs `gh repo create …
+  Choose the provider and public/private; Tabtivity runs `gh repo create …
   --source=. --push` (GitHub) or `glab repo create … --remoteName origin`
   followed by `git push` (GitLab) via the system CLI (over `ssh` on the host
   where the bytes live for remote projects), then records the new push target
@@ -528,15 +531,15 @@ the project rather than a different way of working.
 Local agent tabs also have a default-on **agent fence**: bubblewrap on Linux
 and `sandbox-exec` on macOS, with writable access limited to allowed project
 roots and required agent state. An unavailable Linux fence blocks the launch;
-Windows reports that no fence is available. Eldrun controls the project's
+Windows reports that no fence is available. Tabtivity controls the project's
 container and the tab's location (local / primary host / worker). The agent's
-permission mode is selected in its own CLI; Eldrun has no Plan/Auto toggle.
+permission mode is selected in its own CLI; Tabtivity has no Plan/Auto toggle.
 
 ### Workspace apps
 
-Roles Eldrun used to hand off to an external app now have in-app surfaces, on
+Roles Tabtivity used to hand off to an external app now have in-app surfaces, on
 the same reasoning each time: what sits behind the button is a list and a
-handful of verbs, and Eldrun can render a list. Where a link still needs an
+handful of verbs, and Tabtivity can render a list. Where a link still needs an
 app — a `mailto:` or `webcal:` from a terminal or the file tree — the router
 opens the in-app surface when it is enabled and falls back to your configured
 external app when it is not.
@@ -570,7 +573,7 @@ follows debug mode, so they are all on in a development build.
 - **Browser**: a reader-mode tab (text and images, **no scripts**) behind the
   same sanitizer and SSRF guards as mail, with a security chip, a start page,
   and downloads. Settings → Browser can opt into live pages, which open in a
-  separate Eldrun webview window with an ephemeral profile and no Eldrun IPC
+  separate Tabtivity webview window with an ephemeral profile and no Tabtivity IPC
   privileges. Live pages run scripts; reader mode stays script-free. Opening
   the page in your external browser is also available.
 - **Print manager**: every printer this machine knows, its queue, and the verbs
@@ -587,7 +590,7 @@ follows debug mode, so they are all on in a development build.
   speaker notes, a timer, and a second audience display or window.
 - **Agent tools for the calendar and the board (MCP)**: an agent opened in the
   root console (`Ctrl+Shift+R`) — a cloud CLI, or a **local Ollama model**
-  behind a tool-capable CLI — gets Eldrun's own tools and can manage these
+  behind a tool-capable CLI — gets Tabtivity's own tools and can manage these
   surfaces for you: "add a calendar entry on Friday at 14:00, one hour",
   "move every event of that calendar into the other one", "put a card on the
   board for project X", "what did I finish this week?". The calendar tools list,
@@ -637,7 +640,7 @@ can override them from its header) plus a global autosave switch. The text/LaTeX
 (`Ctrl` +/−, `Ctrl`+0 to reset; scales the Markdown preview too), persisted
 per file type. Every viewer remembers where you left off — editor/PDF scroll
 position, PDF/image zoom, and image pan persist per tab, so reopening a file (or
-restarting Eldrun) restores your position instead of jumping to the top.
+restarting Tabtivity) restores your position instead of jumping to the top.
 
 - **File side panel**: place it on either side; its closed edge rail opens
   Files, Git, Apps, or Agents on hover or click. Browse, open, create, rename,
@@ -652,7 +655,7 @@ restarting Eldrun) restores your position instead of jumping to the top.
   additional views list tracked external windows.
 - **Downloads and project captures**: browse configured download source folders
   in the file panel and move/copy files into a project. Screenshots and saved
-  mail attachments use Eldrun-prefixed, ignored project folders; Eldrun does
+  mail attachments use Tabtivity-prefixed, ignored project folders; Tabtivity does
   not rewrite another browser's preferences or download directory.
 - **Local autocomplete (opt-in, private)**: in the editable text/LaTeX/markdown
   viewers, `Ctrl+Space` requests a single completion from a **local Ollama**
@@ -676,14 +679,14 @@ restarting Eldrun) restores your position instead of jumping to the top.
   pointer hover and disappears when the pointer leaves, keeping the center
   terminal unobstructed; the side panel can also be pinned permanently open.
 - **Appearance and responsiveness**: a Theme Customizer with saved presets,
-  Eldrun navigation and shortcut help, Fast mode, and Energy Saver. Hidden
+  Tabtivity navigation and shortcut help, Fast mode, and Energy Saver. Hidden
   viewers suspend background work and hidden terminals buffer output until
   shown. Settings groups less frequently changed controls under Advanced
   options.
 - **Network indicator**: probes connectivity and shows online/offline plus wired
   or wireless state.
 - **Keyboard shortcuts**: `F11` toggles fullscreen; `F9` toggles panels while
-  Eldrun is focused. A bare `Super` also toggles panels where the desktop does
+  Tabtivity is focused. A bare `Super` also toggles panels where the desktop does
   not claim that key (GNOME, KDE, and Windows do).
 - **Guided tour and lessons**: a first-run tour plus ~30 step-by-step lessons
   that anchor onto the real UI — adding a project, arranging tabs, the YAML and
@@ -730,22 +733,22 @@ changes take effect only when you deliberately restart the app. Run
 with the checkout. `npm run tauri:dev:watch` opts into automatic backend
 rebuilds and window relaunches.
 
-On Linux, `npm run package:dev` freezes the working tree for the **Eldrun (dev)**
+On Linux, `npm run package:dev` freezes the working tree for the **Tabtivity (dev)**
 desktop entry. With this clone's hooks enabled, commits also queue a background
 freeze of **the committed snapshot**; `scripts/package-dev-auto.sh --status`
 reports the queue or last failure. A running window keeps its current binary
 until you relaunch it. For a separate development state directory, launch
-`./start-eldrun-dev-sandbox.sh` yourself.
+`./start-tabtivity-dev-sandbox.sh` yourself.
 
 On Linux you can also use the convenience scripts in `docs/`:
-`docs/start-eldrun-tauri.sh` (packaged build) and
-`docs/start-eldrun-tauri-hotreload.sh` (hot reload). The desktop launchers
-`docs/Eldrun.desktop` and `docs/EldrunHotReload.desktop` carry a
+`docs/start-tabtivity-tauri.sh` (packaged build) and
+`docs/start-tabtivity-tauri-hotreload.sh` (hot reload). The desktop launchers
+`docs/Tabtivity.desktop` and `docs/TabtivityHotReload.desktop` carry a
 `/path/to/projecteldrun/...` placeholder — point them at your checkout, then
 install them:
 
 ```bash
-cp docs/Eldrun*.desktop ~/.local/share/applications/
+cp docs/Tabtivity*.desktop ~/.local/share/applications/
 update-desktop-database ~/.local/share/applications/
 ```
 
@@ -766,14 +769,14 @@ update-desktop-database ~/.local/share/applications/
 - **Packaging**: Linux `.deb` and AppImage, Windows NSIS `.exe`, and an unsigned
   universal macOS `.dmg`. CI builds packages on pushes and publishes successful
   platform artifacts on `v*` tags.
-- **Crash logging**: Rust panic hook appends to `~/.local/share/eldrun/crash.log`.
+- **Crash logging**: Rust panic hook appends to `~/.local/share/tabtivity/crash.log`.
 
 ## Project Storage
 
-Managed projects live under `~/eldrun/projects/<sanitized-name>/`.
+Managed projects live under `~/tabtivity/projects/<sanitized-name>/`.
 Imported projects can also be registered in place.
 
-Global Eldrun state lives in `~/.local/share/eldrun/`:
+Global Tabtivity state lives in `~/.local/share/tabtivity/`:
 
 - `projects.json`: lightweight index with project id, name, status, ordering,
   and path to each project's local metadata file.
@@ -845,7 +848,7 @@ schemas, behavior notes, and known limitations.
   the deck presenter, VM boots, SLURM/HPC, and the newest prompt-chart workflows
   still have open acceptance checks. Features awaiting verification carry an
   *untested* pill; it is removed per item after user confirmation.
-- Eldrun Mobile runs its host sidecar on all three desktops (systemd user
+- Tabtivity Mobile runs its host sidecar on all three desktops (systemd user
   unit, launchd agent, Windows Run key), requires Tailscale on both ends, and
   its real-phone security and acceptance QA is still open.
 - Containerized projects are local-only and need Docker (Docker Desktop on
@@ -863,16 +866,16 @@ schemas, behavior notes, and known limitations.
 
 Each platform parks windows in its own idiom today (desktops, `SW_HIDE`, app
 hide/unhide), and the design is cross-platform by intent. The long-term shape
-is a stable Eldrun core behind pluggable compositor/window backends (X11,
+is a stable Tabtivity core behind pluggable compositor/window backends (X11,
 KDE/KWin, Hyprland, GNOME Shell, i3, Sway, and other Wayland environments; the
-Win32 backend on Windows; AppKit on macOS), and eventually an Eldrun-native
+Win32 backend on Windows; AppKit on macOS), and eventually a Tabtivity-native
 compositor for full control of projects, windows, and layout.
 
 See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
 
 ## License
 
-Eldrun is dual-licensed under either of
+Tabtivity is dual-licensed under either of
 
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
   <http://www.apache.org/licenses/LICENSE-2.0>)

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 
 /**
- * "This CLI is newer than the release Eldrun was checked against", as a card
+ * "This CLI is newer than the release Tabtivity was checked against", as a card
  * on the agent's own tab (`TerminalVersionCard`) — the launch-time half of the
  * drift line Manage Agents already shows (`services::agent_versions`).
  *
@@ -34,7 +34,7 @@ interface VersionReport {
 }
 
 /** What one tab's card says: the installed release and the newest release
- *  Eldrun was verified with that it has moved past. */
+ *  Tabtivity was verified with that it has moved past. */
 export interface NewerAgentVersion {
   agent: string;
   label: string;

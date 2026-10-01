@@ -12,7 +12,7 @@
 //! it must never run in CI. Point it at a scratch project.
 //!
 //! ```text
-//! ELDRUN_PROJECT=<project-id> cargo run --example lockstep_drv -- <script>
+//! TABTIVITY_PROJECT=<project-id> cargo run --example lockstep_drv -- <script>
 //! ```
 //!
 //! Script: one command per line, `#` comments, blank lines ignored.

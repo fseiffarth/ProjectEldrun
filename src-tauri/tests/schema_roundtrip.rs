@@ -275,12 +275,12 @@ fn project_python_rollback_shape() {
     assert!(back["tab_layout"].is_array(), "tab_layout must be array");
 }
 
-// ── .eldrun/sessions/terminals.json ──────────────────────────────────────
+// ── .tabtivity/sessions/terminals.json ──────────────────────────────────────
 
 #[test]
 fn app_terminal_session_roundtrip() {
-    let path = fixture(concat!(app_lib::app_slug!(), "_terminal_session.json"));
-    let raw = std::fs::read_to_string(&path).expect(concat!("read ", app_lib::app_slug!(), "_terminal_session.json"));
+    let path = fixture(concat!(app_lib::legacy_slug!(), "_terminal_session.json"));
+    let raw = std::fs::read_to_string(&path).expect(concat!("read ", app_lib::legacy_slug!(), "_terminal_session.json"));
     let session: TerminalSession = roundtrip(&raw);
 
     assert_eq!(session.tab_layout.len(), 2);
@@ -300,12 +300,12 @@ fn app_terminal_session_roundtrip() {
     assert_unknown_preserved(&session.extra);
 }
 
-// ── .eldrun/sessions/windows.json ────────────────────────────────────────
+// ── .tabtivity/sessions/windows.json ────────────────────────────────────────
 
 #[test]
 fn app_window_session_roundtrip() {
-    let path = fixture(concat!(app_lib::app_slug!(), "_window_session.json"));
-    let raw = std::fs::read_to_string(&path).expect(concat!("read ", app_lib::app_slug!(), "_window_session.json"));
+    let path = fixture(concat!(app_lib::legacy_slug!(), "_window_session.json"));
+    let raw = std::fs::read_to_string(&path).expect(concat!("read ", app_lib::legacy_slug!(), "_window_session.json"));
     let session: WindowSession = roundtrip(&raw);
 
     assert_eq!(session.project_window_ids.len(), 2);
@@ -315,12 +315,12 @@ fn app_window_session_roundtrip() {
     assert_unknown_preserved(&session.extra);
 }
 
-// ── .eldrun/sessions/filetabs.json ───────────────────────────────────────
+// ── .tabtivity/sessions/filetabs.json ───────────────────────────────────────
 
 #[test]
 fn app_filetab_session_roundtrip() {
-    let path = fixture(concat!(app_lib::app_slug!(), "_filetab_session.json"));
-    let raw = std::fs::read_to_string(&path).expect(concat!("read ", app_lib::app_slug!(), "_filetab_session.json"));
+    let path = fixture(concat!(app_lib::legacy_slug!(), "_filetab_session.json"));
+    let raw = std::fs::read_to_string(&path).expect(concat!("read ", app_lib::legacy_slug!(), "_filetab_session.json"));
     let session: FileTabSession = roundtrip(&raw);
 
     assert_eq!(session.file_tabs.len(), 2);
@@ -339,12 +339,12 @@ fn app_filetab_session_optional_side_panel_folder() {
     assert_unknown_preserved(&session.extra);
 }
 
-// ── .eldrun/sessions/layout.json ─────────────────────────────────────────
+// ── .tabtivity/sessions/layout.json ─────────────────────────────────────────
 
 #[test]
 fn app_layout_session_roundtrip() {
-    let path = fixture(concat!(app_lib::app_slug!(), "_layout_session.json"));
-    let raw = std::fs::read_to_string(&path).expect(concat!("read ", app_lib::app_slug!(), "_layout_session.json"));
+    let path = fixture(concat!(app_lib::legacy_slug!(), "_layout_session.json"));
+    let raw = std::fs::read_to_string(&path).expect(concat!("read ", app_lib::legacy_slug!(), "_layout_session.json"));
     let session: LayoutSession = roundtrip(&raw);
 
     let meta = session.active_layout_metadata.expect("metadata present");
@@ -360,7 +360,7 @@ fn app_layout_session_empty_metadata() {
     assert_unknown_preserved(&session.extra);
 }
 
-// ── .eldrun/state.json ───────────────────────────────────────────────────
+// ── .tabtivity/state.json ───────────────────────────────────────────────────
 
 #[test]
 fn app_state_roundtrip() {

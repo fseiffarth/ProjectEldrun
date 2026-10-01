@@ -252,7 +252,7 @@ function CenterPanelImpl() {
         ) {
           useTabsStore.getState().addTab(
             { label: "Projects", cmd: BLOB_TAB_CMD, cwd: "", kind: "projects3d" },
-            // Eldrun opened this, not the user — it must not show up in the usage
+            // Tabtivity opened this, not the user — it must not show up in the usage
             // recap as a tab they opened.
             { seeded: true },
           );
@@ -1301,7 +1301,7 @@ function CenterPanelImpl() {
           // Persistent sessions (TODO #85): the stable, persisted session name to
           // wrap a shell/script tab in a tmux session, so a long run survives — for a
           // REMOTE tab an SSH drop / relaunch (default ON per project, opt out via
-          // the pill toggle), for a LOCAL tab an Eldrun crash (default ON on Unix via
+          // the pill toggle), for a LOCAL tab a Tabtivity crash (default ON on Unix via
           // `persist_local_sessions`). Remote shell/script AND remote agent tabs
           // (`shouldPersistTab`; the agent's process reattaches, composing with its
           // own `--resume`); local persistence stays shell-only

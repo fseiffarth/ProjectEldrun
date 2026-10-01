@@ -108,7 +108,7 @@ describe(`${BRAND.display} Mobile composer sheets`, () => {
     await settle(400);
     expect(FakeWebSocket.keys.join("")).toContain("/model");
     // The sheet is up before the picker is: it says so rather than listing
-    // models Eldrun made up.
+    // models Tabtivity made up.
     expect(screen.getByText("Waiting for the session's model picker…")).toBeTruthy();
 
     await paint(PICKER);

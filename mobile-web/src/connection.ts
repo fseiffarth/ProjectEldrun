@@ -3,7 +3,7 @@ import type { TranslationKey } from "../../src/lib/i18n";
 import { BRAND } from "../../src/lib/brand";
 
 /**
- * Why Eldrun Mobile could not reach the workspace, at the granularity the
+ * Why Tabtivity Mobile could not reach the workspace, at the granularity the
  * *reader* can act on.
  *
  * The screen behind this used to say "Host unavailable" for every one of these

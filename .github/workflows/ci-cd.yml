@@ -551,6 +551,14 @@ jobs:
               printf -- '- macOS: unavailable (package job: `%s`)\n' "$MACOS_RESULT"
             fi
 
+            # Until the cleanup release (the one that drops the old-name
+            # lookups): what an upgrade across the rename does and asks for.
+            printf '\nTabtivity was called Eldrun before. Upgrading from an Eldrun build:\n'
+            printf -- '- your state is moved to the new name on the first start (projects stay where they are); '
+            printf 'close the old window before installing, and update all machines that sync with each other together\n'
+            printf -- '- agents may ask once more for permission to use the app'"'"'s tools, and Codex to trust its session hook\n'
+            printf -- '- `eldrun-send` keeps working for one release as an alias of `tabtivity-send`\n'
+            printf -- '- macOS: delete the old `Eldrun.app` yourself; a pinned launcher of the old entry has to be pinned again\n'
             printf '\nThis is an early alpha; expect rough edges.\n'
           } > release-body.md
 

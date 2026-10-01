@@ -3,7 +3,7 @@
 #
 # The signal handler in src-tauri/src/lib.rs writes a glibc backtrace as
 # `module(+offset) [abs]` lines — no symbols, because resolving them is not
-# async-signal-safe. This turns each Eldrun frame into `function at file:line`
+# async-signal-safe. This turns each Tabtivity frame into `function at file:line`
 # with addr2line against the executable named on the crash's `exe=` line (the
 # offsets are only valid for that exact binary — a re-frozen dev build shifts
 # them), and each system-library frame into `function` via its exported symbols.
@@ -21,10 +21,10 @@
 # for a crash in none of them; 2026-09-17). The kernel appends `(deleted)` to
 # `/proc/self/exe` once the file has been replaced under the running process,
 # and a binary whose mtime is newer than the crash was installed after it. On
-# either, Eldrun frames are left unresolved unless `--force`; system-library
+# either, Tabtivity frames are left unresolved unless `--force`; system-library
 # frames resolve regardless, since those come from packages, not this build.
 # So each installed dev build is also kept under
-# `<state dir>/dev-builds/eldrun-<commit>` (scripts/retain-dev-build.sh, from
+# `<state dir>/dev-builds/tabtivity-<commit>` (scripts/retain-dev-build.sh, from
 # package-dev.sh and the launcher), and the crash header records
 # `commit=<short sha>`: when the recorded path is stale, the retained copy for
 # that commit is used instead. Rebuilding the commit is NOT a substitute — a
@@ -123,7 +123,7 @@ printf '%s\n' "$block" | grep -E '^[^ ].*\(\+0x[0-9a-f]+\)' | while IFS= read -r
   if [ -z "$exe" ] && [ "$module" = "$exe_recorded" ]; then
     resolved="?? (not resolved: the binary on disk is not this build)"
   elif [ "$module" = "$exe_recorded" ]; then
-    # Eldrun's own frames: against the recorded file, or the retained copy.
+    # Tabtivity's own frames: against the recorded file, or the retained copy.
     resolved=$(addr2line -e "$exe" -f -C -i -p "$offset" 2>/dev/null | head -3 | paste -sd '|' -)
     [ -n "$resolved" ] || resolved="?? (no symbols in $exe)"
   elif [ -r "$module" ]; then

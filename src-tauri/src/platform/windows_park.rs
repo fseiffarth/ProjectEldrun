@@ -16,14 +16,14 @@
 //!   - `is_protected_process_name` — the Windows analog of x11.rs
 //!     `is_protected_class` (there is no WM_CLASS on Windows, so protection keys
 //!     on the owning process executable basename; owning-process *identity* is
-//!     handled in the FFI layer via Eldrun's own pid).
+//!     handled in the FFI layer via Tabtivity's own pid).
 
 use std::collections::HashSet;
 
 /// Executable basenames whose top-level windows must NEVER be parked: the
-/// desktop shell and Eldrun-named helpers. Mirrors x11.rs `PROTECTED_CLASSES`.
-/// Eldrun's own windows are additionally shielded by owning-process identity in
-/// the FFI layer, so `eldrun` here only guards same-named helper processes.
+/// desktop shell and Tabtivity-named helpers. Mirrors x11.rs `PROTECTED_CLASSES`.
+/// Tabtivity's own windows are additionally shielded by owning-process identity in
+/// the FFI layer, so `tabtivity` here only guards same-named helper processes.
 pub const PROTECTED_PROCESSES: &[&str] = &[
     crate::brand::BIN_NAME,
     // An older build still running under the app's old name (the same
@@ -43,8 +43,8 @@ pub const PROTECTED_PROCESSES: &[&str] = &[
 /// Lowercases, drops a trailing `.exe`, and matches whole segments (split on the
 /// usual name separators) against `PROTECTED_PROCESSES`. Matching whole segments
 /// rather than raw substrings keeps a process merely *containing* a protected
-/// token (e.g. `eldrunner.exe`) parkable — directly mirroring the X11 segment
-/// logic and its `kwinter`/`eldrunner` regression tests.
+/// token (e.g. `tabtivityner.exe`) parkable — directly mirroring the X11 segment
+/// logic and its `kwinter`/`tabtivityner` regression tests.
 pub fn is_protected_process_name(exe_basename: &str) -> bool {
     let lowered = exe_basename.to_lowercase();
     let stem = lowered.strip_suffix(".exe").unwrap_or(&lowered);
@@ -56,14 +56,14 @@ pub fn is_protected_process_name(exe_basename: &str) -> bool {
 /// of currently-hidden ("parked") window ids. Pure over its own state —
 /// unit-testable without Win32. Mirrors x11.rs `ParkableState`, with the added
 /// `parked` set as the SW_HIDE analog of X11's PARKED_DESKTOP membership: it
-/// records exactly which HWNDs Eldrun hid so cleanup restores precisely those.
+/// records exactly which HWNDs Tabtivity hid so cleanup restores precisely those.
 #[derive(Default)]
 pub struct WindowsParkState {
     override_ids: HashSet<u64>,
-    /// The main Eldrun window's HWND id, once known. `add_parkable` refuses to
+    /// The main Tabtivity window's HWND id, once known. `add_parkable` refuses to
     /// add this id, keeping "the main window is never parked" structural.
     main_window_id: Option<u64>,
-    /// Window ids currently `SW_HIDE`-parked by Eldrun.
+    /// Window ids currently `SW_HIDE`-parked by Tabtivity.
     parked: HashSet<u64>,
 }
 
@@ -90,7 +90,7 @@ impl WindowsParkState {
         self.override_ids.contains(&id)
     }
 
-    /// Record the MAIN Eldrun window's id so `add_parkable` can structurally
+    /// Record the MAIN Tabtivity window's id so `add_parkable` can structurally
     /// refuse to ever add it to the override.
     pub fn set_main(&mut self, id: u64) {
         self.main_window_id = Some(id);
@@ -107,7 +107,7 @@ impl WindowsParkState {
     }
 
     /// Take the whole parked set, clearing it. Used by `cleanup` to restore
-    /// exactly the windows Eldrun hid (the SW_HIDE analog of X11 moving
+    /// exactly the windows Tabtivity hid (the SW_HIDE analog of X11 moving
     /// PARKED_DESKTOP windows back to ACTIVE_DESKTOP).
     pub fn drain_parked(&mut self) -> Vec<u64> {
         self.parked.drain().collect()
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn app_process_is_always_protected() {
-        // The most critical invariant: Eldrun's own helper processes must NEVER
+        // The most critical invariant: Tabtivity's own helper processes must NEVER
         // be SW_HIDE-parked. (The main window is doubly protected via self_pid.)
         assert!(is_protected_process_name(concat!(crate::app_slug!(), ".exe")));
         assert!(is_protected_process_name(crate::app_slug!()));
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn protected_processes_constant_includes_app() {
-        // Regression guard: if someone removes "eldrun" from PROTECTED_PROCESSES
+        // Regression guard: if someone removes "tabtivity" from PROTECTED_PROCESSES
         // by accident, this test fails immediately.
         assert!(
             PROTECTED_PROCESSES.contains(&crate::app_slug!()),
@@ -166,8 +166,8 @@ mod tests {
     #[test]
     fn process_merely_containing_protected_token_is_parkable() {
         // Segment matching, not substring matching: an unrelated process whose
-        // name happens to contain "eldrun"/"explorer" must remain parkable — the
-        // direct analog of x11's `kwinter`/`eldrunner` test.
+        // name happens to contain "tabtivity"/"explorer" must remain parkable — the
+        // direct analog of x11's `kwinter`/`tabtivityner` test.
         assert!(!is_protected_process_name(concat!(crate::app_slug!(), "ner.exe")));
         assert!(!is_protected_process_name("explorerplus.exe"));
     }
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn find_new_window_protection_rejects_shell_accepts_ordinary() {
         // The FFI-free name half of `windows.rs::is_protected_owner`, which
-        // `find_new_window` uses to skip Eldrun-self/shell windows that appear
+        // `find_new_window` uses to skip Tabtivity-self/shell windows that appear
         // during the launch poll. A protected basename is rejected; an ordinary
         // app basename is accepted (and would thus be a candidate new window).
         assert!(is_protected_process_name("explorer.exe"));
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn overridden_id_is_parkable() {
         // A detached subwindow's id, opted in, must be parkable despite its
-        // owning process being Eldrun (protected) — that is the #42 parking link.
+        // owning process being Tabtivity (protected) — that is the #42 parking link.
         let mut state = WindowsParkState::default();
         assert!(state.add_parkable(42));
         assert!(state.is_parkable(42));

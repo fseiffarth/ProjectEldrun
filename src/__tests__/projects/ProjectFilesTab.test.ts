@@ -2,7 +2,7 @@
  * The "Files (Project)" tab kind — the side panel's file view hosted in a tab.
  * Two things must hold for it, and neither is visible from the pane itself:
  * the tab is recovered from its bare command on restore (a persisted layout
- * stores `cmd`, and a kind Eldrun can't recover would come back a shell), and
+ * stores `cmd`, and a kind Tabtivity can't recover would come back a shell), and
  * the folder it was opened on is part of what survives — the whole point of
  * "Open in a new tab" on a folder is that the tab IS that folder.
  */

@@ -111,6 +111,10 @@ APP_SHARE_DIR="$(app_share_dir)"
 # guards — which look for the current names — would not see it, and two
 # instances on one state corrupt it. Prints nothing when the name is unchanged
 # or no such build runs.
+#
+# Also a CURRENT build that was started from the old-named per-user folder:
+# the first launch after the rename moves that folder, and the process keeps
+# the old path on its command line for as long as it runs.
 app_legacy_pids() {
   [ "$APP_SLUG" != "$APP_LEGACY_SLUG" ] || return 0
   local root="$1" share="$HOME/.local/share/$APP_LEGACY_SLUG" path
@@ -120,6 +124,9 @@ app_legacy_pids() {
     "$share/$APP_LEGACY_SLUG-dev" \
     "$share/$APP_LEGACY_SLUG.AppImage" \
     "$share/$APP_LEGACY_SLUG" \
+    "$share/$APP_DEV_BIN_NAME" \
+    "$share/$APP_BIN_NAME.AppImage" \
+    "$share/$APP_BIN_NAME" \
     "/usr/bin/$APP_LEGACY_SLUG"; do
     pgrep -f "^$path( |\$)" || true
   done

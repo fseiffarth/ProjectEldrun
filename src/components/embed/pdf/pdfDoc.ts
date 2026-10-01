@@ -371,7 +371,7 @@ export async function rasterizeRedactedPage(
 // A remark is written into the file as the PDF's OWN `/Text` annotation — a sticky
 // note — which is the whole feature: what is saved here opens as a comment in
 // Acrobat, in Okular, in a browser's viewer, in whatever the reader's colleague uses.
-// Nothing is stored beside the document and nothing about the format is Eldrun's own.
+// Nothing is stored beside the document and nothing about the format is Tabtivity's own.
 
 /** The default note colour, as a PDF `/C` triple: the yellow every reader draws a
  *  comment in, so a remark saved with no colour of its own still looks like one. */

@@ -1,9 +1,9 @@
-//! **Eldrun's help MCP** — a read-only question-answering surface over the
+//! **Tabtivity's help MCP** — a read-only question-answering surface over the
 //! help corpus (`docs/help/*.md`), served to every local agent tab as the MCP
-//! server `eldrun-help` and to the window as `help_search` / `help_read` /
+//! server `tabtivity-help` and to the window as `help_search` / `help_read` /
 //! `help_topics`. Design: `docs/help_mcp_plan.md`, `docs/context/help_mcp.md`.
 //!
-//! The authority is deliberately the smallest one Eldrun hands out: the corpus
+//! The authority is deliberately the smallest one Tabtivity hands out: the corpus
 //! is compiled into the binary (`build.rs` → `HELP_CORPUS`), so no tool here
 //! reads a file, a store, a setting, a project or a path at call time. A
 //! [`Caller::Helper`] token (per spawn, like the schedule identity) reaches
@@ -48,7 +48,7 @@ pub const MAX_SECTION_BYTES: usize = 8 * 1024;
 pub const SNIPPET_CHARS: usize = 240;
 pub const MAX_QUERY_BYTES: usize = 256;
 pub const MAX_QUERY_TERMS: usize = 16;
-/// Topics `eldrun_help_topics` lists at most (the corpus is a few dozen).
+/// Topics `tabtivity_help_topics` lists at most (the corpus is a few dozen).
 pub const MAX_TOPICS: usize = 200;
 const TRUNCATED: &str = "\n\n[… truncated — read one section at a time with `section`]";
 

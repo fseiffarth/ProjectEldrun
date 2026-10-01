@@ -15,7 +15,7 @@
 //! ref/commit transfer + missing-ref creation; coordinated checkout that pauses file
 //! auto-sync and re-stamps its bases so checkout writes don't become false conflicts;
 //! and **detection + display** of a desynchronized state (diverged history / dirty
-//! peer). Full Use-local/Use-remote resolution with `refs/eldrun/backup/*` and messy
+//! peer). Full Use-local/Use-remote resolution with `refs/tabtivity/backup/*` and messy
 //! initial-pairing authority are deferred to Phase 2/3.
 //!
 //! **Hardening (#28p).** Byte-sync (`sync_auto`) and this module are two transports
@@ -400,7 +400,7 @@ fn is_empty_bundle_error(stderr: &str) -> bool {
 }
 
 /// The two refspecs that import a bundle's refs into the receiver's isolated
-/// `refs/eldrun/incoming/*` namespace — never touching real `refs/heads`/`refs/tags`.
+/// `refs/tabtivity/incoming/*` namespace — never touching real `refs/heads`/`refs/tags`.
 pub fn incoming_fetch_refspecs() -> [String; 2] {
     [
         format!("refs/heads/*:{}/heads/*", crate::brand::GIT_REF_INCOMING),
@@ -477,7 +477,7 @@ pub fn peer_ref_name(branch_short: &str) -> String {
     format!("{}/{branch_short}", crate::brand::GIT_REF_PEER)
 }
 
-/// What to do with a branch's `refs/eldrun/peer/*` ref after classifying it (#28p D8):
+/// What to do with a branch's `refs/tabtivity/peer/*` ref after classifying it (#28p D8):
 /// park the peer tip only while the branch is genuinely diverged and unresolved;
 /// otherwise clear a stale one so the ref never outlives the divergence it documents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -958,7 +958,7 @@ pub fn pairing_collisions(
 
 // ── Backup refs (#28p D6) ───────────────────────────────────────────────────
 
-/// One `refs/eldrun/backup/<ts>/<branch>` safety ref, as listed for the Backups UI.
+/// One `refs/tabtivity/backup/<ts>/<branch>` safety ref, as listed for the Backups UI.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupRef {
@@ -982,7 +982,7 @@ pub fn parse_backup_ref_name(refname: &str) -> Option<(u64, String)> {
 }
 
 /// Parse `for-each-ref --format='%(objectname)%09%(refname)%09%(contents:subject)'`
-/// over `refs/eldrun/backup`. Pure.
+/// over `refs/tabtivity/backup`. Pure.
 pub fn parse_backup_refs(peer: &str, stdout: &str) -> Vec<BackupRef> {
     let mut out: Vec<BackupRef> = stdout
         .lines()
@@ -1198,7 +1198,7 @@ fn probe_per_command(peer: &Peer) -> PeerSnapshot {
 /// the very fast-forward that would have delivered it properly.
 ///
 /// NUL-delimited so paths with spaces/quotes survive verbatim (no `core.quotePath`
-/// escaping). `.git` is never listed by `ls-files`; a gitignored `.eldrun` won't be
+/// escaping). `.git` is never listed by `ls-files`; a gitignored `.tabtivity` won't be
 /// either — both stay out of byte-sync, as elsewhere. Empty set on any failure, which
 /// degrades to today's (racy but working) behaviour rather than silently syncing nothing.
 pub fn tracked_paths(project_id: &str) -> HashSet<String> {
@@ -1270,7 +1270,7 @@ enum RefKind {
 /// When `force` is set (the Use-local/Use-remote resolution, #28n Phase 2), `source`
 /// is the user-chosen authority: a diverged branch or one where `dest` is *ahead* is
 /// reset to `source`'s sha after saving the overwritten tip to a timestamped
-/// `refs/eldrun/backup/*` safety ref (a checked-out loser branch is `reset --hard`,
+/// `refs/tabtivity/backup/*` safety ref (a checked-out loser branch is `reset --hard`,
 /// moving ref + working tree). Tags conflicting on sha are likewise force-moved with
 /// a backup. `force` never widens what history *transfers*, only how `dest` applies it.
 async fn transfer_and_apply(
@@ -1379,7 +1379,7 @@ async fn transfer_and_apply(
     }
 
     // 4. Apply safe updates per branch. One shared timestamp so every safety ref this
-    //    forced pass creates sorts under the same `refs/eldrun/backup/<ts>/` batch.
+    //    forced pass creates sorts under the same `refs/tabtivity/backup/<ts>/` batch.
     let head_branch = match &dest.head {
         Some(HeadRef::Branch { name, .. }) => Some(name.clone()),
         _ => None,
@@ -1859,7 +1859,7 @@ async fn stale_byte_sync_residue(
 /// the incoming fetch just deposited, wrote exactly this content at some point
 /// (#28p D10). `git cat-file -e` checks object *existence*, not reachability from any
 /// ref, so this is true for an object the bundle fetch just brought into
-/// `refs/eldrun/incoming/*` even before any ref points at it.
+/// `refs/tabtivity/incoming/*` even before any ref points at it.
 fn object_already_known(peer: &Peer, path: &str) -> bool {
     let Some(hash) = peer
         .run(&["hash-object", "--", path])
@@ -1965,7 +1965,7 @@ fn audit_local_head_move(project_id: &str, from_sha: &str, op: &str) {
 }
 
 /// Force-move `dest`'s `branch` from `dst_sha` to the authority's `src_sha` during a
-/// resolution, after saving the overwritten tip to a timestamped `refs/eldrun/backup/*`
+/// resolution, after saving the overwritten tip to a timestamped `refs/tabtivity/backup/*`
 /// safety ref so nothing is lost. When the branch is the dest's checked-out HEAD, a
 /// `reset --hard` moves the ref *and* the working tree; otherwise the ref is force-set
 /// with `update-ref`'s old-value guard. Best-effort (each step ignores its own error;
@@ -2012,7 +2012,7 @@ async fn move_bundle(
     }
 }
 
-/// Delete the `refs/eldrun/incoming/*` tracking refs on a peer after applying.
+/// Delete the `refs/tabtivity/incoming/*` tracking refs on a peer after applying.
 fn cleanup_incoming(peer: &Peer) {
     // `for-each-ref` then delete each; best-effort.
     if let Ok(out) = peer.run(&[
@@ -2073,7 +2073,7 @@ async fn init_pairing(
 
     // Defense-in-depth: init_pairing's contract is that `dest` is the *empty* side.
     // If a misprobe/race routed us here with a dest that actually already holds
-    // commits, back every existing branch tip up to `refs/eldrun/backup/*` BEFORE the
+    // commits, back every existing branch tip up to `refs/tabtivity/backup/*` BEFORE the
     // `reset --hard` below can move them — so an unexpected non-empty dest is always
     // recoverable rather than silently wiped. Truly-empty dests probe clean and skip.
     let pre = probe(&dest_peer);
@@ -2087,7 +2087,7 @@ async fn init_pairing(
 
     // The host root must exist before any remote git can run: every remote command is
     // `cd '<remote_path>' && git …`, so a missing directory fails ALL of them — including
-    // the `git init` below. Eldrun only `mkdir -p`s the root at create/extend time, which
+    // the `git init` below. Tabtivity only `mkdir -p`s the root at create/extend time, which
     // leaves a host whose directory is later removed (or whose creation was refused back
     // then — it is best-effort there) permanently unpairable. Idempotent, so re-pairing an
     // existing host costs one cheap round trip.
@@ -2319,7 +2319,7 @@ fn hash_objects(peer: &Peer, paths: &[String]) -> HashMap<String, String> {
 /// `init_pairing` was hardened against for a not-yet-a-repo dest (D3) — but
 /// `resolve`'s and `restore_backup`'s force-reset of an *existing* repo's checked-out
 /// branch had no equivalent guard. A path git never tracked is invisible to the
-/// `refs/eldrun/backup/*` safety net (that only saves refs), so without this check it
+/// `refs/tabtivity/backup/*` safety net (that only saves refs), so without this check it
 /// is destroyed with no way back. Conservative like `pairing_collisions`: an
 /// unprovable hash counts as a difference. Reuses `hash_objects`, so it costs no new
 /// primitive.
@@ -2836,7 +2836,7 @@ async fn checkout_lockstep_inner(
             ));
         }
         // #28q: a checkout deletes the tracked files the target commit doesn't carry.
-        // Audited only when Eldrun ran it — `already_checked_out` means the user ran
+        // Audited only when Tabtivity ran it — `already_checked_out` means the user ran
         // `git checkout` themselves in a terminal, where git already said so.
         if initiating_local {
             audit_local_head_move(project_id, &old_local_sha, &format!("checkout '{target}'"));
@@ -2929,7 +2929,7 @@ pub fn winner_is_local(authority: &str) -> bool {
 /// chosen `authority` (`"local"` or `"remote"`) becomes the source of truth: every
 /// diverged branch — and every branch where the *losing* side is ahead — is reset to
 /// the winner's commit, after the overwritten tip is saved to a timestamped
-/// `refs/eldrun/backup/*` safety ref so nothing is discarded irrecoverably. Conflicting
+/// `refs/tabtivity/backup/*` safety ref so nothing is discarded irrecoverably. Conflicting
 /// tags are force-moved the same way. File auto-sync is paused for the duration and its
 /// tracked-file bases are re-stamped afterward (a losing local branch is `reset --hard`,
 /// rewriting the mirror tree), then a normal reconcile recomputes the (now
@@ -3044,7 +3044,7 @@ const BACKUP_KEEP_N: usize = 20;
 /// …and keep anything younger than this regardless of the count.
 const BACKUP_MAX_AGE: u64 = 30 * 24 * 60 * 60;
 
-/// Every `refs/eldrun/backup/*` safety ref on one peer, newest first.
+/// Every `refs/tabtivity/backup/*` safety ref on one peer, newest first.
 fn backups_on(peer: &Peer, label: &str) -> Vec<BackupRef> {
     peer.run(&[
         "for-each-ref",
@@ -3085,7 +3085,7 @@ pub async fn restore_backup(
     if !connected(pool, project_id).await {
         return Err("Not connected to the remote host".to_string());
     }
-    let (_, branch) = parse_backup_ref_name(refname).ok_or(concat!("Not an ", crate::app_name!(), " backup ref"))?;
+    let (_, branch) = parse_backup_ref_name(refname).ok_or(concat!("Not a ", crate::app_name!(), " backup ref"))?;
     let peer = if peer_label == "remote" {
         Peer::Remote(spec.clone())
     } else {
@@ -3309,7 +3309,7 @@ pub async fn start(
     // probe every 12 s for as long as the project is open is exactly the standing
     // load a login node's rules ask you not to put there. Lockstep's manual
     // reconcile (and the local `.git` watcher's push) still work — what stops is
-    // Eldrun asking the cluster, unprompted, forever.
+    // Tabtivity asking the cluster, unprompted, forever.
     if crate::services::hpc_mode::is_hpc_spec(&target.spec) {
         return;
     }
@@ -3407,7 +3407,7 @@ async fn poll_loop(
 
     // The mirror's signature as this task last left it — what tells a watcher burst
     // caused by *our own* `.git` writes apart from one caused by the user. Every pass
-    // writes inside `.git` (the bundle file, `refs/eldrun/*`, the objects a fetch
+    // writes inside `.git` (the bundle file, `refs/tabtivity/*`, the objects a fetch
     // deposits, `index`/`ORIG_HEAD` from a merge), and each of those trips the very
     // watcher that queues the next pass. While green the D5 early-out absorbed that;
     // while red — diverged, blocked, a pairing refusal — nothing did, and the loop

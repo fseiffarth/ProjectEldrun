@@ -111,7 +111,7 @@ pub struct TranscriptEntry {
 }
 
 /// What a tab's stored session answers with. Always a value, never an error:
-/// an agent that keeps no transcript Eldrun reads comes back `available:
+/// an agent that keeps no transcript Tabtivity reads comes back `available:
 /// false` with the reason, and the phone shows the screen instead.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentTranscript {

@@ -83,7 +83,7 @@ export interface ScheduledPrompt {
 }
 export interface ScheduledPromptInput { enabled: boolean; message: string; rule: ScheduleRule }
 /** `desktop_available: false` on any of these lists means the host answered
- * off its files because no Eldrun window is open: the data is current but
+ * off its files because no Tabtivity window is open: the data is current but
  * read-only until the desktop is back (headless owner plan, H0). */
 export interface ScheduledPromptList { schedules: ScheduledPrompt[]; time_zone: string; next_runs: Record<string, string>; desktop_available?: boolean }
 /** A prompt collected for a project without a tab. Ids and timestamps are the
@@ -419,7 +419,7 @@ export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUE
 export const MAX_TAB_LABEL = 120;
 
 /** `PUT /api/v1/tabs/{id}` — rename one agent tab. The desktop owns the tab
- * layout, so this is a bridge call and needs desktop Eldrun to be open. */
+ * layout, so this is a bridge call and needs desktop Tabtivity to be open. */
 export function renameTab(tabId: string, label: string): Promise<{ tab?: TabRow; label?: string }> {
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "PUT", body: JSON.stringify({ label }) });
 }
@@ -429,7 +429,7 @@ export function renameTab(tabId: string, label: string): Promise<{ tab?: TabRow;
  * both surfaces resolve it to the same hex (see `tabColors.ts`). Its own route
  * rather than a field on the rename above, because the rename is agent-only
  * while a colour is for any tab the phone lists. A bridge call, so it needs
- * desktop Eldrun open. */
+ * desktop Tabtivity open. */
 export function setTabColor(tabId: string, color: string | null): Promise<{ tab?: TabRow; color?: string | null }> {
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/color`, { method: "PUT", body: JSON.stringify({ color }) });
 }
@@ -460,7 +460,7 @@ export function editHeldPrompt(tabId: string, heldId: string, message: string): 
 /** `POST /api/v1/tabs/{id}/undo-clear` — take back this agent tab's last
  * `/clear`: the desktop types the resume of the conversation it ended (the
  * session id never comes here). `409 nothing_to_undo` once the session has
- * moved on. A bridge call, so it needs desktop Eldrun open. */
+ * moved on. A bridge call, so it needs desktop Tabtivity open. */
 export function undoClear(tabId: string): Promise<{ undone: boolean }> {
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/undo-clear`, { method: "POST" });
 }
@@ -489,7 +489,7 @@ export type TabPlace = "before" | "after";
  * tabs are named by their opaque ids; the answer is the project's tab ids in
  * the order the desktop now holds them, which is what the list reconciles
  * against after having rearranged itself on the drop. A bridge call, so it
- * needs desktop Eldrun open. */
+ * needs desktop Tabtivity open. */
 export function reorderTab(tabId: string, anchorId: string, place: TabPlace): Promise<{ tabs?: string[] }> {
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/order`, {
     method: "PUT",
@@ -498,9 +498,9 @@ export function reorderTab(tabId: string, anchorId: string, place: TabPlace): Pr
 }
 
 /** `DELETE /api/v1/tabs/{id}` — close one tab, agent or shell. Closing is the
- * desktop's own ×: the tab leaves the Eldrun window, and the session behind it
+ * desktop's own ×: the tab leaves the Tabtivity window, and the session behind it
  * keeps running and stays reattachable from the desktop's Sessions view. Like
- * the rename above it is a bridge call, so it needs desktop Eldrun open. */
+ * the rename above it is a bridge call, so it needs desktop Tabtivity open. */
 export function closeTab(tabId: string): Promise<{ closed: boolean }> {
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "DELETE" });
 }
@@ -677,7 +677,7 @@ export async function getTranscript(tabId: string, version?: string, limit?: num
 }
 
 /** A file the phone dropped into the tab's project inbox. `reference` is
- * project-relative (`.eldrun/inbox/<file>`) — the one path shape that crosses
+ * project-relative (`.tabtivity/inbox/<file>`) — the one path shape that crosses
  * this boundary, because it carries no host component and is exactly what the
  * agent needs after an `@`. */
 export interface InboxAttachment { name: string; reference: string; size: number }
@@ -782,7 +782,7 @@ export async function attachDesktopImage(tabId: string, imageId: string): Promis
   return attachment;
 }
 
-/** One picture the agent left for the phone in the project's `.eldrun/outbox/`
+/** One picture the agent left for the phone in the project's `.tabtivity/outbox/`
  * (`outbox.rs`) — the mirror of the inbox. `name` is the leaf the desktop
  * validated and the only thing the phone hands back; `kind` is what the
  * bytes say, not the extension; `modified` is unix seconds. */
@@ -791,7 +791,7 @@ export interface OutboxFile {
   /** `name` without the `YYYYMMDD-HHMMSS-` stamps each send put in front —
    * what it was called when it was sent. Project files have none. */
   original?: string;
-  /** Sent by `eldrun-send` from the tab this listing was read through — the
+  /** Sent by `tabtivity-send` from the tab this listing was read through — the
    * one chat that shows it. Absent otherwise; the gallery lists every file. */
   from_tab?: boolean;
   /** What the file is fetched by when that is not its name: a project file's

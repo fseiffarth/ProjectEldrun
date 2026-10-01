@@ -1,12 +1,12 @@
-//! Eldrun-owned commands reachable from local, fenced and container tabs:
-//! `eldrun-send`, and one **agent shim** per registry CLI (`agent_shim`).
+//! Tabtivity-owned commands reachable from local, fenced and container tabs:
+//! `tabtivity-send`, and one **agent shim** per registry CLI (`agent_shim`).
 //!
 //! The shims sit at the front of every tab's PATH. In a shell tab (never
-//! fenced) a typed `claude` reaches the shim, which asks Eldrun's own binary
+//! fenced) a typed `claude` reaches the shim, which asks Tabtivity's own binary
 //! to build the tab's fence and execs into it — same scope home, same shared
 //! logins as an agent tab. Inside a fence the shim steps aside and execs the
 //! real CLI from the rest of PATH. Written at every startup, so they always
-//! name the running Eldrun.
+//! name the running Tabtivity.
 use crate::brand::{DISPLAY, UPPER};
 use std::{fs, io, path::{Path, PathBuf}};
 
@@ -60,7 +60,7 @@ fn install_in(dir: &Path, exe: Option<&Path>, clis: &[&str]) -> io::Result<()> {
 /// POSIX `sh`; no bypass flag.
 ///
 /// Only the *lookup* skips this directory; the CLI runs with PATH as it came,
-/// so `eldrun-send` (which lives here too) stays reachable from the agent and
+/// so `tabtivity-send` (which lives here too) stays reachable from the agent and
 /// every shell it opens. Trimming the exported PATH lost it in every fenced
 /// tab (2026-09-29).
 pub(crate) fn shim_script(cli: &str, exe: &Path, dir: &Path) -> String {
@@ -133,7 +133,7 @@ mod tests {
     }
 
     /// Inside a fence the shim runs the real CLI, which still sees this
-    /// directory on PATH — `eldrun-send` must stay reachable from the agent.
+    /// directory on PATH — `tabtivity-send` must stay reachable from the agent.
     #[cfg(unix)]
     #[test]
     fn a_fenced_shim_runs_the_real_cli_with_app_send_still_on_path() {

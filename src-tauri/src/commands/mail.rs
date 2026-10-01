@@ -38,9 +38,9 @@
 //!
 //! **One write into a project tree exists, and it is the exception that keeps
 //! the rule legible.** [`mail_attachment_save_to_project`] drops a single
-//! attachment into `<project>/eldrun-emails/`, creating it on demand. It still
+//! attachment into `<project>/tabtivity-emails/`, creating it on demand. It still
 //! names **no path**: the project is an opaque `project_id` the backend resolves
-//! to that project's own directory, the `eldrun-emails/` subfolder is fixed, and the
+//! to that project's own directory, the `tabtivity-emails/` subfolder is fixed, and the
 //! filename is sanitized exactly as the OS-dialog path pre-fills it — so the
 //! message's bytes can neither choose the folder nor traverse out of it. It is
 //! reached only from an explicit, per-file confirmation in the UI (which also
@@ -4458,11 +4458,11 @@ pub async fn mail_attachment_save(
     .map_err(|e| e.to_string())?
 }
 
-/// Save an attachment into a project's `eldrun-emails/` folder, creating that
+/// Save an attachment into a project's `tabtivity-emails/` folder, creating that
 /// folder if it does not exist yet, and return the full path written (for a
 /// toast).
 ///
-/// The folder is `eldrun-`prefixed so it can be ignored without ever swallowing
+/// The folder is `tabtivity-`prefixed so it can be ignored without ever swallowing
 /// a folder the project itself owns, and the write ensures that ignore line
 /// first: filing somebody's mail into a project tree is consent to keep it, not
 /// to push it to that project's remote.
@@ -4470,7 +4470,7 @@ pub async fn mail_attachment_save(
 /// The exception to rule 2, kept honest by naming **no path**: the project is an
 /// opaque `project_id` the backend resolves to that project's own `directory`
 /// (via [`crate::services::remote::project_directory`]), the destination is
-/// fixed at `<project>/eldrun-emails/`, and the filename is sanitized as the
+/// fixed at `<project>/tabtivity-emails/`, and the filename is sanitized as the
 /// OS-dialog path pre-fills it. An attacker who controls the bytes and the
 /// filename can neither choose the folder nor traverse out of it. The
 /// pick-any-location path stays [`mail_attachment_save`]'s OS dialog, offered
@@ -4486,7 +4486,7 @@ pub async fn mail_attachment_save_to_project(
     let (meta, bytes) = load_attachment(&rt, &message_id, &part_id).await?;
 
     tokio::task::spawn_blocking(move || {
-        // A remote project's `directory` is Eldrun's local state dir for it, not
+        // A remote project's `directory` is Tabtivity's local state dir for it, not
         // its tree — the tree is on the host — so a save "into the project"
         // would land somewhere the user never sees. Refused rather than
         // misfiled; the OS dialog beside it still works.
@@ -4500,7 +4500,7 @@ pub async fn mail_attachment_save_to_project(
             .filter(|d| !d.is_empty())
             .ok_or_else(|| "no such project".to_string())?;
         let root = PathBuf::from(dir);
-        // The folder is Eldrun's own, so Eldrun makes sure git ignores it before
+        // The folder is Tabtivity's own, so Tabtivity makes sure git ignores it before
         // the first attachment lands in it — a project scaffolded before the
         // folder existed would otherwise stage somebody's mail on the next
         // `git add -A`. Best-effort: a project with no git and no writable
@@ -4510,7 +4510,7 @@ pub async fn mail_attachment_save_to_project(
 
         // The filename is the message's, so it is sanitized (no path component,
         // no traversal, no control/bidi trickery) before being joined under the
-        // fixed `eldrun-emails/` subfolder — and kept from impersonating an
+        // fixed `tabtivity-emails/` subfolder — and kept from impersonating an
         // agent's instruction file, which agents pick up from subfolders too.
         let safe = defuse_agent_instruction_name(
             mail_sanitize::sanitize_attachment_name(&meta.filename).value,
@@ -4529,12 +4529,12 @@ fn emails_dir_name(root: &Path) -> String {
     crate::commands::projects::generated_dir_name(root, crate::brand::Name::EMAILS_DIR)
 }
 
-/// `<root>/eldrun-emails`, created if missing, and **refused unless it is a real
+/// `<root>/tabtivity-emails`, created if missing, and **refused unless it is a real
 /// directory directly inside the project**.
 ///
 /// The project tree is attacker-controlled — a cloned repo, or an agent working
-/// in it — and the write happens in Eldrun's own, unfenced process. A committed
-/// `eldrun-emails -> ~/.config/autostart` would otherwise turn "save this
+/// in it — and the write happens in Tabtivity's own, unfenced process. A committed
+/// `tabtivity-emails -> ~/.config/autostart` would otherwise turn "save this
 /// attachment" into a file dropped wherever the link points, and for a fenced
 /// agent that is a way out of its fence.
 fn emails_dir_in(root: &Path) -> Result<PathBuf, String> {
@@ -4566,7 +4566,7 @@ fn emails_dir_in(root: &Path) -> Result<PathBuf, String> {
 
 /// File names an agent CLI reads as instructions when it works in (or below)
 /// the folder holding them. A mailed `CLAUDE.md` saved into a project would be
-/// a stranger's prompt the next time an agent touched `eldrun-emails/`.
+/// a stranger's prompt the next time an agent touched `tabtivity-emails/`.
 const AGENT_INSTRUCTION_NAMES: &[&str] = &[
     "agents.md",
     "claude.md",

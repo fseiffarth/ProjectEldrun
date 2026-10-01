@@ -1,7 +1,7 @@
 //! Codex's own thread store: `~/.codex/state_<n>.sqlite`.
 //!
 //! Codex used to keep every conversation as a JSONL transcript under
-//! `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`, and Eldrun
+//! `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`, and Tabtivity
 //! read the model tag beside an agent tab out of that file's tail. Codex
 //! 0.153.4 writes its history into a SQLite database instead: the `threads` row
 //! still *names* a `rollout_path`, but no such file is written any more, so the
@@ -102,7 +102,7 @@ pub fn thread_exists(db: &Path, thread_id: &str) -> bool {
 /// The model the thread `thread_id` is running, per the store at `db`.
 ///
 /// Opened strictly read-only: Codex is writing this database while we read it,
-/// and the one thing that must never happen is Eldrun touching another
+/// and the one thing that must never happen is Tabtivity touching another
 /// application's state. A locked, missing, or differently-shaped store is not
 /// an error here — it is simply no tag.
 pub fn thread_model(db: &Path, thread_id: &str) -> Option<String> {

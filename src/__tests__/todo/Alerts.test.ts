@@ -751,7 +751,7 @@ describe("alertCounts", () => {
 
 /**
  * The gates. The one asymmetry worth locking: `files_alerts` is the *file
- * viewer's* group visibility, so Eldrun Mobile — a surface with its own screen
+ * viewer's* group visibility, so Tabtivity Mobile — a surface with its own screen
  * and no 🔔 of its own — reads past it, while everything that says which alerts
  * exist stays shared between the two.
  */

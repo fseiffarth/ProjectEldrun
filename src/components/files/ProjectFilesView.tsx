@@ -124,7 +124,7 @@ function MobileAccessIcon({ on }: { on: boolean }) {
 }
 
 /** The row's own name button shows a short, stable label rather than the raw
- *  `eldrun-<uuid>` — meaningless to read at a glance and mostly there to keep
+ *  `tabtivity-<uuid>` — meaningless to read at a glance and mostly there to keep
  *  the name unique. The full id lives in the session-stats popup instead
  *  (`SessionStatsMenu` below), alongside the rest of the row's detail. A
  *  hand-started/foreign session's name is usually short and meaningful
@@ -668,7 +668,7 @@ export function ProjectFilesView({
 
   // Persistent (tmux) sessions on the project's hosts (TODO #85): a session
   // outlives the tab that started it, so a host can hold runs no open tab points at
-  // (a crashed/relaunched Eldrun, another machine, a hand-started `tmux`). This list
+  // (a crashed/relaunched Tabtivity, another machine, a hand-started `tmux`). This list
   // makes them discoverable and reattachable — the primary UI surface for the
   // feature. **Multi-host**: aggregated across the primary AND every connected
   // worker, each row tagged with its host; polled while this view is active (rides
@@ -765,7 +765,7 @@ export function ProjectFilesView({
     // (`sessionKindFromName`), in a fixed order so the sub-headings never reshuffle
     // as sessions come and go. An empty bucket is dropped — a header for a type this
     // host is not running would be noise — and `other` (foreign/legacy/renamed
-    // sessions) only appears when there is at least one, so an ordinary all-Eldrun
+    // sessions) only appears when there is at least one, so an ordinary all-Tabtivity
     // host shows just Agents/Shells.
     return [...groups.values()]
       .filter((group) => group.rows.length > 0)
@@ -1168,7 +1168,7 @@ export function ProjectFilesView({
   const nameHover = useProjectHoverCard(project ?? undefined);
   const leftDockedPanel = containerClassName.includes("side-panel left");
 
-  // The root scope's own tree (`~/eldrun/root`): a real folder with no project
+  // The root scope's own tree (`~/tabtivity/root`): a real folder with no project
   // record behind it — no project.json, no git provider, no settings dialog — so
   // it is named for what it is rather than falling back to a bare "Files". The
   // check is the scope's, not "no project": a box scope has none either.
@@ -1478,7 +1478,7 @@ export function ProjectFilesView({
             })}
           </span>
         )}
-        {/* Per-project Eldrun Mobile opt-in. Deliberately NOT shaped like the
+        {/* Per-project Tabtivity Mobile opt-in. Deliberately NOT shaped like the
             tag chips beside it: those are static labels, this one is a live
             switch, and a chip that looked like them would invite reading it as
             another fact about the project. It is the header's own icon-button

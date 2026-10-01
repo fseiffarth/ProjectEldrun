@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Is the RUNNING Eldrun older than the backend source on disk?
+# Is the RUNNING Tabtivity older than the backend source on disk?
 #
 # `npm run tauri:dev` passes `--no-watch`, so a `src-tauri/` edit no longer
 # rebuilds and relaunches the window out from under whoever is using it (open
@@ -34,16 +34,16 @@ APP_DIR="$(app_env APP_DIR "$APP_SHARE_DIR")"
 STATE_DIR="$(app_env STATE_DIR "$APP_DIR")"
 
 # ---------------------------------------------------------------------------
-# Which Eldrun is running?
+# Which Tabtivity is running?
 #
 # The hot-reload dev binary is only one of the shapes this takes: `npm run
-# package:dev` freezes the tree at eldrun-dev and `npm run package` installs
-# eldrun[.AppImage]. Matching only target/debug made this script print "nothing
+# package:dev` freezes the tree at tabtivity-dev and `npm run package` installs
+# tabtivity[.AppImage]. Matching only target/debug made this script print "nothing
 # to be stale against" and exit 0 — a false all-clear — for precisely the
 # builds whose backend cannot hot-reload at all, and whose embedded mobile PWA
 # is therefore the most likely thing in the window to be months behind.
 #
-# Order matters: `^$APP_DIR/eldrun` prefix-matches the other two, so the
+# Order matters: `^$APP_DIR/tabtivity` prefix-matches the other two, so the
 # specific paths are tried first.
 # ---------------------------------------------------------------------------
 # What the frozen dev build is called below (matched again where the advice is
@@ -68,7 +68,7 @@ $APP_DIR/$APP_BIN_NAME|packaged build
 EOF
 
 # An AppImage execs its payload out of a FUSE mount, so the process actually
-# serving the sidecar has /tmp/.mount_*/usr/bin/eldrun on its cmdline and
+# serving the sidecar has /tmp/.mount_*/usr/bin/tabtivity on its cmdline and
 # matches none of the paths above.
 if [ -z "$app_pid" ]; then
   app_pid="$(pgrep -f "^/tmp/\\.mount_[^/]*/usr/bin/$APP_BIN_NAME" | head -n 1 || true)"
@@ -235,7 +235,7 @@ fi
 
 # --- the sidecar's own copy of the backend ---------------------------------
 # The phone's HTTP API is not this window's process. `mobile_host_apply` copies
-# the running image to bin/<version>/eldrun-mobile-host and the service manager
+# the running image to bin/<version>/tabtivity-mobile-host and the service manager
 # runs that copy — and the directory is keyed by the version ALONE, so every
 # build between two pushes shares one, and the copy answering the phone is
 # whichever of them installed first. Nothing said so, in either direction: the
@@ -249,7 +249,7 @@ host_pid="$(pgrep -f -- '--mobile-host' | head -n 1 || true)"
 if [ -n "$host_pid" ] && [ -n "$app_pid" ]; then
   # Both images are measured THROUGH `/proc/<pid>/exe` with `stat -L`, never
   # through the path that link resolves to. `readlink -f` answers
-  # "…/eldrun-dev (deleted)" the moment a rebuild unlinks the file under the
+  # "…/tabtivity-dev (deleted)" the moment a rebuild unlinks the file under the
   # running window — unreadable, so this check used to skip in silence in the
   # very shape it exists for (2026-09-21: the sidecar was nine hours behind the
   # window and nothing said so). And when the path does still exist it is the
@@ -279,7 +279,7 @@ fi
 
 # --- the desktop frontend seam ---------------------------------------------
 # Only the hot-reload session gets `src/` for free: vite serves it and HMR pushes
-# every edit into the window. Every other shape — the frozen "Eldrun (dev)"
+# every edit into the window. Every other shape — the frozen "Tabtivity (dev)"
 # build, the packaged one, the AppImage — has the frontend COMPILED IN, so it
 # goes stale exactly like the backend does, and nothing said so. The symptom is
 # not an error: the window simply renders an older UI than the hot-reload one

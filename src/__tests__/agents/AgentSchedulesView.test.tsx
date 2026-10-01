@@ -46,7 +46,7 @@ describe("AgentSchedulesView order and model tag", () => {
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       if (command === "agent_tab_model") return (args as { agent: string }).agent === "claude" ? "claude-opus-4-1-20250805" : null;
       // The prompt comes from the transcript, so one typed straight into the
-      // terminal — never through Eldrun's composer — is shown all the same.
+      // terminal — never through Tabtivity's composer — is shown all the same.
       if (command === "agent_tab_last_prompt") return (args as { agent: string }).agent === "claude" ? "fix the failing tests" : null;
       return [];
     });

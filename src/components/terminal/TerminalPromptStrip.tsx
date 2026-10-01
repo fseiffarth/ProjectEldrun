@@ -59,7 +59,7 @@ export function TerminalPromptStrip({
   /** Hand the keyboard back to the terminal (the drop-down closed). */
   onReturnFocus: () => void;
   /** The Reader switch (`TerminalReaderView`), for an agent whose stored
-   * conversation Eldrun reads; absent for any other. */
+   * conversation Tabtivity reads; absent for any other. */
   reader?: { open: boolean; onToggle: () => void };
 }) {
   const t = useT();

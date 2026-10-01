@@ -1,7 +1,7 @@
 //! Commands about the **OS credential store itself**, rather than any one
 //! credential in it.
 //!
-//! Every "is this password saved?" answer in Eldrun — the SSH `remote_has_password`,
+//! Every "is this password saved?" answer in Tabtivity — the SSH `remote_has_password`,
 //! the VPN `vpn_has_saved_password`, both silent-connect probes — reduces to a
 //! keychain read, and on Linux a read against a *locked* Secret Service collection
 //! answers exactly like an empty one: nothing saved. That is how a user who ticked
@@ -35,7 +35,7 @@ use tauri::State;
 // command is later typed into a PTY (the frontend types it as the terminal's
 // `initialInput`, in a single `pty_write`), that PTY is marked as a login terminal
 // for that target. A paste is then only allowed into a PTY that is genuinely
-// running the login Eldrun built for that very credential — which is where the
+// running the login Tabtivity built for that very credential — which is where the
 // secret was always going to go.
 
 /// Which login a marked PTY is running — i.e. which saved credentials may be typed
@@ -194,7 +194,7 @@ impl PasteCredential {
 /// Type a saved credential into a **login terminal**, at its cursor, without it ever
 /// reaching the frontend.
 ///
-/// This is the non-headless login's missing half. In that mode Eldrun deliberately
+/// This is the non-headless login's missing half. In that mode Tabtivity deliberately
 /// handles no passwords — the host asks its own questions in an embedded terminal and
 /// the user answers them — but a user who *did* save a credential (from a headless
 /// connect, or the header's VPN menu) then has it sitting in the keychain, unreachable,

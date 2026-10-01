@@ -1,6 +1,6 @@
 # Mobile Focus: what each agent CLI draws
 
-A survey of the agent CLIs Eldrun offers (`src/components/tabs/newTabItems.ts`
+A survey of the agent CLIs Tabtivity offers (`src/components/tabs/newTabItems.ts`
 `AGENT_ITEMS`), taken 2026-09-15, for the phone's **Focus** view
 (`mobile-web/src/terminal/`): what each CLI puts on the screen, whether that
 screen can be read at all, and where the conversation is stored when it cannot.

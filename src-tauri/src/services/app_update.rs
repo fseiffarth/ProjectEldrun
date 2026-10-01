@@ -1,4 +1,4 @@
-//! "Check for a new Eldrun" against the project's GitHub releases.
+//! "Check for a new Tabtivity" against the project's GitHub releases.
 //!
 //! Deliberately *not* the Tauri updater plugin: that wants a `latest.json`
 //! published next to the artifacts. This reads the same public releases page a
@@ -71,19 +71,19 @@ const RELEASE_PUBLIC_KEY_PEM: &str = include_str!("../../release-signing.pub.pem
 /// A checksum list or signature is a few hundred bytes.
 const MAX_SUMS_BYTES: u64 = 64 * 1024;
 
-/// Refuse absurd downloads. The largest Eldrun artifact is well under 200 MB;
+/// Refuse absurd downloads. The largest Tabtivity artifact is well under 200 MB;
 /// this only exists so a wrong or hostile `Content-Length` can't fill a disk.
 const MAX_ASSET_BYTES: u64 = 512 * 1024 * 1024;
 
 /// How the *running* build can apply an update, which is not the same question
-/// as which artifact exists. A `.deb`-installed Eldrun can download the new
+/// as which artifact exists. A `.deb`-installed Tabtivity can download the new
 /// `.deb` but must not try to install it itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InstallKind {
     /// Linux AppImage: swap the file we are running from, then restart.
     Appimage,
-    /// Windows: run the NSIS installer, which offers to close Eldrun first.
+    /// Windows: run the NSIS installer, which offers to close Tabtivity first.
     Nsis,
     /// macOS: open the `.dmg` and let the user drag it to Applications.
     Dmg,
@@ -203,7 +203,7 @@ pub fn version_from_tag(tag: &str) -> String {
 /// On Linux the deciding fact is the `APPIMAGE` environment variable, which the
 /// AppImage runtime sets to the path of the `.AppImage` itself. A `.deb`
 /// install or a `cargo build` binary has no such thing, and overwriting either
-/// from inside the app would be Eldrun editing a package manager's files.
+/// from inside the app would be Tabtivity editing a package manager's files.
 pub fn install_kind_for_running_build() -> InstallKind {
     if cfg!(target_os = "windows") {
         return InstallKind::Nsis;
@@ -334,7 +334,7 @@ fn verify_sums(
 /// The lowercase hex SHA-256 a verified checksum list gives `asset_name`.
 ///
 /// `version` is the release being installed: the asset name must carry it
-/// (`Eldrun_<version>_amd64.AppImage`), so a signed list from an older release
+/// (`Tabtivity_<version>_amd64.AppImage`), so a signed list from an older release
 /// cannot vouch for a downgrade published under a newer tag.
 fn expected_digest(sums: &str, asset_name: &str, version: &str) -> Result<String, String> {
     if version.is_empty() || !asset_name.contains(&format!("_{version}_")) {
@@ -550,7 +550,7 @@ async fn fetch_latest(url: &str) -> Result<String, String> {
 }
 
 /// Where downloads are staged. Outside the project tree, next to the rest of
-/// Eldrun's own state.
+/// Tabtivity's own state.
 pub fn staging_dir() -> PathBuf {
     crate::storage::state_dir().join("updates")
 }
@@ -681,7 +681,7 @@ pub fn staged() -> Option<Staged> {
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallOutcome {
-    /// Whether Eldrun must be restarted by the user for the update to take.
+    /// Whether Tabtivity must be restarted by the user for the update to take.
     pub restart_required: bool,
     /// Whether an external installer was launched and now owns the process.
     pub installer_launched: bool,
@@ -716,14 +716,14 @@ pub fn install() -> Result<InstallOutcome, String> {
             })
         }
         InstallKind::Nsis => {
-            // The Tauri NSIS installer detects a running Eldrun and offers to
+            // The Tauri NSIS installer detects a running Tabtivity and offers to
             // close it, so handing it over mid-session is the supported flow.
             // A plain `Command`, deliberately not `paths::command_no_window`:
             // this child is meant to put a window on screen, and suppressing a
             // console for an installer is the opposite of what is wanted here.
             let mut cmd = std::process::Command::new(&staged.path);
             // Run it from the directory it landed in, so nothing resolves
-            // against whatever Eldrun's cwd happens to be.
+            // against whatever Tabtivity's cwd happens to be.
             if let Some(parent) = staged.path.parent() {
                 cmd.current_dir(parent);
             }

@@ -1,6 +1,6 @@
 import { BRAND } from "../../src/lib/brand";
 /**
- * The Eldrun mark — the same circuit "tree of life" the desktop app draws in
+ * The Tabtivity mark — the same circuit "tree of life" the desktop app draws in
  * its launch splash (`src/components/layout/LogoIcon.tsx`, geometry from
  * `src/assets/logo.svg`).
  *

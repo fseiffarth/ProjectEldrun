@@ -25,10 +25,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 /// Owner names (per `kCGWindowOwnerName`, lowercased) whose windows must NEVER
-/// be parked: Eldrun itself plus the macOS shell surfaces. Mirrors
-/// `windows_park::PROTECTED_PROCESSES`. Eldrun's own windows are additionally
+/// be parked: Tabtivity itself plus the macOS shell surfaces. Mirrors
+/// `windows_park::PROTECTED_PROCESSES`. Tabtivity's own windows are additionally
 /// shielded by owning-process identity (self pid) in the FFI layer, so
-/// `eldrun` here only guards same-named helper processes.
+/// `tabtivity` here only guards same-named helper processes.
 pub const PROTECTED_OWNERS: &[&str] = &[
     crate::brand::BIN_NAME,
     // An older build still running under the app's old name (the same
@@ -48,7 +48,7 @@ pub const PROTECTED_OWNERS: &[&str] = &[
 /// the usual name separators) against [`PROTECTED_OWNERS`]. Segment matching
 /// rather than raw substring matching keeps an owner merely *containing* a
 /// protected token (e.g. "Docker" contains "dock"? no — segments — or
-/// "eldrunner") parkable, directly mirroring the X11 `kwinter`/`eldrunner`
+/// "tabtivityner") parkable, directly mirroring the X11 `kwinter`/`tabtivityner`
 /// regression tests.
 pub fn is_protected_owner_name(owner: &str) -> bool {
     let lowered = owner.to_lowercase();
@@ -66,7 +66,7 @@ pub fn is_protected_owner_name(owner: &str) -> bool {
 #[derive(Default)]
 pub struct MacParkState {
     override_ids: HashSet<u64>,
-    /// The main Eldrun window's `CGWindowID`, once known. `add_parkable`
+    /// The main Tabtivity window's `CGWindowID`, once known. `add_parkable`
     /// refuses to add this id, keeping "the main window is never parked"
     /// structural.
     main_window_id: Option<u64>,
@@ -96,7 +96,7 @@ impl MacParkState {
         self.override_ids.contains(&id)
     }
 
-    /// Record the MAIN Eldrun window's id so `add_parkable` can structurally
+    /// Record the MAIN Tabtivity window's id so `add_parkable` can structurally
     /// refuse to ever add it to the override.
     pub fn set_main(&mut self, id: u64) {
         self.main_window_id = Some(id);
@@ -120,7 +120,7 @@ impl MacParkState {
     }
 
     /// Take the whole parked map, clearing it. Used by `cleanup` to unhide
-    /// exactly the apps Eldrun hid.
+    /// exactly the apps Tabtivity hid.
     pub fn drain_parked(&mut self) -> Vec<(u64, u32)> {
         self.parked.drain().collect()
     }
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn app_owner_is_always_protected() {
-        // The most critical invariant: Eldrun-named apps must NEVER be hidden.
+        // The most critical invariant: Tabtivity-named apps must NEVER be hidden.
         // (The main window is doubly protected via the self-pid check.)
         assert!(is_protected_owner_name(crate::app_name!()));
         assert!(is_protected_owner_name(crate::app_slug!()));
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn owner_merely_containing_protected_token_is_parkable() {
         // Segment matching, not substring matching — the macOS analog of the
-        // x11 `kwinter`/`eldrunner` regression tests.
+        // x11 `kwinter`/`tabtivityner` regression tests.
         assert!(!is_protected_owner_name(concat!(crate::app_slug!(), "ner")));
         assert!(!is_protected_owner_name("Docker")); // contains "dock" as substring only
         assert!(!is_protected_owner_name("Pathfinder")); // contains "finder" as substring only

@@ -68,7 +68,7 @@ impl MailProto {
 ///
 /// Keyed by **server target, not account id**, matching the SSH rule at
 /// [`ssh_account`]: one saved secret per login, whichever dialog saved it, so
-/// two Eldrun accounts pointed at the same mailbox share one entry instead of
+/// two Tabtivity accounts pointed at the same mailbox share one entry instead of
 /// silently disagreeing about whether a password is saved. The host is
 /// lower-cased for the same reason it is there (DNS is case-insensitive, so
 /// `Imap.Example` and `imap.example` are one machine); the login name is *not*
@@ -84,7 +84,7 @@ pub fn mail_account(proto: MailProto, user: &str, host: &str, port: u16) -> Stri
 
 /// The keychain account for a CalDAV login: `"caldav:{user}@{host}[:{port}]"`.
 ///
-/// Keyed by **server target, not Eldrun account id**, for the reason
+/// Keyed by **server target, not Tabtivity account id**, for the reason
 /// [`mail_account`] and [`ssh_account`] give: one saved secret per login, so
 /// re-adding an account (or pointing a second one at the same server) finds the
 /// password that is already there instead of the two silently disagreeing about
@@ -128,7 +128,7 @@ fn origin_of(base_url: &str) -> String {
 /// One entry per machine, not per mail account: the master key it wraps seals
 /// the whole store, which spans every account. Keyed by nothing, therefore — the
 /// store has exactly one home (`state_dir()/mail`) and a second one would be a
-/// second Eldrun installation with its own keychain anyway.
+/// second Tabtivity installation with its own keychain anyway.
 ///
 /// The secret here is **machine-generated, never a user password**, which is why
 /// it does not fall under the "no passwords persisted by default" rule: there is
@@ -478,7 +478,7 @@ pub fn keyring_state() -> KeyringState {
 }
 
 /// How long [`cached_keyring_state`] trusts a reading. Short enough that unlocking the
-/// collection from *outside* Eldrun (Seahorse, Keychain Access, another app's prompt)
+/// collection from *outside* Tabtivity (Seahorse, Keychain Access, another app's prompt)
 /// is picked up without a restart; long enough that a burst of connects costs one probe,
 /// not one per credential. The transition that actually matters — our own
 /// [`unlock_keyring`] — does not wait for it: it invalidates the cache outright.
@@ -906,7 +906,7 @@ mod tests {
     }
 
     /// A mail key must never collide with an SSH or OpenVPN one — they share
-    /// the `eldrun-remote` service.
+    /// the `tabtivity-remote` service.
     #[test]
     fn mail_keys_never_collide_with_the_other_credential_kinds() {
         let m = mail_account(MailProto::Imap, "u", "h.example", 993);

@@ -1,5 +1,5 @@
 /**
- * Device auth for Eldrun Mobile (`mobile-web/src/auth.ts`): a non-exportable
+ * Device auth for Tabtivity Mobile (`mobile-web/src/auth.ts`): a non-exportable
  * signing key in IndexedDB, a challenge/response sign-in on every open, and —
  * the part worth pinning — the split between "this device was rejected, pair
  * again" and "the host could not be reached, say which machine to fix". The

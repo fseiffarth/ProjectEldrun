@@ -145,7 +145,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** The agent tab being renamed. The desktop owns the tab layout, so the sheet
    * writes through the bridge and the next poll brings the new label back. */
   const [renameTab, setRenameTab] = useState<TabRow | null>(null);
-  /** What the agent sent this project (`eldrun-send` → `.eldrun/outbox/`),
+  /** What the agent sent this project (`tabtivity-send` → `.tabtivity/outbox/`),
    * newest first, behind the header's 🖼. The files belong to the project, not
    * to a session, so this screen reads them by the project: a file sent from a
    * tab that has since been closed is still here. */
@@ -321,7 +321,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   };
   /** Close on the tap, as the desktop's × does — no sheet in between. It is the
    *  same act on both surfaces, through the same desktop seam: the tab leaves
-   *  the Eldrun window and the local tmux session it minted ends with it (a
+   *  the Tabtivity window and the local tmux session it minted ends with it (a
    *  session on a remote host keeps running). */
   const close = async (tab: TabRow) => {
     setClosingId(tab.id);

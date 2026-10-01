@@ -1,6 +1,6 @@
 # Root console
 
-The root scope is Eldrun's cross-project working surface. It is where you
+The root scope is Tabtivity's cross-project working surface. It is where you
 manage everything that sits above a single project: the calendar, the to-do
 board and the project list itself. This doc covers two design choices: why the
 root scope is an overlay, and why its agents have rights no other agent has.
@@ -49,7 +49,7 @@ across the screen. An untouched console keeps the size the stylesheet gives it.
 Every subwindow also docks the **file viewer** on its right edge, through the
 same ◫ a project's subwindows carry — the shared `SubwindowFilesSidebar`, i.e.
 the `ProjectFilesView` the side panel and the Files (Project) tab render, so
-there is no fourth copy of the viewer. It is rooted at `~/eldrun/root`, the
+there is no fourth copy of the viewer. It is rooted at `~/tabtivity/root`, the
 folder that belongs to no project: the console had a terminal on it and no way
 to see what was in it but `ls`. The state is the group node's own
 (`filesOpen`/`filesWidth`/`filesFolder`), so it persists with the root layout
@@ -122,7 +122,7 @@ views of one PTY would take turns resizing it.
 
 A root agent is asked for things that are not any project's business: "add a
 calendar entry on Friday at 14:00 for an hour", "put a card on the board for
-project X". Those stores are Eldrun's own, so Eldrun serves them as MCP tools
+project X". Those stores are Tabtivity's own, so Tabtivity serves them as MCP tools
 (`services::root_mcp`) over loopback HTTP (`POST /mcp`, one JSON-RPC message in
 and one reply out).
 
@@ -138,16 +138,16 @@ and one reply out).
   `project_id` is the same trusted spawn input that picks the fence roots, and
   an agent cannot make Tauri calls, so it cannot ask for a root spawn.
 - **Given on the CLI's own command line, never through its config files.**
-  Eldrun does not write another application's config, and a flag dies with the
+  Tabtivity does not write another application's config, and a flag dies with the
   tab. Claude gets an inline `--mcp-config` whose header reads
-  `Bearer ${ELDRUN_ROOT_MCP_TOKEN}`, which Claude expands from its environment.
-  Codex gets `-c mcp_servers.eldrun.url=…` plus `bearer_token_env_var`. Vibe
+  `Bearer ${TABTIVITY_ROOT_MCP_TOKEN}`, which Claude expands from its environment.
+  Codex gets `-c mcp_servers.tabtivity.url=…` plus `bearer_token_env_var`. Vibe
   (a local-model tab) gets `VIBE_MCP_SERVERS` (naming the token via
-  `api_key_env`) and `VIBE_ENABLED_TOOLS=["eldrun_*"]` — its env layer outranks
+  `api_key_env`) and `VIBE_ENABLED_TOOLS=["tabtivity_*"]` — its env layer outranks
   the per-model `config.toml` that turns tools off — but only when the model
   wears the Models & agents menu's opt-in "MCP" chip
-  (`settings.ollama_mcp_models`). Every other agent gets `ELDRUN_ROOT_MCP_URL`
-  and `ELDRUN_ROOT_MCP_TOKEN` only. `root_mcp::WIRED_CLIS` lists the CLIs that
+  (`settings.ollama_mcp_models`). Every other agent gets `TABTIVITY_ROOT_MCP_URL`
+  and `TABTIVITY_ROOT_MCP_TOKEN` only. `root_mcp::WIRED_CLIS` lists the CLIs that
   are named the server (Claude, Codex); `root_mcp_status` carries it.
 - **Root and MCP are two chips.** Root lets an agent or model run in the root
   console; MCP runs it there *with* the tools, so switching MCP on switches
@@ -181,13 +181,13 @@ read `/proc/<pid>/environ` and `/proc/<pid>/cmdline` of a root agent. That is
 what turning the fence off means, and the token does not pretend otherwise.
 
 **Known limit, inherited.** The token reaches the CLI through its environment
-(`${ELDRUN_ROOT_MCP_TOKEN}` in Claude's inline config, `bearer_token_env_var`
+(`${TABTIVITY_ROOT_MCP_TOKEN}` in Claude's inline config, `bearer_token_env_var`
 for Codex, `api_key_env` for Vibe — each CLI reads it by name, so there is no
 way to hand it over that leaves it out of the process environment), and the
 environment is inherited: anything the agent runs in that tab — a git hook, a
 package script, a Makefile, a `curl` — holds the token and can call the tools
 as the tab. The same holds for a project agent's schedule token. The fence
-does not narrow this (the root fence's roots are `~/eldrun/root`; a project
+does not narrow this (the root fence's roots are `~/tabtivity/root`; a project
 agent's fence contains its project, and the schedule endpoint is loopback
 either way). One exception widens the root fence: with
 `root_fence_projects_readable` on (default off), a root spawn also gets every
@@ -203,7 +203,7 @@ mail `attach` argument, never the live setting or project list — a project
 added after the tab started is refused until a new root tab is opened. So an audit record is the **tab's**, not necessarily the agent's
 own call, and the *MCP session access* fold says so. The one thing that would
 close it — the CLI reading the secret from a 0600 file and scrubbing the
-variable before it spawns children — is the CLI's to do, not Eldrun's.
+variable before it spawns children — is the CLI's to do, not Tabtivity's.
 
 **Browsers.** A request carrying an `Origin` header is refused. Browsers send
 that header on cross-origin POSTs and agent CLIs don't, so a web page cannot
@@ -230,7 +230,7 @@ still be addressed.
 a *project* agent structurally cannot answer — which projects have uncommitted
 work, whether anything is out of step with its host, how long last week went.
 `project_activity` is the sixth: one project's git state and latest commits.
-All of them read files Eldrun already owns and none opens a connection — with
+All of them read files Tabtivity already owns and none opens a connection — with
 the one caveat every git call here carries: `hookless_git_command_in` first
 strips program-naming keys from the repo's `.git/config`, and the tool
 descriptions say so rather than claim a pure read. `project_activity` passes
@@ -251,7 +251,7 @@ loop.
 
 The two rollups are bucketed by **UTC** date, since that is how
 `time_summary.json` and `usage_stats.json` were written; the tool descriptions
-say so rather than passing them off as local days. Eldrun's own window time is
+say so rather than passing them off as local days. Tabtivity's own window time is
 reported as `app_seconds` and never inside a project's total, and a scope whose
 project has since been deleted keeps its bare id — the hours are still real.
 
@@ -306,7 +306,7 @@ annotations: the `*_list` tools and the read-only sweeps are `readOnlyHint`,
 and the deletes, `todo_update`, `calendar_update_event`, `calendar_move_events`
 and `mail_draft_update` are `destructiveHint`. Codex asks before any tool not marked
 read-only, so reads now go through without a prompt and writes still ask.
-Eldrun never passes `default_tools_approval_mode`: approval is the CLI's own,
+Tabtivity never passes `default_tools_approval_mode`: approval is the CLI's own,
 like its permission mode.
 
 **One switch turns it all off.** `settings.json`'s `root_mcp` — absent means
@@ -327,7 +327,7 @@ off; Settings, under the main switch) serves local-model tabs only, so the
 calendar and board never reach a hosted model through these tools. It closes
 both halves the same way. Each token maps to its PTY tab id and
 `Caller::{Agent, LocalModel}`; Vibe carrying
-`ELDRUN_LOCAL_MODEL`/`VIBE_ACTIVE_MODEL` gets the local class. On, a cloud agent
+`TABTIVITY_LOCAL_MODEL`/`VIBE_ACTIVE_MODEL` gets the local class. On, a cloud agent
 is handed nothing at spawn and the endpoint answers `503` to its token;
 local tabs opened before the flip keep working. A model still needs its "MCP"
 chip to get tools at all.
@@ -425,10 +425,10 @@ only.
 
 **Locked means refused.** `commands::mail::AgentMail` never opens the store: not
 opened this run, or opened as the memory-only stand-in, both answer "mail is
-locked, unlock it in Eldrun first". No tool unlocks and none prompts.
+locked, unlock it in Tabtivity first". No tool unlocks and none prompts.
 
 **Reader credential transport.** The host SSH command contains only the name
-`LC_ELDRUN_ROOT_MCP_TOKEN`. SSH sends its value through the encrypted environment
+`LC_TABTIVITY_ROOT_MCP_TOKEN`. SSH sends its value through the encrypted environment
 channel (`SendEnv`); the provisioned guest's standard `AcceptEnv LC_*` accepts
 it. The guest exports the actual MCP variable and passes the locale variable
 into a new tmux session with `-e`. A guest that rejects the channel fails before
@@ -444,7 +444,7 @@ unattended run gets no endpoint; future scheduled-agent spawns must opt out.
 
 `calendar_import_ics` (`services::root_mcp_import`) takes the file's **text**
 and nothing else. There is no path and no URL argument on purpose: this process
-is not fenced, so a path would let a fenced agent have Eldrun read what its
+is not fenced, so a path would let a fenced agent have Tabtivity read what its
 fence hides (a symlink named `x.ics` is enough), and a URL is a fetch the agent
 aims. The text is capped at 96 KiB (`maxLength` in the schema, which
 `root_mcp_security::validate` honours in place of its 32 KiB default; the
@@ -641,7 +641,7 @@ limitations. New private store paths must be added to the macOS deny inventory.
 
 ## On the phone
 
-Root used to be kept off Eldrun Mobile outright, on the grounds that its agents
+Root used to be kept off Tabtivity Mobile outright, on the grounds that its agents
 hold rights no project agent has. That guarded against the wrong party. Those
 rights separate a root *agent* from a project *agent* — fenced processes that
 read untrusted text. The phone is the user, on a paired device that signs a
@@ -652,8 +652,8 @@ phone and kept the user from their own root agent away from the desk.
 
 So root is a phone scope, behind a line drawn where the rights actually are:
 
-- **Its own switch, default off** — `eldrun_mobile_host.root_access`, in
-  Settings → Eldrun Mobile. Root is in neither `projects.json` nor
+- **Its own switch, default off** — `tabtivity_mobile_host.root_access`, in
+  Settings → Tabtivity Mobile. Root is in neither `projects.json` nor
   `boxes.json`, so it cannot carry a per-record switch; `discovery` lists it as
   `ScopeKind::Root` from `paths::root_work_dir()` and `sessions/root/`. A
   hand-edited *project record* using the id `root` is still refused: it would
@@ -676,12 +676,12 @@ So root is a phone scope, behind a line drawn where the rights actually are:
   its tools by the same Root / MCP chips as a tab made at the desk. "Activate"
   raises the console (`useRootOverlayStore.show`); root is never switched to.
 - Root Claude tabs still spawn without `--remote-control`, so they never appear
-  in Claude's own phone app — a different decision from Eldrun's paired phone.
+  in Claude's own phone app — a different decision from Tabtivity's paired phone.
 - **The phone's raw terminal input is trusted as the user's, and reaches the
-  pane only.** Eldrun sets `prefix None` on every tmux session it creates
+  pane only.** Tabtivity sets `prefix None` on every tmux session it creates
   (`tmux_local::local_tmux_args`, `ssh_exec::tmux_wrap_exec`; session-scoped,
   so a user's own tmux sessions on the same server keep theirs). Both clients
-  already ran `status off` and nothing of Eldrun's binds the prefix, so nobody
+  already ran `status off` and nothing of Tabtivity's binds the prefix, so nobody
   loses a key — and without one, no keystroke from a paired phone can open
   tmux's own command line and detach, rename or spawn past the review gate
   above. Decided 2026-09-24.

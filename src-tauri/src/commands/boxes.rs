@@ -1,6 +1,6 @@
 //! Project boxes — meta-project grouping (TODO Group A: #13 + #41).
 //!
-//! Boxes live in their own sibling file `~/.local/share/eldrun/boxes.json` so the
+//! Boxes live in their own sibling file `~/.local/share/tabtivity/boxes.json` so the
 //! existing `projects.json` stays byte-compatible for Python rollback. A box owns
 //! the authoritative ordered `member_ids` — membership is N:M (a project may sit
 //! in several boxes at once) and lives NOWHERE else; the old per-project `box_id`
@@ -9,12 +9,12 @@
 //!
 //! A box folder also carries one **link per member** (a symlink on Unix, a
 //! directory junction on Windows) beside the generated agent docs, so agent CLIs
-//! launched in the box folder can traverse straight into each member's tree. Eldrun's own file confinement
+//! launched in the box folder can traverse straight into each member's tree. Tabtivity's own file confinement
 //! deliberately does NOT follow these links — the multi-root Files view (and the
-//! explicit allowed-roots set in `compute_box_allowed_roots`) is Eldrun's file
+//! explicit allowed-roots set in `compute_box_allowed_roots`) is Tabtivity's file
 //! surface; the links exist purely for the agents' benefit. Ownership of the
-//! links is recorded in `<folder>/.eldrun-box-links.json` so regeneration only
-//! ever removes links Eldrun itself created (see `write_box_member_links`).
+//! links is recorded in `<folder>/.tabtivity-box-links.json` so regeneration only
+//! ever removes links Tabtivity itself created (see `write_box_member_links`).
 
 use std::collections::HashSet;
 use std::fs;
@@ -31,7 +31,7 @@ use crate::storage;
 /// box file should link to (CLAUDE.md → members' CLAUDE.md, etc.).
 const BOX_AGENT_DOCS: &[&str] = &["CLAUDE.md", "GEMINI.md", "AGENTS.md"];
 
-/// Markers delimiting the Eldrun-managed link block inside a box agent doc. Only
+/// Markers delimiting the Tabtivity-managed link block inside a box agent doc. Only
 /// the text between (and including) these lines is rewritten on regeneration, so
 /// anything a user adds outside the block survives.
 const BOX_LINKS_START: &str = crate::brand::BOX_LINKS_START;
@@ -190,7 +190,7 @@ pub(crate) fn box_allowed_roots(box_id: &str) -> Option<Vec<PathBuf>> {
     Some(roots)
 }
 
-/// Build the Eldrun-managed link block for one box agent doc. Pure (no IO) so it
+/// Build the Tabtivity-managed link block for one box agent doc. Pure (no IO) so it
 /// is unit-testable. `agent_file` is the filename of THIS doc (e.g. "CLAUDE.md");
 /// each member is linked to its same-named md file plus its root path.
 fn box_links_block(agent_file: &str, box_name: &str, members: &[(String, PathBuf)]) -> String {
@@ -199,7 +199,7 @@ fn box_links_block(agent_file: &str, box_name: &str, members: &[(String, PathBuf
     out.push('\n');
     out.push_str(concat!("<!-- Managed by ", crate::app_name!(), " — do not edit between these markers. -->\n\n"));
     out.push_str(&format!(
-        "## Box \"{box_name}\" — member projects\n\nThis folder is an {app} project box grouping the projects below. Each entry \
+        "## Box \"{box_name}\" — member projects\n\nThis folder is a {app} project box grouping the projects below. Each entry \
 links to the project root and its `{agent_file}`:\n\n", app = crate::brand::DISPLAY
     ));
     if members.is_empty() {
@@ -614,7 +614,7 @@ pub fn set_box_members(box_id: String, member_ids: Vec<String>) -> Result<Projec
     Ok(updated)
 }
 
-/// Switch a box's Eldrun Mobile reach (#31aa) — the box-scope twin of
+/// Switch a box's Tabtivity Mobile reach (#31aa) — the box-scope twin of
 /// `set_project_mobile_access`. The machine-wide preconditions are the same
 /// (persistent local sessions, tmux), because a box tab reaches the phone the
 /// way a project tab does: through the tmux session the tab already runs in.
@@ -1169,7 +1169,7 @@ mod tests {
                 &[("one".to_string(), t1.clone()), ("two".to_string(), t2)],
             )
             .unwrap();
-            // A FOREIGN symlink Eldrun never made stays, member or not.
+            // A FOREIGN symlink Tabtivity never made stays, member or not.
             std::os::unix::fs::symlink(&t1, folder.join("foreign")).unwrap();
 
             write_box_member_links(&folder, &[("one".to_string(), t1)]).unwrap();

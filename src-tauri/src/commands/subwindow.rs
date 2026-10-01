@@ -42,7 +42,7 @@ pub fn detached_label(scope: &str, group_id: &str) -> String {
 }
 
 /// Human-friendly, per-session-unique OS window title for a detached group,
-/// e.g. "Eldrun win-1". This string is load-bearing on X11: the resolver in
+/// e.g. "Tabtivity win-1". This string is load-bearing on X11: the resolver in
 /// `platform::x11::find_window_for_title` matches on it exactly to recover the
 /// native window id, so it must stay unique among live detached windows.
 /// Uniqueness comes from the caller assigning a distinct sequence number per
@@ -94,7 +94,7 @@ pub fn detached_decorations(os: crate::paths::OsKind) -> bool {
     os == crate::paths::OsKind::Macos
 }
 
-/// Reserve the lowest free display number for `label` (the N in "Eldrun
+/// Reserve the lowest free display number for `label` (the N in "Tabtivity
 /// win-N"). Must run under the registry lock so a concurrent detach (or a
 /// restart batch respawning several popouts) can't pick the same one.
 pub fn reserve_detached_seq(reg: &mut WindowRegistry, label: &str) -> u32 {
@@ -255,7 +255,7 @@ pub async fn detach_subwindow(
     // Wayland) is waited out, bounded, before the rebuild.
     //
     // The reservation carries the lowest free display number. It becomes the
-    // OS title "Eldrun win-N" and, on X11, the resolver key — hence it must be
+    // OS title "Tabtivity win-N" and, on X11, the resolver key — hence it must be
     // unique per live window. It's freed on dock-back/close
     // (`attach_subwindow`) AND on any other destruction via the
     // `WindowEvent::Destroyed` hook in `lib.rs` (the popout self-destroys on
@@ -370,7 +370,7 @@ pub async fn detach_subwindow(
 
     if let Some(wid) = window_id {
         // Opt the detached window into the parkable override so the switch path
-        // can actually park it despite its `eldrun` WM_CLASS. The MAIN window id
+        // can actually park it despite its `tabtivity` WM_CLASS. The MAIN window id
         // can never enter this set (structural guard in the backend).
         workspace.lock().unwrap().backend.set_parkable(wid);
     }

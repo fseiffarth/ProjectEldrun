@@ -9,7 +9,7 @@ import { BRAND } from "../../../src/lib/brand";
  *
  * `RenameSheet`'s sibling, and deliberately shaped like it: the tab is named by
  * its opaque id, the desktop owns the tab layout, and nothing here works
- * without desktop Eldrun open — which is why the failure says so rather than
+ * without desktop Tabtivity open — which is why the failure says so rather than
  * "request failed".
  *
  * It commits on the tap instead of holding a Save button. A colour is a label

@@ -22,7 +22,7 @@ pub mod schedule_usage;
 // that keeps a phone reopening the status sheet from spawning a CLI each
 // time.
 pub mod agent_usage;
-// Which release of each agent CLI is installed vs. the one Eldrun's parsers
+// Which release of each agent CLI is installed vs. the one Tabtivity's parsers
 // were checked against: the version recipes, the "verified against" notes from
 // docs/third_party_update_checklist.md as data, and the day-long probe cache.
 pub mod agent_versions;
@@ -33,7 +33,7 @@ pub mod agent_fence;
 // Landlock's abstract-socket scope (X11, D-Bus) the fence enters before bwrap.
 #[cfg(target_os = "linux")]
 pub mod fence_scope;
-// The Claude credential mirror: one Eldrun-owned inode mounted into every
+// The Claude credential mirror: one Tabtivity-owned inode mounted into every
 // fenced/contained tab in place of `~/.claude/.credentials.json`, kept in step
 // with the host file by in-place writes — a file bind mount pins an inode, and
 // Claude rotates that file by rename.
@@ -43,15 +43,15 @@ pub mod agent_hint;
 pub mod agent_home;
 pub mod agent_install;
 pub mod agent_shim;
-// Copilot CLI sign-in for fenced tabs: Eldrun keeps the token in its own
+// Copilot CLI sign-in for fenced tabs: Tabtivity keeps the token in its own
 // keyring entry (the fence hides the keyring) and hands it to each fenced
 // Copilot as COPILOT_GITHUB_TOKEN.
 pub mod copilot_auth;
-// "Check for a new Eldrun" against the GitHub releases page: version compare,
+// "Check for a new Tabtivity" against the GitHub releases page: version compare,
 // per-platform asset pick, staged download, per-platform install.
 pub mod app_update;
 pub mod big_folders;
-// Ask-once approval for project-supplied programs Eldrun runs on the host
+// Ask-once approval for project-supplied programs Tabtivity runs on the host
 // (git hooks, latexmkrc, a project's own prettier), re-asked when they change.
 pub mod exec_trust;
 // In-app browser (TODO J #61): reader-mode fetch+sanitize, the live-page window
@@ -69,7 +69,7 @@ pub mod todo_board;
 // What the phone's composer may attach from the desktop: recent screenshots and
 // pictures by opaque id, copied into the project inbox on request.
 pub mod desktop_images;
-// What the background "Eldrun (dev)" freeze (`scripts/package-dev-auto.sh`) is
+// What the background "Tabtivity (dev)" freeze (`scripts/package-dev-auto.sh`) is
 // doing, read from that script's own state files for the header's dev-build
 // chip. Compiled to "no chip" unless the binary was built from a checkout.
 pub mod dev_build;
@@ -84,7 +84,7 @@ pub mod copilot;
 pub mod git_credentials;
 // The `.git` control files a sandbox keeps its occupant from writing (#158).
 pub mod git_guard;
-// The default branch (`main`) for repositories Eldrun creates, and the
+// The default branch (`main`) for repositories Tabtivity creates, and the
 // unpublished-`master` rename that runs just before a publish.
 pub mod git_init;
 pub mod git_peer;

@@ -19,7 +19,7 @@ export type { SessionTranscript };
 const READER_AGENTS = new Set(["claude", "codex", "opencode"]);
 
 /** Whether `tab` can be shown as a Reader: an agent tab whose CLI keeps a
- * transcript Eldrun reads. A local-model tab keeps none. */
+ * transcript Tabtivity reads. A local-model tab keeps none. */
 export function readerOffered(tab: Pick<TabEntry, "kind" | "cmd"> | undefined): boolean {
   return !!tab && tab.kind === "agent" && READER_AGENTS.has(tab.cmd);
 }

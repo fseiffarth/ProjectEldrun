@@ -36,7 +36,7 @@ export interface StaticMenuItem {
   // displayed/persisted label through. Agent items keep their brand name as a
   // literal `label` and never set this (Claude/Codex/… are proper nouns).
   labelKey?: TranslationKey;
-  // When set, Eldrun mints a UUID at launch and passes it to the agent so it
+  // When set, Tabtivity mints a UUID at launch and passes it to the agent so it
   // owns a deterministic session id (e.g. Claude's `--session-id <uuid>`). The
   // returned strings are appended to the spawn args. Lets us surface the
   // session id on hover and later resume the session.
@@ -128,7 +128,7 @@ export const TAB_ACCENT: Record<TabKind, string> = {
 /**
  * Build the full tab payload (minus the store-minted `key`) for a static
  * agent/shell menu item. Mirrors the main-window `TabBar.handleAdd`: for
- * resumable agents it mints a session UUID + `ELDRUN_TAB_UID`, threads
+ * resumable agents it mints a session UUID + `TABTIVITY_TAB_UID`, threads
  * `sessionIdArgs` into the launch args, and derives the session-rename input.
  * Pure aside from `crypto.randomUUID`, so both the main and detached add menus
  * produce identical specs.
@@ -171,7 +171,7 @@ export function buildStaticTabSpec(
 /**
  * The tab payload for a built-in agent's *cloud* session (see
  * `lib/agents/cloudSessions`). Unlike {@link buildStaticTabSpec} it mints no
- * session id, no `ELDRUN_TAB_UID` and no session-rename input: the session is
+ * session id, no `TABTIVITY_TAB_UID` and no session-rename input: the session is
  * the vendor's, and a tab without an id is one restore drops rather than
  * relaunching into a second cloud session. `cloud` still has it saved and
  * tmux-wrapped while it runs, so a phone can attach (`isSavedWhileLive`).

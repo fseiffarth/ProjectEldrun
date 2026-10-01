@@ -1,5 +1,5 @@
 /**
- * Eldrun's shared line-icon set — the replacement for colour emoji in the
+ * Tabtivity's shared line-icon set — the replacement for colour emoji in the
  * chrome. Same rounded `currentColor` outline as {@link SaveIcon} /
  * {@link PrinterIcon} / the edge-rail icons (24-grid, 1.4 stroke), so every
  * icon follows the theme, dims with its row, and reads as one family.

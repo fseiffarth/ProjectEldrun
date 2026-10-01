@@ -1,6 +1,6 @@
 /**
- * The repo's own `.githooks/pre-push` under Eldrun's agent-push preflight
- * (`ELDRUN_PUSH_PREFLIGHT=1`, `services::git_push_mcp`): it bumps the version,
+ * The repo's own `.githooks/pre-push` under Tabtivity's agent-push preflight
+ * (`TABTIVITY_PUSH_PREFLIGHT=1`, `services::git_push_mcp`): it bumps the version,
  * commits the bump and exits 0 instead of re-pushing and aborting. Run against
  * a throwaway repo whose remote is unreachable, so any push attempt would fail
  * loudly. Skipped where git or jq is missing.

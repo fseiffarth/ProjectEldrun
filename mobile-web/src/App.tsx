@@ -54,7 +54,7 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "mail", icon: SECTION_GLYPH.mail, label: "Mail" },
 ];
 /**
- * How long Eldrun Mobile may go untouched before the local lock closes the
+ * How long Tabtivity Mobile may go untouched before the local lock closes the
  * session. Long enough to outlast a reload, a trip to another app, and reading a
  * screenful of terminal output without touching the glass; short enough that a
  * phone whose own screen saver has taken over is locked here too — the web
@@ -106,7 +106,7 @@ const ACTIVITY_EVENTS = ["pointerdown", "keydown", "input", "touchstart", "touch
 
 /**
  * The launch curtain, and the same one the desktop app draws while its settings
- * and project reads are in flight (`AppShell`'s `StartupSplash`): the Eldrun
+ * and project reads are in flight (`AppShell`'s `StartupSplash`): the Tabtivity
  * mark inside two counter-rotating orbit rings. It stood in as a `✦` glyph,
  * which is the one screen a phone reliably sees on every cold open — every cold
  * open asks for the PIN or fingerprint first, and re-authenticates from scratch

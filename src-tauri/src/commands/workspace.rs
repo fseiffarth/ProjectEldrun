@@ -610,7 +610,7 @@ pub(crate) fn detect_conn_type_linux(net_dir: &Path) -> String {
 fn detect_conn_type_windows() -> String {
     // Check for an active Wi-Fi connection via `netsh wlan show interfaces`.
     // `command_no_window` (inside `probe_output_capped`) keeps these probes
-    // from flashing a console window on every poll (Eldrun is a windowed app
+    // from flashing a console window on every poll (Tabtivity is a windowed app
     // with no console).
     if let Some(text) = probe_output_capped("netsh", &["wlan", "show", "interfaces"]) {
         let text = text.to_lowercase();

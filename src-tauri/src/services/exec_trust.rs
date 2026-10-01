@@ -1,6 +1,6 @@
-//! Ask-once approval for project-supplied programs Eldrun would run on the host.
+//! Ask-once approval for project-supplied programs Tabtivity would run on the host.
 //!
-//! Three things Eldrun runs at a click execute code that lives in the project
+//! Three things Tabtivity runs at a click execute code that lives in the project
 //! tree — a tree a fenced agent, a container tab, a `git pull` or whoever sent
 //! the repo can write:
 //!

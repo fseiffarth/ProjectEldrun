@@ -4601,7 +4601,7 @@
   100% { box-shadow: 0 0 0 14px rgba(68, 147, 248, 0); }
 }
 
-/* The card a remark is written in. App chrome rather than paper — it is Eldrun's
+/* The card a remark is written in. App chrome rather than paper — it is Tabtivity's
    editor, not part of the document — and it sits above every page overlay. */
 .file-viewer-pdf-note-card {
   position: absolute;

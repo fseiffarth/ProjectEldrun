@@ -187,7 +187,7 @@ pub async fn serve(socket: &Path, context: AdminContext) -> Result<(), String> {
 pub mod pipe {
     use std::path::{Path, PathBuf};
 
-    /// Stable per-path pipe name so two Eldrun state dirs never collide.
+    /// Stable per-path pipe name so two Tabtivity state dirs never collide.
     pub fn pipe_name(socket: &Path) -> String {
         pipe_name_with(crate::brand::CONTROL_PIPE_PREFIX, socket)
     }
@@ -340,7 +340,7 @@ pub async fn serve(_: &Path, _: AdminContext) -> Result<(), String> {
 /// A stopped host leaves its socket *file* behind, so connecting to it fails
 /// with `ECONNREFUSED`; passing that through rendered the whole feature's
 /// ordinary down state in the Mobile menu as `Connection refused (os error
-/// 111)`, which names neither Eldrun Mobile nor anything the reader can act on.
+/// 111)`, which names neither Tabtivity Mobile nor anything the reader can act on.
 /// `NotFound` is the same state with the socket file already gone.
 pub const NOT_RUNNING_ERROR: &str = concat!("The ", crate::app_name!(), " Mobile host is not running");
 

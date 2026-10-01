@@ -4,7 +4,7 @@
  * that makes it safe to float over a project: opening it never moves the active
  * project, its panes are attach-only views of the root tabs' own PTYs (so
  * closing it ends nothing), a tab added from it lands in the ROOT scope, and a
- * row a root agent wrote through Eldrun's MCP tools reaches the calendar store
+ * row a root agent wrote through Tabtivity's MCP tools reaches the calendar store
  * and the CalDAV write hook.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -398,7 +398,7 @@ describe("RootOverlayHost", () => {
     expect(useCalendarStore.getState().tasks.map((t) => t.id)).toEqual(["t1"]);
     expect(announced).toHaveLength(1);
 
-    // A move's rank/column rows are Eldrun's own: merged, never announced.
+    // A move's rank/column rows are Tabtivity's own: merged, never announced.
     await act(async () =>
       listeners.get("root-mcp-changed")?.({ payload: { kind: "task", op: "upsert", row: { ...row, rank: 2048 }, local: true } }),
     );

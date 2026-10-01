@@ -220,7 +220,7 @@ pub struct MobileLocalAgent {
 }
 
 /// One agent the phone's ＋ can sign in to (`agent_id` is the catalog's
-/// opaque agent id). `signed_in` is `None` where Eldrun cannot tell (a CLI
+/// opaque agent id). `signed_in` is `None` where Tabtivity cannot tell (a CLI
 /// whose login it does not keep); `account` is the account the shared login
 /// names, when it names one; `alternate` names the CLI's other way in
 /// (`"console"`, `"browser"`) when it has one.
@@ -955,7 +955,7 @@ pub enum DesktopRequest {
     /// tmux through the sidecar's own client, so the desktop never sees the
     /// words; the phone knows them before they leave, and the desktop records
     /// them in the tab's prompt history — the one list of what a session was
-    /// asked for an agent whose transcript Eldrun does not read (OpenCode).
+    /// asked for an agent whose transcript Tabtivity does not read (OpenCode).
     TabPrompt {
         request_id: String,
         project_id: String,
@@ -1033,7 +1033,7 @@ pub enum DesktopRequest {
         project_id: String,
     },
     /// Copy one of those images into the project's inbox — the same
-    /// `.eldrun/inbox/` drop box a file sent from the phone lands in — and
+    /// `.tabtivity/inbox/` drop box a file sent from the phone lands in — and
     /// answer with the project-relative reference. `image_id` is one the
     /// desktop listed; a path never crosses.
     AttachDesktopImage {
@@ -1295,7 +1295,7 @@ pub struct MobileAgentStatus {
     pub usage: MobileAgentUsage,
 }
 
-/// A file that landed in a project's `.eldrun/inbox/`, as the phone sees it:
+/// A file that landed in a project's `.tabtivity/inbox/`, as the phone sees it:
 /// the stored name, the project-relative reference it puts after an `@`, and
 /// the size. Mirrors `inbox::Stored` on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1330,7 +1330,7 @@ pub fn git_dot(state: &str) -> Option<&'static str> {
 /// What the desktop answers a [`DesktopRequest`] with.
 ///
 /// **This enum and everything it carries are deliberately NOT
-/// `deny_unknown_fields`.** Strictness here guards nothing — the peer is Eldrun
+/// `deny_unknown_fields`.** Strictness here guards nothing — the peer is Tabtivity
 /// itself over a private socket in the state dir, not the paired browser, whose
 /// every input type above stays strict — and it made the two halves of one app
 /// version-fragile in exactly the direction this repo's dev workflow produces

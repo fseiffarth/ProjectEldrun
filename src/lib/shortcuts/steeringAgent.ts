@@ -5,7 +5,7 @@
  *
  *  - Clear submits `/clear` the way a scheduled prefix command goes in
  *    (`submitScheduledAgentCommand`), and offers "Undo clear" as a typed one
- *    does (`noteTypedClear`). Every agent CLI Eldrun launches reads `/clear` as
+ *    does (`noteTypedClear`). Every agent CLI Tabtivity launches reads `/clear` as
  *    a new conversation (see the phone's `NEW_CONVERSATION_COMMAND`).
  *  - Plan / Goal open steering's prompt box led with the command — the user
  *    writes the rest and sends it themselves, as with the chips, and steering
@@ -15,7 +15,7 @@
  * None of them leaves the mode: the keyboard stays with steering, or comes
  * back to it once the box is done.
  *
- * Eldrun chooses nothing here: each key types what the user could have typed
+ * Tabtivity chooses nothing here: each key types what the user could have typed
  * into the agent's own CLI (AGENTS.md, agent authority).
  */
 import { agentDraftPrefixes, agentFamily } from "../../../shared/agentComposer";

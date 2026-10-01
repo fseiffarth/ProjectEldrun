@@ -1,15 +1,18 @@
 # Brand migration — why it is shaped this way
 
 `services::brand_migration` moves what an older build wrote under the app's old
-name to the current name. Today the two names are the same, so the whole
-subsystem is inert; it exists so that the rename itself is one commit that
-changes names and no behaviour.
+name to the current name. It was built while the two names were still the
+same — inert, so that the rename itself was one commit that changed names and
+no behaviour — and has been live since the flip (release A): the app is now
+Tabtivity, and the old name is the one in `brand::LEGACY`.
 
-Status of each kind of thing: `docs/rename_phase2_handoff.md`.
+Status of each kind of thing: `docs/rename_phase2_handoff.md`; what the flip
+changed and what it left: `docs/rename_phase3_handoff.md`.
 
 ## The no-op guarantee
 
-While `brand::PAIR.renamed()` is false:
+For a pair whose name did not change (`pair.renamed()` is false — every build
+before the flip, and the tests' `UNCHANGED` pair since):
 
 - `run_at_launch` returns before it builds anything, and `run_startup` before
   it looks at the disk. **No record is written — not even an all-done one.** A

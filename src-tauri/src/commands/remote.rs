@@ -107,7 +107,7 @@ pub async fn remote_connect(
     // Connect *fail* on a tagged host, because the alternative is the bug this
     // whole change exists to close: a launch path that inherits "user-initiated"
     // by saying nothing is exactly how the cluster kept being dialled. Failing
-    // closed here costs one `ELDRUN_HPC_GUARD connect …` naming the machine.
+    // closed here costs one `TABTIVITY_HPC_GUARD connect …` naming the machine.
     // A VM project boots first (`docs/vm_projects_plan.md`): the VM *is* the
     // host, so every connect path — activation auto-connect, the lamp click,
     // a tab's silent re-connect — funnels through ensure-booted here rather

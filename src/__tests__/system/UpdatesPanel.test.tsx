@@ -1,7 +1,7 @@
 /**
  * Settings → Updates (`UpdatesPanel`).
  *
- * The panel ends with Eldrun running a binary it downloaded, so what is worth
+ * The panel ends with Tabtivity running a binary it downloaded, so what is worth
  * locking in is not the layout but the shape of the conversation with the
  * backend — every one of these has a plausible-looking wrong version:
  *
@@ -12,7 +12,7 @@
  *  2. **Nothing is downloaded by the check.** Opening the panel asks GitHub one
  *     question; the artifact waits for a click.
  *  3. **A `manual` install offers no install.** A `.deb` copy must not be
- *     handed a button that would have Eldrun overwrite a package manager's
+ *     handed a button that would have Tabtivity overwrite a package manager's
  *     files — it is told where the download went instead.
  *  4. **Being up to date says so.** A check that answers "no" must render a
  *     sentence, not an empty panel that reads like a failed request.

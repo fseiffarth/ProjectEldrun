@@ -11,7 +11,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { ErrorNote } from "../common/ErrorNote";
 
 /**
- * The background "Eldrun (dev)" freeze that every commit queues
+ * The background "Tabtivity (dev)" freeze that every commit queues
  * (`scripts/package-dev-auto.sh`, docs/context/dev_builds.md), as a header
  * chip: which step the build is on, for how long, and roughly how much is left
  * (the last successful build's duration is the estimate — nothing better is
@@ -27,7 +27,7 @@ import { ErrorNote } from "../common/ErrorNote";
  * now" quits through the ordinary close and reopens via the launcher
  * (`dev_build_relaunch`).
  *
- * Only a binary built from a checkout answers (`ELDRUN_DEV_SOURCE_ROOT`); a
+ * Only a binary built from a checkout answers (`TABTIVITY_DEV_SOURCE_ROOT`); a
  * release answers `null` and this renders nothing, so the chip is never a
  * cluster member there.
  *

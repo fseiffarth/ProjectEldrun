@@ -1,4 +1,4 @@
-# Eldrun Mobile — future directions plan
+# Tabtivity Mobile — future directions plan
 
 Status: **Proposed. Nothing in this document is implemented.**
 
@@ -251,10 +251,10 @@ when its old chunk is gone.
 > **Re-evaluated and built 2026-09-28 (todo 31bo, never live).** Since this
 > section was written the phone grew the outbox (`mobile_control/outbox.rs`,
 > `OutboxViewer`), boxes and the root console as scopes, and host-wide gates
-> in `eldrun_mobile_host` that the sidecar reads itself (`root_access`). The
+> in `tabtivity_mobile_host` that the sidecar reads itself (`root_access`). The
 > build follows D.2's sealed tokens and D.3's routes, with these changes:
 >
-> - **One host-wide switch, not a per-project flag.** `eldrun_mobile_host.
+> - **One host-wide switch, not a per-project flag.** `tabtivity_mobile_host.
 >   project_files` (default off), beside the mail and root switches in Mobile
 >   settings. A second checkbox on every project row doubled the list for
 >   little: a phone shell reads the whole machine anyway, and the per-project
@@ -272,7 +272,7 @@ when its old chunk is gone.
 >   `GET /api/v1/projects/{id}/files/raw?f=<token>[&download=1]`; the project
 >   detail carries `files: bool` so the phone shows its 📁 only when on.
 
-Downloads already exist for explicitly sent outbox files (`eldrun-send`, `docs/context/agent_sessions.md`).
+Downloads already exist for explicitly sent outbox files (`tabtivity-send`, `docs/context/agent_sessions.md`).
 This section concerns browsing beyond that outbox.
 
 ### D.1 Goal
@@ -315,13 +315,13 @@ listing) is a 404, and this check is **per request**, never cached.
 
 Both routes: authenticated, project must be in the catalog (which already
 excludes remote/sandbox/VM projects), and gated by a **new per-project flag**
-`eldrun_mobile_files` (default off) beside `eldrun_mobile_access` — shell
+`tabtivity_mobile_files` (default off) beside `tabtivity_mobile_access` — shell
 access and tree access are different grants; a paired phone that can nudge an
 agent should not silently also read every secret file in the tree. The
 desktop Settings row grows a second checkbox.
 
 **Denylist, not intelligence:** `.git/`, `.env*`, and the project's
-`.eldrun/` are skipped in listings. This is a courtesy filter against casual
+`.tabtivity/` are skipped in listings. This is a courtesy filter against casual
 shoulder-surfing, and the plan says so — the real boundary is the per-project
 flag, because a phone with shell access can `cat` anything regardless.
 
@@ -364,7 +364,7 @@ opaque ids, applies the flag through `mail_engine`'s pooled session
 answers with the refreshed `MobileMailView::Folder` page so the phone's list
 is correct without a second round trip.
 
-**Gate:** one global setting `eldrun_mobile_mail_actions` (default **off**),
+**Gate:** one global setting `tabtivity_mobile_mail_actions` (default **off**),
 checked desktop-side in the bridge handler — the sidecar cannot read mail
 settings and must not start to. When off, the request answers
 `mail_actions_disabled` and the phone hides the buttons (capability is
@@ -386,7 +386,7 @@ failing server-side surfaces the error string, never a silently stale list.
 The design above, with three deliberate deviations and one addition:
 
 - the gate lives on the host settings object as
-  `eldrun_mobile_host.mail_actions` rather than as a top-level key, so it
+  `tabtivity_mobile_host.mail_actions` rather than as a top-level key, so it
   travels with the rest of Mobile's configuration and is read only by the
   desktop bridge (`MobileBridgeHost`), never by the sidecar;
 - the bridge request carries the folder page `offset`, because the desktop
@@ -396,7 +396,7 @@ The design above, with three deliberate deviations and one addition:
   command (local index first, then the server, a refusal reported), not
   `set_flags_bulk`: one message per tap is the whole workload.
 - **Reply-only, added under a second, separate default-off gate
-  (`eldrun_mobile_host.mail_reply`).** The phone submits plain text and
+  (`tabtivity_mobile_host.mail_reply`).** The phone submits plain text and
   nothing else (`POST …/reply {body, offset}`, ≤ 16 KiB). The desktop derives
   the recipient from the original's `From`, the subject behind the reply
   prefix, quotes the original below the text, sets `In-Reply-To` from the RFC
@@ -468,7 +468,7 @@ platform authenticator supports it** and changes nothing where it does not.
 ### G.2 What exists
 
 - The device identity is a **non-exportable** ECDSA P-256 `CryptoKey` in
-  IndexedDB (`auth.ts`, `eldrun-mobile-auth` → `keys` → `device`), generated
+  IndexedDB (`auth.ts`, `tabtivity-mobile-auth` → `keys` → `device`), generated
   with `extractable: false`. It is usable — but not exportable — by any script
   running in the `https://<serve-host>` origin.
 - The local lock (`localLock.ts`) is a **PBKDF2 verifier** (210 000 iterations,
@@ -476,7 +476,7 @@ platform authenticator supports it** and changes nothing where it does not.
   WebAuthn platform credential (`residentKey: required`,
   `userVerification: required`) used purely as an unlock *assertion* — its
   success gates the flow but derives no key material.
-- The app-flow gate is `sessionStorage["eldrun-mobile-local-unlocked"]` plus a
+- The app-flow gate is `sessionStorage["tabtivity-mobile-local-unlocked"]` plus a
   180 s idle re-lock (`App.tsx`); `resumeAuth`'s signed-challenge login runs
   only after a verified unlock, so a cold open always shows the lock screen.
 - The UI already states the honest posture: *"This local lock protects against
@@ -545,7 +545,7 @@ to keep the key in the authenticator and still sign challenges without an
 assertion per signature, which the 5 s reconnect cadence and the WebSocket
 lifetime make impractical. G's claim is exactly and only: *no usable key at
 rest, and no unlock without an authenticator assertion where the platform
-supports one.* The phone's own device lock and Eldrun's paired-device
+supports one.* The phone's own device lock and Tabtivity's paired-device
 revocation remain the outer boundary, as the UI already says.
 
 ### G.6 Delivery and gates

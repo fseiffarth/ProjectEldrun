@@ -1,7 +1,7 @@
-//! Read-only CI for the `eldrun-git` lane (`services::git_push_mcp`): a
+//! Read-only CI for the `tabtivity-git` lane (`services::git_push_mcp`): a
 //! fenced agent reads why a GitHub Actions run — the build, the tests, the
 //! security workflow — failed, and which code-scanning alerts are open,
-//! without the token entering its sandbox. Eldrun asks api.github.com from the
+//! without the token entering its sandbox. Tabtivity asks api.github.com from the
 //! host and hands back capped, redacted text. `docs/context/git_push_mcp.md`.
 //! AppHandle-free.
 //!

@@ -2284,7 +2284,7 @@ async fn order_tab(
 
 /// `DELETE /api/v1/tabs/{id}` — close one tab from the phone, agent or shell.
 /// The desktop owns the tab layout, so this is a bridge call, and it closes the
-/// way the desktop's own × does: the tab leaves the Eldrun window while the
+/// way the desktop's own × does: the tab leaves the Tabtivity window while the
 /// tmux session behind it keeps running, reattachable from the desktop's
 /// Sessions view. Only the opaque tab id crosses; the raw project id and the
 /// tmux name stay on the desktop/sidecar link.
@@ -3107,7 +3107,7 @@ struct InboxQuery {
 
 /// `POST /api/v1/tabs/{tab_id}/inbox` — the composer's **+ → From this phone**.
 /// The raw body is the file; it lands in the tab's project under
-/// `.eldrun/inbox/` and the phone gets the project-relative reference back to
+/// `.tabtivity/inbox/` and the phone gets the project-relative reference back to
 /// put after an `@`. The tab names the project and nothing else: a session
 /// that has ended can still receive a file for the next one. See
 /// `inbox.rs` for why a relative reference may cross the boundary.
@@ -3199,7 +3199,7 @@ fn inbox_error(error: inbox::InboxError) -> (StatusCode, Json<serde_json::Value>
 }
 
 /// `POST /api/v1/inbox` — the phone's **Send to desktop**: a file that belongs
-/// to no project. It lands in Eldrun's own `<state_dir>/inbox/`, never in a
+/// to no project. It lands in Tabtivity's own `<state_dir>/inbox/`, never in a
 /// project folder, and the desktop's header lists it from there. The answer
 /// carries the stored name and size only — there is nothing to reference.
 async fn global_inbox_upload(
@@ -3300,7 +3300,7 @@ struct AttachDesktopImageBody {
 
 /// `POST /api/v1/tabs/{tab_id}/desktop-images` — copy one listed image into
 /// the tab's project inbox. Answers like `inbox_upload`: the stored name, the
-/// project-relative `.eldrun/inbox/<file>` reference, the size.
+/// project-relative `.tabtivity/inbox/<file>` reference, the size.
 async fn attach_desktop_image(
     State(state): State<HostState>,
     headers: HeaderMap,
@@ -3382,7 +3382,7 @@ fn outbox_error(error: outbox::OutboxError) -> (StatusCode, Json<serde_json::Val
 }
 
 /// `GET /api/v1/tabs/{tab_id}/outbox` — the files the agent left in the
-/// project's `.eldrun/outbox/` for the phone to see (`outbox.rs`): leaf name,
+/// project's `.tabtivity/outbox/` for the phone to see (`outbox.rs`): leaf name,
 /// kind, size and mtime, newest first. Read from disk by the sidecar itself,
 /// like the inbox write — no desktop round trip, and no path in the answer.
 async fn outbox_list(
@@ -3482,7 +3482,7 @@ async fn project_outbox_file(
 /// desktop published to this phone.
 ///
 /// What the reader can see, the reader can clear: nothing prunes
-/// `.eldrun/outbox/`, and a picture that has been looked at could only be
+/// `.tabtivity/outbox/`, and a picture that has been looked at could only be
 /// removed from a shell on the desktop until now. Only a leaf the listing
 /// handed out is deletable (`outbox::remove` re-proves it exactly as a read
 /// does), and the exact-origin check every mutating route here carries applies
@@ -3598,7 +3598,7 @@ async fn markup_submit(
         let Some((project, tab)) = catalog.tab(&tab_id) else {
             return api_error(StatusCode::NOT_FOUND, "tab_not_found");
         };
-        // A tab with a session id is one `eldrun-send` can answer into.
+        // A tab with a session id is one `tabtivity-send` can answer into.
         (project.root.clone(), project.raw_id.clone(), project.public.kind, tab.session_id.is_some())
     };
     let source = match &request.source {

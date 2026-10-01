@@ -86,7 +86,7 @@ export function normalizeTodoId(value: unknown): string | undefined {
  *
  * - `sessionId` is an agent's conversation. It is minted fresh AND substituted
  *   wherever the old one was baked in at creation — `--session-id <uuid>` in
- *   `args`, `ELDRUN_TAB_UID` in `env` (see `buildStaticTabSpec`) — since two
+ *   `args`, `TABTIVITY_TAB_UID` in `env` (see `buildStaticTabSpec`) — since two
  *   agents launched onto one session id is a collision, not a duplicate.
  * - `tmuxSession` is dropped so `withTmuxSession` mints a new one; keeping it
  *   would make the copy REATTACH to the original's session instead of running.
@@ -213,7 +213,7 @@ export function workerRunnable(h: LocalityHost): boolean {
 /**
  * The scope that belongs to no project: the root control terminal's, and the
  * scope every tab opened outside a project lands in. Its working directory is
- * `~/eldrun/root` (`root_work_dir`), which the side panel browses as the app's
+ * `~/tabtivity/root` (`root_work_dir`), which the side panel browses as the app's
  * unfiled/scratch area.
  */
 export const ROOT_SCOPE = "root";
@@ -268,7 +268,7 @@ export const CALENDAR_TAB_CMD = tabCommand("calendar");
  * Sentinel `cmd` of the **retired** mail tab.
  *
  * Mail was a tab and a header overlay at once, and the tab was the half that did
- * not earn its keep: the mail store is global (one `~/.local/share/eldrun/mail/`,
+ * not earn its keep: the mail store is global (one `~/.local/share/tabtivity/mail/`,
  * one zustand store), so a mail tab showed the same mailbox from every scope —
  * i.e. exactly what the header's ✉ button already opens over whatever is on
  * screen, without belonging to a project you then switch away from. The tab kind
@@ -277,12 +277,12 @@ export const CALENDAR_TAB_CMD = tabCommand("calendar");
  * The constant stays because the *persisted layouts* do: a saved tree written
  * before the removal still carries `kind: "mail"` tabs holding this `cmd`, and
  * without `RETIRED_TAB_CMDS` below, `cmdToKind` would fall through to `"shell"`
- * and restore each one as a terminal trying to run `__eldrun_mail__`.
+ * and restore each one as a terminal trying to run `__tabtivity_mail__`.
  */
 export const MAIL_TAB_CMD = tabCommand("mail");
 
 /**
- * Sentinel commands of tab kinds Eldrun no longer has, dropped unconditionally
+ * Sentinel commands of tab kinds Tabtivity no longer has, dropped unconditionally
  * on restore. Here for the same reason the removed global-app launcher kept a list of
  * retired roles: removing a feature does not remove it from the
  * state already written to disk, and the fall-through for an unrecognized `cmd`
@@ -391,7 +391,7 @@ export const EMPTY_GROUP_ID = "__empty__";
 
 /**
  * Persisted per-tab view state for the in-app file viewers, so reopening a file —
- * or restarting Eldrun — restores the reader where they left it instead of
+ * or restarting Tabtivity — restores the reader where they left it instead of
  * jumping back to the top/default zoom. All fields optional; each viewer fills
  * the ones it has: scroll offset (text + PDF), zoom `scale` (PDF + image), and
  * pan `offsetX/offsetY` (image). Travels with the embed tab in project.json.
@@ -428,7 +428,7 @@ export interface ViewerState {
   // check; they are ignored.
   // Debug breakpoints (#py), as 1-based line numbers into the file. Persisted per
   // tab like the reader's scroll position, so the dots survive closing the file
-  // and an Eldrun restart. Remapped as the draft is edited (see useBreakpoints);
+  // and a Tabtivity restart. Remapped as the draft is edited (see useBreakpoints);
   // what is stored is always resolved against the file as last seen.
   breakpoints?: number[];
   // Collapsed nodes of the YAML tree (#yaml), as node ids (document + path). Like
@@ -587,7 +587,7 @@ export interface TabEntry {
   cwd: string;
   kind: TabKind;
   // For agents that support a deterministic session id (currently Claude, via
-  // `--session-id <uuid>`), the UUID Eldrun minted and launched the agent with.
+  // `--session-id <uuid>`), the UUID Tabtivity minted and launched the agent with.
   // Surfaced on tab hover and intended to later drive session resume.
   sessionId?: string;
   // Stable local-only binding into <state_dir>/agent_tasks.json. It follows the
@@ -597,7 +597,7 @@ export interface TabEntry {
   // This tab's work is **not** worth outliving it: never tmux-wrapped, however
   // persist-enabled its project is (`lib/terminal/tmuxSession`'s `shouldPersistTab`). Set
   // by the SLURM log tab on an HPC-tagged host — a `tail -F` left running under a
-  // tmux daemon on a shared login node after Eldrun quits is exactly the standing
+  // tmux daemon on a shared login node after Tabtivity quits is exactly the standing
   // presence the tag forbids, and the tail is one click away in the Jobs view.
   // A real run (`srun --pty`, a training job) is untouched: it is the case tmux
   // persistence exists for. Persisted with the tab, so a restored log tab does
@@ -656,7 +656,7 @@ export interface TabEntry {
   location?: TabLocation;
   // There is deliberately no `agentMode` here. An agent tab launches with the
   // plain CLI command and no permission-mode flag; the mode is the agent's own
-  // to set, inside its own TUI. Eldrun used to carry a per-tab Plan/Auto mode
+  // to set, inside its own TUI. Tabtivity used to carry a per-tab Plan/Auto mode
   // and fold it into `args`, which made every flip a PTY respawn — and made the
   // *tab layout* a second, disagreeing authority record beside whatever the
   // session was actually in. The mode a user sets in-session still survives a
@@ -724,7 +724,7 @@ export interface TabEntry {
   // one tab).
   todoId?: string;
   // The root console's **Host session** (`docs/context/agent_authority.md`):
-  // this agent tab runs unfenced, with the user's full rights, in Eldrun's
+  // this agent tab runs unfenced, with the user's full rights, in Tabtivity's
   // `host` agent home. Only ever set by the console's own "Host session" menu
   // entry, never a project default, never from the phone. Persisted so the
   // tab comes back after a restart — paused (`hostSessionPaused`), never
@@ -1166,7 +1166,7 @@ interface TabsStore {
   revealTabInScope: (scope: string, key: string) => boolean;
 
   // tab lifecycle
-  // `seeded` marks a tab Eldrun opened by itself rather than one the user asked
+  // `seeded` marks a tab Tabtivity opened by itself rather than one the user asked
   // for (the root scope's default 3D-blob tab). Such a tab must not be counted as
   // a tab the user opened — see `countTabOpen`.
   addTab: (tab: Omit<TabEntry, "key">, opts?: AddTabOpts) => TabEntry; // into focused group
@@ -1252,12 +1252,12 @@ interface TabsStore {
    *
    * This is not cosmetic; without it a detach silently breaks every agent tab. While a
    * project is remote its `directory` is the **state dir**
-   * (`~/.local/share/eldrun/remote-projects/<id>/`), and `loadFromLayout` stores exactly
+   * (`~/.local/share/tabtivity/remote-projects/<id>/`), and `loadFromLayout` stores exactly
    * that as each tab's `cwd` (agents unconditionally, others via `t.cwd || defaultCwd`).
    * Nothing noticed, because `localTabCwd` overrode it at render time to the real mirror —
    * an override gated on `isRemoteProject`. Detach flips that to false, the override stops
    * firing, and every tab falls back to the stored cwd it never should have had: the state
-   * dir. Agents then launch inside `~/.local/share/eldrun/remote-projects/<id>/` — a
+   * dir. Agents then launch inside `~/.local/share/tabtivity/remote-projects/<id>/` — a
    * directory that detach has just emptied — so Claude asks for permissions there and
    * `--resume` finds no session, because Claude keys its history by cwd and the whole
    * conversation lives under the mirror's path instead.
@@ -4822,7 +4822,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // below this waits for nothing: the kind does not exist any more, and the
     // fall-through for its unrecognized `cmd` is `"shell"` — so a mail tab saved
     // before the tab was retired would come back as a terminal running
-    // `__eldrun_mail__` rather than as nothing at all.
+    // `__tabtivity_mail__` rather than as nothing at all.
     layout = layout.filter((t) => !RETIRED_TAB_CMDS.has(t.cmd || ""));
     // A tab whose experimental flag is off does not come back (the restore half of
     // `closeTabsOfKinds`; the sweep only reaches scopes already in memory). Reads
@@ -4854,7 +4854,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // Agent tabs start in the current project dir so stale saved cwds don't
       // put the agent in the wrong directory after a project move/rename — with
       // two exceptions, both places the scope *derives* rather than remembers: a
-      // cwd under THIS root's `.eldrun/worktrees/` is a linked worktree the agent
+      // cwd under THIS root's `.tabtivity/worktrees/` is a linked worktree the agent
       // was deliberately started in, and a box scope's member root (or a
       // worktree under one) is where its per-member Claude tab was started.
       // Resetting those put the agent in the wrong directory and, on the CLI of
@@ -4906,9 +4906,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // `--resume` rewrite (`services::agent_session`), and for every other
       // agent whatever its CLI does on resume.
       const args = base;
-      // Codex mints its conversation id itself, so `sessionId` is Eldrun's
+      // Codex mints its conversation id itself, so `sessionId` is Tabtivity's
       // stable *binding* key rather than a CLI argument. The backend resolves
-      // that key from ELDRUN_TAB_UID before it spawns the restored tab. Layouts
+      // that key from TABTIVITY_TAB_UID before it spawns the restored tab. Layouts
       // written before the key was persisted in `env` (and a stale layout whose
       // env disagrees with its sessionId) would otherwise restore a visible
       // Codex tab but launch a fresh conversation. Rebuild this identity field
@@ -5100,7 +5100,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const layout = get().layoutByScope[scope] ?? null;
     const scopeTabs = get().tabsByScope[scope] ?? [];
     // Whether an EMPTY layout may erase what's on disk. Saving empty is destructive —
-    // it drops `tab_layout`/`tab_groups` AND overwrites the `.eldrun` session mirror,
+    // it drops `tab_layout`/`tab_groups` AND overwrites the `.tabtivity` session mirror,
     // taking a resumable agent tab's `sessionId` (the only handle on its conversation)
     // with them. So it must mean "the user closed every tab", and only two things here
     // can distinguish that from a caller with nothing loaded:
@@ -5118,7 +5118,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // Anything else: the backend keeps what it has. Worst case we persist a layout one
     // save late; the alternative loses conversations.
     const hydrated = Object.prototype.hasOwnProperty.call(get().tabsByScope, scope);
-    // The seeded 3D-blob (`projects3d`, root scope only) is Eldrun's own default
+    // The seeded 3D-blob (`projects3d`, root scope only) is Tabtivity's own default
     // tab, never restorable and never persisted — so a root holding only it IS an
     // empty root, and must license a clear or a closed-back-to-default root would
     // resurrect its old tabs on every relaunch. It only ever exists at root, so
@@ -5457,11 +5457,11 @@ export function isPtyTabKind(kind: TabKind): boolean {
  *    latter two from their per-tab hook records.
  *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Gemini, Grok,
  *    Google Antigravity have no caller-supplied launch id, so
- *    Eldrun re-launches with their "continue the most recent session" flag.
+ *    Tabtivity re-launches with their "continue the most recent session" flag.
  *    Because each agent tab
  *    launches in the project directory, that most-recent session IS the tab's
  *    prior conversation. These ignore the minted id (it only satisfies the
- *    persistence gate below and is set as ELDRUN_TAB_UID). Caveat: two tabs of
+ *    persistence gate below and is set as TABTIVITY_TAB_UID). Caveat: two tabs of
  *    the same agent in one project both resume that project's single latest
  *    session, so they can't be told apart on restore. Aider stays excluded — it
  *    has no per-session resume (only `--restore-chat-history`).
@@ -5471,7 +5471,7 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   // after `/clear`.
   claude: (id) => ["--resume", id],
   // Codex mints its own session id, so the tab's `sessionId` is only the
-  // ELDRUN_TAB_UID key (not a Codex id) → no frontend resume args. The backend
+  // TABTIVITY_TAB_UID key (not a Codex id) → no frontend resume args. The backend
   // reads the hook-recorded live id and injects `codex resume <live-id>` at spawn
   // (terminal::resolve_codex_session).
   codex: () => [],

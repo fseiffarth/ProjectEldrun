@@ -1197,7 +1197,7 @@ pub async fn fetch_changes(
 // 2. **A `412` is a value, not an error.** See [`CalDavWrite`].
 // 3. **The client names the resource.** RFC 4791 §5.3.2 leaves the URL to the
 //    client, so a create mints `<collection>/<uid>.ics`. The uid comes from
-//    Eldrun's own row id, but it is sanitized anyway ([`resource_name`]) — a UID
+//    Tabtivity's own row id, but it is sanitized anyway ([`resource_name`]) — a UID
 //    that arrived from an *imported* ICS file is text somebody else wrote, and it
 //    would otherwise be a path-traversal primitive aimed at the server.
 // 4. **The body is `text/calendar`.** Sent verbatim, exactly as the frontend's

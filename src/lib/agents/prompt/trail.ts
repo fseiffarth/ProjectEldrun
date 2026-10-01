@@ -7,7 +7,7 @@ import { rowOfTab, sameWords } from "./adopt";
  * (`components/terminal/TerminalPromptStrip`).
  *
  * Two sources, joined:
- *  - the project's prompt history rows of the tab — what Eldrun sent itself
+ *  - the project's prompt history rows of the tab — what Tabtivity sent itself
  *    (composer, schedules, the phone) and what it already adopts from the
  *    agents that keep a transcript. Exact, and it survives a restart.
  *  - the lines the keystrokes submitted (`lib/agents/typedPrompt`), which

@@ -12,9 +12,9 @@
 //! agent's habit and broke another's reading. The agents themselves know
 //! exactly when a turn starts (`UserPromptSubmit`), pauses on the user
 //! (`Notification` with `permission_prompt`), resumes (`PostToolUse`) and ends
-//! (`Stop`), and both Claude Code and Codex run Eldrun's hook script on those
+//! (`Stop`), and both Claude Code and Codex run Tabtivity's hook script on those
 //! events already (see `services::agent_session`). The script writes one small
-//! record per tab, `<live_sessions>/<ELDRUN_TAB_UID>.turn`, holding the state
+//! record per tab, `<live_sessions>/<TABTIVITY_TAB_UID>.turn`, holding the state
 //! word; this module watches that directory and hands the state to the
 //! frontend's activity store, which treats it as the authority for the tab and
 //! keeps the byte heuristic only for agents that fire no hooks (Gemini, Qwen,
@@ -435,7 +435,7 @@ fn environ_uid(environ: &[u8]) -> Option<String> {
 ///
 /// The PTY's process tree cannot answer this — an agent tab runs under tmux, so
 /// the agent hangs off the tmux server, not the tab's PTY — but every process
-/// under the tab inherits `ELDRUN_TAB_UID`, fenced ones included (bubblewrap
+/// under the tab inherits `TABTIVITY_TAB_UID`, fenced ones included (bubblewrap
 /// moves the pid namespace, not the owner, so the host still reads their
 /// environ). Linux reads `/proc`; elsewhere no tab ever reports a job. A
 /// contained agent's shells belong to the container's user and a remote one's

@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn unknown_metric_keys_survive_a_roundtrip() {
-        // The key space is open by design: a file written by a NEWER Eldrun that
+        // The key space is open by design: a file written by a NEWER Tabtivity that
         // knows metrics this build does not must not lose them on rewrite.
         let json = r#"{"version":1,"days":{"2026-07-13":{"p1":{"future.metric":5}}}}"#;
         let back: UsageStats = serde_json::from_str(json).unwrap();

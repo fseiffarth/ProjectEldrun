@@ -7,7 +7,7 @@
 //!
 //! 1. On the mirror, `git bundle` the current HEAD (incremental `--not <last_head>`
 //!    when we know what the worker already has).
-//! 2. Ship the bundle to `worker:<remote_path>/.eldrun-worker.bundle` over the
+//! 2. Ship the bundle to `worker:<remote_path>/.tabtivity-worker.bundle` over the
 //!    worker's pooled SFTP session.
 //! 3. On the worker: `git init` (idempotent), `git fetch` the bundle, then
 //!    `git reset --hard FETCH_HEAD` — **tracked files only, never `git clean`**.

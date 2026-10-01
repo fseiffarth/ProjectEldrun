@@ -68,7 +68,7 @@ pub struct LoginSession {
     pub user: String,
     pub tty: String,
     pub detail: String,
-    /// Whether this session belongs to the account Eldrun is sampling *as* (the
+    /// Whether this session belongs to the account Tabtivity is sampling *as* (the
     /// host's `ME` line — see [`parse_who`]). The pane marks the row "you"; it is
     /// also what lets the sampling account appear at all on a host where `who`
     /// has no record of it (the synthesized row below).
@@ -201,7 +201,7 @@ static DESCENDANT_CACHE: Mutex<Vec<DescendantCache>> = Mutex::new(Vec::new());
 const CACHE_ENTRIES: usize = 4;
 
 /// Upper bound on cache reuse even if no spawn/death bumped the generation: a
-/// process tree can grow/shrink without Eldrun spawning the PTY directly (an
+/// process tree can grow/shrink without Tabtivity spawning the PTY directly (an
 /// agent forking children), so a short TTL keeps the readout from going stale.
 const CACHE_TTL: Duration = Duration::from_millis(1500);
 
@@ -225,7 +225,7 @@ pub fn clk_tck() -> u64 {
 /// the result is cached keyed by the (sorted) root set. The cache is reused while
 /// (a) the spawn/death generation counter is unchanged — the PTY layer calls
 /// [`invalidate_descendant_cache`] on every spawn/death — and (b) the entry is
-/// younger than [`CACHE_TTL`], a backstop for tree changes Eldrun didn't trigger
+/// younger than [`CACHE_TTL`], a backstop for tree changes Tabtivity didn't trigger
 /// directly (an agent forking its own children).
 pub fn descendant_pids(roots: &[u32]) -> Vec<u32> {
     if roots.is_empty() {
@@ -821,9 +821,9 @@ fn pick_cpu_temp(channels: &[(Option<String>, f64)]) -> Option<f64> {
 /// passes the machine's stored mode on every poll ([`remote_snapshot_script`]),
 /// and careful is the default for every remote machine — so the probe matters
 /// only for a caller with no answer to pass. That is why the script reads
-/// `ELDRUN_CAREFUL` *before* probing, and why an explicit `0` has to be honoured
+/// `TABTIVITY_CAREFUL` *before* probing, and why an explicit `0` has to be honoured
 /// as well as an explicit `1`: without it, a machine the user owns and told
-/// Eldrun to read fully would still be redacted the moment it happened to have a
+/// Tabtivity to read fully would still be redacted the moment it happened to have a
 /// scheduler installed.
 pub const REMOTE_SNAPSHOT_SCRIPT: &str = concat!(r#"
 _careful="${"#, crate::app_upper!(), r#"_CAREFUL:-}"
@@ -975,7 +975,7 @@ fi
 /// [`REMOTE_SNAPSHOT_SCRIPT`] with careful mode pinned by the caller, or left to
 /// the host to decide.
 ///
-/// `Some(true)`/`Some(false)` pin `ELDRUN_CAREFUL`, so the script skips its own
+/// `Some(true)`/`Some(false)` pin `TABTIVITY_CAREFUL`, so the script skips its own
 /// `sbatch` probe entirely; `None` leaves the probe in place. **Both** directions
 /// are pinnable, which is the change the per-machine switch needed: careful is
 /// now the default for every remote machine (`src/lib/remote/carefulHost.ts`), so the
@@ -983,7 +983,7 @@ fi
 /// to outrank host-side detection. That answer is the *user's*, recorded per SSH
 /// target and deliberate — the asymmetry the old force-on-only signature encoded
 /// (a probe must never talk a cluster down) applies to a guess, not to a person
-/// telling Eldrun whose machine it is.
+/// telling Tabtivity whose machine it is.
 ///
 /// `None` is now only for a caller with no stored answer to pass on, where the
 /// host's own SLURM check is still the best available signal.
@@ -1124,7 +1124,7 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
             careful = rest.trim() == "1";
             continue;
         }
-        // Who Eldrun is on this host — the account the "Logged in" panel would
+        // Who Tabtivity is on this host — the account the "Logged in" panel would
         // otherwise be the only one never to mention (see `parse_who`).
         if let Some(rest) = line.strip_prefix("ME\t") {
             me = rest.trim().to_string();

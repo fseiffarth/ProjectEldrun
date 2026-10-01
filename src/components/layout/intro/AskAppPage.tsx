@@ -6,7 +6,7 @@ import { Toggle } from "../../common/Toggle";
 import { UntestedTag } from "../../common/UntestedTag";
 import { IntroActions, IntroStatus } from "./introUi";
 
-/** `root_mcp_status().help` — the Eldrun help MCP's state. Absent on a backend
+/** `root_mcp_status().help` — the Tabtivity help MCP's state. Absent on a backend
  *  that predates it. Read in either key case. */
 interface HelpMcpStatus {
   enabled?: boolean;
@@ -31,8 +31,8 @@ const EXAMPLE_KEYS: TranslationKey[] = [
 ];
 
 /**
- * Intro page 5 — "Ask Eldrun": every local agent tab can look things up in
- * Eldrun's own help (the `eldrun-help` MCP server, read-only). Shows whether
+ * Intro page 5 — "Ask Tabtivity": every local agent tab can look things up in
+ * Tabtivity's own help (the `tabtivity-help` MCP server, read-only). Shows whether
  * the server is up (`root_mcp_status`), the one on/off switch
  * (`settings.help_mcp`, absent = on), and a small search box over the same
  * corpus (`help_search`) so the user sees what an agent would get back. An

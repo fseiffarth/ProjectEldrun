@@ -1,6 +1,6 @@
-## Group Z — Eldrun Server: one server, several users, thin clients
+## Group Z — Tabtivity Server: one server, several users, thin clients
 
-*Plan only; nothing is built. Design: [`docs/eldrun_hosted_plan.md`](../docs/eldrun_hosted_plan.md).
+*Plan only; nothing is built. Design: [`docs/tabtivity_hosted_plan.md`](../docs/tabtivity_hosted_plan.md).
 One Linux server runs every user's projects, terminals and agents. Desktop
 browsers and the phone PWA are thin clients. Each user gets a daemon under
 their own uid and signs in to their own agent CLIs (the admin may offer API
@@ -42,7 +42,7 @@ the desktop groundwork the hosted plan's P1 builds on.*
       the store-level gate and the refused-delete rejection
       (`src/__tests__/calendar/CalDavPushGate.test.ts`).
     - [ ] 🖐️ Manual test — Radicale in a container + Thunderbird: create/edit/
-      delete an event and a task from Eldrun and see them in Thunderbird; a
+      delete an event and a task from Tabtivity and see them in Thunderbird; a
       concurrent edit from Thunderbird surfaces as a named conflict rather than
       being overwritten; a recurring series' "this occurrence only" edit
       round-trips.
@@ -80,7 +80,7 @@ the desktop groundwork the hosted plan's P1 builds on.*
 
 171. **Compare-and-swap on `calendar.json` writes.** `write_data`
     (`commands/calendar.rs:44-51`) is whole-file read-modify-write with no
-    revision check, so **two Eldrun windows already lose the loser's edit
+    revision check, so **two Tabtivity windows already lose the loser's edit
     silently, today, on one machine** — the board writes on every drag, from a
     second window as well. Add a per-record `rev` and make writes CAS. Worth
     doing on its own merits and a hard prerequisite for anything multi-writer.
@@ -102,7 +102,7 @@ the desktop groundwork the hosted plan's P1 builds on.*
     then `fs::rename(tmp, path)` with **no `sync_all()` on either the file or the
     parent directory**, so the rename can be ordered ahead of the data. An
     accepted trade on a desktop; a data-loss path on a machine defined by being
-    unplugged rather than shut down. **Must land before any Eldrun-authored JSON
+    unplugged rather than shut down. **Must land before any Tabtivity-authored JSON
     is ever written server-side**, and it is a two-line change worth making
     regardless.
     - [x] 🤖 Automated test — the write path calls `sync_all` on the temp file and

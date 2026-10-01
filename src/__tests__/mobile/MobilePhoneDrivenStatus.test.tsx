@@ -213,7 +213,7 @@ describe("Mobile bridge — the status of a tab the phone is driving", () => {
       { text: "then the docs", at: "2026-09-19T11:00:00Z" },
     ]);
 
-    // With nothing sent from Eldrun, the card gets no rows — not the echo.
+    // With nothing sent from Tabtivity, the card gets no rows — not the echo.
     useAgentPromptsStore.setState({ historyByProject: { [project.id]: [] } });
     const empty = await ask({ type: "catalog", request_id: "c-oc2", project_id: project.id }) as unknown as { prompts: unknown[] };
     expect(empty.prompts).toEqual([]);

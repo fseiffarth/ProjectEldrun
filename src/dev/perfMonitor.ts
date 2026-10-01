@@ -10,7 +10,7 @@
  *
  * Three decisions are load-bearing:
  *
- * - **State lives on a window global** (`__ELDRUN_PERF__`), not in module
+ * - **State lives on a window global** (`__TABTIVITY_PERF__`), not in module
  *   scope: Vite HMR re-evaluates this module, and module-scoped buffers would
  *   reset on every hot update — exactly when you are watching the numbers —
  *   while a second install would wrap the already-wrapped `invoke` and count

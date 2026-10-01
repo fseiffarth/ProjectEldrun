@@ -17,7 +17,7 @@ import { storageKey } from "../lib/brand";
  * the one that cost you the project you were in. It is now a floating subwindow
  * (`layout/RootOverlay`, Ctrl+Shift+R) over whatever is open — the fast-reach,
  * cross-project management surface: its agents are the only ones handed
- * Eldrun's own MCP tools (projects, calendar, to-do board; see the backend's
+ * Tabtivity's own MCP tools (projects, calendar, to-do board; see the backend's
  * `services::root_mcp`). The phone reaches it only behind its own switch and
  * the review gate (`docs/context/root_console.md`, "On the phone").
  *

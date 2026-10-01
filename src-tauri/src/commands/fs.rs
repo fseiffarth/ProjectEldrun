@@ -121,7 +121,7 @@ pub fn list_dir_local(project_dir: &str, rel_path: &str) -> Result<Vec<FileEntry
             Err(_) => continue,
         };
         let name = entry.file_name().to_string_lossy().to_string();
-        // Always hide .eldrun/ — it is internal runtime storage, not user content.
+        // Always hide .tabtivity/ — it is internal runtime storage, not user content.
         if crate::brand::is_project_dir(&name) {
             continue;
         }
@@ -217,7 +217,7 @@ async fn list_dir_remote(
 
     Ok(entries
         .into_iter()
-        // Always hide .eldrun/ — mirrors the local lister (internal runtime dir).
+        // Always hide .tabtivity/ — mirrors the local lister (internal runtime dir).
         .filter(|e| !crate::brand::is_project_dir(&e.name))
         .map(|e| remote_file_entry(&remote_dir, e))
         .collect())
@@ -1436,8 +1436,8 @@ const MAX_BINARY_VIEW_BYTES: u64 = 256 * 1024 * 1024;
 /// Read an absolute file path as UTF-8 text for the in-app text/markdown viewer.
 ///
 /// Takes an absolute path (the same `FileEntry.path` the file tree already uses
-/// to open files). Security #1: the path is confined to Eldrun's known roots
-/// (`~/eldrun`, the sshfs mounts dir, the state dir) so a content-injection in
+/// to open files). Security #1: the path is confined to Tabtivity's known roots
+/// (`~/tabtivity`, the sshfs mounts dir, the state dir) so a content-injection in
 /// a renderer cannot turn this into an arbitrary file read of e.g.
 /// `~/.ssh/id_rsa`. Refuses files over `MAX_TEXT_VIEW_BYTES` and non-UTF-8
 /// (binary) files.
@@ -1491,7 +1491,7 @@ pub fn read_file_text_local(path: &str, scope_id: Option<&str>) -> Result<String
 /// Write UTF-8 text to an absolute file path from the in-app editor.
 ///
 /// Counterpart to `read_file_text`: same absolute `FileEntry.path`, confined to
-/// Eldrun's known roots (Security #1 — without it any reachable IPC caller could
+/// Tabtivity's known roots (Security #1 — without it any reachable IPC caller could
 /// overwrite arbitrary user files), refuses to grow a file past
 /// `MAX_TEXT_VIEW_BYTES`, and only writes to an existing regular file (the
 /// editor edits files opened from the tree; it never creates new paths).
@@ -1544,7 +1544,7 @@ pub fn write_file_text_local(
     fs::write(&p, content).map_err(|e| e.to_string())
 }
 
-/// Write raw bytes to an absolute path, confined to Eldrun's known roots
+/// Write raw bytes to an absolute path, confined to Tabtivity's known roots
 /// (Security #1). Unlike `write_file_text` this may create a new file (so the
 /// image annotator can "Save as…" a sibling PNG), but still refuses paths
 /// outside the allowed roots and oversized payloads.
@@ -1558,7 +1558,7 @@ pub fn write_file_text_local(
 /// straight into it without anyone clicking anything.
 ///
 /// The header values are `encodeURIComponent`-encoded, because a header is ASCII and
-/// a path is not: `~/eldrun/projects/Übung/…` would otherwise be unsendable. Nothing
+/// a path is not: `~/tabtivity/projects/Übung/…` would otherwise be unsendable. Nothing
 /// about that is a trust boundary — the decoded path goes through exactly the same
 /// `confine_abs_write` as before.
 #[tauri::command]
@@ -1669,7 +1669,7 @@ pub fn write_file_bytes_local(
 
 /// Read an absolute file path as raw bytes for the in-app PDF viewer.
 ///
-/// Confined to Eldrun's known roots (Security #1). Refuses files over
+/// Confined to Tabtivity's known roots (Security #1). Refuses files over
 /// `MAX_BINARY_VIEW_BYTES`.
 ///
 /// Answers with a **raw** IPC body (`ipc::Response`), not a serialized `Vec<u8>`.
@@ -1737,7 +1737,7 @@ pub fn read_file_bytes_local(path: &str, scope_id: Option<&str>) -> Result<Vec<u
 /// Return a file's last-modified time as whole seconds since the Unix epoch.
 ///
 /// Used by the in-app text/markdown/TeX viewer to poll for external changes
-/// (#43 diff-aware auto-reload). Confined to Eldrun's known roots (Security #1).
+/// (#43 diff-aware auto-reload). Confined to Tabtivity's known roots (Security #1).
 /// Mirrors the `FileEntry.modified_secs` machinery in `list_dir`.
 #[tauri::command]
 pub async fn file_mtime(
@@ -1855,7 +1855,7 @@ fn compute_allowed_roots(
 ) -> Vec<PathBuf> {
     // The ROOT scope — a viewer with no owning project (`scope_id: None`), i.e.
     // the side panel's root view and any root-scope tab — browses the root
-    // terminal folder `~/eldrun/root`. Its *listing* passes confinement because
+    // terminal folder `~/tabtivity/root`. Its *listing* passes confinement because
     // `list_dir` confines against the project_dir argument, but every absolute-
     // path read a viewer then makes (`read_file_bytes`, `file_mtime`, …) lands
     // here — and a roots set without that folder refused each one, so a PDF
@@ -3326,7 +3326,7 @@ mod tests {
     fn allowed_roots_root_scope_includes_root_folder_beside_current() {
         // The ROOT scope (scope_id None) reads the root terminal folder — the
         // regression here was a PDF opened from the root tree failing every
-        // byte read and hanging on "Loading" (~/eldrun/root was never a root).
+        // byte read and hanging on "Loading" (~/tabtivity/root was never a root).
         let projects = vec![entry("x", "current", "/home/u/code/projectx")];
         let roots = compute_allowed_roots(&projects, &Vec::new(), None, Path::new(ROOT_WORK));
         assert!(roots.iter().any(|r| r == Path::new(ROOT_WORK)));

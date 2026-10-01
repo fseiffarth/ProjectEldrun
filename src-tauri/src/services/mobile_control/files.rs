@@ -1,5 +1,5 @@
 //! Read-only browsing of a mobile project's tree (#31bo,
-//! `docs/eldrun_mobile_future_plan.md` §D): the "what did the agent just
+//! `docs/tabtivity_mobile_future_plan.md` §D): the "what did the agent just
 //! write" glance, without a shell.
 //!
 //! Paths never cross the browser API. Every folder and file the phone may ask
@@ -8,7 +8,7 @@
 //! — so a token is opaque to the phone and useless against another project.
 //! Tokens are not a permission: every request re-proves the path below the
 //! project root, with no link anywhere on the way, and the host-wide switch
-//! (`eldrun_mobile_host.project_files`, default off) is read per request.
+//! (`tabtivity_mobile_host.project_files`, default off) is read per request.
 //!
 //! Nothing here writes. A file is served exactly as the outbox serves one —
 //! typed by its bytes (`outbox::classify`), opened without following a link.
@@ -99,7 +99,7 @@ pub struct Listing {
 }
 
 /// Names the listing leaves out and no token may cross: git's internals, the
-/// project's own `.eldrun/` (its outbox has its own door), and `.env*`. A
+/// project's own `.tabtivity/` (its outbox has its own door), and `.env*`. A
 /// courtesy against a glance over a shoulder, not the boundary — that is the
 /// switch, since a phone with a shell can read anything anyway.
 pub fn hidden(name: &str) -> bool {

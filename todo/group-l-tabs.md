@@ -10,7 +10,7 @@ files: `src/stores/tabs.ts` (per-scope layout tree `layoutByScope`,
 `src/App.tsx` (global key handlers). #55 (mapping bug) and #62 (keyboard nav) are
 correctness/UX work atop the same layout model #42 detaches.*
 
-42. **Drag a subwindow out of the Eldrun main window.** ✅ Implemented · 🧪 Awaiting
+42. **Drag a subwindow out of the Tabtivity main window.** ✅ Implemented · 🧪 Awaiting
     live multi-window QA. Let a tiling subwindow
     (a tab group from Group D.11/#36) be dragged out of the main window and become
     its own standalone OS window, while keeping it bound to its project. The
@@ -519,19 +519,19 @@ correctness/UX work atop the same layout model #42 detaches.*
 
 ---
 
-846. **Root console: the root terminal as a Ctrl+Shift+R overlay with Eldrun's own tools.**
+846. **Root console: the root terminal as a Ctrl+Shift+R overlay with Tabtivity's own tools.**
     ✅ Implemented · 🧪 Awaiting live QA. The root scope is no longer a place
     you switch to: Ctrl+Shift+R (rebindable, `rootConsole`), the scope chip's
     Root entry and a root-terminal login all open it as one floating subwindow
     over whatever project is open, and nothing about the project on screen
-    moves. Agents opened there, and nowhere else, get Eldrun's MCP tools:
+    moves. Agents opened there, and nowhere else, get Tabtivity's MCP tools:
     `projects_list`, `calendar_list`, `calendar_add_event` (1 h by default),
     `calendar_delete_event`, and the whole to-do board — `todo_list`,
     `todo_add`, `todo_update`, `todo_complete`, `todo_reopen`, `todo_move`
     (column + position, through the drag's own `move_tasks_at`) and
     `todo_delete`. The
     tools are served on loopback with a per-run token that only a root-scope
-    agent spawn is given. The root console is never in Eldrun Mobile's catalog
+    agent spawn is given. The root console is never in Tabtivity Mobile's catalog
     and its Claude tabs get no `--remote-control`. Design:
     `docs/context/root_console.md`.
     *Files: `src-tauri/src/services/root_mcp.rs`,
@@ -548,7 +548,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     - [ ] 🖐️ Manual test (needs a restart: backend change)
       - Ctrl+Shift+R from a focused project terminal opens the console and
         pressing it again closes it; the project stays where it was.
-      - Open Claude with **+**: `/mcp` lists `eldrun`; "add a calendar entry
+      - Open Claude with **+**: `/mcp` lists `tabtivity`; "add a calendar entry
         tomorrow at 14:00, 1 h, Review" puts the event in the header's 🗓 at
         once. With CalDAV write turned on, the event also reaches the server.
       - With the to-do board open beside the console: "put a card 'Ship' on
@@ -559,8 +559,8 @@ correctness/UX work atop the same layout model #42 detaches.*
         card": the console closes and the overlay appears (the card's editor
         for the last one). With that overlay's setting off, the agent is told
         so and nothing opens.
-      - Claude in a project tab: `/mcp` lists no `eldrun`.
-      - Codex in the root console: `/mcp` lists `eldrun`.
+      - Claude in a project tab: `/mcp` lists no `tabtivity`.
+      - Codex in the root console: `/mcp` lists `tabtivity`.
       - The phone's project list never shows the root console.
       - [ ] ✅ Works on Linux (X11)
       - [ ] ❌ Doesn't work on Linux (X11)
@@ -595,7 +595,7 @@ correctness/UX work atop the same layout model #42 detaches.*
   recipients: the composer shows the recipients warning.
 - [ ] **Root MCP token is inherited by everything the agent runs** (open,
   2026-09-23). The token reaches Claude/Codex/Vibe through the process
-  environment (`${ELDRUN_ROOT_MCP_TOKEN}`, `bearer_token_env_var`,
+  environment (`${TABTIVITY_ROOT_MCP_TOKEN}`, `bearer_token_env_var`,
   `api_key_env`), so hooks, package scripts, Makefiles and `curl` inside the tab
   can call the tools as the tab; the schedule token is the same for project
   agents. Documented (`docs/context/root_console.md`, *Known limit,
@@ -629,7 +629,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     viewer** docks on every subwindow's right edge through the same ◫ a
     project's subwindows carry — the shared `SubwindowFilesSidebar` →
     `ProjectFilesTab` → `ProjectFilesView`, so no fourth copy of the viewer —
-    rooted at `~/eldrun/root`, the folder that belongs to no project and could
+    rooted at `~/tabtivity/root`, the folder that belongs to no project and could
     until now only be read with `ls` from inside the console. Its state is the
     group node's own three fields (`filesOpen`/`filesWidth`/`filesFolder`),
     written through new `setGroupFiles*InScope` actions, because root is not the
@@ -656,7 +656,7 @@ correctness/UX work atop the same layout model #42 detaches.*
       helpers: clamping into a smaller window, move, corner resize, the pinned
       far edge).
     - [ ] 🖐️ Manual test (frontend only — hot-reloads)
-      - Ctrl+Shift+R, then ◫: a file tree of `~/eldrun/root` docks on the right;
+      - Ctrl+Shift+R, then ◫: a file tree of `~/tabtivity/root` docks on the right;
         drag its left edge to resize it, double-click that edge to close it.
         Close and reopen the console — the column, its width and its browsed
         folder are still there; the project on screen never grew one.
@@ -690,7 +690,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     staged/unstaged/untracked per project, `dirty_only` to keep it short),
     **`sync_status`** (lockstep state and why, what byte-sync tracks, and the
     unacknowledged local-loss warnings), **`time_summary`** (tracked seconds per
-    project, Eldrun's own window time separate), **`usage_recap`** (the daily
+    project, Tabtivity's own window time separate), **`usage_recap`** (the daily
     recap's counters over a range) and **`boxes_list`** (each box's members and
     relations). None of them opens a connection: the git sweep reads the local
     working copy only — a remote project through its mirror, skipped with a
@@ -735,14 +735,14 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
 
-2316. **Root console: one global switch for Eldrun's MCP tools.** ✅
+2316. **Root console: one global switch for Tabtivity's MCP tools.** ✅
     Implemented · 🧪 Untested (2026-09-17). `settings.json`'s `root_mcp`
     (absent means on, so nothing migrates) turns the root console's tools off
     and on. It is read per spawn and per request, so neither direction needs a
     restart, and off closes both halves: `apply_to_spawn` hands a new root agent
     no endpoint, and `POST /mcp` answers `503` to the agents that already hold
     the token — after the bearer check, so an unauthenticated caller learns
-    nothing from it. Two doors onto the one key: Settings → "Eldrun's tools
+    nothing from it. Two doors onto the one key: Settings → "Tabtivity's tools
     (MCP) for root-console agents", and the console's ⚿ badge, now a button
     that is struck through while off.
     *Files: `src-tauri/src/schema/settings.rs`, `services/root_mcp.rs`
@@ -751,9 +751,9 @@ correctness/UX work atop the same layout model #42 detaches.*
     - [x] 🤖 Automated test — `services::root_mcp::the_switch_is_on_unless_stored_off`.
     - [ ] 🖐️ Manual test (needs a restart once: backend change)
       - Click the ⚿ badge: it strikes through, and the Settings toggle follows.
-        A root Claude tab opened now has no `eldrun` server under `/mcp`.
+        A root Claude tab opened now has no `tabtivity` server under `/mcp`.
       - In a root agent opened *before* the click, ask for the calendar: the
-        tool call fails with "switched off in Eldrun's Settings".
+        tool call fails with "switched off in Tabtivity's Settings".
       - Click again: that same agent's next tool call works, no restart.
       - [ ] ✅ Works on Linux (X11)
       - [ ] ❌ Doesn't work on Linux (X11)
@@ -842,7 +842,7 @@ correctness/UX work atop the same layout model #42 detaches.*
       - Colour a tab of a project the desktop window is **not** showing: it
         lands there, the project on screen is untouched, and it is still there
         after a relaunch.
-      - With desktop Eldrun closed, the sheet says "Open desktop Eldrun to
+      - With desktop Tabtivity closed, the sheet says "Open desktop Tabtivity to
         colour a tab." rather than a generic failure.
       - [ ] ✅ Works on Linux (X11)
       - [ ] ❌ Doesn't work on Linux (X11)

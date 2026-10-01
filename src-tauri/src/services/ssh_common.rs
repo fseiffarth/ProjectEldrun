@@ -53,7 +53,7 @@ pub fn validate_arg(label: &str, value: &str) -> Result<(), String> {
 
 // ── Dial policy: who asked for this connection ──────────────────────────────
 //
-// `settings.hpc_hosts` promises that Eldrun never reaches a tagged machine *by
+// `settings.hpc_hosts` promises that Tabtivity never reaches a tagged machine *by
 // itself* (`docs/context/hpc_careful_mode.md`). That promise used to be kept
 // only in TypeScript, so every backend path that opens an `ssh` child — a
 // reachability probe, a tab respawned at relaunch, a readiness poll, an
@@ -71,7 +71,7 @@ pub fn validate_arg(label: &str, value: &str) -> Result<(), String> {
 // by target: a user-initiated command holds a [`UserDial`] for the machine it is
 // about, and a pooled connection the user opened holds one for as long as it is
 // connected (which is what keeps a tagged project usable once connected: work on
-// a connection a person made is not Eldrun connecting by itself). Everything
+// a connection a person made is not Tabtivity connecting by itself). Everything
 // else is [`DialIntent::Background`], the safe default — a wrong "background"
 // costs one confirmation dialog, a wrong "user-initiated" costs the promise.
 
@@ -225,7 +225,7 @@ pub fn declared_dial(
 /// [`user_dial`] this is not scoped to one call: it lives until
 /// [`forget_user_connect`], because everything riding a pooled ControlMaster the
 /// user authenticated — a shell tab, a `git status`, a Sessions listing — is work
-/// on *their* connection, not Eldrun reaching out on its own. Paired one-for-one
+/// on *their* connection, not Tabtivity reaching out on its own. Paired one-for-one
 /// with the pool in `services::remote`.
 pub fn remember_user_connect(user: &Option<String>, host: &str, port: Option<u16>) {
     shift_authorization(&target_key(user.as_deref(), host, port), true);
@@ -664,7 +664,7 @@ pub fn version_supports_askpass_require(major: u32, minor: u32) -> bool {
 
 /// Whether the `ssh` on PATH is new enough for the askpass path
 /// (`SSH_ASKPASS_REQUIRE`, OpenSSH ≥ 8.4). Cached for the process lifetime —
-/// the binary does not change under a running Eldrun. Win10's inbox OpenSSH is
+/// the binary does not change under a running Tabtivity. Win10's inbox OpenSSH is
 /// 8.1 (→ false, sshpass fallback); Win11's is 8.6+ (→ true).
 #[cfg(windows)]
 pub fn ssh_supports_askpass() -> bool {
@@ -804,7 +804,7 @@ pub fn explain_ssh_error(stderr: &str) -> Option<String> {
     None
 }
 
-/// The one prompt Eldrun is willing to answer automatically. OpenSSH builds its
+/// The one prompt Tabtivity is willing to answer automatically. OpenSSH builds its
 /// password request as `"%.30s@%.128s's password: "` (`sshconnect2.c`) — a string
 /// that has been stable for two decades and that **no other** prompt it can raise
 /// shares. Matching on it is what turns the askpass shim from "answer whatever is
@@ -915,7 +915,7 @@ pub fn missing_single_prompt_opt_for(kind: SecretKind, args: &[String]) -> Optio
 /// A temporary, owner-only askpass shim that feeds a password to OpenSSH via its
 /// built-in `SSH_ASKPASS` mechanism — the in-tree replacement for the external
 /// `sshpass` binary. The shim script holds **no secret**: it prints whatever is
-/// in the `ELDRUN_ASKPASS` environment variable, which we set only on the
+/// in the `TABTIVITY_ASKPASS` environment variable, which we set only on the
 /// specific `ssh` child (same `/proc/<pid>/environ` exposure `sshpass -e`'s
 /// `SSHPASS` had — no worse). Pairing it with `SSH_ASKPASS_REQUIRE=force` makes
 /// OpenSSH (>= 8.4) call the shim with no controlling TTY and no `DISPLAY`, which
@@ -1039,7 +1039,7 @@ fn askpass_owner_pid(name: &str) -> Option<u32> {
 ///
 /// The bytes are irrelevant (8 MB). What matters is that the directory is
 /// secret-*adjacent*: a shim holds no password (the value arrives through
-/// `ELDRUN_ASKPASS` at run time, which is the whole design) but its presence and
+/// `TABTIVITY_ASKPASS` at run time, which is the whole design) but its presence and
 /// its `.tally` say that a password path was used and how often it answered, and
 /// a growing pile of 0700 scripts is exactly the kind of thing that is
 /// individually harmless and collectively worth not leaving behind.
@@ -1058,7 +1058,7 @@ pub fn sweep_stale_askpass() {
 /// The sweep above, against a named directory.
 ///
 /// Split out for the test, which must not reach the behaviour through
-/// `ELDRUN_STATE_DIR`: that variable is process-wide, the suite runs its tests
+/// `TABTIVITY_STATE_DIR`: that variable is process-wide, the suite runs its tests
 /// concurrently in one process, and the shim tests two screens up create and
 /// then *exec* a shim under whatever the state dir says at that instant — so
 /// redirecting it here deleted their shim's directory out from under them and
@@ -1147,11 +1147,11 @@ pub fn unexpected_prompt_error(prompt: &str) -> String {
 static ASKPASS_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Body of the Unix askpass shim (`ap-*.sh`). Holds no secret: the password comes
-/// from `$ELDRUN_ASKPASS`, and the prompt to answer arrives as `$1`.
+/// from `$TABTIVITY_ASKPASS`, and the prompt to answer arrives as `$1`.
 ///
 /// The `case` is [`prompt_is_password_request`] in `sh`. Anything else — a key
 /// passphrase, a host-key `yes/no`, a keyboard-interactive challenge whose text
-/// the *server* chose — is written to `$ELDRUN_ASKPASS_REJECT` and answered with
+/// the *server* chose — is written to `$TABTIVITY_ASKPASS_REJECT` and answered with
 /// nothing, so ssh fails auth instead of the secret going somewhere unvetted.
 /// Exposed cfg-free so the refusal is unit-tested on any platform.
 pub fn unix_askpass_shim_body() -> &'static str {
@@ -1210,7 +1210,7 @@ pub fn unix_shim_body_for(kind: SecretKind) -> &'static str {
 }
 
 /// Write an owner-only (0700) askpass shim for `password` and return a guard that
-/// deletes it on drop. The shim reads the password from the `ELDRUN_ASKPASS` env
+/// deletes it on drop. The shim reads the password from the `TABTIVITY_ASKPASS` env
 /// var (set via [`Askpass::env_vars`]), so the secret never lands in the file.
 ///
 /// `args` is the ssh argv the shim will be attached to, and is **checked, not
@@ -1266,7 +1266,7 @@ pub fn make_askpass_for(
 }
 
 /// Body of the Windows askpass shim (`ap-*.cmd`). It must echo the secret via
-/// PowerShell, NOT `@echo %ELDRUN_ASKPASS%`: cmd re-parses the expanded value,
+/// PowerShell, NOT `@echo %TABTIVITY_ASKPASS%`: cmd re-parses the expanded value,
 /// so `& | < > ^` in a password would be executed/mangled. PowerShell receives
 /// the variable through the environment block and writes it verbatim. Secret-
 /// free, like the Unix shim. Exposed cfg-free so the no-interpolation property
@@ -1282,7 +1282,7 @@ pub fn make_askpass_for(
 /// cross-platform [`guard_first_contact`]. Revisit if the shim is ever replaced by
 /// a real executable, where argv needs no shell at all.
 /// The answer tally ([`Askpass::answer_count`]) is written from inside the *same*
-/// PowerShell command, not by a `cmd` redirect: `@echo x>>"%ELDRUN_ASKPASS_TALLY%"`
+/// PowerShell command, not by a `cmd` redirect: `@echo x>>"%TABTIVITY_ASKPASS_TALLY%"`
 /// would put the path through exactly the `%VAR%` re-parse this shim exists to
 /// avoid, and a state-dir path carries the Windows account name. PowerShell reads
 /// it from the environment block instead, so no shell ever re-parses it.
@@ -1402,7 +1402,7 @@ pub fn private_key_is_encrypted(text: &str) -> Option<bool> {
 /// The identity files OpenSSH would actually offer for `[user@]host[:port]`, in
 /// its own order, after `~/.ssh/config` is applied — asked of `ssh -G` for the
 /// same reason [`resolve_host_port`] is: a `Host` alias can pin an `IdentityFile`
-/// that nothing in Eldrun's own state knows about. Paths are `~`-expanded (ssh
+/// that nothing in Tabtivity's own state knows about. Paths are `~`-expanded (ssh
 /// prints them unexpanded) and returned whether or not they exist.
 pub fn resolve_identity_files(
     user: &Option<String>,
@@ -1659,7 +1659,7 @@ pub fn known_hosts_key(host: &str, port: u16) -> String {
 /// useless, and `-F` searches the global file too.
 ///
 /// **Fails open** when `ssh-keygen` cannot be run at all — it ships with the ssh
-/// client on every platform Eldrun supports, so its absence means something is
+/// client on every platform Tabtivity supports, so its absence means something is
 /// broken about the install, and blocking every password connect on that would be
 /// a worse failure than the TOFU window this closes.
 pub fn host_key_known(host: &str, port: u16) -> bool {
@@ -1906,7 +1906,7 @@ mod tests {
             std::fs::write(p, b"x").expect("write");
         }
 
-        // Against the directory directly, never through `ELDRUN_STATE_DIR`: that
+        // Against the directory directly, never through `TABTIVITY_STATE_DIR`: that
         // is process-wide, and a concurrent test in this same binary execs a
         // shim resolved from it.
         sweep_stale_askpass_in(&askpass);
@@ -2360,7 +2360,7 @@ mod tests {
             .find(|(k, _)| *k == "SSH_ASKPASS")
             .map(|(_, v)| std::path::PathBuf::from(v))
             .unwrap();
-        // The password is passed only via ELDRUN_ASKPASS, never written to disk.
+        // The password is passed only via TABTIVITY_ASKPASS, never written to disk.
         let body = std::fs::read_to_string(&shim).unwrap();
         assert!(!body.contains("hunter2"), "shim must not embed the secret");
         assert!(body.contains(crate::app_env!("ASKPASS")));
@@ -2394,7 +2394,7 @@ mod tests {
     #[test]
     fn only_openssh_own_password_request_is_answerable() {
         // The prompt OpenSSH builds for password auth — the one and only thing
-        // Eldrun answers on the user's behalf.
+        // Tabtivity answers on the user's behalf.
         assert!(prompt_is_password_request(
             "alice@build.example's password: "
         ));

@@ -93,7 +93,7 @@ fn remote_mirror_in(parent: &Path, name: &str, id: &str, list: &ProjectsList) ->
 }
 
 /// The default local mirror location for a new remote (SSH) project: a readable
-/// `<name>` subfolder of the top-level `eldrun/projects-ssh/` root (rather than a
+/// `<name>` subfolder of the top-level `tabtivity/projects-ssh/` root (rather than a
 /// hidden state dir or the managed-local `projects/` tree).
 fn default_remote_mirror(name: &str, id: &str, list: &ProjectsList) -> PathBuf {
     remote_mirror_in(&paths::projects_ssh_root(), name, id, list)
@@ -142,7 +142,7 @@ pub struct ProjectConflict {
     pub name: String,
     /// `"directory"` — the same local folder is already a project.
     /// `"mirror"` — it is a remote project's local mirror (the working copy
-    /// Eldrun syncs), which is a tree that already has an owner.
+    /// Tabtivity syncs), which is a tree that already has an owner.
     /// `"remote-path"` — the same login on the same host, at the same path.
     pub kind: String,
 }
@@ -523,8 +523,8 @@ pub(crate) fn patch_project_entry_mirrored<R>(
     Ok(result)
 }
 
-/// Remove the entry of the retired built-in Trash workspace (`eldrun-trash`),
-/// which older Eldrun versions created and kept pinned. Its `~/eldrun/trash`
+/// Remove the entry of the retired built-in Trash workspace (`tabtivity-trash`),
+/// which older Tabtivity versions created and kept pinned. Its `~/tabtivity/trash`
 /// folder is left untouched.
 fn drop_legacy_trash_project(list: &mut ProjectsList) {
     list.retain(|p| p.id != paths::LEGACY_TRASH_PROJECT_ID);
@@ -612,7 +612,7 @@ pub fn get_projects() -> Result<ProjectsList, String> {
 
 /// Bring one `projects.json` entry up to the current on-disk shape, in place.
 ///
-/// Old Eldrun versions (pre-Group-D) wrote entries that omit fields the current
+/// Old Tabtivity versions (pre-Group-D) wrote entries that omit fields the current
 /// code and pill/hover UI expect. This backfills those from information the
 /// entry already carries, so a legacy project (e.g. the self-hosting
 /// ProjectEldrun entry, which predates persisted `directory`) becomes
@@ -656,7 +656,7 @@ pub(crate) fn normalize_entry(entry: &mut ProjectEntry) -> bool {
 }
 
 /// The hosting provider recorded alongside a `remote-*` `git_type`, from the
-/// dialog's clone/fork URL. Only the two providers Eldrun speaks to are kept,
+/// dialog's clone/fork URL. Only the two providers Tabtivity speaks to are kept,
 /// and only for a project that actually has a hosting target — a `local` or
 /// `none` project naming a provider would badge a repo that is pushed nowhere.
 pub(crate) fn normalize_git_provider(value: Option<&str>, git_type: &str) -> Option<String> {
@@ -710,7 +710,7 @@ pub fn save_projects(projects: ProjectsList) -> Result<(), String> {
 
 // ── Archive (delete → restorable holding area) ─────────────────────────────
 //
-// Deleting a project moves its LOCAL folders into `~/eldrun/archive/<id>/` and
+// Deleting a project moves its LOCAL folders into `~/tabtivity/archive/<id>/` and
 // drops it from `projects.json`. A remote project's tree on its host is never
 // touched — only its local state dir + mirror move. The archive is only cleared
 // manually from Settings; restore moves the folders back and re-registers the
@@ -997,17 +997,17 @@ pub fn archive_project_blocking(project_id: String, archived_at: String) -> Resu
     Ok(())
 }
 
-/// Remove a project from Eldrun and leave its folder exactly where it is.
+/// Remove a project from Tabtivity and leave its folder exactly where it is.
 ///
 /// The counterpart of `archive_project` for when the *files* are fine and only
-/// Eldrun's view of them is wrong — an import that went sideways, a folder
+/// Tabtivity's view of them is wrong — an import that went sideways, a folder
 /// registered under the wrong name, a tree that should be imported again from
 /// scratch. Nothing inside the project folder is touched: not `project.json`,
 /// not the scaffold (`PROJECT.md`, `AGENTS.md`, `.claude/settings.json`,
 /// `.gitignore` — the scaffold only writes those when absent, so any of them may
-/// be the user's own), not `.eldrun/`, and certainly nothing the user put there
+/// be the user's own), not `.tabtivity/`, and certainly nothing the user put there
 /// themselves (a `README.md`). A remote project's mirror is user files
-/// and stays too. What goes is Eldrun's own state *about* the project, all of it
+/// and stays too. What goes is Tabtivity's own state *about* the project, all of it
 /// keyed by the id and all of it outside the tree: the `projects.json` entry,
 /// `<state_dir>/sessions/<id>/` (tab layout, `open_apps`, host-bound markers),
 /// `<state_dir>/live_sessions/<id>/` (agent resume records), the time-tracking
@@ -1016,7 +1016,7 @@ pub fn archive_project_blocking(project_id: String, archived_at: String) -> Resu
 /// that would ever be read again — and the duplicate gate it has to pass looks
 /// at the registry, not the folder.
 ///
-/// A VM project is refused: its overlay disk lives in Eldrun's state dir and
+/// A VM project is refused: its overlay disk lives in Tabtivity's state dir and
 /// *is* the working tree, so "keep the files" has nothing to keep — that one
 /// goes through the archive, which moves the disk with it.
 #[tauri::command]
@@ -1055,13 +1055,13 @@ pub fn forget_project_blocking(project_id: String) -> Result<(), String> {
     forget_project_state(&project_id, remote)
 }
 
-/// The state-dir half of `forget_project`: every directory Eldrun keeps *about*
+/// The state-dir half of `forget_project`: every directory Tabtivity keeps *about*
 /// a project, keyed by its id — all under the state dir, never under the tree.
 fn forget_project_state(project_id: &str, remote: bool) -> Result<(), String> {
     let mut dirs = vec![
         storage::project_session_dir(project_id),
         crate::services::agent_session::project_live_sessions_dir(project_id),
-        // The project's Eldrun-owned agent home: its agents' config,
+        // The project's Tabtivity-owned agent home: its agents' config,
         // transcripts and session stores go with it (`services::agent_home`).
         crate::services::agent_home::scope_home(Some(project_id)),
     ];
@@ -1200,7 +1200,7 @@ pub struct UnsyncedReport {
     /// Per-branch breakdown (only branches with a non-zero count).
     pub branches: Vec<UnsyncedBranch>,
     /// True when a host baseline existed to compare against (a recorded
-    /// `remote_head` or any `refs/eldrun/{incoming,backup}` ref). When false the
+    /// `remote_head` or any `refs/tabtivity/{incoming,backup}` ref). When false the
     /// count is every local commit and should be framed as "could not verify".
     pub verified: bool,
 }
@@ -1250,8 +1250,8 @@ pub fn archived_mirror_unsynced(project_id: String) -> Result<UnsyncedReport, St
     }
 
     // Build the host baseline: refs whose history we know reached (or came from)
-    // the host. `refs/eldrun/incoming/*` are the host's tips at the last fetch,
-    // `refs/eldrun/backup/*` are safety snapshots, and the recorded `remote_head`
+    // the host. `refs/tabtivity/incoming/*` are the host's tips at the last fetch,
+    // `refs/tabtivity/backup/*` are safety snapshots, and the recorded `remote_head`
     // is the last-observed host HEAD.
     let mut negatives: Vec<String> = vec![
         format!("--glob={}", crate::brand::GIT_REF_INCOMING),
@@ -1432,7 +1432,7 @@ pub struct ProjectDirRenamePlan {
     pub status: String,
 }
 
-/// A single folder name that is valid on every OS Eldrun ships to: no
+/// A single folder name that is valid on every OS Tabtivity ships to: no
 /// separators, no `.`/`..`, none of Windows' reserved characters, no trailing
 /// dot or space, no control characters.
 fn is_valid_folder_leaf(leaf: &str) -> bool {
@@ -1588,7 +1588,7 @@ fn rename_dir_no_replace(old: &Path, new: &Path) -> Result<(), String> {
 }
 
 /// Rename a **closed** local project's folder to `<same parent>/<leaf>`, then
-/// re-point everything Eldrun stores under the old path: the registry entry
+/// re-point everything Tabtivity stores under the old path: the registry entry
 /// (`directory`, `local_file`, a pinned venv interpreter…), the moved
 /// `project.json`, and the saved tab layout. Refuses anything the plan does not
 /// call `ok`, and refuses an open project — its shells and agents hold the old
@@ -1661,7 +1661,7 @@ fn rename_project_dir_blocking(project_id: &str, leaf: &str) -> Result<ProjectEn
     }
     if new.join(".git").exists() {
         // Linked worktrees record absolute paths both ways. The ones that lived
-        // inside the folder (`.eldrun/worktrees/…`) moved with it, and repair can
+        // inside the folder (`.tabtivity/worktrees/…`) moved with it, and repair can
         // only find them when told where they went.
         let moved_worktrees = moved_linked_worktrees(&new, old_s, new_s);
         match paths::command_no_window("git")
@@ -2050,7 +2050,7 @@ pub fn set_project_persist_sessions(project_id: String, enabled: bool) -> Result
     Ok(enabled)
 }
 
-/// Authoritative per-project opt-in for Eldrun Mobile. This flag lives in the
+/// Authoritative per-project opt-in for Tabtivity Mobile. This flag lives in the
 /// state-dir `projects.json`, never only in project-writable `project.json`.
 #[tauri::command]
 pub fn set_project_mobile_access(project_id: String, enabled: bool) -> Result<bool, String> {
@@ -2584,7 +2584,7 @@ pub fn load_tab_session(project_id: String) -> crate::schema::session::TerminalS
     crate::services::terminal_service::load_terminal_session(&project_id)
 }
 
-/// Adopt the layout saved in the project **folder** (`.eldrun/sessions/`) as this
+/// Adopt the layout saved in the project **folder** (`.tabtivity/sessions/`) as this
 /// project's session state. Explicit user action only — see
 /// `terminal_service::adopt_project_tree_session`.
 #[tauri::command]
@@ -2628,7 +2628,7 @@ pub fn save_tab_layout(
     )
 }
 
-/// `~/eldrun/root` — the working directory of everything that belongs to no
+/// `~/tabtivity/root` — the working directory of everything that belongs to no
 /// project (the root control terminal, and now the side panel's file tree over
 /// the same folder, which is where data lands while it is only being looked at
 /// or before it has a project to belong to).
@@ -2653,7 +2653,7 @@ pub fn projects_root_dir() -> String {
 }
 
 /// The default parent directory for a remote (SSH) project's local mirror — the
-/// top-level `eldrun/projects-ssh/` root. The New/Import dialog seeds its "Local
+/// top-level `tabtivity/projects-ssh/` root. The New/Import dialog seeds its "Local
 /// location" picker from this so its default matches `default_remote_mirror`.
 #[tauri::command]
 pub fn remote_mirror_root_dir() -> String {
@@ -2810,8 +2810,8 @@ pub fn move_remote_mirror_blocking(
 ///
 /// Kept to placeholders: agents load it every session, and it is the user's
 /// file from the first write on — never rewritten unless still byte-identical
-/// to a template Eldrun shipped (`AGENTS_HISTORY`). So nothing about Eldrun
-/// itself goes here (the `eldrun-send` hint comes from `services::agent_hint`
+/// to a template Tabtivity shipped (`AGENTS_HISTORY`). So nothing about Tabtivity
+/// itself goes here (the `tabtivity-send` hint comes from `services::agent_hint`
 /// and the session hook), and the map of the other files is `PROJECT.md`'s.
 /// Changing this text? Add the old one to `scaffold_history/` first — a test
 /// pins it.
@@ -2918,12 +2918,12 @@ pub const SCAFFOLD_FILES: &[(&str, &str)] = &[
     ("DOCUMENTATION.md", "# Documentation\n"),
 ];
 
-/// The folder a saved screen grab lands in. `eldrun-` prefixed because the
+/// The folder a saved screen grab lands in. `tabtivity-` prefixed because the
 /// plain name is one a *project* plausibly owns — a repo with its own
-/// `screenshots/` of documentation images would have Eldrun filing private
+/// `screenshots/` of documentation images would have Tabtivity filing private
 /// captures into a tracked folder, and ignoring that folder would then hide the
 /// project's own files from git. The prefix makes the folder unmistakably
-/// Eldrun's, so ignoring it can never swallow something the user wrote.
+/// Tabtivity's, so ignoring it can never swallow something the user wrote.
 pub const SCREENSHOTS_DIR: &str = crate::brand::SCREENSHOTS_DIR;
 
 /// The folder a saved mail attachment lands in (*Save to emails folder*), named
@@ -2970,15 +2970,15 @@ pub fn project_generated_dir(project_dir: String, kind: String) -> Result<String
     Ok(generated_dir_name(Path::new(&project_dir), name))
 }
 
-// `eldrun-screenshots/` is ignored by default because a screen grab holds
+// `tabtivity-screenshots/` is ignored by default because a screen grab holds
 // whatever happened to be on the screen — mail, tokens, another project's
 // window — and a project with a public remote is one `git add -A` away from
-// publishing it. `eldrun-emails/` is the same argument from the same direction:
+// publishing it. `tabtivity-emails/` is the same argument from the same direction:
 // it holds correspondence somebody sent to the user, not project source, and
 // the consent that filed it was consent to keep it, never to publish it.
 //
 // The unprefixed `screenshots/` and `emails/` stay on the list. They are what
-// Eldrun wrote into before the rename, so dropping them would un-ignore a
+// Tabtivity wrote into before the rename, so dropping them would un-ignore a
 // folder of already-filed private data the moment a project's `.gitignore` was
 // regenerated — the exact leak these entries exist to prevent.
 //
@@ -2997,7 +2997,7 @@ pub struct ScaffoldPreviewItem {
     pub kind: String,
 }
 
-/// Write the standard Eldrun project scaffold into a directory.
+/// Write the standard Tabtivity project scaffold into a directory.
 ///
 /// When `with_git` is false the scaffold files are still written but no git
 /// repository is initialized — used for "local, no git" projects (git_type
@@ -3074,7 +3074,7 @@ fn init_repo_without_scaffold(dir: &Path, git_type: &str) {
 
 /// Stage everything the `.gitignore` permits and create a single scaffold commit.
 /// Best-effort: staging or the commit failing just leaves HEAD as it was. Respects
-/// the user's configured git identity, falling back to an Eldrun identity only when
+/// the user's configured git identity, falling back to a Tabtivity identity only when
 /// git can't resolve one (fresh machine, no global `user.name`/`user.email`) so the
 /// commit never silently fails for lack of a committer and leaves HEAD unborn.
 fn git_scaffold_commit(dir: &Path) {
@@ -3140,7 +3140,7 @@ fn missing_gitignore_lines_at(dir: &Path) -> std::io::Result<Vec<String>> {
 
 /// Append any `GITIGNORE_DEFAULT` pattern missing from `dir/.gitignore` to the
 /// end of the file, creating it fresh if absent. Existing lines are never
-/// reordered or removed — this only ever adds patterns Eldrun scaffolds by
+/// reordered or removed — this only ever adds patterns Tabtivity scaffolds by
 /// default (e.g. a new one like `project.json` added after the project's
 /// `.gitignore` was first written). Returns the patterns that were added.
 fn ensure_gitignore_defaults(dir: &Path) -> std::io::Result<Vec<String>> {
@@ -3165,8 +3165,8 @@ fn ensure_gitignore_defaults(dir: &Path) -> std::io::Result<Vec<String>> {
     Ok(missing)
 }
 
-/// Make sure `dir/.gitignore` ignores one of Eldrun's own generated folders
-/// (`eldrun-screenshots/`, `eldrun-emails/`) before anything is written into it.
+/// Make sure `dir/.gitignore` ignores one of Tabtivity's own generated folders
+/// (`tabtivity-screenshots/`, `tabtivity-emails/`) before anything is written into it.
 ///
 /// Scaffold repair is the other way these patterns arrive, but it only runs when
 /// the user asks for it — so a project scaffolded before the folder existed
@@ -3461,11 +3461,11 @@ pub fn repair_all_project_scaffolds() -> Result<Vec<ProjectScaffoldRepair>, Stri
 }
 
 /// One-time-per-entry startup migration that brings legacy `projects.json`
-/// entries fully in line with the current Eldrun version. For each entry:
+/// entries fully in line with the current Tabtivity version. For each entry:
 ///
 /// 1. `normalize_entry` canonicalizes its shape (backfill `directory`, map
 ///    legacy `git_type`). Entries it touches are *legacy* — written by an older
-///    Eldrun that predates those fields.
+///    Tabtivity that predates those fields.
 /// 2. Every legacy entry additionally gets its on-disk scaffold refreshed (the
 ///    same additive, never-overwrite repair as the manual "Repair scaffold
 ///    files" action), since a legacy project also predates current scaffold
@@ -3761,7 +3761,7 @@ fn apply_migration_steps_at(
 }
 
 /// Dry-run for the "Migrate project" dialog: everything an old project is
-/// missing relative to the current Eldrun state, one step per piece. Changes
+/// missing relative to the current Tabtivity state, one step per piece. Changes
 /// nothing.
 #[tauri::command]
 pub fn project_migration_plan(project_id: String) -> Result<MigrationPlan, String> {
@@ -3847,7 +3847,7 @@ pub struct CreateProjectRequest {
     /// off the repository URL. Ignored for any other `git_type`.
     #[serde(default)]
     pub git_provider: Option<String>,
-    /// Skip writing the Eldrun scaffold (and `git init`) — for new projects
+    /// Skip writing the Tabtivity scaffold (and `git init`) — for new projects
     /// that should start empty. `project.json` is still created so the project
     /// registers normally.
     #[serde(default)]
@@ -3982,7 +3982,7 @@ fn create_claimed_project(
     let mut git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
 
     // Remote projects mirror into `<name>` under the chosen "Local location"
-    // (`mirror_parent`), defaulting to the top-level `eldrun/projects-ssh/` root;
+    // (`mirror_parent`), defaulting to the top-level `tabtivity/projects-ssh/` root;
     // relocatable later. None for local projects — and None for VM projects,
     // whose sync posture is the *inverse* of a network remote's
     // (`docs/vm_projects_plan.md`, "Sync posture"): remote-only by default,
@@ -4161,7 +4161,7 @@ pub struct ImportProjectRequest {
     pub mode: String,
     pub scaffold_fill_modes: Option<HashMap<String, String>>,
     pub manual_validation_confirmed: Option<bool>,
-    /// Skip writing the Eldrun scaffold files — for importing projects that
+    /// Skip writing the Tabtivity scaffold files — for importing projects that
     /// already carry their own. A git `git_type` still gets its repo (no initial
     /// commit), and `project.json` is still created/updated so the project
     /// registers normally.
@@ -4274,12 +4274,12 @@ pub fn import_project_blocking(req: ImportProjectRequest) -> Result<ProjectEntry
     finish_import(req, id, target, None)
 }
 
-/// Drop every field of an *adopted* `project.json` that Eldrun later reads back as
+/// Drop every field of an *adopted* `project.json` that Tabtivity later reads back as
 /// executable intent, keeping only the descriptive ones.
 ///
 /// Importing a folder (or cloning/forking a repo) adopts whatever `project.json`
 /// the tree happens to ship. That file is written by whoever wrote the tree, and
-/// several of its fields are commands Eldrun runs on the **host**, unprompted:
+/// several of its fields are commands Tabtivity runs on the **host**, unprompted:
 ///
 /// - `open_apps` — auto-launched on every project activation
 ///   (`services::restore_service`, which now also allowlists each entry);
@@ -4390,7 +4390,7 @@ fn finish_import(
     let git_provider = normalize_git_provider(req.git_provider.as_deref(), &git_type);
 
     // Remote imports mirror into `<name>` under the chosen "Local location"
-    // (`mirror_parent`), defaulting to the `eldrun/projects-ssh/` root; created up
+    // (`mirror_parent`), defaulting to the `tabtivity/projects-ssh/` root; created up
     // front so a local-on-remote tab can cwd into it immediately. None for local.
     let mirror = remote
         .as_ref()
@@ -4403,7 +4403,7 @@ fn finish_import(
         let mut existing: Project = storage::read_json(&project_file).unwrap_or_default();
         // The adopted `project.json` came with the folder — a foreign repository, a
         // clone, a fork, or a tree someone else wrote — so anything in it that
-        // Eldrun would later read back as *executable intent* must not be adopted
+        // Tabtivity would later read back as *executable intent* must not be adopted
         // along with the descriptive fields (see `strip_untrusted_project_fields`).
         strip_untrusted_project_fields(&mut existing);
         existing.id = id.clone();
@@ -4742,7 +4742,7 @@ pub async fn detach_project_from_remote(
     clear_host_bound_state(&project_id, manifest.inner()).await;
 
     // Remove the old state-dir project.json, its session mirror, and then the state dir.
-    // `.eldrun/` is why the dir used to survive every detach: `remove_dir` is
+    // `.tabtivity/` is why the dir used to survive every detach: `remove_dir` is
     // non-recursive, so it failed on a dir that still held the session mirror, and the
     // project's id was left lying around under `remote-projects/` forever.
     //
@@ -4892,7 +4892,7 @@ fn chrono_now() -> String {
 mod tests {
     use super::*;
 
-    /// `forget_project` purges only Eldrun's state dirs about a project: a dir
+    /// `forget_project` purges only Tabtivity's state dirs about a project: a dir
     /// that is there goes, one that never existed is not an error, and a
     /// sibling that is not on the list — the project folder — is untouched.
     #[test]
@@ -5581,7 +5581,7 @@ mod tests {
 
     #[test]
     fn git_provider_rides_only_on_a_hosted_project() {
-        // The clone/fork URL's own host, kept for the two providers Eldrun speaks.
+        // The clone/fork URL's own host, kept for the two providers Tabtivity speaks.
         assert_eq!(
             normalize_git_provider(Some("GitHub"), "remote-private").as_deref(),
             Some("github")
@@ -5846,7 +5846,7 @@ mod tests {
         );
         assert!(gitignore.lines().any(|line| line == "node_modules/"));
 
-        // Not a folder Eldrun generates: the file is left alone.
+        // Not a folder Tabtivity generates: the file is left alone.
         assert!(!ensure_generated_dir_ignored(dir.path(), "src").unwrap());
         let after = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(!after.contains("src"));

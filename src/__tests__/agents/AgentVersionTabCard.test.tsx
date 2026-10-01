@@ -1,5 +1,5 @@
 /**
- * The agent tab's "CLI is newer than Eldrun was checked with" card
+ * The agent tab's "CLI is newer than Tabtivity was checked with" card
  * (`TerminalVersionCard`, `stores/agents/agentVersionNotice`).
  *
  *  1. Only *newer* drift speaks; older drift, a match, and an already-dismissed

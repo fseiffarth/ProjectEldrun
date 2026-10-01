@@ -185,7 +185,7 @@ describe("auto-typed initial input vs. Claude's trust dialog", () => {
   });
 
   it("passes the tab's scope, so the backend knows which trust store the spawn reads", async () => {
-    // Trust Eldrun recorded inside the fence lives only in the fence's staged
+    // Trust Tabtivity recorded inside the fence lives only in the fence's staged
     // `.claude.json`; an unfenced tab reads the host file. Turning a project's
     // fence off made the probe answer "trusted" from the record while the
     // unfenced Claude asked anyway — and the rename's Enter said `No, exit`.

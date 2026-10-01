@@ -23,7 +23,7 @@ import { BRAND, storageColonKey } from "../brand";
  * (which loses all of that anyway, plus a giant core dump) into a ~1 s flicker.
  *
  * Two rules exist because of one incident (2026-09-01). The reading is
- * **per window**: every Eldrun window — the main one, each popout — runs this
+ * **per window**: every Tabtivity window — the main one, each popout — runs this
  * hook and reloads only itself. The first version read the largest renderer
  * under the app and always reloaded the main window; with a popout holding
  * 4.7 GB, the main window (at 1.4 GB) reloaded itself every 30 s, freeing
@@ -102,7 +102,7 @@ const RELOAD_AT_KEY = storageColonKey("renderer-watchdog-reload-at");
 const RESTART_AT_KEY = storageColonKey("renderer-watchdog-restart-at");
 const WORKING_SET_KEY = storageColonKey("renderer-watchdog-working-set-mb");
 const OWN_PID_KEY = storageColonKey("renderer-watchdog-own-pid");
-/** The app's name leading a window title (`"Eldrun win-1"`). */
+/** The app's name leading a window title (`"Tabtivity win-1"`). */
 const APP_TITLE_PREFIX = new RegExp(`^${BRAND.display}\\b[\\s—–-]*`);
 
 /** One webview renderer as the backend reports it (`commands::debug::RendererRss`). */
@@ -110,7 +110,7 @@ export interface RendererRss {
   /** Label of the window that claimed this renderer; `""` while unclaimed, or
    *  when the backend could not attribute at all (`pid === 0`). */
   label: string;
-  /** The claiming window's title (`"Eldrun win-1"`); `""` when unclaimed. */
+  /** The claiming window's title (`"Tabtivity win-1"`); `""` when unclaimed. */
   title: string;
   /** `0` = the older backend's unattributed largest-renderer reading. */
   pid: number;
@@ -297,7 +297,7 @@ export function shouldReplaceRenderer(
 }
 
 /** Short name for a renderer row: the claiming window's title minus the app
- *  name (`"Eldrun win-1"` → `"win-1"`), its label when there is no title, the
+ *  name (`"Tabtivity win-1"` → `"win-1"`), its label when there is no title, the
  *  pid while unclaimed, and a generic word for an unattributed reading. */
 export function rendererName(r: Pick<RendererRss, "label" | "title" | "pid">): string {
   const title = r.title.replace(APP_TITLE_PREFIX, "").trim();
@@ -493,7 +493,7 @@ export function useRendererWatchdog(): void {
       const own = ownRenderer(all, pid, attributionGivenUp());
 
       // Another window's renderer over the ceiling is that window's own
-      // watchdog's to reload — but it is also where a "why is Eldrun slow"
+      // watchdog's to reload — but it is also where a "why is Tabtivity slow"
       // answer lives, so say so once per renderer.
       for (const r of all) {
         if (r === own || r.pid === 0 || r.pid === pid) continue;

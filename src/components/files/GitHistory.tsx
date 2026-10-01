@@ -48,7 +48,7 @@ interface Worktree {
   is_prunable: boolean;
   prunable_reason: string;
   is_bare: boolean;
-  /** This worktree is the one Eldrun is working in — never removable (#23 D4). */
+  /** This worktree is the one Tabtivity is working in — never removable (#23 D4). */
   is_current: boolean;
 }
 
@@ -84,7 +84,7 @@ interface PairingConflict {
   paths: string[];
 }
 
-/** One `refs/eldrun/backup/*` safety ref (#28p D6). */
+/** One `refs/tabtivity/backup/*` safety ref (#28p D6). */
 interface BackupRef {
   peer: "local" | "remote";
   refname: string;
@@ -592,7 +592,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
 
   // Use-local / Use-remote divergence resolution (#28n Phase 2): the chosen side
   // becomes authoritative and the loser's overwritten tips are backed up to
-  // refs/eldrun/backup/* before it is reset. Confirm first — it discards commits
+  // refs/tabtivity/backup/* before it is reset. Confirm first — it discards commits
   // on the losing side (recoverable only via those backup refs).
   const lockstepResolve = useCallback(
     async (authority: "local" | "remote") => {
@@ -724,7 +724,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
 
   // #28p D8: a genuine two-sided divergence used to offer only "pick a winner". Open a
   // local shell in the mirror instead — the peer's tip is already parked at
-  // refs/eldrun/peer/<branch> by the reconcile that detected the divergence, so the user
+  // refs/tabtivity/peer/<branch> by the reconcile that detected the divergence, so the user
   // can merge or rebase with plain git and the next pass fast-forwards the host normally.
   const resolveInTerminal = useCallback(async () => {
     if (!projectId) return;

@@ -5,7 +5,7 @@
  * window event", which is precisely the kind of move that fails silently: a
  * mistyped event name leaves a menu row that opens nothing and throws nothing.
  * So every row is asserted against the listener that answers it — including
- * `eldrun:open-settings`, whose `detail` is the panel `ProjectSwitcher` opens
+ * `tabtivity:open-settings`, whose `detail` is the panel `ProjectSwitcher` opens
  * the dialog on.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";

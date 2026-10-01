@@ -755,7 +755,7 @@ enum MacMenuItem {
     Services,
     Hide,
     HideOthers,
-    /// Eldrun's own "Quit Eldrun" (⌘Q, id [`MAC_MENU_QUIT_ID`]), not the
+    /// Tabtivity's own "Quit Tabtivity" (⌘Q, id [`MAC_MENU_QUIT_ID`]), not the
     /// predefined `terminate:` one.
     Quit,
     Undo,
@@ -773,7 +773,7 @@ enum MacMenuItem {
 const MAC_MENU_QUIT_ID: &str = concat!(crate::app_slug!(), "-quit");
 
 /// The macOS menu bar: (submenu title, items). Tauri would otherwise install
-/// its default menu, and that one is wrong for Eldrun in two ways:
+/// its default menu, and that one is wrong for Tabtivity in two ways:
 ///
 /// - It binds **⌘W to Close Window**. The webview sees the key first, but from
 ///   a terminal or editor the frontend used to let it pass, and the menu then
@@ -875,13 +875,13 @@ fn with_macos_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri:
 /// WebKitGTK draws the scrollbars INSIDE the web content with the native GTK
 /// theme, not the page's CSS — the standard `scrollbar-color` property is ignored
 /// on this WebKitGTK build (confirmed on 2.50.x). On a light GTK system theme
-/// that leaves a white trough + grey slider regardless of Eldrun's in-app theme.
+/// that leaves a white trough + grey slider regardless of Tabtivity's in-app theme.
 ///
 /// WebKit's scrollbar renderer queries the default screen's GTK style providers,
 /// so an APPLICATION-priority `GtkCssProvider` that recolors the `scrollbar`
 /// nodes is picked up for the in-content bars. We apply a theme-agnostic look —
 /// a translucent-grey trough (subtle on both light and dark surfaces) with a
-/// solid accent-blue slider — so it reads as "Eldrun blue" without having to
+/// solid accent-blue slider — so it reads as "Tabtivity blue" without having to
 /// follow the live in-app theme. Best-effort and behind an env opt-out: any
 /// failure simply leaves the native scrollbar untouched.
 #[cfg(target_os = "linux")]
@@ -954,7 +954,7 @@ fn restore_main_window(app: &tauri::App) {
     // the window UNMOVABLE — KWin refuses the `_NET_WM_MOVERESIZE` that
     // `startDragging` sends, so the header title-bar drag silently no-ops. A
     // maximized window fills the monitor identically yet stays draggable and
-    // edge-snappable, so that is what Eldrun uses instead. macOS is excluded: real
+    // edge-snappable, so that is what Tabtivity uses instead. macOS is excluded: real
     // fullscreen (its own Space) is the platform-expected behaviour there, and
     // `AppShell.tsx` opts into it explicitly after load.
     #[cfg(not(target_os = "macos"))]
@@ -1021,10 +1021,10 @@ pub fn run() {
     }
 
     // WebKit's AT-SPI bridge aborts the web process on a stale text offset, and
-    // Eldrun's constantly rewriting UI produces those by the second whenever a
+    // Tabtivity's constantly rewriting UI produces those by the second whenever a
     // screen reader is attached (2026-09-17: two renderer SIGABRTs, both taking
     // the window's tabs with them). Opt out before the first webview is built;
-    // `ELDRUN_ENABLE_A11Y=1` keeps the bridge. See `services::webkit_a11y`.
+    // `TABTIVITY_ENABLE_A11Y=1` keeps the bridge. See `services::webkit_a11y`.
     #[cfg(target_os = "linux")]
     services::webkit_a11y::install();
 
@@ -1116,7 +1116,7 @@ pub fn run() {
         .manage(workspace)
         .manage(fs_watch)
         .manage(remote_pool)
-        // Carries PDF pages between two Eldrun windows: they are separate WebViews
+        // Carries PDF pages between two Tabtivity windows: they are separate WebViews
         // with separate JS heaps, so the bytes must cross the process boundary.
         .manage(commands::pdf_clip::PdfClipboard::default())
         .manage(sync_manifest)
@@ -1251,7 +1251,7 @@ pub fn run() {
             // Relay the turn state the agents' own hooks record per tab
             // (working / decision / done) to the window's activity store.
             services::agent_turn::start(_app.handle().clone());
-            // Install the global Claude SessionStart hook so Eldrun can follow a
+            // Install the global Claude SessionStart hook so Tabtivity can follow a
             // tab's live session id across `/clear` (see services::agent_session).
             if let Err(e) = services::agent_bin::install() {
                 eprintln!("agent_bin: install commands: {e}");
@@ -1259,7 +1259,7 @@ pub fn run() {
             if let Err(e) = services::agent_session::install_session_start_hook() {
                 eprintln!("agent_session: install SessionStart hook: {e}");
             }
-            // Bring legacy `projects.json` entries (written by older Eldrun
+            // Bring legacy `projects.json` entries (written by older Tabtivity
             // versions) up to the current shape and refresh their scaffold, then
             // persist. Off-thread so file I/O never blocks startup; additive and
             // idempotent, so a race with the frontend's first load is benign.
@@ -1280,7 +1280,7 @@ pub fn run() {
             // fenced spawn can race it.
             services::sandbox::clear_stage();
             // The per-CLI login store (`services::agent_auth`): adopt the
-            // Claude mirror an older Eldrun kept, then keep every agent home's
+            // Claude mirror an older Tabtivity kept, then keep every agent home's
             // links in step with the store. One detached thread; dies with
             // the process.
             services::agent_install::migrate_legacy_stores();
@@ -1345,7 +1345,7 @@ pub fn run() {
             // Place the main window where it was last closed and MAKE IT VISIBLE.
             // Must stay last in `setup`: the window is created hidden (see
             // `restore_main_window`), so anything that returns early before this
-            // leaves Eldrun running with no window on screen.
+            // leaves Tabtivity running with no window on screen.
             restore_main_window(_app);
             Ok(())
         })
@@ -2123,7 +2123,7 @@ pub fn run() {
             // A detached popout can die WITHOUT going through `attach_subwindow`
             // (seed-timeout self-destroy, last-tab close, the WM-close safety
             // net in DetachedApp). Free its registry footprint — display number
-            // ("Eldrun win-N"), TrackedWindow, parkable override — here, the one
+            // ("Tabtivity win-N"), TrackedWindow, parkable override — here, the one
             // choke point every destruction passes, so freed numbers get reused
             // and a lone popout is always "win-1". The dock-back path fires this
             // after `attach_subwindow` already freed; the release is idempotent.
@@ -2134,12 +2134,12 @@ pub fn run() {
             } = &event
             {
                 use tauri::{Emitter, Manager};
-                // The main window going away must take every other Eldrun window
+                // The main window going away must take every other Tabtivity window
                 // with it. Popouts, the deck presenter and live browser pages are
                 // siblings of `main` in this process, not children of it, so
                 // nothing closes them on their own: they would strand on screen
                 // and — since Tauri exits only on the LAST window — keep a
-                // windowless Eldrun running behind them. The shell's own
+                // windowless Tabtivity running behind them. The shell's own
                 // `shutdownDetachedWindows` already tears popouts down (before
                 // `destroy()`, so their bounds are persisted first); this is the
                 // net under it, for the windows it does not cover and for the
@@ -2208,7 +2208,7 @@ pub fn run() {
                 // Old-name lookups counted since the last write (nothing
                 // while the app's name is unchanged).
                 services::brand_migration::hits::flush();
-                // Stop the Eldrun Mobile host first: its lifetime is the app's
+                // Stop the Tabtivity Mobile host first: its lifetime is the app's
                 // (started again at the next launch, see `setup`), and once the
                 // desktop is gone it can neither create tabs nor reach the
                 // sessions reaped below, so a host left running would only be a
@@ -2220,7 +2220,7 @@ pub fn run() {
                 // nothing of the endpoint outlives the quit.
                 commands::root_mcp::stop_for_exit();
                 // Abort every terminal's process subtree so no inner process (a
-                // dev server, a build, a training run) outlives Eldrun. Runs
+                // dev server, a build, a training run) outlives Tabtivity. Runs
                 // before the container teardown below, since a containerized
                 // tab's in-container process is TERMed via its still-live
                 // container. Dropping the registry alone would kill only the
@@ -2228,7 +2228,7 @@ pub fn run() {
                 _app.state::<RegistryState>().lock().unwrap().kill_all();
                 // The local tmux servers those PTYs were clients of survive the
                 // clients by design (that is what makes a crash resumable), so a
-                // clean quit ends Eldrun's own sessions explicitly. The window's
+                // clean quit ends Tabtivity's own sessions explicitly. The window's
                 // close handler already does this before `destroy()`; repeating
                 // it here is what covers the exits that never run frontend code
                 // — the dev launcher's Ctrl+C (SIGINT/SIGTERM → `app.exit`),
@@ -2239,10 +2239,10 @@ pub fn run() {
                 }
                 // Stop the Ollama server *this run started* — the spawned
                 // `ollama serve` (with the runner child holding the weights) or
-                // the systemd unit that was inactive until Eldrun asked for it.
+                // the systemd unit that was inactive until Tabtivity asked for it.
                 // A server that was already running, or one on another machine,
                 // is deliberately left alone: Ollama is a machine service as
-                // often as it is an Eldrun detail.
+                // often as it is a Tabtivity detail.
                 commands::ollama::shutdown_owned_server();
                 // The fenced Copilot language servers (one per consented project).
                 tauri::async_runtime::block_on(commands::copilot::stop_all_for_exit());
@@ -2266,7 +2266,7 @@ pub fn run() {
                 // via QMP, escalating to a kill after a short grace).
                 services::vm::down_all();
                 // Tear down pooled SSH/SFTP connections. This ends the `ssh`
-                // *clients* Eldrun spawned; the ControlMaster behind them is a
+                // *clients* Tabtivity spawned; the ControlMaster behind them is a
                 // separate backgrounded process (`ssh: … [mux]`, reparented to
                 // init) that `ControlPersist` keeps for its idle window whatever
                 // we do here, so it is deliberately left with its socket intact
@@ -2338,7 +2338,7 @@ mod tests {
         for needed in [MacMenuItem::Copy, MacMenuItem::Paste, MacMenuItem::Cut, MacMenuItem::SelectAll] {
             assert!(edit.contains(&needed), "{needed:?}");
         }
-        // Exactly one Quit, in the app menu, and it is Eldrun's own.
+        // Exactly one Quit, in the app menu, and it is Tabtivity's own.
         let quits: usize = plan
             .iter()
             .map(|(_, items)| items.iter().filter(|i| **i == MacMenuItem::Quit).count())

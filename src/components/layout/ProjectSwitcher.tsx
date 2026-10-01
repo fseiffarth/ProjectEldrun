@@ -126,7 +126,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
 
   // The intro wizard's New / Import / Clone buttons open the very dialogs the
   // + menu opens — this bar owns them, so they arrive as a window event (the
-  // `eldrun:open-settings` pattern above) rather than a second copy.
+  // `tabtivity:open-settings` pattern above) rather than a second copy.
   useEffect(() => {
     const onOpenProjectDialog = (e: Event) => {
       const kind = (e as CustomEvent).detail;
@@ -540,7 +540,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         onContextMenu={(e) => e.preventDefault()}
       >
         {/* No leading divider: this strip opens the whole bar — its box chip
-            (the Eldrun logo) is the leftmost thing in the window — so there is
+            (the Tabtivity logo) is the leftmost thing in the window — so there is
             nothing on its left to divide it from. */}
         <div
           className={`project-pills-region${pillOverflow.left ? " overflow-left" : ""}${
@@ -581,7 +581,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           {/* Hairline between the fixed leading segment (★ · ⬡) and the
               scrolling project strip, so the two zones read as two zones. */}
           {/* The pending-proposals count used to stand here as a second copy of
-              the console's own badge. Eldrun's tools and what they propose are
+              the console's own badge. Tabtivity's tools and what they propose are
               the root console's subject, so both live there and only there
               (RootOverlay's ⚿ chip and the ✓ button beside it); the project bar
               keeps its width for the projects. */}

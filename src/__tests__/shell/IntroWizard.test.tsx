@@ -1,6 +1,6 @@
 /**
  * "How to start" is a paged intro wizard: Welcome → Projects → Agent CLIs →
- * Local models → Ask Eldrun → What next. It pages with Back/Next, the step rail
+ * Local models → Ask Tabtivity → What next. It pages with Back/Next, the step rail
  * and ←/→, remembers the page it was left on, and each page's one-click
  * actions reuse an existing mechanism: the + menu's project dialogs (a window
  * event), the registry's installer run in a terminal tab (`runInstallInTab`),

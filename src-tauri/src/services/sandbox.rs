@@ -2,7 +2,7 @@
 //!
 //! When a project's container toggle is on, every terminal/agent tab of the
 //! project (`shell` and `agent` kinds) execs into a single long-lived container
-//! named `eldrun-<project-id>`. `local_only` tabs (e.g. Ollama `local_agent`)
+//! named `tabtivity-<project-id>`. `local_only` tabs (e.g. Ollama `local_agent`)
 //! stay on the host verbatim. The container mounts **only the project
 //! directory** plus the minimal agent auth/state paths, so a process inside it
 //! physically cannot reach unrelated host files.
@@ -38,7 +38,7 @@
 //!
 //! Only these host paths are bind-mounted, each at its identical absolute path:
 //! - the **project directory** (rw) — the sole project bytes exposed;
-//! - the project's **Eldrun-owned agent home** (`services::agent_home`) at
+//! - the project's **Tabtivity-owned agent home** (`services::agent_home`) at
 //!   `$HOME` (rw): the agents' config, transcripts and session stores live
 //!   there, never in the user's own home, which the container never sees;
 //! - `<state_dir>/live_sessions/<project-id>` (rw) — where the in-container
@@ -79,7 +79,7 @@
 //!
 //! Every container is created with `--init` (PID 1 reaps zombies),
 //! `--security-opt no-new-privileges`, `--cap-drop ALL`, a `--pids-limit`
-//! (fork-bomb guard), and `--label eldrun.owner=eldrun` so anything we started
+//! (fork-bomb guard), and `--label tabtivity.owner=tabtivity` so anything we started
 //! is enumerable (and sweepable). Optional per-project knobs (`SandboxSpec`):
 //! `--memory`, `--cpus`, `--network` (e.g. `none` for no egress), and
 //! `--read-only` rootfs (+ `--tmpfs /tmp`). Docker's own socket is never
@@ -112,7 +112,7 @@ pub const DEFAULT_IMAGE: &str = crate::brand::SANDBOX_IMAGE;
 /// for node + git + ripgrep + child processes, tight enough to blunt a fork bomb.
 pub const DEFAULT_PIDS_LIMIT: u32 = 1024;
 
-/// `--label` marking every container Eldrun starts, so anything we own is
+/// `--label` marking every container Tabtivity starts, so anything we own is
 /// enumerable (`docker ps --filter label=…`) and sweepable at startup/exit.
 pub const OWNER_LABEL: &str = crate::brand::DOCKER_OWNER_LABEL;
 
@@ -157,7 +157,7 @@ fn sanitize_key(id: &str) -> String {
     crate::storage::project_key(id)
 }
 
-/// Name of the session container for a project: `eldrun-<sanitized-id>`.
+/// Name of the session container for a project: `tabtivity-<sanitized-id>`.
 pub fn container_name_for(project_id: &str) -> String {
     format!("{}{}", crate::brand::CONTAINER_PREFIX, sanitize_key(project_id))
 }
@@ -176,7 +176,7 @@ pub fn image_for(project_id: &str, spec: Option<&SandboxSpec>) -> String {
 
 /// Stable FNV-1a hash of everything baked into `docker run` at create time
 /// (image, mounts, hardening — i.e. the create argv built with no fingerprint
-/// label). Stored on the container as `--label eldrun.spec=<hash>` so `up` can
+/// label). Stored on the container as `--label tabtivity.spec=<hash>` so `up` can
 /// detect a stale container whose spec/mounts no longer match and recreate it.
 /// Deliberately not `DefaultHasher` (unstable across Rust releases — a false
 /// mismatch would needlessly recreate on every app upgrade… of the hasher).
@@ -199,7 +199,7 @@ pub fn spec_fingerprint(create_args: &[String]) -> String {
 pub struct ContainerProbe {
     pub exists: bool,
     pub running: bool,
-    /// The `eldrun.spec` label recorded at create, when present.
+    /// The `tabtivity.spec` label recorded at create, when present.
     pub fingerprint: Option<String>,
 }
 
@@ -329,7 +329,7 @@ pub fn docker_create_args(
 }
 
 /// Whether a tab variable's VALUE must stay off the `docker exec` argv (#864):
-/// the forwarded agent credentials and Eldrun's MCP bearer tokens. The docker
+/// the forwarded agent credentials and Tabtivity's MCP bearer tokens. The docker
 /// client stays alive for the tab's whole life, and `/proc/<pid>/cmdline` is
 /// readable by every local user — not only this uid.
 fn is_secret_exec_env(key: &str) -> bool {
@@ -423,7 +423,7 @@ pub fn docker_exec_args(
 //
 // `PtyOptions.sandbox` and `PtyOptions.local_only` arrive from the renderer,
 // which derives them from the tab store — and the tab store is rehydrated from a
-// layout file that lives INSIDE the project tree (`.eldrun/sessions/terminals.json`
+// layout file that lives INSIDE the project tree (`.tabtivity/sessions/terminals.json`
 // and `project.json`), i.e. inside the container's own writable mount and inside
 // any cloned/imported repo. A persisted tab that declares `location: "local"`
 // therefore used to defeat the container it was supposed to be confined by:
@@ -442,7 +442,7 @@ pub struct SpawnAuthority {
     pub local_only: bool,
 }
 
-/// Env var Eldrun sets on every local-model tab (both the `vibe` per-model driver
+/// Env var Tabtivity sets on every local-model tab (both the `vibe` per-model driver
 /// and the `prepare_local_launch` drivers) to record which Ollama model it drives.
 ///
 /// **A usage label, and nothing else.** It used to double as the marker that
@@ -529,7 +529,7 @@ pub const HOST_BOUND_LOCAL_AGENT_CMDS: &[&str] = &[
 /// [`host_bound_marker_exists`].
 ///
 /// **What this buys, precisely.** It removes an authority decision that was keyed
-/// on `ELDRUN_LOCAL_MODEL` — a label `TabBar.tsx` sets for the usage recap, which
+/// on `TABTIVITY_LOCAL_MODEL` — a label `TabBar.tsx` sets for the usage recap, which
 /// meant a display-only change elsewhere could hand out container escapes without
 /// anyone noticing. It does *not* defend against a compromised renderer: the
 /// registration is a command the renderer calls, so a renderer that can spawn can
@@ -551,7 +551,7 @@ pub fn is_host_bound_local_agent(cmd: &str, marker: bool) -> bool {
 /// *indirectly* (`sh -c 'claude'`, a wrapper script), which under `Agents` runs on
 /// the host — the same class of gap the host-bound marker documents, with the same
 /// answer: it takes a renderer that can already spawn, which is the CSP's problem
-/// and not this function's. Nothing in Eldrun's own UI opens an agent that way.
+/// and not this function's. Nothing in Tabtivity's own UI opens an agent that way.
 ///
 /// Matched on the **basename**, so a pinned `/usr/local/bin/claude` or a
 /// `~/.local/bin/codex` is still an agent.
@@ -733,7 +733,7 @@ pub fn wrap_pty_options_docker(opts: &mut PtyOptions) -> Result<(), String> {
         (opts.cmd.clone(), opts.args.clone())
     };
 
-    // opts.env is already resolved (ELDRUN_TAB_UID, resume args' env, etc.).
+    // opts.env is already resolved (TABTIVITY_TAB_UID, resume args' env, etc.).
     let env: BTreeMap<String, String> = opts.env.clone().into_iter().collect();
     // Auth env is read at exec (not create) so rotated tokens are picked up
     // per tab spawn.
@@ -864,7 +864,7 @@ pub fn up(
     // path rather than a docker-auto-created (root-owned) one. Best effort.
     let _ = std::fs::create_dir_all(&live_sessions_own);
 
-    // The scope's Eldrun-owned agent home is the container's `$HOME`
+    // The scope's Tabtivity-owned agent home is the container's `$HOME`
     // (`services::agent_home`): the user's own home never enters it.
     let scope_home = crate::services::agent_home::prepare_scope_home(
         project_id,
@@ -1002,7 +1002,7 @@ pub fn down_for_project(project_id: &str) {
         .retain(|_, t| t.container != name);
 }
 
-/// App-exit teardown: remove every eldrun-owned container. Skipped entirely
+/// App-exit teardown: remove every tabtivity-owned container. Skipped entirely
 /// when this run never created one (a crash's leftovers are `sweep_orphans`'s
 /// job next startup).
 pub fn down_all() {
@@ -1020,7 +1020,7 @@ pub fn clear_stage() {
     let _ = std::fs::remove_dir_all(storage::state_dir().join("sandbox-stage"));
 }
 
-/// Startup sweep: remove every container labelled `eldrun.owner=eldrun` (a
+/// Startup sweep: remove every container labelled `tabtivity.owner=tabtivity` (a
 /// previous run's containers are by definition stale). The staged config
 /// copies are cleared by [`clear_stage`], which must have run first
 /// and synchronously. Best-effort; cheap no-op when docker is absent.
@@ -1037,7 +1037,7 @@ pub fn sweep_orphans() {
 }
 
 /// Whether the startup sweep may spend a `docker` spawn at all: only when a
-/// docker CLI resolves on Eldrun's PATH. Pure so the gate is testable on any OS.
+/// docker CLI resolves on Tabtivity's PATH. Pure so the gate is testable on any OS.
 fn sweep_should_probe(docker_on_path: bool) -> bool {
     docker_on_path
 }
@@ -1251,7 +1251,7 @@ pub struct PreflightReport {
     pub status: String,
     pub image: String,
     /// For "image_missing": the shell command that provides the image — a
-    /// `docker build` of the in-repo/embedded reference Dockerfile for eldrun
+    /// `docker build` of the in-repo/embedded reference Dockerfile for tabtivity
     /// images, a `docker pull` for registry images.
     pub build_command: Option<String>,
 }
@@ -1283,7 +1283,7 @@ pub fn preflight_report(project_id: &str) -> PreflightReport {
     report("image_missing", build)
 }
 
-/// The command that provides a missing image. Eldrun's own images build from
+/// The command that provides a missing image. Tabtivity's own images build from
 /// `docker/agent-sandbox` when the project carries a checkout, else from an
 /// embedded copy of the reference Dockerfile materialized under the state dir
 /// (an installed app has no repo checkout). Anything else is a registry pull.
@@ -2339,7 +2339,7 @@ mod tests {
         let resolved = resolve_all(true, false, true, want(false, true), "/tmp/pwn.sh", true);
         assert_eq!(resolved, want(true, false));
         // …and a known driver alone is not enough either. This is #150: the grant
-        // used to be the tab's `ELDRUN_LOCAL_MODEL` env var, which is a label the
+        // used to be the tab's `TABTIVITY_LOCAL_MODEL` env var, which is a label the
         // usage recap sets, so anything that set it for a display reason handed
         // out a container escape. It is now a file in the state dir.
         assert!(!is_host_bound_local_agent("vibe", false));

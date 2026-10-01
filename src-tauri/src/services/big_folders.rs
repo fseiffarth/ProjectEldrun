@@ -164,8 +164,8 @@ pub fn pick(
 ///
 /// Symlinks are never followed (the host walk in `remote_sync` makes the same
 /// promise, for the same reason: a `link -> /` must not be measured as project
-/// data), and `.git`/`.eldrun` are skipped — git's bytes are lockstep's business
-/// and Eldrun's runtime dir is nobody's. Stops at [`MAX_ENTRIES`].
+/// data), and `.git`/`.tabtivity` are skipped — git's bytes are lockstep's business
+/// and Tabtivity's runtime dir is nobody's. Stops at [`MAX_ENTRIES`].
 pub fn walk_local_files(root: &Path) -> Vec<(String, u64)> {
     let mut out = Vec::new();
     let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];

@@ -1,6 +1,6 @@
 /**
  * The side panel in the ROOT scope: the scope that belongs to no project gets
- * the same file viewer, rooted at `~/eldrun/root` (`rootDir`) — the staging area
+ * the same file viewer, rooted at `~/tabtivity/root` (`rootDir`) — the staging area
  * for data that is only being looked at, or has no project to belong to yet.
  *
  * The two things worth pinning down are the ones a plain "no active project"

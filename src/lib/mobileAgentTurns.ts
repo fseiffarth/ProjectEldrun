@@ -1,6 +1,6 @@
 /**
  * Which agent-turn changes become a push notice on the phone
- * (`docs/eldrun_mobile_future_plan.md` §A).
+ * (`docs/tabtivity_mobile_future_plan.md` §A).
  *
  * Only the desktop sees a transition — the sidecar gets snapshots — so the
  * edges are found here, from the same per-tab state the phone's lists show

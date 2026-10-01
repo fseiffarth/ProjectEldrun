@@ -54,7 +54,7 @@ fi
 echo "Open this private URL on your phone:"
 echo "$origin"
 if command -v qrencode >/dev/null; then
-  # Do not request ANSI black/white: Eldrun maps those palette slots to the
+  # Do not request ANSI black/white: Tabtivity maps those palette slots to the
   # active theme (lavender in particular), which can make a camera QR scan
   # unreliable. Plain UTF-8 uses the terminal's normal foreground/background
   # pair instead, whose contrast is selected with the rest of the theme.
@@ -62,4 +62,4 @@ if command -v qrencode >/dev/null; then
 else
   echo "Install qrencode to print a terminal QR code."
 fi
-echo "Then use Install app / Add to Home Screen and pair it from Eldrun Settings."
+echo "Then use Install app / Add to Home Screen and pair it from Tabtivity Settings."

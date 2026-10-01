@@ -154,14 +154,19 @@ three_forms \
   .github/workflows/ci-cd.yml
 
 # ── 4. Literals no constant can reach ───────────────────────────────────────
-# A serde key: the new name is written, the old one is still read.
+# A serde key. No `alias` for the old key, on purpose: with one, a file that
+# holds BOTH keys (an older build wrote it after this one did) fails to parse
+# as a whole, and the readers fall back to an empty default — and an old key
+# left behind would switch the phone's access on behind a UI that reads the
+# current key only. The migrator's `persisted-names` step renames the keys in
+# the state files before anything reads them.
 say "serde keys and include paths"
 for file in \
   src-tauri/src/schema/settings.rs \
   src-tauri/src/schema/boxes.rs \
   src-tauri/src/services/mobile_control/config.rs \
   src-tauri/src/services/mobile_control/discovery.rs; do
-  sed -i -E "s/rename = \"${OLD_SLUG}(_mobile_[a-z]+)\"/rename = \"${NEW_SLUG}\1\", alias = \"${OLD_SLUG}\1\"/" "$file"
+  sed -i -E "s/rename = \"${OLD_SLUG}(_mobile_[a-z]+)\"/rename = \"${NEW_SLUG}\1\"/" "$file"
 done
 
 # ── 5. Files named after the app ────────────────────────────────────────────
