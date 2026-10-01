@@ -157,6 +157,37 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     screen.getByTestId("session-transcript");
   });
 
+  it("keeps the chat while the composer has focus, even when a read answers the session unavailable", async () => {
+    // Under full load the desktop misses the transcript call's deadline and
+    // the host answers from the tab record — the chat dropped to the screen
+    // (or handed over to Terminal) under the reader's thumbs.
+    let stored: unknown = STORED;
+    const fetchMock = sidecarFetch(() => stored);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    screen.getByTestId("session-transcript");
+    const composer = screen.getByRole("textbox", { name: "Message agent" });
+    act(() => { composer.focus(); });
+    fireEvent.change(composer, { target: { value: "half a" } });
+
+    stored = { available: false, reason: "unsupported", entries: [], truncated: false };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect(screen.getByRole("button", { name: "Chat" }).getAttribute("aria-pressed")).toBe("true");
+    screen.getByTestId("session-transcript");
+    expect(composer).toBe(document.activeElement);
+
+    // Letting go reads the session afresh, and that answer stands.
+    const reads = () => fetchMock.mock.calls.filter(([url]) => (url as string).includes("/transcript")).length;
+    const before = reads();
+    act(() => { composer.blur(); });
+    await settle();
+    expect(reads()).toBe(before + 1);
+    expect(screen.getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByTestId("session-transcript")).toBeNull();
+  });
+
   it("opens a shell tab on Terminal", async () => {
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));
     render(<Terminal tab={{ ...TAB, id: "tab-9", kind: "shell", agent_label: undefined }} back={() => {}} />);

@@ -1723,13 +1723,39 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   // reading the screen meanwhile, and paints the stored session the moment it
   // reads. It used to leave for Terminal on any of these, and since that was
   // not the reader's choice either, nothing ever brought it back.
+  /** Whether the composer has the keyboard. While it does, nothing swaps the
+   * view under the reader's thumbs: not the hand-over to Terminal below, and
+   * not a read that answers a shown chat `available: false` — on a desktop
+   * under full load the window misses the call's deadline, the host answers
+   * from the tab record instead, and the chat used to drop to the screen and
+   * come back with the next read, mid-sentence. Such an answer is only noted
+   * (`transcriptHeld`); letting go of the composer reads the session afresh. */
+  const [composerTyping, setComposerTyping] = useState(false);
+  const transcriptHeld = useRef(false);
+  const typingStopped = () => {
+    setComposerTyping(false);
+    if (!transcriptHeld.current) return;
+    transcriptHeld.current = false;
+    setTranscriptReload((count) => count + 1);
+  };
+  // Asks the page rather than `composerTyping`: a composer disabled while it
+  // had focus (the link dropped) loses it without a blur event.
+  const showTranscript = (next: SessionTranscript) => setTranscript((current) => {
+    const typing = !!composerInput.current && document.activeElement === composerInput.current;
+    if (typing && current?.available && !next.available) {
+      transcriptHeld.current = true;
+      return current;
+    }
+    transcriptHeld.current = false;
+    return current && sameTranscript(current, next) ? current : next;
+  });
   useEffect(() => {
     // A just-sent prompt is still a useful Reader conversation when Codex has
     // not produced a readable rollout yet. Keep its local bubble on screen
     // instead of swapping to the terminal and making it vanish mid-turn.
-    if (!viewChosen.current && view === "focus" && transcript?.available === false && transcript.reason === "unsupported"
+    if (!viewChosen.current && !composerTyping && view === "focus" && transcript?.available === false && transcript.reason === "unsupported"
       && (!CODEX_AGENT.test(tab.agent_label ?? tab.label) || pending.length === 0)) setView("terminal");
-  }, [view, transcript, pending, tab.agent_label, tab.label]);
+  }, [view, transcript, pending, tab.agent_label, tab.label, composerTyping]);
   /** Whether Focus is reading the stored session rather than the screen. */
   const sessionFocus = tab.kind === "agent" && view === "focus" && focusSource === "session";
   const transcriptVersion = useRef<string | undefined>();
@@ -1756,7 +1782,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
           // A forced full read (after an Undo) answers the same session: keep
           // what is shown, but ask by its version again from here on.
           transcriptVersion.current = next.version;
-          setTranscript((current) => current && sameTranscript(current, next) ? current : next);
+          showTranscript(next);
         },
         () => {},
       );
@@ -1780,7 +1806,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       void getTranscript(tab.id, transcriptVersion.current, transcriptLimit, controller.signal).then(
         (next) => {
           if (controller.signal.aborted || !next || typeof next !== "object" || next.unchanged) return;
-          setTranscript((current) => current && sameTranscript(current, next) ? current : next);
+          showTranscript(next);
         },
         () => {},
       );
@@ -3582,7 +3608,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
           </div>)}
         </div>}
         <div className="composer-field">
-          <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
+          <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onFocus={() => setComposerTyping(true)} onBlur={typingStopped} onKeyDown={(event) => {
             if (event.key !== "Enter" || event.shiftKey) return;
             // Enter confirms a candidate inside an IME composition (CJK keyboards,
             // and 229 is what Android keyboards report mid-composition); that
