@@ -74,8 +74,9 @@ const HANDOFF_BACK_KEY = "Esc";
  * names on hover. Every key shown is the user's steering binding
  * (`steeringRowLabel`, `steeringSlotKey`).
  *
- * Laid out as a hub at the bottom centre — the round steering badge — with one
- * circle per box fanned on an arc above it, each on its own spoke (`OrbitLegend`).
+ * Laid out as a hub at the bottom centre — the hexagonal steering badge — with one
+ * hexagon per box in a low arch along the bottom edge, each on its own spoke
+ * from the hub (`OrbitLegend`).
  *
  * Mounted once in `AppShell` (the FocusFrameOverlay/host pattern) and
  * portalled to `document.body` so no pane clips it; `pointer-events: none` —
@@ -185,7 +186,7 @@ export function SteeringLegend() {
   if (!active) return null;
   const legendKey = steeringRowKeys(["legend"], steerKeys);
   if (legendHidden) {
-    // Folded (H): a round badge at the bottom centre still says steering is on; H
+    // Folded (H): a hexagonal badge at the bottom centre still says steering is on; H
     // again — or a click — unfolds the key list.
     return createPortal(
       <div className="steering-legend-fab" role="status" aria-label={t("steering.legendTitle")}>
@@ -198,6 +199,7 @@ export function SteeringLegend() {
           onClick={toggleLegend}
           title={t("steering.fab.title", { key: legendKey })}
         >
+          <span className="steering-legend-fab-pulse" aria-hidden="true" />
           <KeyboardIcon size={22} />
           <kbd>{legendKey}</kbd>
         </button>
@@ -249,7 +251,7 @@ export function SteeringLegend() {
     );
   };
 
-  // The keys in circles by what they are for, each circle in one editor token
+  // The keys in hexagons by what they are for, each hexagon in one editor token
   // colour (the colour, not a printed name, tells them apart); the hub, not a
   // title, says the mode is on.
   const blobs = STEERING_GROUPS.flatMap((g): OrbitBlob[] => {
@@ -277,15 +279,15 @@ export function SteeringLegend() {
 
 interface OrbitBlob {
   id: string;
-  /** The editor token class that colours the circle and its spoke. */
+  /** The editor token class that colours the hexagon and its spoke. */
   tok: string;
   label?: string;
   items: ReactNode[];
 }
 
 /**
- * The hub with one circle per key box on an arc above it, each on a spoke in
- * its own colour. The circles are sized from their rendered key lists, so the
+ * The hub with one hexagon per key box in a row along the bottom, each on a
+ * spoke in its own colour. The hexagons are sized from their rendered key lists, so the
  * first paint measures them hidden and the next places them.
  */
 function OrbitLegend({ label, where, hub, blobs }: { label: string; where: string | null; hub: ReactNode; blobs: OrbitBlob[] }) {
@@ -323,7 +325,7 @@ function OrbitLegend({ label, where, hub, blobs }: { label: string; where: strin
       }}
     >
       {blobs.map((b, i) => {
-        const c = orbit?.circles.length === blobs.length ? orbit.circles[i] : null;
+        const c = orbit?.hexes.length === blobs.length ? orbit.hexes[i] : null;
         return (
           <span
             key={`spoke-${b.id}`}
@@ -333,7 +335,7 @@ function OrbitLegend({ label, where, hub, blobs }: { label: string; where: strin
         );
       })}
       {blobs.map((b, i) => {
-        const c = orbit?.circles.length === blobs.length ? orbit.circles[i] : null;
+        const c = orbit?.hexes.length === blobs.length ? orbit.hexes[i] : null;
         return (
           <div
             key={b.id}
@@ -342,7 +344,7 @@ function OrbitLegend({ label, where, hub, blobs }: { label: string; where: strin
             aria-label={b.label}
             style={
               c
-                ? { width: c.d, height: c.d, left: c.x - c.d / 2, top: -c.y - c.d / 2 }
+                ? { width: c.w, height: c.h, left: c.x - c.w / 2, top: -c.y - c.h / 2 }
                 : { visibility: "hidden" }
             }
           >
