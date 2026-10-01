@@ -1246,6 +1246,24 @@ pub fn snap_detached_window(app: AppHandle, label: String) -> bool {
     snap_detached_to_screen(&app, &label)
 }
 
+/// Raise one of the active scope's popouts and give it the keyboard —
+/// steering's J (the main window walks no popout itself). Popout labels only,
+/// so this can never bring up the main window or a presenter. Wayland's
+/// `set_focus` presents the surface (`gtk_window_present_with_time`), which
+/// also undoes a minimize there.
+#[tauri::command]
+pub fn focus_detached_window(app: AppHandle, label: String) -> bool {
+    if !label.starts_with("detached-") {
+        return false;
+    }
+    let Some(win) = app.get_webview_window(&label) else {
+        return false;
+    };
+    let _ = win.unminimize();
+    let _ = win.show();
+    win.set_focus().is_ok()
+}
+
 /// How often the monitor-arrangement watcher re-reads the connected displays.
 /// One cheap runtime query; the cost of noticing an unplug late is a popout the
 /// user cannot reach, so this stays in the "within a breath" range rather than

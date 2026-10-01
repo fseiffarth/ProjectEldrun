@@ -67,6 +67,7 @@ export type SteeringAction =
   | "panels"
   | "settings"
   | "jumpProject"
+  | "popout"
   | "menu"
   | "tabCard"
   | SteeringSlotAction;
@@ -130,6 +131,7 @@ export const STEERING_BINDINGS: SteeringBindingDef[] = [
   { action: "panels", labelKey: "steering.panels.label", scopes: TAB_BAR, defaults: ["p"] },
   { action: "settings", labelKey: "steering.settings.label", scopes: TAB_BAR, defaults: [","] },
   { action: "jumpProject", labelKey: "steering.jumpProject.label", scopes: TAB_BAR, defaults: ["/"] },
+  { action: "popout", labelKey: "steering.popout.label", scopes: TAB_BAR, defaults: ["j"] },
   ...STEERING_SLOT_ACTIONS.map(
     (action, i): SteeringBindingDef => ({
       action,

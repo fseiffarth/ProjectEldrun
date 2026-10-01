@@ -1474,6 +1474,9 @@ export function SplitPreviewOverlay({ groupRects }: { groupRects: Record<string,
  *    collide with them.
  * `pointer-events: none`, panel-relative coords from the same measured rects.
  */
+/** `.subwindow-number`'s height (subwindows.css). */
+const SUBWINDOW_NUMBER_SIZE = 18;
+
 export function FocusFrameOverlay({
   groupRects,
   frameRects,
@@ -1535,12 +1538,21 @@ export function FocusFrameOverlay({
           const up = (n - down) % n;
           const label =
             down === 0 ? "0" : down <= up ? `${down}↓` : `${up}↑`;
+          // On the tab bar's drag grip (the strip between the subwindow's top
+          // and its pane), not the pane's corner: there it covered the agent
+          // prompt strip / the terminal's first line. No bar measured (the
+          // empty-scope slot) → the pane corner.
+          const fr = frameRects[id];
+          const bar = fr ? r.top - fr.top : 0;
+          const pos =
+            fr && bar >= SUBWINDOW_NUMBER_SIZE
+              ? {
+                  left: fr.left + 3,
+                  top: fr.top + (bar - SUBWINDOW_NUMBER_SIZE) / 2 + 2,
+                }
+              : { left: r.left + 6, top: r.top + 6 };
           return (
-            <div
-              key={id}
-              className="subwindow-number"
-              style={{ left: r.left + 6, top: r.top + 6 }}
-            >
+            <div key={id} className="subwindow-number" style={pos}>
               {label}
             </div>
           );

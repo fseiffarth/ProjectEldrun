@@ -19,6 +19,7 @@ import {
 } from "../stores/keyboardSteering";
 import { useActivityStore } from "../stores/activity";
 import { jumpToTab } from "../lib/shortcuts/tabJump";
+import { focusNextPopout } from "../lib/window/focusPopout";
 import { nextStatusTab, statusTabs, type TabStatusKind } from "../lib/shortcuts/statusJump";
 import {
   steeringActionFor,
@@ -51,6 +52,7 @@ import {
   openContextMenu,
   openCursorPopup,
   placeRegionCursor,
+  pointRegionCursor,
   regionCursor,
   regionForLayer,
   regionHasControls,
@@ -336,6 +338,31 @@ export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
         syncTimers.add(id);
       }
     };
+    // A held key repeats faster than a heavy surface can take a step — the
+    // mail overlay reads the style and box of thousands of elements for each.
+    // Repeats the window had no time for queue up, and the cursor walked on by
+    // itself long after the key was let go (user, 2026-10-01). So a repeat is
+    // dropped when it was fired while the last step was still running, or
+    // before that step reached the screen.
+    let stepDoneAt = -Infinity;
+    let stepUnpainted = false;
+    const staleRepeat = (e: KeyboardEvent): boolean => {
+      if (!e.repeat) return false;
+      if (stepUnpainted) return true;
+      // `timeStamp` is on `performance.now()`'s clock in the engine; an older
+      // one counts from the epoch (jsdom) and cannot be compared.
+      const now = performance.now();
+      return Math.abs(now - e.timeStamp) < 60_000 && e.timeStamp < stepDoneAt;
+    };
+    const stepTaken = () => {
+      stepDoneAt = performance.now();
+      stepUnpainted = true;
+      const painted = () => {
+        stepUnpainted = false;
+      };
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(painted);
+      else window.setTimeout(painted, 16);
+    };
     // A box takes the keyboard and steering waits for it (`handOff`): the mode
     // is off, what steering opened stays open for it to come back to.
     const handOffSteering = (box: SteeringHandoff) => {
@@ -589,6 +616,11 @@ export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
         case "sidePanel":
           openSidePanel();
           return;
+        // The project's popped-out subwindow (the next one, with several): its
+        // window takes the keyboard, and the blur here ends steering.
+        case "popout":
+          void focusNextPopout();
+          return;
         case "panels": // toggle the side panels
           onTogglePanels();
           return;
@@ -827,9 +859,49 @@ export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
       // steering before the key is read; after it, whatever the key opened.
       // An arrow that met a dialog nobody announced only lands the cursor on
       // it: the legend still showed the level behind when the key was pressed.
+      if (staleRepeat(e)) return;
       const landed = syncLayer();
       steerKey(e, landed);
       syncSoon();
+      stepTaken();
+    }
+
+    // A press of the real pointer while steering is on: navigation starts over
+    // from where it landed. Inside the surface the cursor walks, the cursor
+    // goes to what was pressed; anywhere else — a project pill, a tab, a
+    // terminal — the region and everything stacked under it is dropped, and
+    // steering is back on the tabs (of the project the press switches to). A
+    // dialog or menu still up afterwards takes it again (`syncSoon`).
+    function onSteeringPointerDown(e: PointerEvent) {
+      if (isSteeringSynthetic(e)) return;
+      const steering = useKeyboardSteeringStore.getState();
+      if (!steering.active) return;
+      const target = e.target instanceof Element ? e.target : null;
+      // The legend's own fold button is steering's, not a place to go.
+      if (!target || target.closest(".steering-legend, .steering-legend-fab")) return;
+      cancelPlace();
+      const region = steering.level === "region" ? steering.region : null;
+      const root = region ? regionRoot(region) : null;
+      // A project pill is never under the top bar's cursor: a press on one
+      // starts over on that project's tabs.
+      if (root?.contains(target) && !target.closest(".project-pill, .box-chip")) {
+        pointRegionCursor(root, target);
+        return;
+      }
+      clearRegionCursor();
+      dropOverlay();
+      panelOpenedBySteering = false;
+      steering.setLevel("tabs");
+      const side = regionRoot("side");
+      if (side?.contains(target)) {
+        enterRegion("side");
+        pointRegionCursor(side, target);
+      }
+      syncSoon(() => {
+        const s = useKeyboardSteeringStore.getState();
+        const back = s.active && s.level === "region" && s.region ? regionRoot(s.region) : null;
+        if (back?.contains(target)) pointRegionCursor(back, target);
+      });
     }
 
     function steerKey(e: KeyboardEvent, landed: boolean) {
@@ -1206,6 +1278,7 @@ export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
     const unsubscribeLayers = useKeyboardSteeringStore.subscribe((s) => watchLayers(s.active));
 
     document.addEventListener("keydown", onSteeringKeyDown, true);
+    document.addEventListener("pointerdown", onSteeringPointerDown, true);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
@@ -1217,6 +1290,7 @@ export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
       unsubscribeLayers();
       watchLayers(false);
       document.removeEventListener("keydown", onSteeringKeyDown, true);
+      document.removeEventListener("pointerdown", onSteeringPointerDown, true);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);

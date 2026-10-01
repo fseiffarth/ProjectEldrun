@@ -1906,6 +1906,7 @@ pub fn run() {
             commands::subwindow::detached_window_frontmost,
             commands::subwindow::desktop_coordinates_supported,
             commands::subwindow::snap_detached_window,
+            commands::subwindow::focus_detached_window,
             commands::subwindow::sync_detached_scope,
             commands::subwindow::detached_window_is_parked,
             commands::subwindow::detached_retire_ack,

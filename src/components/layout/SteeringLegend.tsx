@@ -61,6 +61,32 @@ const HANDOFF: Record<SteeringHandoff, { where: TranslationKey; keys: [string, T
 };
 const HANDOFF_BACK_KEY = "Esc";
 
+/** Beats per pulse cycle: three ring sizes, then two at rest. */
+const PULSE_BEATS = 5;
+const PULSE_BEAT_MS = 400;
+
+/**
+ * The folded badge's pulse ring. It steps through a few discrete frames on a
+ * slow timer that writes `data-beat` straight to the DOM (no React render),
+ * so it costs about 2.5 small repaints a second. An infinite CSS keyframe
+ * animation repaints the clip-path ring every frame, which is expensive on
+ * WebKitGTK's software path.
+ */
+function SteeringPulse() {
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    let beat = 0;
+    const id = window.setInterval(() => {
+      beat = (beat + 1) % PULSE_BEATS;
+      el.dataset.beat = String(beat);
+    }, PULSE_BEAT_MS);
+    return () => window.clearInterval(id);
+  }, []);
+  return <span ref={ref} className="steering-legend-fab-pulse" data-beat="0" aria-hidden="true" />;
+}
+
 /**
  * The legend shown while keyboard steering mode is
  * active — the visible half of the mode's contract (every key is swallowed, so
@@ -98,6 +124,7 @@ export function SteeringLegend() {
   const toggleLegend = useKeyboardSteeringStore((s) => s.toggleLegend);
   const handedTo = useKeyboardSteeringStore((s) => s.handedTo);
   const multiPane = useTabsStore((s) => allGroups(s.layout).length >= 2);
+  const popouts = useTabsStore((s) => (s.detachedGroupsByScope[s.scope]?.length ?? 0) > 0);
   const focusedGroupId = useTabsStore((s) => s.focusedGroupId);
   const mail = useSettingsStore((s) => steeringAppEnabled("mail", s.settings));
   const calendar = useSettingsStore((s) => steeringAppEnabled("calendar", s.settings));
@@ -199,7 +226,7 @@ export function SteeringLegend() {
           onClick={toggleLegend}
           title={t("steering.fab.title", { key: legendKey })}
         >
-          <span className="steering-legend-fab-pulse" aria-hidden="true" />
+          <SteeringPulse />
           <KeyboardIcon size={22} />
           <kbd>{legendKey}</kbd>
         </button>
@@ -222,6 +249,7 @@ export function SteeringLegend() {
     apps: { mail, calendar, todo },
     agent: steeringAgentOffer(activeTab),
     terminal: !!activeTab && !!terminalFor(`${tabScope}:${activeTab.key}`),
+    popouts,
     statusCounts,
   });
   const where = level === "region" ? (region ? REGION_LABEL[region] : null) : LEVEL_LABEL[level];

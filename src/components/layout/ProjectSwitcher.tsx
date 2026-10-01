@@ -516,13 +516,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         // right-click only ever surfaces our own pill context menu.
         onContextMenu={(e) => e.preventDefault()}
       >
-        {/* No leading divider here any more. There used to be one, describing
-            itself as the line between the header's global cluster and the
-            project strip — but that cluster moved to the right of the strip, and
-            `.header-left` draws exactly that line at its own trailing edge. Two
-            hairlines ten pixels apart with nothing between them read as a
-            rendering fault, and the doubling is also what made the clock sit
-            noticeably further from the clock than the pills sit from each other. */}
+        {/* No leading divider: this strip opens the whole bar — its box chip
+            (the Eldrun logo) is the leftmost thing in the window — so there is
+            nothing on its left to divide it from. */}
         <div
           className={`project-pills-region${pillOverflow.left ? " overflow-left" : ""}${
             pillOverflow.right ? " overflow-right" : ""
