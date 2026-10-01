@@ -274,8 +274,13 @@ pub struct Catalog {
 /// upgrade *and* the periodic authorization re-check of each open terminal
 /// (every fifth second of `pty_bridge`'s tick), so without a TTL an idle phone
 /// with one terminal open kept the workstation at roughly 1.7 tmux forks per
-/// second forever.
-const CATALOG_TTL: Duration = Duration::from_millis(1_000);
+/// second forever. At 1 s nearly every phone request still missed (its polls
+/// run every 5 s and 8 s, the re-check every 5 s), so each paid a fork and the
+/// session-file reads; 3 s lets a poll's burst of requests share one load.
+/// The cost is staleness: a change made on the desktop (a tab opened or
+/// closed there, phone access switched off) reaches the phone up to 3 s later.
+/// Changes the phone makes itself go through `load_fresh` / `invalidate`.
+const CATALOG_TTL: Duration = Duration::from_millis(3_000);
 
 #[derive(Debug, Default)]
 pub struct CatalogCache {
