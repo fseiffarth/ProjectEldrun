@@ -20,10 +20,13 @@ pub fn install() -> io::Result<()> {
 fn install_in(dir: &Path, exe: Option<&Path>, clis: &[&str]) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     // The POSIX script is needed even on Windows for Docker containers.
+    // brand-check: allow — an include path is a literal; the script file is renamed at the flip
     write_script(dir, crate::brand::SEND_CLI, include_bytes!("../../../scripts/eldrun-send.sh"))?;
     #[cfg(windows)]
     {
+        // brand-check: allow — an include path is a literal; the script file is renamed at the flip
         write_script(dir, concat!(crate::app_slug!(), "-send.cmd"), include_bytes!("../../../scripts/eldrun-send.cmd"))?;
+        // brand-check: allow — an include path is a literal; the script file is renamed at the flip
         write_script(dir, concat!(crate::app_slug!(), "-send.ps1"), include_bytes!("../../../scripts/eldrun-send.ps1"))?;
     }
     if let Some(exe) = exe {
@@ -89,6 +92,7 @@ mod tests {
         assert_eq!(fs::metadata(&script).unwrap().modified().unwrap(), modified);
         fs::write(&script, "drift").unwrap();
         install_in(dir.path(), None, &[]).unwrap();
+        // brand-check: allow — an include path is a literal; the script file is renamed at the flip
         assert_eq!(fs::read(&script).unwrap(), include_bytes!("../../../scripts/eldrun-send.sh"));
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;

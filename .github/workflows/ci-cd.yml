@@ -69,6 +69,21 @@ jobs:
           echo "Scanning ${base}..${HEAD_SHA}"
           scripts/privacy-check.sh "$base" "$HEAD_SHA"
 
+  # The app's name is spelled in the brand modules only (src-tauri/src/brand.rs,
+  # src/lib/brand.ts, scripts/lib/brand.sh); everything else reads it from
+  # there. This fails when a tracked file outside the script's commented
+  # allowlist spells it itself. No hook runs it, so CI is where it is enforced.
+  brand:
+    name: brand
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check that only the brand modules spell the app's name
+        run: scripts/brand-check.sh
+
   # gitleaks over the whole history, next to privacy-check.sh (which scans only
   # the pushed range, for this repo's own private literals). The two overlap on
   # purpose: gitleaks knows far more issuer token formats. Blocking: history is
@@ -284,7 +299,7 @@ jobs:
     if: github.event_name == 'push'
     # `privacy` gates every package job: a build that leaks must never become a
     # downloadable artifact, let alone a release asset.
-    needs: [test-windows, privacy]
+    needs: [test-windows, privacy, brand]
 
     steps:
       - name: Checkout
@@ -334,7 +349,7 @@ jobs:
     name: package
     runs-on: ubuntu-24.04
     if: github.event_name == 'push'
-    needs: [test, privacy]
+    needs: [test, privacy, brand]
 
     steps:
       - name: Checkout
@@ -401,7 +416,7 @@ jobs:
     name: package-macos
     runs-on: macos-latest
     if: github.event_name == 'push'
-    needs: [test-macos, privacy]
+    needs: [test-macos, privacy, brand]
 
     steps:
       - name: Checkout

@@ -12,6 +12,7 @@
 #   APP_DISPLAY       the name as shown to the user
 #   APP_SLUG          lowercase form: file names, the state dir's leaf
 #   APP_UPPER         uppercase form
+#   APP_LEGACY_SLUG   lowercase form of the OLD name (the same until the rename)
 #   APP_ENV_PREFIX    prefix of the app's environment variables
 #   APP_BIN_NAME      the built main binary: target/<profile>/$APP_BIN_NAME
 #   APP_DEV_BIN_NAME  the frozen dev build's installed binary
@@ -62,9 +63,10 @@ _brand_sh_bin_name() {
 APP_DISPLAY="$(_brand_sh_macro app_name)"
 APP_SLUG="$(_brand_sh_macro app_slug)"
 APP_UPPER="$(_brand_sh_macro app_upper)"
+APP_LEGACY_SLUG="$(_brand_sh_macro legacy_slug)"
 APP_BIN_NAME="$(_brand_sh_bin_name)"
 
-if [ -z "$APP_DISPLAY" ] || [ -z "$APP_SLUG" ] || [ -z "$APP_UPPER" ]; then
+if [ -z "$APP_DISPLAY" ] || [ -z "$APP_SLUG" ] || [ -z "$APP_UPPER" ] || [ -z "$APP_LEGACY_SLUG" ]; then
   echo "scripts/lib/brand.sh: could not read the app's name from $_brand_sh_root/src-tauri/src/brand.rs" >&2
   return 1
 fi

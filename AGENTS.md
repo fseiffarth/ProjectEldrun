@@ -32,6 +32,7 @@ npm test
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run lint
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+scripts/brand-check.sh   # the app's name is spelled only in the brand modules
 ```
 
 CI clippy is latest stable; a stale local toolchain can pass what CI fails.
@@ -77,6 +78,10 @@ tool is unavailable, say so — never skip silently.
 ## Conventions
 
 - Match surrounding style; small focused changes; `rg` for search.
+- Never spell the app's name in code. Rust: `crate::brand` constants and
+  `app_name!`/`app_slug!` macros; TS (desktop and phone): `src/lib/brand.ts`
+  (`BRAND`, `NAMES`, `storageKey`, …); dictionaries: `{app}`/`{slug}`; shell:
+  source `scripts/lib/brand.sh`. Comments and docs may name it.
 - All user-facing strings via `src/lib/i18n.ts` (`useT()`); English holds
   every key. Never hardcode display text.
 - Tag new, not-live-verified features with the `UntestedTag` pill, and give it
