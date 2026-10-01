@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ScheduledPrompt } from "../../../mobile-web/src/api";
 import { ScheduleSheet } from "../../../mobile-web/src/screens/ScheduleSheet";
+import { BRAND } from "../../lib/brand";
 
 const TAB = "tab one";
 const PATH = "/api/v1/tabs/tab%20one/schedules";
@@ -148,7 +149,7 @@ describe("Mobile schedule sheet", () => {
   it("disables the whole form when the desktop is closed, and says why", async () => {
     fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({ error: "desktop_unavailable" }), { status: 503 }));
     render(<ScheduleSheet tabId={TAB} onClose={() => {}} />);
-    expect((await screen.findByRole("alert")).textContent).toBe("Open desktop Eldrun to manage scheduled prompts.");
+    expect((await screen.findByRole("alert")).textContent).toBe(`Open desktop ${BRAND.display} to manage scheduled prompts.`);
     expect((screen.getByLabelText("Prompt") as HTMLTextAreaElement).disabled).toBe(true);
     expect((screen.getByLabelText("Recurrence") as HTMLSelectElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);

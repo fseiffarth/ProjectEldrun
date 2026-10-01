@@ -21,6 +21,7 @@ import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useTabsStore } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { STEERING_PROMPT_EVENT, type SteeringPromptDetail } from "../../lib/shortcuts/steeringAgent";
+import { BRAND } from "../../lib/brand";
 
 function Harness() {
   useKeyboard({ onTogglePanels: () => {} });
@@ -76,14 +77,14 @@ describe("steering hand-off", () => {
       steering().handOff("prompt");
     });
     let legend = document.querySelector(".steering-legend");
-    expect(legend?.textContent).toContain("Back to Eldrun navigation");
+    expect(legend?.textContent).toContain(`Back to ${BRAND.display} navigation`);
     expect(legend?.textContent).toContain("Esc");
     expect(legend?.textContent).toContain("Send");
     act(() => {
       steering().toggleLegend();
     });
     legend = document.querySelector(".steering-legend");
-    expect(legend?.textContent).toContain("Back to Eldrun navigation");
+    expect(legend?.textContent).toContain(`Back to ${BRAND.display} navigation`);
     act(() => {
       steering().dropHandoff();
     });

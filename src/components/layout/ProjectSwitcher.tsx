@@ -116,11 +116,11 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     };
     // Steering's Escape out of the settings region closes the dialog again.
     const onCloseSettings = () => setShowSettings(false);
-    window.addEventListener("eldrun:open-settings", onOpenSettings);
-    window.addEventListener("eldrun:close-settings", onCloseSettings);
+    window.addEventListener("app:open-settings", onOpenSettings);
+    window.addEventListener("app:close-settings", onCloseSettings);
     return () => {
-      window.removeEventListener("eldrun:open-settings", onOpenSettings);
-      window.removeEventListener("eldrun:close-settings", onCloseSettings);
+      window.removeEventListener("app:open-settings", onOpenSettings);
+      window.removeEventListener("app:close-settings", onCloseSettings);
     };
   }, []);
 

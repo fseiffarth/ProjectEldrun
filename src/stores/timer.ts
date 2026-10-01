@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { NAMES } from "../lib/brand";
 
-export const APP_TIMER_ID = "__eldrun__";
+export const APP_TIMER_ID = NAMES.appTimerId;
 
 /**
  * The root terminal's own bucket in `time_log.json`. Time spent there is

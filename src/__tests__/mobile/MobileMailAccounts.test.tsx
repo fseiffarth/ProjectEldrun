@@ -3,6 +3,7 @@ import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, type MobileMailFolder, type MobileMailView } from "../../../mobile-web/src/api";
 import { Mail } from "../../../mobile-web/src/screens/Mail";
+import { storageKey } from "../../lib/brand";
 
 vi.mock("../../../mobile-web/src/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../mobile-web/src/api")>();
@@ -44,16 +45,16 @@ describe("phone mail account picker", () => {
     expect(folderNames()).toEqual(["Inbox", "Sent"]);
     fireEvent.change(picker, { target: { value: "home" } });
     expect(folderNames()).toEqual(["Post", "Bin"]);
-    expect(localStorage.getItem("eldrun.mobile.mailAccount")).toBe("home");
+    expect(localStorage.getItem(storageKey("mobile.mailAccount"))).toBe("home");
   });
 
   it("opens on the stored account and falls back when the desktop no longer lists it", async () => {
-    localStorage.setItem("eldrun.mobile.mailAccount", "home");
+    localStorage.setItem(storageKey("mobile.mailAccount"), "home");
     serve([]);
     render(createElement(Mail));
     await screen.findByText("Post");
     cleanup();
-    localStorage.setItem("eldrun.mobile.mailAccount", "gone");
+    localStorage.setItem(storageKey("mobile.mailAccount"), "gone");
     render(createElement(Mail));
     await screen.findByText("Inbox");
   });

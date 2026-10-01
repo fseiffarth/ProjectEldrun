@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { translate, useI18nStore } from "./i18n";
 import { useExecTrustStore } from "../stores/execTrust";
+import { NAMES } from "./brand";
 
 /**
  * Frontend half of `services::exec_trust`: a gated backend command (commit,
@@ -27,7 +28,7 @@ export interface TrustRequest {
   items: TrustItem[];
 }
 
-const PREFIX = "eldrun-trust-required:";
+const PREFIX = NAMES.trustRequiredPrefix;
 
 export function parseTrustRequest(err: unknown): TrustRequest | null {
   const text = typeof err === "string" ? err : err instanceof Error ? err.message : null;

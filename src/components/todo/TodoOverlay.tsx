@@ -8,6 +8,7 @@ import { useFloatingFrame } from "../common/useFloatingFrame";
 import { TodoGlyph } from "../header/HeaderGlyphs";
 import { OverlayApprovals } from "../layout/OverlayApprovals";
 import { TodoPane } from "./TodoPane";
+import { storageKey } from "../../lib/brand";
 
 /**
  * The header ☑ button's overlay — the todo board's only surface, and the third
@@ -47,7 +48,7 @@ export function TodoOverlayHost() {
   const live = enabled && open;
   // Moves, resizes and fills like the root console; remembered per overlay.
   const { frameRef, frameStyle, frameClass, barProps, grips, fillButton } =
-    useFloatingFrame("eldrun.todoOverlayFrame");
+    useFloatingFrame(storageKey("todoOverlayFrame"));
 
   useEffect(() => {
     if (!live) return;

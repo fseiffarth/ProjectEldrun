@@ -27,6 +27,7 @@ import {
   normalizeAccent,
   resolveTheme,
 } from "../../stores/settings";
+import { storageDashKey } from "../../lib/brand";
 
 const rootStyle = () => document.documentElement.style;
 
@@ -56,7 +57,7 @@ describe("applyAccent", () => {
     // the achromatic themes, whose explicit literals it must outrank.
     expect(rootStyle().getPropertyValue("--accent-hover")).toContain("color-mix");
     expect(rootStyle().getPropertyValue("--pill-active-border")).toBe("var(--accent)");
-    expect(localStorage.getItem("eldrun-accent")).toBe("#ff5c8a");
+    expect(localStorage.getItem(storageDashKey("accent"))).toBe("#ff5c8a");
   });
 
   it("clearing removes every inline token and the cache", () => {
@@ -65,14 +66,14 @@ describe("applyAccent", () => {
     expect(rootStyle().getPropertyValue("--accent")).toBe("");
     expect(rootStyle().getPropertyValue("--accent-hover")).toBe("");
     expect(rootStyle().getPropertyValue("--pill-active-bg")).toBe("");
-    expect(localStorage.getItem("eldrun-accent")).toBeNull();
+    expect(localStorage.getItem(storageDashKey("accent"))).toBeNull();
   });
 
   it("an invalid accent is a clear, never a write", () => {
     applyAccent("#ff5c8a");
     applyAccent("purple");
     expect(rootStyle().getPropertyValue("--accent")).toBe("");
-    expect(localStorage.getItem("eldrun-accent")).toBeNull();
+    expect(localStorage.getItem(storageDashKey("accent"))).toBeNull();
   });
 });
 
@@ -82,13 +83,13 @@ describe("applyCorners", () => {
     expect(rootStyle().getPropertyValue("--radius-sm")).toBe("4px");
     expect(rootStyle().getPropertyValue("--radius")).toBe("8px");
     expect(rootStyle().getPropertyValue("--radius-lg")).toBe("12px");
-    expect(localStorage.getItem("eldrun-corners")).toBe("rounded");
+    expect(localStorage.getItem(storageDashKey("corners"))).toBe("rounded");
   });
 
   it("square sets zeros (a real override — soft_dark is rounded by default)", () => {
     applyCorners("square");
     expect(rootStyle().getPropertyValue("--radius")).toBe("0px");
-    expect(localStorage.getItem("eldrun-corners")).toBe("square");
+    expect(localStorage.getItem(storageDashKey("corners"))).toBe("square");
   });
 
   it("clearing (or an unknown style) falls back to the theme's own tokens", () => {
@@ -96,7 +97,7 @@ describe("applyCorners", () => {
     applyCorners("pill");
     expect(rootStyle().getPropertyValue("--radius-sm")).toBe("");
     expect(rootStyle().getPropertyValue("--radius")).toBe("");
-    expect(localStorage.getItem("eldrun-corners")).toBeNull();
+    expect(localStorage.getItem(storageDashKey("corners"))).toBeNull();
   });
 });
 
@@ -127,7 +128,7 @@ describe("system theme", () => {
   it("applyTheme never lets 'system' reach data-theme or the pre-paint cache", () => {
     applyTheme("system");
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
-    expect(localStorage.getItem("eldrun-theme")).toBe("dark");
+    expect(localStorage.getItem(storageDashKey("theme"))).toBe("dark");
   });
 
   it("marks a 'system' pick on the root, for the looks only it has", () => {

@@ -38,7 +38,7 @@ const EXAMPLE_KEYS: TranslationKey[] = [
  * corpus (`help_search`) so the user sees what an agent would get back. An
  * older backend without these answers with a plain sentence, never an error.
  */
-export function AskEldrunPage() {
+export function AskAppPage() {
   const t = useT();
   const enabledSetting = useSettingsStore((s) => s.settings?.help_mcp !== false);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
@@ -101,7 +101,7 @@ export function AskEldrunPage() {
                   : t("intro.ask.statusOn")
                 : t("intro.ask.statusOff")}
         </IntroStatus>
-        <UntestedTag id="desktop.intro.askEldrun" />
+        <UntestedTag id="desktop.intro.askApp" />
       </div>
 
       <label className="intro-toggle-row">

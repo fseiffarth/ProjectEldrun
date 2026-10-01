@@ -36,6 +36,7 @@ const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 
 import { GitHistory } from "../../components/files/GitHistory";
+import { NAMES } from "../../lib/brand";
 
 const COMMITS = [
   { hash: "aaa111", short: "aaa111", subject: "feat: add widget", author: "me", date: "2d ago", refs: "HEAD -> main", is_head: true, parents: ["bbb222"] },
@@ -66,7 +67,7 @@ function wt(over: Partial<Record<string, unknown>> = {}) {
 
 const WORKTREES = [
   wt({ path: "/p", branch: "main", head: "aaa111aaa", is_main: true, is_current: true }),
-  wt({ path: "/p/.eldrun/worktrees/feature", branch: "feature" }),
+  wt({ path: `/p/${NAMES.worktreesDir}/feature`, branch: "feature" }),
 ];
 
 let worktrees: unknown[] = WORKTREES;
@@ -116,7 +117,7 @@ describe("#23 git worktrees", () => {
     expect(await screen.findByText("Worktrees")).toBeTruthy();
     // main worktree (branch "main") and the linked "feature" worktree.
     // Scope to the worktree pill: "feature" also appears as a branch pill.
-    const featurePill = (await screen.findByTitle("/p/.eldrun/worktrees/feature")) as HTMLElement;
+    const featurePill = (await screen.findByTitle(`/p/${NAMES.worktreesDir}/feature`)) as HTMLElement;
     expect(featurePill.textContent).toContain("feature");
   });
 
@@ -187,11 +188,11 @@ describe("#23 git worktrees", () => {
     const pill = await pillFor("worktrees/feature");
     await user.click(within(pill).getByRole("button", { name: /Remove worktree/ }));
     // The confirm must name the directory it is about to delete.
-    expect(dialogText()).toContain("/p/.eldrun/worktrees/feature");
+    expect(dialogText()).toContain(`/p/${NAMES.worktreesDir}/feature`);
     await answerDialog(user, "Remove");
     expect(mockInvoke).toHaveBeenCalledWith("git_worktree_remove", {
       projectDir: "/p",
-      path: "/p/.eldrun/worktrees/feature",
+      path: `/p/${NAMES.worktreesDir}/feature`,
       force: 0,
       site: "host",
     });
@@ -239,7 +240,7 @@ describe("#23 git worktrees", () => {
     const user = userEvent.setup();
     worktrees = [
       WORKTREES[0],
-      wt({ path: "/p/.eldrun/worktrees/wip", branch: "wip", is_locked: true, lock_reason: "on a removable drive" }),
+      wt({ path: `/p/${NAMES.worktreesDir}/wip`, branch: "wip", is_locked: true, lock_reason: "on a removable drive" }),
     ];
     let n = 0;
     setupInvoke({
@@ -267,7 +268,7 @@ describe("#23 git worktrees", () => {
     const user = userEvent.setup();
     worktrees = [
       WORKTREES[0],
-      wt({ path: "/p/.eldrun/worktrees/wip", branch: "wip", is_locked: true, lock_reason: "on a removable drive" }),
+      wt({ path: `/p/${NAMES.worktreesDir}/wip`, branch: "wip", is_locked: true, lock_reason: "on a removable drive" }),
     ];
     setupInvoke();
     await renderHistory();
@@ -276,7 +277,7 @@ describe("#23 git worktrees", () => {
     await user.click(within(pill).getByRole("button", { name: /Unlock/ }));
     expect(mockInvoke).toHaveBeenCalledWith("git_worktree_unlock", {
       projectDir: "/p",
-      path: "/p/.eldrun/worktrees/wip",
+      path: `/p/${NAMES.worktreesDir}/wip`,
       site: "host",
     });
   });
@@ -289,7 +290,7 @@ describe("#23 git worktrees", () => {
     worktrees = [
       WORKTREES[0],
       wt({
-        path: "/p/.eldrun/worktrees/gone",
+        path: `/p/${NAMES.worktreesDir}/gone`,
         branch: "old",
         is_prunable: true,
         prunable_reason: "gitdir file points to non-existent location",
@@ -315,7 +316,7 @@ describe("#23 git worktrees", () => {
     // current worktree — `remove --force` on it exits 0 and deletes the tree.
     worktrees = [
       wt({ path: "/p", branch: "main", is_main: true }),
-      wt({ path: "/p/.eldrun/worktrees/here", branch: "here", is_current: true }),
+      wt({ path: `/p/${NAMES.worktreesDir}/here`, branch: "here", is_current: true }),
     ];
     setupInvoke();
     await renderHistory();

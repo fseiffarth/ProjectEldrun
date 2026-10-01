@@ -4,8 +4,9 @@
  * recommendation. Store- and Tauri-free, so it is unit-testable on its own.
  */
 import type { TranslationKey } from "../../../lib/i18n";
+import { storageKey } from "../../../lib/brand";
 
-export const INTRO_PAGES = ["welcome", "projects", "agents", "localModels", "askEldrun", "done"] as const;
+export const INTRO_PAGES = ["welcome", "projects", "agents", "localModels", "askApp", "done"] as const;
 export type IntroPage = (typeof INTRO_PAGES)[number];
 
 export const INTRO_PAGE_TITLE_KEYS: Record<IntroPage, TranslationKey> = {
@@ -13,13 +14,13 @@ export const INTRO_PAGE_TITLE_KEYS: Record<IntroPage, TranslationKey> = {
   projects: "intro.page.projects",
   agents: "intro.page.agents",
   localModels: "intro.page.localModels",
-  askEldrun: "intro.page.askEldrun",
+  askApp: "intro.page.askApp",
   done: "intro.page.done",
 };
 
 /** The page the wizard was left on survives a close and a window reload — a
  *  per-viewer convenience, so localStorage (and nothing breaks without it). */
-const PAGE_KEY = "eldrun.intro.page";
+const PAGE_KEY = storageKey("intro.page");
 
 export function readIntroPage(): IntroPage {
   try {

@@ -56,6 +56,7 @@ class FakeWebSocket {
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
 import type { TranscriptEntry } from "../../../mobile-web/src/api";
 import { openSubagent, openSubagentRunning, siblingPosition, stepSibling, subagentsIn, workingModelName } from "../../../mobile-web/src/terminal/subagents";
+import { BRAND, storageKey } from "../../lib/brand";
 
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, agent_label: "Claude Code", available: true, viewer_busy: false };
 
@@ -145,13 +146,13 @@ describe("the pure path through subagents", () => {
   });
 });
 
-describe("Eldrun Mobile Reader opens the subagents an agent spawned", () => {
+describe(`${BRAND.display} Mobile Reader opens the subagents an agent spawned`, () => {
   beforeEach(() => {
     terminalState.lines = [];
     terminalState.alternate = false;
     FakeWebSocket.instances = [];
     localStorage.clear();
-    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    localStorage.setItem(storageKey("mobile.view.claude-code"), "focus");
     vi.stubGlobal("WebSocket", FakeWebSocket);
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
   });

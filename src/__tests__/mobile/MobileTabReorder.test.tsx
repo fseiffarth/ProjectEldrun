@@ -24,6 +24,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import type { ProjectEntry, Settings } from "../../types";
+import { BRAND, MOBILE_ACCESS_KEY, NAMES, storageKey } from "../../lib/brand";
 
 const box = (id: string, top: number, bottom: number) => ({ id, top, bottom });
 
@@ -127,7 +128,7 @@ describe("Mobile project — arranging tabs by hand", () => {
 
     manual();
     expect(await screen.findByLabelText("Move T-A")).toBeTruthy();
-    expect(localStorage.getItem("eldrun.mobile.projectTabsSort")).toBe("native");
+    expect(localStorage.getItem(storageKey("mobile.projectTabsSort"))).toBe("native");
   });
 
   it("moves a tab one place from the grip's arrow keys and tells the desktop", async () => {
@@ -154,7 +155,7 @@ describe("Mobile project — arranging tabs by hand", () => {
     moveStatus = 503;
 
     fireEvent.keyDown(await screen.findByLabelText("Move T-C"), { key: "ArrowUp" });
-    expect(await screen.findByText(/Open desktop Eldrun to rearrange tabs/)).toBeTruthy();
+    expect(await screen.findByText(new RegExp(String.raw`Open desktop ${BRAND.display} to rearrange tabs`))).toBeTruthy();
     expect(listed(container)).toEqual(["T-A", "T-B", "T-C"]);
   });
 });
@@ -165,10 +166,10 @@ const project: ProjectEntry = {
   status: "active",
   position: 1,
   local_file: "/projects/alpha/project.json",
-  eldrun_mobile_access: true,
+  [MOBILE_ACCESS_KEY]: true,
 };
 
-const TMUX = (name: string) => `eldrun-p-mobile--agent-${name}`;
+const TMUX = (name: string) => `${BRAND.slug}-p-mobile--agent-${name}`;
 // Resumable agent tabs: an agent with no `sessionId` is not restorable, so it
 // would be dropped by the layout write this test reads back.
 const TABS: TabEntry[] = ["one", "two", "three"].map((name, index) => ({
@@ -184,7 +185,7 @@ const TABS: TabEntry[] = ["one", "two", "three"].map((name, index) => ({
 /** Hand the bridge one desktop request and give back what it answered, matched
  *  by request id (the invoke log is read across several asks). */
 async function ask(request: Record<string, unknown>) {
-  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === "eldrun-mobile-desktop-request");
+  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === NAMES.mobileDesktopEvent);
   const deliver = listener![1] as (event: { payload: unknown }) => void;
   const answer = () => vi.mocked(invoke).mock.calls.find(([command, args]) =>
     command === "mobile_desktop_respond"
@@ -260,12 +261,12 @@ describe("Mobile bridge — moving a tab", () => {
       request_id: "r2",
       project_id: project.id,
       tmux_session: TMUX("one"),
-      anchor_tmux_session: "eldrun-elsewhere--agent-9",
+      anchor_tmux_session: `${BRAND.slug}-elsewhere--agent-9`,
       place: "after",
     })).toMatchObject({ status: "error", code: "tab_not_found" });
     expect(order()).toEqual(["one", "two", "three"]);
 
-    useProjectsStore.setState({ projects: [{ ...project, eldrun_mobile_access: false }] });
+    useProjectsStore.setState({ projects: [{ ...project, [MOBILE_ACCESS_KEY]: false }] });
     expect(await ask({
       type: "reorder_tab",
       request_id: "r3",

@@ -68,6 +68,7 @@ import type {
   MailSyncSummary,
   StagedAttachment,
 } from "../types/mail";
+import { NAMES } from "./brand";
 
 /**
  * Minutes between automatic checks when `mail_check_interval_min` was never
@@ -743,7 +744,7 @@ export function mailAttachmentSave(
 /** The project folder a saved attachment lands in, mirroring the backend's
  *  `commands::projects::EMAILS_DIR`. `eldrun-`prefixed so ignoring it in git can
  *  never swallow a folder the project itself owns. */
-export const ELDRUN_EMAILS_DIR = "eldrun-emails";
+export const APP_EMAILS_DIR = NAMES.emailsDir;
 
 /**
  * OUT (mail → project): save the attachment into the given project's

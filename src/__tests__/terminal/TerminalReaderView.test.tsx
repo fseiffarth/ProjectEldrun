@@ -26,6 +26,7 @@ import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
 import { noteSentPrompt } from "../../lib/agents/sentPrompts";
 import type { Terminal } from "@xterm/xterm";
+import { NAMES, storageKey } from "../../lib/brand";
 
 /** A pane's xterm as far as the Reader reads it: its active buffer. */
 function fakeTerminal(rows: string[]): Terminal {
@@ -472,7 +473,7 @@ describe("the Reader's live rows", () => {
   });
 
   it("shows the mode, the effort the busy row named, the folder and its worktree", async () => {
-    useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [{ ...tab, cwd: "/home/u/p/.eldrun/worktrees/feat-x" }] } }));
+    useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [{ ...tab, cwd: `/home/u/p/${NAMES.worktreesDir}/feat-x` }] } }));
     const rows = ["> fix it", "", "✻ Pondering… (9s · ↓ 1.2k tokens · thinking with high effort)", ">", "⏵⏵ accept edits on (shift+tab to cycle)"];
     term = fakeTerminal(rows);
     registerTerminal("p:agent-1", term);
@@ -573,9 +574,9 @@ describe("agentReader helpers", () => {
   });
 
   it("names a linked worktree from the path and shortens the path", () => {
-    expect(worktreeOfPath("/p/.eldrun/worktrees/feat")).toBe("feat");
+    expect(worktreeOfPath(`/p/${NAMES.worktreesDir}/feat`)).toBe("feat");
     expect(worktreeOfPath("/p/.claude/worktrees/x/src")).toBe("x");
-    expect(worktreeOfPath("C:\\p\\.eldrun\\worktrees\\w")).toBe("w");
+    expect(worktreeOfPath(`C:\\p\\${NAMES.projectDir}\\worktrees\\w`)).toBe("w");
     expect(worktreeOfPath("/p/worktrees/feat")).toBeUndefined();
     expect(worktreeOfPath(undefined)).toBeUndefined();
     expect(shortPath("/home/u/p/")).toBe("…/u/p");
@@ -613,7 +614,7 @@ describe("agentReader helpers", () => {
     expect(rememberedReader("claude")).toBe(false);
     // The window-wide choice it replaced seeds every CLI without its own.
     localStorage.clear();
-    localStorage.setItem("eldrun.agentReader.open", "1");
+    localStorage.setItem(storageKey("agentReader.open"), "1");
     rememberReader("codex", false);
     expect(rememberedReader("claude")).toBe(true);
     expect(rememberedReader("codex")).toBe(false);

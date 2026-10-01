@@ -77,9 +77,9 @@ import {
   type ScheduleRule,
   type ScheduledAgentPrompt,
 } from "../../lib/agents/agentSchedule";
-import { BRAND } from "../../lib/brand";
+import { BRAND, MOBILE_ACCESS_KEY, MOBILE_HOST_KEY, NAMES, envName } from "../../lib/brand";
 
-const MOBILE_DESKTOP_EVENT = "eldrun-mobile-desktop-request";
+const MOBILE_DESKTOP_EVENT = NAMES.mobileDesktopEvent;
 
 interface AgentInfo { bin: string; installed: boolean }
 interface CatalogAgent { id: string; label: string; modes: string[] }
@@ -355,7 +355,7 @@ function mobileProject(projectId: string | undefined) {
     || project.remote
     || project.sandbox?.enabled
     || project.vm?.enabled
-    || !project.eldrun_mobile_access
+    || !project[MOBILE_ACCESS_KEY]
   ) {
     return undefined;
   }
@@ -404,7 +404,7 @@ function refreshRootFacts(): void {
  * or every write of theirs is staged behind a fence they cannot walk around. */
 function mobileRootScope(): MobileScope | undefined {
   const settings = useSettingsStore.getState().settings;
-  if (settings?.eldrun_mobile_host?.root_access !== true) return undefined;
+  if (settings?.[MOBILE_HOST_KEY]?.root_access !== true) return undefined;
   refreshRootFacts();
   if (settings.root_mcp !== false) {
     const level = settings.root_mcp_review;
@@ -422,7 +422,7 @@ function mobileScope(id: string | undefined): MobileScope | undefined {
     const box = useBoxesStore.getState().boxes.find((entry) => boxScopeId(entry.id) === id);
     // A box never opened has no folder yet; the switch resolves one on enable,
     // so this only refuses a bit hand-edited onto a folder-less record.
-    if (!box?.eldrun_mobile_access || !box.folder) return undefined;
+    if (!box?.[MOBILE_ACCESS_KEY] || !box.folder) return undefined;
     return { id, name: box.name, cwd: box.folder, localFile: "" };
   }
   const project = mobileProject(id);
@@ -495,7 +495,7 @@ function agentTurnScopes(): string[] {
     ...useProjectsStore.getState().projects.flatMap((entry) => mobileScope(entry.id) ?? []),
     ...useBoxesStore.getState().boxes.flatMap((entry) => mobileScope(boxScopeId(entry.id)) ?? []),
   ].map((scope) => scope.id);
-  if (useSettingsStore.getState().settings?.eldrun_mobile_host?.root_access === true) scopes.push(ROOT_SCOPE);
+  if (useSettingsStore.getState().settings?.[MOBILE_HOST_KEY]?.root_access === true) scopes.push(ROOT_SCOPE);
   return scopes;
 }
 
@@ -523,7 +523,7 @@ function mobileModelTag(projectId: string, tab: TabEntry): string | undefined {
   void models.refresh(projectId, tab);
   void models.refreshScreen(projectId, tab);
   return agentTabModelTag(projectId, tab, models.byTab, models.screenByTab)
-    ?? (tab.kind === "local_agent" ? tab.env?.ELDRUN_LOCAL_MODEL : undefined);
+    ?? (tab.kind === "local_agent" ? tab.env?.[envName("LOCAL_MODEL")] : undefined);
 }
 
 /** The PLAN / GOAL marks the desktop's tab strip shows for a tab
@@ -1815,7 +1815,7 @@ async function publicMailHeader(header: MailHeader): Promise<MobileMailHeader> {
  * default off and are switched separately — a flag write and an outbound
  * mail are different risks. */
 function mailWriteGates() {
-  const host = useSettingsStore.getState().settings?.eldrun_mobile_host;
+  const host = useSettingsStore.getState().settings?.[MOBILE_HOST_KEY];
   return { actions: host?.mail_actions === true, reply: host?.mail_reply === true };
 }
 
@@ -1823,7 +1823,7 @@ function mailWriteGates() {
  * ON — unset is what pairing has always allowed — so turning it off is an
  * explicit `false`. Off, every mail request is refused here, writes included. */
 function mailReadAllowed() {
-  return useSettingsStore.getState().settings?.eldrun_mobile_host?.mail_read !== false;
+  return useSettingsStore.getState().settings?.[MOBILE_HOST_KEY]?.mail_read !== false;
 }
 
 const MAIL_READ_DISABLED: DesktopResponse = {
@@ -2315,7 +2315,7 @@ export function MobileBridgeHost() {
   // still shared, so the two surfaces never disagree about the rows themselves.
   // Gated on the Mobile host actually being on: with no phone in the picture the
   // feed stays exactly as opt-in as before, arming no timer and reading no store.
-  const mobileHostOn = useSettingsStore((s) => s.settings?.eldrun_mobile_host?.enabled ?? false);
+  const mobileHostOn = useSettingsStore((s) => s.settings?.[MOBILE_HOST_KEY]?.enabled ?? false);
   const alerts = useAlertsFeed({ ignoreVisibility: mobileHostOn });
   const alertsRef = useRef(alerts);
   const tRef = useRef(t);

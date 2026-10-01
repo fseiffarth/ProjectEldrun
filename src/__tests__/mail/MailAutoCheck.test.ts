@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { backgroundCheckBlocked, isAuthRejection, useMailStore } from "../../stores/mail";
+import { BRAND } from "../../lib/brand";
 
 /**
  * The header's unattended mail check (`MailIndicator`'s interval tick and VPN
@@ -10,7 +11,7 @@ import { backgroundCheckBlocked, isAuthRejection, useMailStore } from "../../sto
  */
 describe("backgroundCheckBlocked", () => {
   const rejected =
-    "the server rejected the username or password. Eldrun does not retry automatically, so nothing was sent a second time.";
+    `the server rejected the username or password. ${BRAND.display} does not retry automatically, so nothing was sent a second time.`;
 
   it("pauses after a rejected login", () => {
     expect(backgroundCheckBlocked({ phase: "error", error: rejected })).toBe(true);

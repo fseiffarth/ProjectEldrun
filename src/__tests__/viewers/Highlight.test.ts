@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HIGHLIGHT_MAX_CHARS, escapeHtml, highlight, languageForPath } from "../../lib/viewers/highlight";
+import { BRAND } from "../../lib/brand";
 
 describe("languageForPath", () => {
   it("maps extensions to languages", () => {
@@ -87,9 +88,9 @@ describe("highlight", () => {
   });
 
   it("treats JSON object keys as props, not strings", () => {
-    const html = highlight('{ "name": "eldrun" }', "json")!;
+    const html = highlight(`{ "name": "${BRAND.slug}" }`, "json")!;
     expect(html).toContain('<span class="tok-prop">&quot;name&quot;</span>');
-    expect(html).toContain('<span class="tok-string">&quot;eldrun&quot;</span>');
+    expect(html).toContain(`<span class="tok-string">&quot;${BRAND.slug}&quot;</span>`);
   });
 
   it("escapes HTML so source can never inject markup", () => {

@@ -52,6 +52,7 @@ class FakeWebSocket {
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { BRAND, storageKey } from "../../lib/brand";
 
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, agent_label: "Claude Code", agent_status: "working" as const, available: true, viewer_busy: false };
 
@@ -74,12 +75,12 @@ const socket = () => FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
 const bubble = (words: string) => screen.getAllByRole("group", { name: "Your prompt" }).find((row) => row.textContent?.includes(words));
 const composer = () => screen.getByRole("textbox", { name: "Message agent" }) as HTMLTextAreaElement;
 
-describe("Eldrun Mobile held prompt edit", () => {
+describe(`${BRAND.display} Mobile held prompt edit`, () => {
   beforeEach(() => {
     vi.useFakeTimers();
     FakeWebSocket.instances = [];
     localStorage.clear();
-    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    localStorage.setItem(storageKey("mobile.view.claude-code"), "focus");
     entries = [
       { kind: "prompt", text: "add a clear button", at: "2026-09-15T05:49:39.013Z" },
       { kind: "answer", text: "Looking at the composer.", at: "2026-09-15T05:49:45.000Z" },

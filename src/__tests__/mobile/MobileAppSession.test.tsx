@@ -28,6 +28,7 @@ vi.mock("../../../mobile-web/src/screens/Terminal", () => ({ Terminal: () => <di
 vi.mock("../../../mobile-web/src/screens/Pair", () => ({ Pair: ({ setupLock, onDone }: { setupLock: boolean; onDone: () => void }) => <button onClick={onDone}>{setupLock ? "Connect and secure" : "Pair this phone"}</button> }));
 
 import { App } from "../../../mobile-web/src/App";
+import { BRAND, storageKey } from "../../lib/brand";
 
 const fetchMock = vi.fn();
 
@@ -61,7 +62,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("Eldrun Mobile session lifecycle", () => {
+describe(`${BRAND.display} Mobile session lifecycle`, () => {
   it("opens the workspace after the combined first connection without another PIN screen", async () => {
     vi.mocked(hasPairedDevice).mockResolvedValue(false);
     vi.mocked(hasLocalUnlock).mockResolvedValue(false);
@@ -75,7 +76,7 @@ describe("Eldrun Mobile session lifecycle", () => {
 
   it("asks for the lock on every cold open, whatever a restored page remembers", async () => {
     // The flag the old shortcut read. It must mean nothing now.
-    sessionStorage.setItem("eldrun-mobile-local-unlocked", "1");
+    sessionStorage.setItem(`${BRAND.slug}-mobile-local-unlocked`, "1");
     answers(ok);
     render(<App />);
     await screen.findByRole("button", { name: "Unlock now" });
@@ -84,21 +85,21 @@ describe("Eldrun Mobile session lifecycle", () => {
 
   it("carries on unlocked across a pull-to-refresh, and stamps the page it leaves", async () => {
     vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ type: "reload" } as PerformanceNavigationTiming]);
-    sessionStorage.setItem("eldrun.mobile.reloadGrace", String(Date.now() - 1_000));
+    sessionStorage.setItem(storageKey("mobile.reloadGrace"), String(Date.now() - 1_000));
     answers(ok);
     render(<App />);
     await screen.findByText("Alpha");
     expect(screen.queryByRole("button", { name: "Unlock now" })).toBeNull();
     expect(resumeAuth).toHaveBeenCalledTimes(1);
-    expect(sessionStorage.getItem("eldrun.mobile.reloadGrace")).toBeNull();
+    expect(sessionStorage.getItem(storageKey("mobile.reloadGrace"))).toBeNull();
 
     window.dispatchEvent(new Event("pagehide"));
-    expect(sessionStorage.getItem("eldrun.mobile.reloadGrace")).toMatch(/^\d+$/);
+    expect(sessionStorage.getItem(storageKey("mobile.reloadGrace"))).toMatch(/^\d+$/);
   });
 
   it("asks on a reload whose stamp is stale", async () => {
     vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ type: "reload" } as PerformanceNavigationTiming]);
-    sessionStorage.setItem("eldrun.mobile.reloadGrace", String(Date.now() - 60_000));
+    sessionStorage.setItem(storageKey("mobile.reloadGrace"), String(Date.now() - 60_000));
     answers(ok);
     render(<App />);
     await screen.findByRole("button", { name: "Unlock now" });
@@ -114,7 +115,7 @@ describe("Eldrun Mobile session lifecycle", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Unlock now" }));
     await waitFor(() => expect(reload).toHaveBeenCalledOnce());
     // The new page signs straight back in: the unlock rides the reload grace.
-    expect(sessionStorage.getItem("eldrun.mobile.reloadGrace")).toMatch(/^\d+$/);
+    expect(sessionStorage.getItem(storageKey("mobile.reloadGrace"))).toMatch(/^\d+$/);
     cleanup();
 
     // The reloaded page fails too: no second reload, the splash says why.
@@ -128,7 +129,7 @@ describe("Eldrun Mobile session lifecycle", () => {
     vi.mocked(resumeAuth).mockResolvedValue(paired);
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await screen.findByText("Alpha");
-    expect(sessionStorage.getItem("eldrun.mobile.connectReload")).toBeNull();
+    expect(sessionStorage.getItem(storageKey("mobile.connectReload"))).toBeNull();
   });
 
   it("shows the splash without reloading when the desktop app is closed", async () => {

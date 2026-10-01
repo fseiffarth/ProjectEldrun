@@ -665,7 +665,7 @@ function shiftedEnd(event: CalendarEvent, occurrenceStart: string, newStart: str
 
 export function icsUid(row: { id: string; uid?: string }): string {
   const uid = (row.uid ?? "").trim();
-  return uid || `${row.id}@eldrun`;
+  return uid || `${row.id}@${BRAND.slug}`;
 }
 
 /**

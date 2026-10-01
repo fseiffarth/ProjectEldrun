@@ -403,7 +403,7 @@
   /* Overflow is conveyed solely by the left/right chevron buttons (toggled from
      JS via the overflow-* classes); a vertical mouse wheel also scrolls this
      horizontally in the webview, so no edge fade or visible scrollbar is used. */
-  --eldrun-scrollbar: none; /* no native bar, and no app-painted thumb either */
+  --app-scrollbar: none; /* no native bar, and no app-painted thumb either */
   -ms-overflow-style: none;
 }
 

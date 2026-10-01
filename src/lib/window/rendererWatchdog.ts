@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect } from "react";
 import { isPtyTabKind, useTabsStore } from "../../stores/tabs";
-import { BRAND } from "../brand";
+import { BRAND, storageColonKey } from "../brand";
 
 /**
  * Renderer memory watchdog.
@@ -98,10 +98,10 @@ export const PROBE_MIN_DELTA_KIB = 96 * 1024;
 /** … and no other renderer by more than this, or the answer is ambiguous. */
 export const PROBE_MAX_OTHER_DELTA_KIB = 48 * 1024;
 const PROBE_ATTEMPTS = 3;
-const RELOAD_AT_KEY = "eldrun:renderer-watchdog-reload-at";
-const RESTART_AT_KEY = "eldrun:renderer-watchdog-restart-at";
-const WORKING_SET_KEY = "eldrun:renderer-watchdog-working-set-mb";
-const OWN_PID_KEY = "eldrun:renderer-watchdog-own-pid";
+const RELOAD_AT_KEY = storageColonKey("renderer-watchdog-reload-at");
+const RESTART_AT_KEY = storageColonKey("renderer-watchdog-restart-at");
+const WORKING_SET_KEY = storageColonKey("renderer-watchdog-working-set-mb");
+const OWN_PID_KEY = storageColonKey("renderer-watchdog-own-pid");
 /** The app's name leading a window title (`"Eldrun win-1"`). */
 const APP_TITLE_PREFIX = new RegExp(`^${BRAND.display}\\b[\\s—–-]*`);
 

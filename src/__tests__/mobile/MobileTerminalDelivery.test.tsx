@@ -67,6 +67,7 @@ class FakeWebSocket {
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { BRAND, storageKey } from "../../lib/brand";
 
 /** The key row starts folded; open it, then press its Enter. */
 function pressEnterKey() {
@@ -93,13 +94,13 @@ const tick = (ms = 0) => act(async () => { await vi.advanceTimersByTimeAsync(ms)
 const socket = () => FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
 const bubble = () => screen.getAllByRole("group", { name: "Your prompt" }).find((row) => row.textContent?.includes("also the tests"))!;
 
-describe("Eldrun Mobile prompt delivery", () => {
+describe(`${BRAND.display} Mobile prompt delivery`, () => {
   beforeEach(() => {
     vi.useFakeTimers();
     terminalState.lines = [];
     FakeWebSocket.instances = [];
     localStorage.clear();
-    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    localStorage.setItem(storageKey("mobile.view.claude-code"), "focus");
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("fetch", vi.fn((url: string) => {
       if (url.endsWith("/outbox")) return Promise.resolve(jsonResponse(200, { files: [] }));

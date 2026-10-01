@@ -59,6 +59,7 @@ class FakeWebSocket {
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { BRAND, storageKey } from "../../lib/brand";
 
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, agent_label: "Claude Code", available: true, viewer_busy: false };
 
@@ -75,12 +76,12 @@ function send(text: string) {
   fireEvent.click(screen.getByRole("button", { name: "Send" }));
 }
 
-describe("Eldrun Mobile prompt after a clear", () => {
+describe(`${BRAND.display} Mobile prompt after a clear`, () => {
   beforeEach(() => {
     vi.useFakeTimers();
     FakeWebSocket.instances = [];
     localStorage.clear();
-    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    localStorage.setItem(storageKey("mobile.view.claude-code"), "focus");
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("fetch", vi.fn((url: string) => {
       if (url.endsWith("/outbox")) return Promise.resolve(jsonResponse(200, { files: [] }));

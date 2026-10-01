@@ -17,7 +17,7 @@ import {
 import { ProjectsPage } from "./intro/ProjectsPage";
 import { AgentsPage } from "./intro/AgentsPage";
 import { LocalModelsPage } from "./intro/LocalModelsPage";
-import { AskEldrunPage } from "./intro/AskEldrunPage";
+import { AskAppPage } from "./intro/AskAppPage";
 
 /**
  * The first-run intro: a paged wizard shown once on the first launch of an
@@ -126,7 +126,7 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
             {page === "projects" && <ProjectsPage onClose={onClose} />}
             {page === "agents" && <AgentsPage onClose={onClose} />}
             {page === "localModels" && <LocalModelsPage onClose={onClose} />}
-            {page === "askEldrun" && <AskEldrunPage />}
+            {page === "askApp" && <AskAppPage />}
             {page === "done" && <DonePage onClose={finish} />}
           </div>
           <div className="dialog-fixed-footer settings-link-row intro-footer">
@@ -212,7 +212,7 @@ function DonePage({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           onClick={() => {
-            window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "help" }));
+            window.dispatchEvent(new CustomEvent("app:open-settings", { detail: "help" }));
             onClose();
           }}
         >
@@ -222,7 +222,7 @@ function DonePage({ onClose }: { onClose: () => void }) {
           type="button"
           onClick={() => {
             onClose();
-            window.dispatchEvent(new Event("eldrun:start-tour"));
+            window.dispatchEvent(new Event("app:start-tour"));
           }}
         >
           {t("howToStart.takeTour")}
@@ -231,7 +231,7 @@ function DonePage({ onClose }: { onClose: () => void }) {
           type="button"
           onClick={() => {
             onClose();
-            window.dispatchEvent(new Event("eldrun:open-lessons"));
+            window.dispatchEvent(new Event("app:open-lessons"));
           }}
         >
           {t("howToStart.lessons")}

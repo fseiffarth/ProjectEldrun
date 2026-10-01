@@ -10,6 +10,7 @@
 // Type-only, so this stays free of a runtime import cycle: `tabs.ts` imports
 // *this* module to count tab opens.
 import type { TabKind } from "../stores/tabs";
+import { envName } from "./brand";
 
 export const METRIC = {
   /** `autocomplete.accept/dismiss.<mode>.<model>` — one outcome per suggestion. */
@@ -63,7 +64,7 @@ export function agentMetricLeaf(tab: {
   env?: Record<string, string>;
 }): { prefix: string; leaf: string } | null {
   if (tab.kind === "local_agent") {
-    const model = tab.env?.ELDRUN_LOCAL_MODEL || tab.env?.VIBE_ACTIVE_MODEL;
+    const model = tab.env?.[envName("LOCAL_MODEL")] || tab.env?.VIBE_ACTIVE_MODEL;
     // A local agent tab with no recorded model would otherwise be filed under an
     // empty key; count it under its driving command instead of inventing one.
     if (model) return { prefix: METRIC.AGENT_TAB_LOCAL, leaf: model };

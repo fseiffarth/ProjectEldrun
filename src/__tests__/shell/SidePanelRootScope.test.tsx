@@ -25,8 +25,9 @@ import { SidePanel } from "../../components/layout/SidePanel";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
 import { useTabsStore, ROOT_SCOPE } from "../../stores/tabs";
+import { BRAND } from "../../lib/brand";
 
-const ROOT_DIR = "/home/u/eldrun/root";
+const ROOT_DIR = `/home/u/${BRAND.slug}/root`;
 
 /** Every `list_dir` the render dispatched, as (projectDir, relPath) pairs. */
 function listedDirs(): Array<{ projectDir: string; relPath: string }> {

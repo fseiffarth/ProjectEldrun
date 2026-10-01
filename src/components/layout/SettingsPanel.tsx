@@ -730,7 +730,7 @@ function VpnAutoConnectSettings({ onBack, onClose }: SubPanelProps) {
                 )}
                 {on && (
                   <p className="settings-help">
-                    {t("vpn.startsWithEldrun")}
+                    {t("vpn.startsWithApp")}
                     {headless ? "" : ` ${t("vpn.waitsInRootTerminal")}`}.
                   </p>
                 )}
@@ -1451,7 +1451,7 @@ export function SettingsDialog({
                 className="settings-btn"
                 onClick={() => {
                   onClose();
-                  window.dispatchEvent(new Event("eldrun:open-how-to-start"));
+                  window.dispatchEvent(new Event("app:open-how-to-start"));
                 }}
               >
                 {t("settings.howToStart")}
@@ -1461,7 +1461,7 @@ export function SettingsDialog({
                 className="settings-btn"
                 onClick={() => {
                   onClose();
-                  window.dispatchEvent(new Event("eldrun:open-lessons"));
+                  window.dispatchEvent(new Event("app:open-lessons"));
                 }}
               >
                 {t("settings.lessons")}

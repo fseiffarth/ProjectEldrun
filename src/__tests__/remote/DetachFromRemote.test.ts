@@ -22,8 +22,9 @@ import { invoke } from "@tauri-apps/api/core";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 import { localTabCwd, useTabsStore, type TabEntry } from "../../stores/tabs";
+import { BRAND } from "../../lib/brand";
 
-const STATE_DIR = "/home/u/.local/share/eldrun/remote-projects/pid";
+const STATE_DIR = `/home/u/.local/share/${BRAND.slug}/remote-projects/pid`;
 const MIRROR = "/home/u/Documents/CodeProjectsGit/DemoProj";
 
 function tab(over: Partial<TabEntry>): TabEntry {

@@ -37,6 +37,7 @@ class FakeWebSocket {
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { BRAND, storageKey } from "../../lib/brand";
 
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, available: true, viewer_busy: false };
 const NOW = 1_788_609_600; // 2026-09-04 12:00:00 UTC
@@ -55,11 +56,11 @@ function outboxFetch(images: () => unknown[]) {
     : Promise.resolve(jsonResponse(404, { error: "not_found" })));
 }
 
-describe("Eldrun Mobile reaches the files the agent sent through the gallery", () => {
+describe(`${BRAND.display} Mobile reaches the files the agent sent through the gallery`, () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
-    localStorage.setItem("eldrun.mobile.view.agent", "terminal");
+    localStorage.setItem(storageKey("mobile.view.agent"), "terminal");
     vi.spyOn(Date, "now").mockReturnValue(NOW * 1000);
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
   });

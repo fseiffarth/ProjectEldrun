@@ -38,8 +38,8 @@ export function ShortcutHelpOverlay() {
 
   useEffect(() => {
     const openIt = () => setOpen(true);
-    window.addEventListener("eldrun:open-shortcut-help", openIt);
-    return () => window.removeEventListener("eldrun:open-shortcut-help", openIt);
+    window.addEventListener("app:open-shortcut-help", openIt);
+    return () => window.removeEventListener("app:open-shortcut-help", openIt);
   }, []);
 
   useEffect(() => {

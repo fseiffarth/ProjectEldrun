@@ -20,9 +20,10 @@
  */
 
 import { useHpcGuardStore, type HpcGuardKind } from "../../../stores/remote/hpc/hpcGuardPrompt";
+import { envName } from "../../brand";
 
 /** Must match `services::hpc_mode::HPC_GUARD`. */
-export const HPC_GUARD = "ELDRUN_HPC_GUARD";
+export const HPC_GUARD = envName("HPC_GUARD");
 
 export interface HpcGuardRefusal {
   /** What was refused — the dialog switches its wording on this. */

@@ -25,7 +25,7 @@ export type NewTabRequest =
 
 /** Detail: {@link NewTabSlotsDetail}. The target pane's bar fills `labels`
  *  in, synchronously, with the agents its Ctrl+1–9 would open. */
-export const NEW_TAB_SLOTS_EVENT = "eldrun:new-tab-slots";
+export const NEW_TAB_SLOTS_EVENT = "app:new-tab-slots";
 
 export interface NewTabSlotsDetail {
   groupId: string;
@@ -35,7 +35,7 @@ export interface NewTabSlotsDetail {
 
 /** Detail: {@link NewTabShortcutDetail}. Cancelled (`preventDefault`) by the
  *  bar that opened the tab. */
-export const NEW_TAB_SHORTCUT_EVENT = "eldrun:new-tab-shortcut";
+export const NEW_TAB_SHORTCUT_EVENT = "app:new-tab-shortcut";
 
 export interface NewTabShortcutDetail {
   request: NewTabRequest;

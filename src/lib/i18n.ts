@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { create } from "zustand";
-import { fillBrand } from "./brand";
+import { fillBrand, storageDashKey } from "./brand";
 
 /**
  * Eldrun's in-house internationalization (i18n) — the ONE place every language
@@ -869,7 +869,7 @@ export const enSource = {
   "mobile.files.openFolder": "Open the folder {name}",
   "mobile.files.openFile": "Open {name}",
   "mobile.projectFiles": "Project files on the phone",
-  "mobile.projectFilesHelp": "A paired phone may browse the folders of the projects above and open files to read, save or share. Nothing can be changed from the phone. .git, .eldrun and .env files are left out, and symbolic links are not followed.",
+  "mobile.projectFilesHelp": "A paired phone may browse the folders of the projects above and open files to read, save or share. Nothing can be changed from the phone. .git, .{slug} and .env files are left out, and symbolic links are not followed.",
   "mobile.rootAccessClosed": "Closed right now: root agents have the MCP tools, but their writes are not all staged behind the agent sandbox. Set \"Review root-agent writes\" to \"All writes\" and keep the sandbox on for root, or switch the root MCP tools off.",
   "mobile.projectAccess": "Project access",
   "mobile.projectAccessHelp": "Access is off per project. Enabling it does not restart a live agent; that agent becomes attachable after its next normal reopen.",
@@ -1280,7 +1280,7 @@ export const enSource = {
   "vpn.needsSavedPre": "Connect once with",
   "vpn.needsSavedBold": "Save passphrase",
   "vpn.needsSavedPost": "ticked to enable this — auto-connect never prompts.",
-  "vpn.startsWithEldrun": "Starts with {app}",
+  "vpn.startsWithApp": "Starts with {app}",
   "vpn.waitsInRootTerminal": "(waits in the root terminal)",
 
   // Settings — archived projects panel.
@@ -2065,14 +2065,14 @@ export const enSource = {
   "intro.page.projects": "Projects",
   "intro.page.agents": "Agent CLIs",
   "intro.page.localModels": "Local models",
-  "intro.page.askEldrun": "Ask {app}",
+  "intro.page.askApp": "Ask {app}",
   "intro.page.done": "What next",
   "intro.welcome.next": "The next pages set you up step by step: a project, an AI agent CLI, a local model, and {app}'s built-in help. Each page shows what is already done here and has one-click buttons for the rest. Use Next, or ← and →.",
   "intro.projects.lead": "A project is a folder {app} manages as one workspace: its own pill in the header, its own tabs and layout, its own file tree and git view. Switching pills swaps all of that at once, and the tabs and panels come back after a restart.",
   "intro.projects.none": "No project yet",
   "intro.projects.haveSome": "{count} project(s) open",
   "intro.projects.localTitle": "Local",
-  "intro.projects.localBody": "The folder lives on this machine (by default under ~/eldrun/projects). Optionally it runs inside a Docker container or a virtual machine.",
+  "intro.projects.localBody": "The folder lives on this machine (by default under ~/{slug}/projects). Optionally it runs inside a Docker container or a virtual machine.",
   "intro.projects.remoteTitle": "Remote (SSH)",
   "intro.projects.remoteBody": "The project lives on another machine you reach over SSH. Tick Remote (SSH) project at the top of the New or Import dialog; {app} keeps a local mirror in sync.",
   "intro.projects.step1Title": "Create or import a project",
@@ -2142,7 +2142,7 @@ export const enSource = {
   "intro.models.noDrivers": "No runner is installed yet. Install Mistral (Vibe) to use the model in a tab.",
   "intro.models.step6Title": "Optional: autocomplete",
   "intro.models.step6Body": "Open the file panel's Project settings → Native Viewers and tick Autocomplete for a file type; then press Ctrl+Space in the editor. Tab accepts, Alt+→ takes one word, Shift+Tab cycles the length.",
-  "intro.ask.lead": "Claude and Codex tabs on this machine are connected to {app}'s built-in help. Ask your agent about {app} in plain words — for example “How do I sync a remote project in {app}?” — and it calls the eldrun-help tools, which look the answer up in the same guide this intro is written from. Read-only: they never change anything.",
+  "intro.ask.lead": "Claude and Codex tabs on this machine are connected to {app}'s built-in help. Ask your agent about {app} in plain words — for example “How do I sync a remote project in {app}?” — and it calls the {slug}-help tools, which look the answer up in the same guide this intro is written from. Read-only: they never change anything.",
   "intro.ask.statusOn": "Help server is on",
   "intro.ask.statusOnFor": "Help server is on for {list}",
   "intro.ask.statusOff": "Help server is off",
@@ -2282,7 +2282,7 @@ export const enSource = {
   "pill.exportProjectEllipsis": "Export project…",
   "pill.exportProjectMenuTitle": "Write this whole project — files, settings and tabs — into one file you can carry to another computer",
   "projectSwitcher.importBundle": "Import Project File",
-  "projectSwitcher.importBundleTitle": "Register a project exported from {app} on this or another computer (.eldrunproj)",
+  "projectSwitcher.importBundleTitle": "Register a project exported from {app} on this or another computer (.{slug}proj)",
   "transfer.bundleFilter": "{app} project",
   "transfer.exportTitle": "Export {name}",
   "transfer.exportIntro": "Writes one file holding this project's files, its settings and its tabs. Import it on the other computer to get the project back as it is here.",
@@ -2311,7 +2311,7 @@ export const enSource = {
   "transfer.showBundle": "Show in file manager",
   "transfer.blocked.vm": "A project VM cannot be exported: its working tree is the VM's own disk image. Copy files out of the VM into a plain project first.",
   "transfer.importTitle": "Import project file",
-  "transfer.importIntro": "Choose a .eldrunproj file exported from {app} on this or another computer.",
+  "transfer.importIntro": "Choose a .{slug}proj file exported from {app} on this or another computer.",
   "transfer.chooseBundle": "Choose file…",
   "transfer.bundleSummary": "{name} — exported {date} by {app} {version}",
   "transfer.bundleFiles": "{count} files, {size}",
@@ -3003,7 +3003,7 @@ export const enSource = {
   "pill.buildFromDockerfile": "Build from a Dockerfile in this project",
   "pill.dockerfilePlaceholder": "e.g. Dockerfile — empty: use the image below",
   "pill.image": "Image",
-  "pill.imagePlaceholder": "empty: eldrun-agent-sandbox:latest",
+  "pill.imagePlaceholder": "empty: {slug}-agent-sandbox:latest",
   "pill.network": "Network",
   "pill.networkPlaceholder": "empty: docker bridge — “none” blocks all egress (breaks cloud agents)",
   "pill.networkNotePre": "Note: the default bridge still reaches services bound on this machine (Ollama, dev servers) via the docker gateway IP. Fully closed means",
@@ -3815,7 +3815,7 @@ export const enSource = {
   "vpnIndicator.connectOnLaunchLabel": "Connect on launch",
   "vpnIndicator.needSaveCredsFirstHintPre": "Turn on",
   "vpnIndicator.needSaveCredsFirstHintPost": "first — auto-connect never prompts, so it is only offered once connecting can be silent.",
-  "vpnIndicator.startsWithEldrun": "Starts with {app}",
+  "vpnIndicator.startsWithApp": "Starts with {app}",
   "vpnIndicator.waitsInRootTerminal": " (waits in the root terminal)",
   "vpnIndicator.mainAriaLabel": "OpenVPN — connect or disconnect a tunnel",
   "vpnIndicator.titleOff": "OpenVPN — no tunnel. Connecting one routes this computer's traffic through it.",
@@ -5088,9 +5088,9 @@ export const enSource = {
   "gitHistory.useLocal": "Use local",
   "gitHistory.useRemoteTitle": "Resolve the divergence with the remote host as the source of truth (backs up the mirror's overwritten tips first)",
   "gitHistory.useRemote": "Use remote",
-  "gitHistory.resolveInTerminalTitle": "Open a shell in the local mirror to merge or rebase by hand — the peer's tip is already at refs/eldrun/peer/<branch>",
+  "gitHistory.resolveInTerminalTitle": "Open a shell in the local mirror to merge or rebase by hand — the peer's tip is already at refs/{slug}/peer/<branch>",
   "gitHistory.resolveInTerminal": "Resolve in terminal",
-  "gitHistory.backupsTitle": "List the refs/eldrun/backup/* safety refs a resolve saved, and restore one",
+  "gitHistory.backupsTitle": "List the refs/{slug}/backup/* safety refs a resolve saved, and restore one",
   "gitHistory.backups": "Backups",
   "gitHistory.localLabel": "local:",
   "gitHistory.remoteLabel": "remote:",
@@ -5143,7 +5143,7 @@ export const enSource = {
   "gitHistory.searchCount": "{n} matching commits",
   "gitHistory.searchCapped": "{n} matching commits (showing the newest; refine the search)",
   "gitHistory.loadingMoreCommits": "Loading older commits…",
-  "gitHistory.confirmResolve": "Use {authority} as the source of truth?\n\nThe {other}'s diverging commits will be reset to match {authority} (backed up to refs/eldrun/backup/* first).",
+  "gitHistory.confirmResolve": "Use {authority} as the source of truth?\n\nThe {other}'s diverging commits will be reset to match {authority} (backed up to refs/{slug}/backup/* first).",
   "gitHistory.resolveAction": "Use {authority}",
   "gitHistory.resolveTitle": "Choose the source of truth",
   "gitHistory.authorityLocal": "local",
@@ -5499,7 +5499,7 @@ export const enSource = {
   "fileTree.tooltipRunHint": "Right-click Run to set arguments",
   "fileTree.tooltipArgs": "args",
   "fileTree.openViewInNewTab": "Open this view in a new tab",
-  "fileTree.eldrunNativeGroup": "{app} native",
+  "fileTree.appNativeGroup": "{app} native",
   "fileTree.newPresentation": "New Presentation",
   "fileTree.pushAllToHost": "Push all to host",
   "fileTree.pasteScreenshot": "Paste screenshot",
@@ -6120,9 +6120,9 @@ export const enSource = {
   "mail.attachmentSaveTitle": "Save attachment",
   "mail.attachmentSaveNameLabel": "Attachment",
   "mail.attachmentSaveFolderLabel": "Saves to",
-  "mail.attachmentSaveToEmails": "Save to eldrun-emails folder",
+  "mail.attachmentSaveToEmails": "Save to {slug}-emails folder",
   "mail.attachmentChooseLocation": "Choose another location…",
-  "mail.attachmentNoProject": "No project is active, so there is no eldrun-emails folder to save into. Choose a location instead.",
+  "mail.attachmentNoProject": "No project is active, so there is no {slug}-emails folder to save into. Choose a location instead.",
   "mail.attachmentPreview": "Preview",
   "mail.attachmentHidePreview": "Hide preview",
   "mail.attachmentTypeMismatch": "This file's contents do not match its name or declared type.",
@@ -7229,7 +7229,7 @@ export const enSource = {
   "stats.timeMany": "times",
   "stats.sectionWork": "Work",
   "stats.noTrackedTime": "No tracked time in this period.",
-  "stats.metricEldrunOpen": "{app} open",
+  "stats.metricAppOpen": "{app} open",
   "stats.metricCommandsRun": "Commands run",
   "stats.metricInShellTabs": "in shell tabs",
   "stats.metricNetwork": "Network",
@@ -7458,7 +7458,7 @@ export const enSource = {
   "lessons.addProject.newDialogTitle": "Fill in the details",
   "lessons.addProject.newDialogBody": "The New Project dialog asks for a name and an optional description, and lets you pick a Git hosting option (no git, a local-only repo, or push to GitHub/GitLab as private or public). \"Where this project runs\" picks the trust tier — on this machine, inside a Docker container, or inside a virtual machine. Flip the \"Remote (SSH) project\" toggle to host it on another machine instead.",
   "lessons.addProject.scaffoldCreateTitle": "What you get",
-  "lessons.addProject.scaffoldCreateBody": "Hit Create and {app} makes the project folder under your projects directory (~/eldrun/projects by default — the Location picker changes it), scaffolds AGENTS.md, CLAUDE.md, .gitignore, README and friends, and initializes the repo. Tick \"Skip scaffolding\" if you'd rather start empty.",
+  "lessons.addProject.scaffoldCreateBody": "Hit Create and {app} makes the project folder under your projects directory (~/{slug}/projects by default — the Location picker changes it), scaffolds AGENTS.md, CLAUDE.md, .gitignore, README and friends, and initializes the repo. Tick \"Skip scaffolding\" if you'd rather start empty.",
   "lessons.addProject.scaffoldCreateTask": "Create the project, and watch its pill appear in the strip.",
   "lessons.addProject.scaffoldCreateTaskHint": "A name is the only field you have to fill in — Create does the rest. Not in the mood to make one? Next reads on without it.",
   "lessons.addProject.publishRemoteTitle": "Advanced: connect a remote",
@@ -7826,7 +7826,7 @@ export const enSource = {
   "lessons.dockerSandbox.imageTitle": "The image (auto-adopted or built)",
   "lessons.dockerSandbox.imageBody": "The first time you enable it, {app} adopts an in-repo Dockerfile or devcontainer image if there is one. If the image is missing, it opens a one-click build tab rather than failing silently. \"Container settings…\" in the same menu tunes the image, network, memory/CPU caps, and read-only rootfs — and those knobs survive turning the container off and on.",
   "lessons.dockerSandbox.lifetimeTitle": "One container, project-lived",
-  "lessons.dockerSandbox.lifetimeBody": "There's a single container per project (named eldrun-<id>), created when the project activates and removed when it deactivates — unless tabs are still live in it — then swept at startup. Shells and agents docker exec into it; only a local-agent tab deliberately stays on the host. Needs Docker installed.",
+  "lessons.dockerSandbox.lifetimeBody": "There's a single container per project (named {slug}-<id>), created when the project activates and removed when it deactivates — unless tabs are still live in it — then swept at startup. Shells and agents docker exec into it; only a local-agent tab deliberately stays on the host. Needs Docker installed.",
   "lessons.vmProject.title": "Run a project inside a VM",
   "lessons.vmProject.blurb": "The strongest tier: a real virtual machine with no shared filesystem — chosen when the project is created, not toggled later.",
   "lessons.vmProject.whyVmTitle": "Why not just a container?",
@@ -8215,7 +8215,7 @@ export const enSource = {
   "install.shellBash": "bash",
   "install.shellPowerShellOrCmd": "PowerShell or Command Prompt",
   "codexHooks.tabLabel": "Codex — hooks",
-  "codexHooks.toast": "Opened Codex in the root terminal — in the list, switch on the “When a new session starts” row whose command is eldrun_session_start",
+  "codexHooks.toast": "Opened Codex in the root terminal — in the list, switch on the “When a new session starts” row whose command is {slug}_session_start",
   "hpcWorkspace.linkCaveat": "The link is for your job scripts on the host — {app}'s file sync does not follow it, so files written inside the workspace are not mirrored locally.",
   "slurm.srunTabLabel": "srun",
   "slurm.logTabLabel": "{job} log",
@@ -8376,7 +8376,7 @@ function ensureDict(lang: Language) {
     });
 }
 
-const LANG_CACHE_KEY = "eldrun-lang";
+const LANG_CACHE_KEY = storageDashKey("lang");
 
 function cachedLang(): Language {
   try {

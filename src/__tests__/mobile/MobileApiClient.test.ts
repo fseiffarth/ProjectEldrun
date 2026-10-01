@@ -8,6 +8,7 @@ import {
   setUnauthorizedHandler,
   updateSchedule,
 } from "../../../mobile-web/src/api";
+import { BRAND } from "../../lib/brand";
 
 function respondWith(body: string, init?: ResponseInit) {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(body, init)));
@@ -18,7 +19,7 @@ afterEach(() => {
   setUnauthorizedHandler(undefined);
 });
 
-describe("Eldrun Mobile API client", () => {
+describe(`${BRAND.display} Mobile API client`, () => {
   it("rejects a malformed body on a 200 instead of handing callers an empty object", async () => {
     // `.catch(() => ({}))` used to turn a truncated response into `{}`, which
     // reached `rows.map` as undefined and white-screened the app for good.

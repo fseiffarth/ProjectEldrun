@@ -5,6 +5,7 @@ import { ApiError, api } from "../../../mobile-web/src/api";
 import { Todo } from "../../../mobile-web/src/screens/Todo";
 import { COLUMN_FOLLOWS_DATE, localDate, moveAccepted } from "../../../mobile-web/src/todoDates";
 import type { TodoCard, TodoColumn } from "../../../mobile-web/src/api";
+import { storageKey } from "../../lib/brand";
 
 vi.mock("../../../mobile-web/src/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../mobile-web/src/api")>();
@@ -102,7 +103,7 @@ describe("mobile board checkbox", () => {
   it("unticks a done card the same way", async () => {
     const board = { columns: COLUMNS, tasks: [card({ title: "Shipped", column: "done", done: true, percent: 100 })], calendars: [{ id: "calendar", name: "Personal" }], projects: [] };
     vi.mocked(api).mockResolvedValue({ board });
-    localStorage.setItem("eldrun.mobile.todoHideDone", "0");
+    localStorage.setItem(storageKey("mobile.todoHideDone"), "0");
 
     render(createElement(Todo));
     await waitFor(() => expect(screen.getByText("Shipped")).toBeTruthy());

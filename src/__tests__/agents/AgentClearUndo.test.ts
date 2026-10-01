@@ -8,11 +8,12 @@ import { _clearScheduledAgentInputsForTest, registerScheduledAgentInput } from "
 import { noteTypedLine } from "../../lib/agents/typedClear";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
+import { BRAND } from "../../lib/brand";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
 
 function agentTab(cmd: string, extra: Partial<TabEntry> = {}): TabEntry {
-  return { key: `agent-${cmd}`, kind: "agent", cmd, label: cmd, cwd: "/p1", sessionId: SESSION, scheduleTargetId: `target-${cmd}`, tmuxSession: `eldrun-p1-${cmd}`, ...extra } as TabEntry;
+  return { key: `agent-${cmd}`, kind: "agent", cmd, label: cmd, cwd: "/p1", sessionId: SESSION, scheduleTargetId: `target-${cmd}`, tmuxSession: `${BRAND.slug}-p1-${cmd}`, ...extra } as TabEntry;
 }
 
 function seed(tabs: TabEntry[]): void {
@@ -77,7 +78,7 @@ describe("Undo clear", () => {
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(command === "agent_tab_undo_clear" ? { kind: "relaunch" } : undefined));
     await expect(undoAgentClear("p1", tab)).resolves.toBe("undone");
-    expect(invokeMock).toHaveBeenCalledWith("local_tmux_kill", { session: "eldrun-p1-codex" });
+    expect(invokeMock).toHaveBeenCalledWith("local_tmux_kill", { session: `${BRAND.slug}-p1-codex` });
     const after = useTabsStore.getState().tabsByScope.p1[0];
     expect(after.relaunchSeq).toBe(1);
     expect(after.args).toEqual([]);

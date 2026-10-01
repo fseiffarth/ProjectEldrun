@@ -16,6 +16,7 @@ import {
   type MobileSpeechRecognitionConstructor,
   type MobileSpeechRecognitionResultEvent,
 } from "../../../mobile-web/src/voiceInput";
+import { BRAND } from "../../lib/brand";
 
 class FakeRecognition implements MobileSpeechRecognition {
   continuous = false;
@@ -35,7 +36,7 @@ function result(transcript: string, isFinal: boolean) {
   return { 0: { transcript }, isFinal, length: 1 };
 }
 
-describe("Eldrun Mobile voice input", () => {
+describe(`${BRAND.display} Mobile voice input`, () => {
   it("uses standard or prefixed mobile speech recognition", () => {
     const Constructor = FakeRecognition as MobileSpeechRecognitionConstructor;
     const standard = { SpeechRecognition: Constructor } as unknown as Window;

@@ -13,6 +13,7 @@ import {
   unavailableDetail,
   type UnavailableReason,
 } from "../../../mobile-web/src/connection";
+import { BRAND } from "../../lib/brand";
 
 /** `navigator.onLine` is read-only on the real object. */
 function withOnline(online: boolean, run: () => void): void {
@@ -104,8 +105,8 @@ describe("describeUnavailable", () => {
   it("points the two look-alike outages at different machines", () => {
     // `host_down` and `desktop_down` are the pair a reader is most likely to
     // confuse, and the copy has to send them to different places.
-    expect(describeUnavailable("host_down").title).toContain("Eldrun Mobile isn't running");
-    expect(describeUnavailable("desktop_down").title).toContain("Eldrun isn't running");
+    expect(describeUnavailable("host_down").title).toContain(`${BRAND.display} Mobile isn't running`);
+    expect(describeUnavailable("desktop_down").title).toContain(`${BRAND.display} isn't running`);
   });
 
   it("does not blame one machine when the phone cannot tell which failed", () => {
@@ -145,9 +146,9 @@ describe("describeFailure", () => {
       const text = describeFailure(source);
       expect(text).toBe("Your desktop reported an error.");
     }
-    expect(describeFailure(new ApiError(503, "desktop_unavailable"))).toBe("Eldrun isn't running on your desktop.");
-    expect(describeFailure("desktop_unavailable")).toBe("Eldrun isn't running on your desktop.");
-    expect(describeFailure(new ApiError(502, "request_failed"))).toBe("Eldrun Mobile isn't running on your desktop.");
+    expect(describeFailure(new ApiError(503, "desktop_unavailable"))).toBe(`${BRAND.display} isn't running on your desktop.`);
+    expect(describeFailure("desktop_unavailable")).toBe(`${BRAND.display} isn't running on your desktop.`);
+    expect(describeFailure(new ApiError(502, "request_failed"))).toBe(`${BRAND.display} Mobile isn't running on your desktop.`);
     expect(describeFailure("session_expired")).toMatch(/lapsed/);
     expect(describeFailure(new ApiError(0, "offline"))).toMatch(/Can't reach|offline/);
   });

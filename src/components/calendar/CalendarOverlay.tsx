@@ -7,6 +7,7 @@ import { useFloatingFrame } from "../common/useFloatingFrame";
 import { CalendarGlyph } from "../header/HeaderGlyphs";
 import { OverlayApprovals } from "../layout/OverlayApprovals";
 import { CalendarPane } from "./CalendarPane";
+import { storageKey } from "../../lib/brand";
 
 /**
  * The header calendar button's overlay — the twin of `MailOverlayHost`, and the
@@ -34,7 +35,7 @@ export function CalendarOverlayHost() {
   const live = enabled && open;
   // Moves, resizes and fills like the root console; remembered per overlay.
   const { frameRef, frameStyle, frameClass, barProps, grips, fillButton } =
-    useFloatingFrame("eldrun.calendarOverlayFrame");
+    useFloatingFrame(storageKey("calendarOverlayFrame"));
   // `barProps.title` is the move hint; on the whole bar it would hover over the
   // tab too, so it goes on the mark alone (the root console's placement).
   const { title: moveHint, ...barRest } = barProps;

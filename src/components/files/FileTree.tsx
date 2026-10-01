@@ -88,6 +88,7 @@ import { FileIcon } from "../common/icons/FileIcon";
 import { ArrowDownIcon, ArrowUpIcon, PlayIcon, SearchIcon } from "../common/icons/Icon";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { ErrorNote } from "../common/ErrorNote";
+import { BRAND, NAMES, storageKey } from "../../lib/brand";
 
 // The context menu's Delete rows name their keyboard twin (handleTreeKeyDown).
 const DELETE_KEY: ChordDescriptor = { key: "Delete" };
@@ -95,10 +96,10 @@ const DELETE_KEY: ChordDescriptor = { key: "Delete" };
 // Persist whether the collapsed "gitignored" files section is expanded, so the
 // choice survives side-panel hide/show and remounts (FileTree remounts each
 // time the panel reopens). Mirrors GitHistory's localStorage view pref.
-const GITIGNORED_EXPANDED_KEY = "eldrun.fileTree.gitignoredExpanded";
+const GITIGNORED_EXPANDED_KEY = storageKey("fileTree.gitignoredExpanded");
 // Same idea, for the collapsed "hidden by extension" group (the project's own
 // hiddenEndings list — see ProjectFilesSettings) — collapsed by default too.
-const HIDDEN_EXT_EXPANDED_KEY = "eldrun.fileTree.hiddenExtExpanded";
+const HIDDEN_EXT_EXPANDED_KEY = storageKey("fileTree.hiddenExtExpanded");
 
 // How many rows the tree renders at once, and how many more each click of the
 // "show more" footer adds. The rows are not virtualized, so this is the bound on
@@ -1889,7 +1890,7 @@ export function FileTree({
       void invoke("start_file_drag", { paths }).catch((err) =>
         // Surfaces the most common failure: the backend wasn't rebuilt, so the
         // command doesn't exist yet — the drag silently no-ops otherwise.
-        console.error("[eldrun] native file drag-out failed:", err),
+        console.error(`[${BRAND.slug}] native file drag-out failed:`, err),
       );
       return;
     }
@@ -1898,7 +1899,7 @@ export function FileTree({
         .catch((err) => {
           // Same visibility for the plugin path (`plugin:drag|start_drag` and
           // `drag_preview_icon` only exist after a backend rebuild).
-          console.error("[eldrun] native file drag-out failed:", err);
+          console.error(`[${BRAND.slug}] native file drag-out failed:`, err);
         });
     // The icon data URL is normally warm by drag time; if not, resolve first.
     if (dragIconDataUrl) void begin(dragIconDataUrl);
@@ -2371,7 +2372,7 @@ export function FileTree({
     // the backend reports the drop (or the user's abort) that ends the whole
     // gesture. NOT fired by the cancel we ourselves issue on re-entry — that
     // hands control back to the in-app drag, which is still very much alive.
-    void listen("eldrun:file-drag-ended", () => {
+    void listen(NAMES.fileDragEndedEvent, () => {
       unbindRelease();
       onAbort();
     }).then((un) => {
@@ -4413,7 +4414,7 @@ export function FileTree({
               {deckEnabled && (
                 <div className="context-menu-group">
                   <div className="context-menu-group-label">
-                    {t("fileTree.eldrunNativeGroup")}
+                    {t("fileTree.appNativeGroup")}
                   </div>
                   <button className="untested" onClick={() => void createDeck()}>
                     {t("fileTree.newPresentation")}

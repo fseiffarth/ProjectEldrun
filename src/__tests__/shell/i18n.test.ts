@@ -118,10 +118,29 @@ describe("i18n", () => {
     expect(leaked).toEqual([]);
   });
 
-  it("spells the app's name only as {app} in dictionary values", () => {
+  it("fills {slug} with the lowercase name in every language, with and without params", () => {
+    // Paths and file names a text mentions (`~/{slug}/projects`) carry the
+    // lowercase form; it is filled at the same place as `{app}`.
+    const keys = (Object.keys(enSource) as TranslationKey[]).filter((k) =>
+      (enSource[k] as string).includes("{slug}"),
+    );
+    expect(keys.length).toBeGreaterThan(5);
+    const leaked: string[] = [];
+    for (const { value } of LANGUAGES) {
+      for (const key of keys) {
+        for (const text of [translate(value, key), translate(value, key, { unused: "x" })]) {
+          const named = value !== "en" || text.includes(BRAND.slug);
+          if (text.includes("{slug}") || !named) leaked.push(`${value}/${key}`);
+        }
+      }
+    }
+    expect(leaked).toEqual([]);
+  });
+
+  it("spells the app's name only as {app} or {slug} in dictionary values", () => {
     const spelled: string[] = [];
     for (const [key, text] of Object.entries(enSource)) {
-      if ((text as string).includes(BRAND.display)) spelled.push(key);
+      if ((text as string).toLowerCase().includes(BRAND.slug)) spelled.push(key);
     }
     expect(spelled).toEqual([]);
   });

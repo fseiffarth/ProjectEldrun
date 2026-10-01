@@ -55,7 +55,7 @@ export type UriOrigin =
   | "filetree"
   | "viewer"
   /** Eldrun itself started this URL (OAuth, `gh`/`glab`, a release link). */
-  | "eldrun";
+  | "app";
 
 /** Origins a person named directly. Only these may offer the live-page control. */
 const TRUSTED_ORIGINS: ReadonlySet<UriOrigin> = new Set<UriOrigin>([
@@ -142,7 +142,7 @@ export function routeUri(uri: string, ctx: RouteContext): LinkTarget {
 
   // 2. Eldrun's own URLs always go to the user's real browser, where their
   //    session already lives.
-  if (ctx.origin === "eldrun") return { kind: "external", url };
+  if (ctx.origin === "app") return { kind: "external", url };
 
   const allowLive = originIsTrusted(ctx.origin);
 

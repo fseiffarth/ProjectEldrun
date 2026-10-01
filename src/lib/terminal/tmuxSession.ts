@@ -10,6 +10,7 @@
  */
 
 import type { RemoteSpec } from "../../types";
+import { NAMES } from "../brand";
 
 /**
  * A project id can appear verbatim in a tmux session name (it's practice a uuid),
@@ -47,7 +48,7 @@ function sanitizeForTmuxName(id: string): string {
  * misclassified. See {@link sessionKindFromName}.
  */
 export function newTmuxSessionName(scope: string, kind: TmuxSessionKind = "shell"): string {
-  return `eldrun-${sanitizeForTmuxName(scope)}--${kind}-${crypto.randomUUID()}`;
+  return `${NAMES.tmuxPrefix}${sanitizeForTmuxName(scope)}--${kind}-${crypto.randomUUID()}`;
 }
 
 /**
@@ -68,7 +69,7 @@ export type TmuxSessionKind = "agent" | "shell" | "other";
  */
 export function sessionKindFromName(name: string): TmuxSessionKind {
   const sep = name.indexOf("--");
-  if (!name.startsWith("eldrun-") || sep < 0) return "other";
+  if (!name.startsWith(NAMES.tmuxPrefix) || sep < 0) return "other";
   const rest = name.slice(sep + 2);
   if (rest.startsWith("agent-")) return "agent";
   if (rest.startsWith("shell-")) return "shell";

@@ -1239,7 +1239,7 @@
   overflow-x: auto;
   /* Scrolls, shows nothing — not even one of the app's own thumbs; overflow is
      conveyed by the chevrons that flank the strip. */
-  --eldrun-scrollbar: none;
+  --app-scrollbar: none;
 }
 
 /* Chevron buttons that flank the strip when it overflows. */
@@ -2370,7 +2370,7 @@ button.tab-todo-link {
    a menu that actually scrolls; one whose content fits keeps the symmetric
    padding its parent gives it, rather than sitting 8px off-centre for a thumb
    that was never drawn. */
-.menu-scroll-region[data-eldrun-scrollbar] {
+.menu-scroll-region[data-app-scrollbar] {
   padding-right: 8px;
 }
 /* Keep the pinned title from shrinking when the menu hits its max-height — only

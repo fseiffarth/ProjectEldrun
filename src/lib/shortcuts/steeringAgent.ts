@@ -106,7 +106,7 @@ export function ledDraft(draft: string, lead: SteeringAgentCommand | undefined):
 }
 
 /** Window event the `SteeringPromptOverlay` answers by opening its text box. */
-export const STEERING_PROMPT_EVENT = "eldrun:steering-prompt";
+export const STEERING_PROMPT_EVENT = "app:steering-prompt";
 
 /** Ask the prompt box to open for `tab`, its text led with `lead`; false when
  *  the tab is not an agent, its CLI does not take `lead`, or no box is

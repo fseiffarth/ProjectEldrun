@@ -14,6 +14,7 @@ import type {
   ProjectEntry,
 } from "../../types";
 import { ErrorNote } from "../common/ErrorNote";
+import { NAMES } from "../../lib/brand";
 
 /**
  * "Import project file…" — register a `.eldrunproj` bundle written by
@@ -53,7 +54,7 @@ export function ProjectImportBundleDialog({
       filters: [
         {
           name: t("transfer.bundleFilter"),
-          extensions: ["eldrunproj", "zip"],
+          extensions: [NAMES.exportExtension, "zip"],
         },
       ],
     });

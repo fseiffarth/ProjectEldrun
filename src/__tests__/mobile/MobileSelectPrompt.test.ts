@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { mergeSelectRows, missingSelectRow, readQuestionTabs, readSelectPrompt, sameSelectStep, selectKeys, selectMoveKeys, selectSignature, UNNUMBERED } from "../../../mobile-web/src/terminal/selectPrompt";
 import { currentMode, modeChoices } from "../../../mobile-web/src/terminal/agentModes";
 import { inputFrameStart, sessionStatus } from "../../../mobile-web/src/terminal/statusLine";
+import { BRAND } from "../../lib/brand";
 
 const lines = (...texts: string[]) => texts.map((text) => ({ text }));
 const ESC = String.fromCharCode(27);
 
-describe("Eldrun Mobile select dialog", () => {
+describe(`${BRAND.display} Mobile select dialog`, () => {
   it("reads the rows of a model picker, with the highlighted one", () => {
     // The Claude Code shape, after readableScreen stripped the box frame.
     const prompt = readSelectPrompt(lines(
@@ -220,7 +221,7 @@ describe("Eldrun Mobile select dialog", () => {
       "\u276f 1. Restore it too               \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510",
       "  2. Just the question            \u2502 swipe \u2192 on the reading view",
       "\u250c\u2500 Status line \u2500\u2500\u2500\u2500\u2500\u2715\u2510",
-      "\u2502 ~/eldrun/\u2026/projecteldrun       \u2502",
+      `\u2502 ~/${BRAND.slug}/\u2026/project${BRAND.slug}       \u2502`,
       "",
       "Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 n to add notes \u00b7 Esc to cancel",
     ), "Claude Code");
@@ -307,7 +308,7 @@ describe("Eldrun Mobile select dialog", () => {
     const prompt = readSelectPrompt(lines(
       ">_ OpenAI Codex (v0.155.1)",
       "model:     gpt-6-astra high   /model to change",
-      "directory: ~/eldrun/projects/projecteldrun",
+      `directory: ~/${BRAND.slug}/projects/project${BRAND.slug}`,
       "",
       "  Tip: New Use /fast to enable our fastest inference with increased plan usage.",
       "",
@@ -563,7 +564,7 @@ describe("Eldrun Mobile select dialog", () => {
   });
 });
 
-describe("Eldrun Mobile permission modes", () => {
+describe(`${BRAND.display} Mobile permission modes`, () => {
   it("offers the family of the mode the session is showing", () => {
     expect(modeChoices("plan").map((choice) => choice.value))
       .toEqual(["default", "accept edits", "plan", "auto", "bypass permissions"]);
@@ -648,7 +649,7 @@ describe("Eldrun Mobile permission modes", () => {
   });
 });
 
-describe("Eldrun Mobile input frame", () => {
+describe(`${BRAND.display} Mobile input frame`, () => {
   const cut = (...texts: string[]) => {
     const rows = lines(...texts);
     return rows.slice(0, inputFrameStart(rows)).map((row) => row.text);
@@ -660,9 +661,9 @@ describe("Eldrun Mobile input frame", () => {
     expect(cut(
       "● Done — the reading view now stops above the box.",
       "",
-      `${"\u2500".repeat(40)} ProjectEldrun \u2500`,
+      `${"\u2500".repeat(40)} Project${BRAND.display} \u2500`,
       "\u276f",
-      "  ~/eldrun/projects/projecteldrun (develop) \u00b7 Opus 5 \u00b7 ctx 93%",
+      `  ~/${BRAND.slug}/projects/project${BRAND.slug} (develop) \u00b7 Opus 5 \u00b7 ctx 93%`,
       "  \u23f5\u23f5 auto mode on (shift+tab to cycle)",
     )).toEqual(["● Done — the reading view now stops above the box."]);
   });
@@ -686,7 +687,7 @@ describe("Eldrun Mobile input frame", () => {
   });
 });
 
-describe("Eldrun Mobile question tabs", () => {
+describe(`${BRAND.display} Mobile question tabs`, () => {
   it("reads the header row Claude Code draws over an agent's question", () => {
     expect(readQuestionTabs("☐ Push scope")).toEqual([{ label: "Push scope", answered: false }]);
     // Several questions: answered ones are ticked, and Submit is navigation.

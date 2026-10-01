@@ -20,6 +20,7 @@ import {
   useTabsStore,
   type GroupNode,
 } from "../../stores/tabs";
+import { tabCommand } from "../../lib/brand";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -27,7 +28,7 @@ describe("projectfiles tab kind", () => {
   it("recovers its kind from the bare command", () => {
     expect(cmdToKind(PROJECT_FILES_TAB_CMD)).toBe("projectfiles");
     // The separate FileBrowser tab keeps its own command and kind.
-    expect(cmdToKind("__eldrun_files__")).toBe("files");
+    expect(cmdToKind(tabCommand("files"))).toBe("files");
   });
 
   it("survives a restart (a pure frontend pane, like the files tab)", () => {

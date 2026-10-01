@@ -40,6 +40,7 @@ class FakeWebSocket {
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { storageKey } from "../../lib/brand";
 
 const ROW = { id: "tab-s", label: "Claude sign-in", kind: "agent" as const, agent_label: "Claude", available: true, viewer_busy: false };
 
@@ -50,7 +51,7 @@ describe("a sign-in tab reached from the tab list", () => {
     localStorage.clear();
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ error: "not_found" }), { status: 404 }))));
-    localStorage.setItem("eldrun.mobile.view.agent", "terminal");
+    localStorage.setItem(storageKey("mobile.view.agent"), "terminal");
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
   });
 

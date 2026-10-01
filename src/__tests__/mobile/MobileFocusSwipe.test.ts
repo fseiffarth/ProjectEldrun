@@ -7,10 +7,11 @@ import {
   classifySwipe,
   installFocusSwipe,
 } from "../../../mobile-web/src/terminal/focusSwipe";
+import { BRAND } from "../../lib/brand";
 
 const at = (x: number, y = 300, t = 0) => ({ x, y, t });
 
-describe("Eldrun Mobile Focus swipe classification", () => {
+describe(`${BRAND.display} Mobile Focus swipe classification`, () => {
   it("exposes the documented thresholds", () => {
     expect([SWIPE_MIN_DISTANCE, SWIPE_AXIS_RATIO, SWIPE_MAX_DURATION_MS, SWIPE_EDGE_GUARD]).toEqual([56, 2, 700, 16]);
   });
@@ -63,7 +64,7 @@ function stubScroll(element: HTMLElement, box: { scrollLeft: number; clientWidth
   element.style.overflowX = "auto";
 }
 
-describe("Eldrun Mobile Focus swipe listeners", () => {
+describe(`${BRAND.display} Mobile Focus swipe listeners`, () => {
   let host: HTMLDivElement;
   let row: HTMLDivElement;
   let now = 10_000;

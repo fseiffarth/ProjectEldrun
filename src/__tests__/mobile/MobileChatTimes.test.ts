@@ -3,11 +3,12 @@ import type { TranscriptEntry } from "../../../mobile-web/src/api";
 import { chatDayLabel, chatMoment, chatTime, dayOpeners } from "../../../mobile-web/src/terminal/chatTimes";
 import { pendingPrompt, withPending } from "../../../mobile-web/src/terminal/pendingPrompts";
 import { transcriptTurns } from "../../../mobile-web/src/terminal/transcriptTurns";
+import { BRAND } from "../../lib/brand";
 
 const labels = { today: "Today", yesterday: "Yesterday" };
 const local = (y: number, m: number, d: number, h = 12, min = 0) => new Date(y, m - 1, d, h, min);
 
-describe("Eldrun Mobile chat times", () => {
+describe(`${BRAND.display} Mobile chat times`, () => {
   it("reads a record's stamp, and nothing from a missing or unreadable one", () => {
     expect(chatMoment("2026-09-29T10:05:00Z")?.toISOString()).toBe("2026-09-29T10:05:00.000Z");
     expect(chatMoment(undefined)).toBeNull();

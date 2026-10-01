@@ -23,6 +23,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore } from "../../stores/tabs";
 import type { TabEntry } from "../../stores/tabs";
 import type { ProjectEntry, Settings } from "../../types";
+import { BRAND, MOBILE_ACCESS_KEY, NAMES } from "../../lib/brand";
 
 const project: ProjectEntry = {
   id: "p-mobile",
@@ -30,14 +31,14 @@ const project: ProjectEntry = {
   status: "active",
   position: 1,
   local_file: "/projects/alpha/project.json",
-  eldrun_mobile_access: true,
+  [MOBILE_ACCESS_KEY]: true,
 };
 
-const TMUX = "eldrun-p-mobile--agent-123456789";
+const TMUX = `${BRAND.slug}-p-mobile--agent-123456789`;
 
 /** Hand the bridge one desktop request and give back what it answered. */
 async function ask(request: Record<string, unknown>) {
-  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === "eldrun-mobile-desktop-request");
+  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === NAMES.mobileDesktopEvent);
   const deliver = listener![1] as (event: { payload: unknown }) => void;
   const invokeMock = vi.mocked(invoke);
   invokeMock.mockClear();
@@ -118,7 +119,7 @@ describe("Mobile bridge — a phone that looked at an agent tab", () => {
   });
 
   it("says nothing about a project the Mobile switch is off for", async () => {
-    useProjectsStore.setState({ projects: [{ ...project, eldrun_mobile_access: false }] });
+    useProjectsStore.setState({ projects: [{ ...project, [MOBILE_ACCESS_KEY]: false }] });
     useActivityStore.setState({ attentionByTab: { "p-mobile:agent-1": "done" } });
 
     const response = await ask({ type: "tab_seen", request_id: "r4", project_id: project.id, tmux_session: TMUX });

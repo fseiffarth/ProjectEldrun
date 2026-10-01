@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import { BRAND } from "../../lib/brand";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
@@ -137,7 +138,7 @@ describe("editor text-size control", () => {
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
-  it("restores the persisted tab size across an Eldrun restart", async () => {
+  it(`restores the persisted tab size across an ${BRAND.display} restart`, async () => {
     // First session: zoom this tab up to 13, which persists on its viewerState.
     await renderTextView();
     await waitFor(() =>

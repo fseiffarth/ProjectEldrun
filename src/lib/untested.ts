@@ -40,7 +40,7 @@ export const UNTESTED = {
   "desktop.intro.projects": { area: "shell", what: "How to start · Projects page: project count, New/Import/Clone open the + menu's dialogs" },
   "desktop.intro.agents": { area: "shell", what: "How to start · Agent CLIs page: installed chips, install/sign-in in a terminal, Node.js prerequisite" },
   "desktop.intro.localModels": { area: "shell", what: "How to start · Local models page: Ollama install/start, recommended pull, GPU load, use for tabs" },
-  "desktop.intro.askEldrun": { area: "shell", what: "How to start · Ask Eldrun page: help-server status, on/off switch, help search box" },
+  "desktop.intro.askApp": { area: "shell", what: "How to start · Ask Eldrun page: help-server status, on/off switch, help search box" },
   "settings.vmPrerequisites": { area: "settings", what: "VM page · install missing QEMU prerequisites in a root terminal tab" },
   "settings.showUntestedTags": { area: "settings", what: "General page · show or hide every untested tag" },
 

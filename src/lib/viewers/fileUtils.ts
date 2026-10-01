@@ -1,5 +1,6 @@
 import type { TranslationKey } from "../i18n";
 import { relativePathWithin } from "../paths";
+import { LEGACY_BRAND } from "../brand";
 
 export interface FileEntry {
   name: string;
@@ -32,7 +33,7 @@ export const INTERNAL_PROJECT_FILES = new Set([
   "open_apps.json",
   "project.json",
   "project_default_apps.json",
-  ".eldrun_colors.json",
+  `.${LEGACY_BRAND.slug}_colors.json`,
 ]);
 
 export type SortKey = "name" | "type" | "size" | "created" | "modified";

@@ -9,6 +9,7 @@ import { MobileIndicator } from "../../components/header/MobileIndicator";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useSettingsStore } from "../../stores/settings";
 import type { Settings } from "../../types";
+import { BRAND, MOBILE_HOST_KEY } from "../../lib/brand";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -32,7 +33,7 @@ describe("MobileIndicator reconnect", () => {
   beforeEach(() => {
     useSettingsStore.setState({
       settings: {
-        eldrun_mobile_host: { enabled: true },
+        [MOBILE_HOST_KEY]: { enabled: true },
         mobile_indicator: true,
       } as Settings,
       loaded: true,
@@ -64,14 +65,14 @@ describe("MobileIndicator reconnect", () => {
     const user = userEvent.setup();
     render(<MobileIndicator />);
 
-    await screen.findByLabelText("Eldrun Mobile connection unavailable");
-    await user.click(screen.getByLabelText("Eldrun Mobile connection unavailable"));
+    await screen.findByLabelText(`${BRAND.display} Mobile connection unavailable`);
+    await user.click(screen.getByLabelText(`${BRAND.display} Mobile connection unavailable`));
     expect(await screen.findByText("Connection refused (os error 111)")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Reconnect" }));
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Eldrun Mobile connected")).toBeTruthy();
+      expect(screen.getByLabelText(`${BRAND.display} Mobile connected`)).toBeTruthy();
     });
     expect(restartStatusChecks).toBe(2);
   });
@@ -84,8 +85,8 @@ describe("MobileIndicator reconnect", () => {
     const user = userEvent.setup();
     render(<MobileIndicator />);
 
-    await screen.findByLabelText("Eldrun Mobile connected");
-    await user.click(screen.getByLabelText("Eldrun Mobile connected"));
+    await screen.findByLabelText(`${BRAND.display} Mobile connected`);
+    await user.click(screen.getByLabelText(`${BRAND.display} Mobile connected`));
 
     expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
@@ -107,8 +108,8 @@ describe("MobileIndicator reconnect", () => {
     const user = userEvent.setup();
     render(<MobileIndicator />);
 
-    await screen.findByLabelText("Eldrun Mobile connected");
-    await user.click(screen.getByLabelText("Eldrun Mobile connected"));
+    await screen.findByLabelText(`${BRAND.display} Mobile connected`);
+    await user.click(screen.getByLabelText(`${BRAND.display} Mobile connected`));
     await user.click(await screen.findByRole("button", { name: "Update" }));
 
     await waitFor(() => {

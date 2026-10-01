@@ -82,6 +82,7 @@ import { RemarksPane } from "./RemarksPane";
 import { DevTodoView, useDevTodoAvailable } from "./DevTodoView";
 import { ArrowDownIcon, ArrowUpIcon, CheckIcon, CommentIcon, GearIcon, HexagonIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
 import { ErrorNote } from "../common/ErrorNote";
+import { MOBILE_ACCESS_KEY, MOBILE_HOST_KEY, NAMES } from "../../lib/brand";
 
 /** How long the pointer must rest on a session row before its stats card opens
  *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
@@ -131,7 +132,7 @@ function sessionDisplayName(
   t: (key: TranslationKey, params?: Record<string, string | number>) => string,
   name: string,
 ): string {
-  return name.startsWith("eldrun-") ? t("projectFilesView.sessionLabel") : name;
+  return name.startsWith(NAMES.tmuxPrefix) ? t("projectFilesView.sessionLabel") : name;
 }
 
 /** The Sessions view's per-machine session-type sub-heading (TODO #85): one label
@@ -446,7 +447,7 @@ export function ProjectFilesView({
   // group's ×, and the Project Settings checkbox are three faces of one switch
   // and cannot disagree.
   const alertsEnabled = useSettingsStore((s) => s.settings?.files_alerts ?? true);
-  const mobileHostEnabled = useSettingsStore((s) => s.settings?.eldrun_mobile_host?.enabled ?? false);
+  const mobileHostEnabled = useSettingsStore((s) => s.settings?.[MOBILE_HOST_KEY]?.enabled ?? false);
   // ...but never in the docked subwindow column (`compact`), whatever the
   // setting says: that viewer is a ~300px sidebar beside a terminal, where a
   // strip of mail/appointment/card rows takes the space the tree is there for
@@ -499,7 +500,7 @@ export function ProjectFilesView({
     };
   }, [active, mobileEligible, mobileHostEnabled]);
 
-  const mobileAccessOn = project?.eldrun_mobile_access ?? false;
+  const mobileAccessOn = project?.[MOBILE_ACCESS_KEY] ?? false;
 
   const toggleMobileAccess = (enabled: boolean) => {
     if (!projectId) return;
@@ -809,7 +810,7 @@ export function ProjectFilesView({
       return;
     }
     useTabsStore.getState().addTabToScope(projectId, {
-      label: name.startsWith("eldrun-") ? "session" : name,
+      label: name.startsWith(NAMES.tmuxPrefix) ? "session" : name,
       cmd: "",
       args: [],
       cwd: projectDir,

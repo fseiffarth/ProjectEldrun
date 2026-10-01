@@ -52,6 +52,7 @@ import type { SavedPasswordState } from "../components/projects/useSavedCredenti
 import { IS_WINDOWS } from "../lib/platform";
 import { shouldPersistLocalTab, shouldPersistTab } from "../lib/terminal/tmuxSession";
 import { translate, useI18nStore } from "../lib/i18n";
+import { MOBILE_ACCESS_KEY } from "../lib/brand";
 
 function connectionsHeadless(): boolean {
   return useSettingsStore.getState().settings?.connections_headless ?? true;
@@ -735,7 +736,7 @@ export function projectTmuxTargets(
           project.id,
           localRunning,
           localPersistenceEnabled,
-          !!project.eldrun_mobile_access,
+          !!project[MOBILE_ACCESS_KEY],
           isResumableAgentTab(tab) || isRelaunchableLocalTab(tab) || isSavedWhileLive(tab),
         ));
     const session = tab.tmuxAttach ?? (persistent ? tab.tmuxSession : undefined);
@@ -1717,7 +1718,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       enabled,
     });
-    patchProject(id, (project) => ({ ...project, eldrun_mobile_access: result || undefined }));
+    patchProject(id, (project) => ({ ...project, [MOBILE_ACCESS_KEY]: result || undefined }));
   },
 
   setProjectRemoteLabel: async (id, label) => {

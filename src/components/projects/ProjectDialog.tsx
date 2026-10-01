@@ -37,6 +37,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { IS_WINDOWS, IS_MAC } from "../../lib/platform";
 import { useT } from "../../lib/i18n";
 import { ErrorNote } from "../common/ErrorNote";
+import { NAMES } from "../../lib/brand";
 
 /** OS-appropriate command to install git, used by the one-click "Install git"
  *  prompt shown when creating/importing a git-backed project on a machine with
@@ -389,7 +390,7 @@ export function ProjectDialog({
   // lost); once a token is saved the `needsGitConnection` notice clears live.
   // Git Hosting is its own settings sub-panel, so open it directly.
   const openGitHostingSettings = () => {
-    window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "git" }));
+    window.dispatchEvent(new CustomEvent("app:open-settings", { detail: "git" }));
   };
 
   useEffect(() => {
@@ -658,7 +659,7 @@ export function ProjectDialog({
     const tabsStore = useTabsStore.getState();
     tabsStore.setScope(project.id);
     for (const [cmd, files] of filesByAgent) {
-      const promptPath = `.eldrun/scaffold-fill-${cmd.replace(/[^a-z0-9_-]/gi, "-")}.md`;
+      const promptPath = `${NAMES.projectDir}/scaffold-fill-${cmd.replace(/[^a-z0-9_-]/gi, "-")}.md`;
       await invoke("write_project_file", {
         projectDir: projectCwd,
         relPath: promptPath,
@@ -681,7 +682,7 @@ export function ProjectDialog({
     const projectCwd = resolveProjectDirectory(project);
     if (!projectCwd) return;
 
-    const promptPath = `.eldrun/project-description-${cmd.replace(/[^a-z0-9_-]/gi, "-")}.md`;
+    const promptPath = `${NAMES.projectDir}/project-description-${cmd.replace(/[^a-z0-9_-]/gi, "-")}.md`;
     await invoke("write_project_file", {
       projectDir: projectCwd,
       relPath: promptPath,

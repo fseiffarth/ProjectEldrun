@@ -37,6 +37,7 @@ class FakeWebSocket {
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { BRAND, storageKey } from "../../lib/brand";
 
 /** A bubble's words, without the time a messenger puts in its corner. */
 function said(bubble: Element | null | undefined): string | null {
@@ -71,11 +72,11 @@ function sidecarFetch(files: unknown[], transcript?: unknown) {
   });
 }
 
-describe("Eldrun Mobile shows the files the agent sent in the chat and in the gallery", () => {
+describe(`${BRAND.display} Mobile shows the files the agent sent in the chat and in the gallery`, () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
     localStorage.clear();
-    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    localStorage.setItem(storageKey("mobile.view.claude-code"), "focus");
     vi.stubGlobal("WebSocket", FakeWebSocket);
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
   });

@@ -26,6 +26,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore } from "../../stores/tabs";
 import type { TabEntry } from "../../stores/tabs";
 import type { ProjectBox, ProjectEntry, Settings } from "../../types";
+import { BRAND, MOBILE_ACCESS_KEY, NAMES } from "../../lib/brand";
 
 /** The member keeps its own switch OFF: the box's switch is the consent. */
 const member: ProjectEntry = {
@@ -42,7 +43,7 @@ const paper: ProjectBox = {
   member_ids: [member.id],
   position: 10,
   folder: "/boxes/paper",
-  eldrun_mobile_access: true,
+  [MOBILE_ACCESS_KEY]: true,
 };
 const privateBox: ProjectBox = {
   id: "b2",
@@ -52,10 +53,10 @@ const privateBox: ProjectBox = {
   folder: "/boxes/private",
 };
 
-const TMUX = "eldrun-box_b1--agent-123456789";
+const TMUX = `${BRAND.slug}-box_b1--agent-123456789`;
 
 async function ask(request: Record<string, unknown>) {
-  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === "eldrun-mobile-desktop-request");
+  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === NAMES.mobileDesktopEvent);
   const deliver = listener![1] as (event: { payload: unknown }) => void;
   const invokeMock = vi.mocked(invoke);
   invokeMock.mockClear();
@@ -86,7 +87,7 @@ describe("Mobile bridge — a box scope", () => {
           { key: "agent-1", label: "Claude", kind: "agent", cmd: "claude", cwd: "/projects/lib", tmuxSession: TMUX },
         ] satisfies TabEntry[],
         "box:b2": [
-          { key: "agent-2", label: "Claude", kind: "agent", cmd: "claude", cwd: "/boxes/private", tmuxSession: "eldrun-box_b2--agent-223456789" },
+          { key: "agent-2", label: "Claude", kind: "agent", cmd: "claude", cwd: "/boxes/private", tmuxSession: `${BRAND.slug}-box_b2--agent-223456789` },
         ] satisfies TabEntry[],
       },
     });
@@ -118,7 +119,7 @@ describe("Mobile bridge — a box scope", () => {
   it("refuses a box whose switch is off, whatever its members say", async () => {
     const response = await ask({ type: "catalog", request_id: "r3", project_id: "box:b2" });
     expect(response.statuses).toEqual([]);
-    const seen = await ask({ type: "tab_seen", request_id: "r4", project_id: "box:b2", tmux_session: "eldrun-box_b2--agent-223456789" });
+    const seen = await ask({ type: "tab_seen", request_id: "r4", project_id: "box:b2", tmux_session: `${BRAND.slug}-box_b2--agent-223456789` });
     expect(seen).toMatchObject({ status: "error", code: "project_ineligible" });
   });
 
@@ -141,7 +142,7 @@ describe("Mobile settings — box access rows", () => {
     });
     vi.mocked(listen).mockResolvedValue(() => {});
     useProjectsStore.setState({ projects: [member], activeId: null, loaded: true });
-    useBoxesStore.setState({ boxes: [{ ...paper, folder: undefined, eldrun_mobile_access: undefined }], loaded: true });
+    useBoxesStore.setState({ boxes: [{ ...paper, folder: undefined, [MOBILE_ACCESS_KEY]: undefined }], loaded: true });
     useSettingsStore.setState({ settings: {} as Settings, loaded: true });
   });
 
@@ -163,7 +164,7 @@ describe("Mobile settings — box access rows", () => {
     });
     // The backend answers with the record it wrote — the switch on and the
     // folder it resolved — and the store takes that record as it is.
-    await waitFor(() => expect(useBoxesStore.getState().boxes[0]).toMatchObject({ eldrun_mobile_access: true, folder: "/boxes/paper" }));
+    await waitFor(() => expect(useBoxesStore.getState().boxes[0]).toMatchObject({ [MOBILE_ACCESS_KEY]: true, folder: "/boxes/paper" }));
     expect((screen.getByRole("checkbox", { name: "Paper" }) as HTMLInputElement).checked).toBe(true);
   });
 });

@@ -113,6 +113,7 @@ import { useT, useI18nStore, translate, type TranslationKey } from "../../lib/i1
 import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/projects/sidePanelView";
 import type { FilesPanelView } from "../../types";
 import { noteTerminalOutputChars } from "../../dev/terminalOutputRate";
+import { BRAND } from "../../lib/brand";
 
 // Dev-only perf panel (src/dev/). The ternary is statically resolved at build
 // time (`import.meta.env.DEV` → false), so in a shipped bundle the lazy() —
@@ -243,7 +244,7 @@ function StartupSplash({ ready }: { ready: boolean }) {
         <span className="startup-splash-orbit startup-splash-orbit-two" />
         <LogoIcon />
       </div>
-      <div className="startup-splash-name">ELDRUN</div>
+      <div className="startup-splash-name">{BRAND.display.toUpperCase()}</div>
       <div className="startup-splash-message">{message}</div>
       <div className="startup-splash-progress" aria-hidden="true"><span /></div>
     </div>
@@ -490,8 +491,8 @@ export function AppShell() {
   // Let the Settings dialog / gear menu re-open the welcome on demand.
   useEffect(() => {
     const open = () => setShowHowToStart(true);
-    window.addEventListener("eldrun:open-how-to-start", open);
-    return () => window.removeEventListener("eldrun:open-how-to-start", open);
+    window.addEventListener("app:open-how-to-start", open);
+    return () => window.removeEventListener("app:open-how-to-start", open);
   }, []);
 
   // Open the lessons picker on demand, and let a tour/lesson step force the
@@ -505,11 +506,11 @@ export function AppShell() {
       }
       setPanelOpen(true);
     };
-    window.addEventListener("eldrun:open-lessons", openLessons);
-    window.addEventListener("eldrun:reveal-side-panel", revealPanel);
+    window.addEventListener("app:open-lessons", openLessons);
+    window.addEventListener("app:reveal-side-panel", revealPanel);
     return () => {
-      window.removeEventListener("eldrun:open-lessons", openLessons);
-      window.removeEventListener("eldrun:reveal-side-panel", revealPanel);
+      window.removeEventListener("app:open-lessons", openLessons);
+      window.removeEventListener("app:reveal-side-panel", revealPanel);
     };
   }, []);
 

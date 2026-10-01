@@ -1,6 +1,7 @@
 import type { TranslationKey } from "../i18n";
 import type { SessionTranscript } from "../../../mobile-web/src/api";
 import type { TabEntry } from "../../stores/tabs";
+import { storageKey } from "../brand";
 
 /**
  * The desktop agent pane's Reader: the phone's Focus Reader — the agent's
@@ -96,10 +97,10 @@ export function mergeTranscript(previous: SessionTranscript | null, next: Sessio
   return next.unchanged && previous ? previous : next;
 }
 
-const STORAGE_KEY = "eldrun.agentReader.byAgent";
+const STORAGE_KEY = storageKey("agentReader.byAgent");
 /** The one window-wide choice that briefly replaced the per-CLI one: a CLI
  * without its own choice yet starts from it. */
-const SHARED_KEY = "eldrun.agentReader.open";
+const SHARED_KEY = storageKey("agentReader.open");
 
 function readChoices(): Record<string, boolean> {
   try {

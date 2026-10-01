@@ -31,6 +31,7 @@ import { isRelaunchableLocalTab, isResumableAgentTab, isSavedWhileLive } from ".
 import { shouldPersistLocalTab, shouldPersistTab } from "../terminal/tmuxSession";
 import { IS_WINDOWS } from "../platform";
 import { noteClosedAgentTab } from "../../stores/agents/closedAgentTabs";
+import { MOBILE_ACCESS_KEY } from "../brand";
 
 /**
  * The persistent host tmux session a tab owns, or `null` if the tab is not a
@@ -105,7 +106,7 @@ export function mintedLocalSessionOf(scope: string, tab: TabEntry): string | nul
     scope,
     localRunning,
     enabled,
-    !!project?.eldrun_mobile_access,
+    !!project?.[MOBILE_ACCESS_KEY],
     isResumableAgentTab(tab) || isRelaunchableLocalTab(tab) || isSavedWhileLive(tab),
   )
     ? tab.tmuxSession

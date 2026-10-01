@@ -10,6 +10,7 @@ import type { TranslationKey } from "../../lib/i18n";
 import { AGENT_TAB_ACTIONS, type AgentTabAction } from "../../lib/shortcuts/shortcuts";
 import { cloudLaunchesFor, type CloudLaunch } from "../../lib/agents/cloudSessions";
 import type { SignInLaunch } from "../../lib/agents/signInLaunch";
+import { envName } from "../../lib/brand";
 
 /**
  * A static entry in the "new tab" add menu. Shared by the main-window `TabBar`
@@ -152,7 +153,7 @@ export function buildStaticTabSpec(
   ];
   const env = {
     ...(item.env ?? {}),
-    ...(resumable && sessionId ? { ELDRUN_TAB_UID: sessionId } : {}),
+    ...(resumable && sessionId ? { [envName("TAB_UID")]: sessionId } : {}),
   };
   return {
     label: itemLabel(item, t),

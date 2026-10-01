@@ -1486,7 +1486,7 @@
 }
 /* Its own overlay thumb sits on the rows' right end — the "On start" badge —
    the same 8px gutter `.menu-scroll-region` reserves, and for its reason. */
-.ollama-autostart-list[data-eldrun-scrollbar] {
+.ollama-autostart-list[data-app-scrollbar] {
   padding-right: 8px;
 }
 

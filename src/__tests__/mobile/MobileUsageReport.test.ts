@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { limitMeters, noteParts, parseUsageReport } from "../../../shared/usageReport";
+import { BRAND } from "../../lib/brand";
 
 /** The panel a real `claude -p "/usage" --output-format json` run returns, as
  * `services::agent_usage` hands it over. */
@@ -11,7 +12,7 @@ const CLAUDE_PANEL = [
   "Last 24h: 41 requests · 6 sessions",
 ].join("\n");
 
-describe("Eldrun Mobile agent usage panel", () => {
+describe(`${BRAND.display} Mobile agent usage panel`, () => {
   it("reads each window as a labelled bar, with its reset", () => {
     const report = parseUsageReport(CLAUDE_PANEL);
     expect(report.unparsed).toBe(false);
@@ -57,7 +58,7 @@ describe("Eldrun Mobile agent usage panel", () => {
       "  49% of your usage was at >150k context",
       "  47% of your usage came from subagent-heavy sessions",
       "  Top subagents: general-purpose 39%, Explore 1%",
-      "  Top MCP servers: eldrun-git 1%",
+      `  Top MCP servers: ${BRAND.slug}-git 1%`,
     ].join("\n"));
     expect(report.meters).toEqual([
       { label: "Current session", percent: 11, resets: "Sep 29, 11:40pm (Europe/Berlin)" },

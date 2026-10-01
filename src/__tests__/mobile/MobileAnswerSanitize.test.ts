@@ -7,6 +7,7 @@ const rendered = vi.hoisted(() => ({ html: "" }));
 vi.mock("../../lib/viewers/markdown", () => ({ renderMarkdown: () => rendered.html }));
 
 import { answerHtml } from "../../../mobile-web/src/terminal/answerMarkdown";
+import { BRAND } from "../../lib/brand";
 
 function dom(html: string): HTMLElement {
   rendered.html = html;
@@ -15,7 +16,7 @@ function dom(html: string): HTMLElement {
   return host;
 }
 
-describe("Eldrun Mobile Focus answer allowlist", () => {
+describe(`${BRAND.display} Mobile Focus answer allowlist`, () => {
   it("drops script, handlers, frames, forms and styles sheets, keeping text", () => {
     const host = dom([
       '<p onclick="alert(1)">hi<script>alert(2)</script></p>',

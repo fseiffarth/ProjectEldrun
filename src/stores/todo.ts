@@ -32,6 +32,7 @@ import { create } from "zustand";
 import type { MailHeader, MailPriority } from "../types/mail";
 import { mailPriorityPage } from "../lib/mail";
 import { useMailStore } from "./mail";
+import { storageKey } from "../lib/brand";
 
 /**
  * A card drag in flight. Positions are viewport coordinates.
@@ -71,7 +72,7 @@ export interface CardDrag {
 /** How many marked messages the rail asks for. A rail, not a second mailbox. */
 const RAIL_PAGE = 25;
 
-const COLLAPSED_COLUMNS_KEY = "eldrun.todo.collapsedColumns";
+const COLLAPSED_COLUMNS_KEY = storageKey("todo.collapsedColumns");
 
 function readCollapsedColumns(): Record<string, true> {
   try {

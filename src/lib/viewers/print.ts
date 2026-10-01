@@ -31,6 +31,7 @@ import {
   type PrintProgress,
 } from "../window/printing";
 import type { PrintSnapshot } from "../../types/printing";
+import { storageKey as brandStorageKey } from "../brand";
 
 // ── Print options ────────────────────────────────────────────────────────────
 // The preview overlay exposes the options a printer dialog normally would. They
@@ -216,11 +217,11 @@ export function buildOptionsCss(opts: PrintOptions, paged = false): string {
     // A flowing document takes its margins from the body; a paged one cannot
     // (see the paged block) and carries them on the sheets instead.
     `body{margin:0;padding:${paged ? 0 : pad}cm;zoom:${zoom};background:#fff}`,
-    `.eldrun-print-hidden{display:none!important}`,
+    ".app-print-hidden{display:none!important}",
     // Where a flowing document's next copy starts (see `printDocument`): a new
     // sheet on paper, a visible seam on screen.
-    `.eldrun-copy-break{break-before:page;page-break-before:always;height:0}` +
-      `@media screen{.eldrun-copy-break{margin:1cm 0;border-top:2px dashed #999}}`,
+    ".app-copy-break{break-before:page;page-break-before:always;height:0}" +
+      "@media screen{.app-copy-break{margin:1cm 0;border-top:2px dashed #999}}",
     // Screen-only: show the actual sheet on a backdrop, so the preview is WYSIWYG.
     `@media screen{html{background:#3f4245;padding:18px 0}` +
       `body{width:${sheetW}cm;min-height:${sheetH}cm;margin:0 auto;` +
@@ -306,11 +307,11 @@ export function buildOptionsCss(opts: PrintOptions, paged = false): string {
     // for exactly this), so it follows the engine's page box the way the sheet
     // does; a box stated in centimetres would overflow it by the same ~2 cm.
     css.push(
-      `.print-page.eldrun-rot-90>img,.print-page.eldrun-rot-270>img{position:absolute;` +
+      ".print-page.app-rot-90>img,.print-page.app-rot-270>img{position:absolute;" +
         `left:50%;top:50%;width:auto;height:auto;max-width:${scale}cqh;max-height:${scale}cqw}` +
-        `.print-page.eldrun-rot-90>img{transform:translate(-50%,-50%) rotate(90deg)}` +
-        `.print-page.eldrun-rot-270>img{transform:translate(-50%,-50%) rotate(270deg)}` +
-        `.print-page.eldrun-rot-180>img{transform:rotate(180deg)}`,
+        ".print-page.app-rot-90>img{transform:translate(-50%,-50%) rotate(90deg)}" +
+        ".print-page.app-rot-270>img{transform:translate(-50%,-50%) rotate(270deg)}" +
+        ".print-page.app-rot-180>img{transform:rotate(180deg)}",
     );
   }
 
@@ -331,7 +332,7 @@ export function buildOptionsCss(opts: PrintOptions, paged = false): string {
   return css.join("\n");
 }
 
-const STORAGE_KEY = "eldrun.print.options";
+const STORAGE_KEY = brandStorageKey("print.options");
 
 /** `common/PrinterIcon` as markup: the preview's Print button is built with
  *  plain DOM, not React. Sized in em so it follows the button's text. */
@@ -739,7 +740,7 @@ export function printDocument(fullHtml: string, native?: NativePrint): Promise<v
       const parent = pageEls[0]?.parentElement ?? null;
       // `pageEls` is indexed by original page number − 1 and never reordered.
       pageEls.forEach((el, i) =>
-        el.classList.toggle("eldrun-print-hidden", !printing.has(i + 1)),
+        el.classList.toggle("app-print-hidden", !printing.has(i + 1)),
       );
       // The DOM *is* the print order, so realise the arrangement by re-appending
       // the pages in sequence. The page break is set inline per page rather than
@@ -753,8 +754,8 @@ export function printDocument(fullHtml: string, native?: NativePrint): Promise<v
         el.style.pageBreakBefore = i === 0 ? "auto" : "always";
         el.style.breakBefore = i === 0 ? "auto" : "page";
         el.setAttribute("data-page", String(i + 1));
-        el.classList.remove("eldrun-rot-90", "eldrun-rot-180", "eldrun-rot-270");
-        if (ref.rot) el.classList.add(`eldrun-rot-${ref.rot}`);
+        el.classList.remove("app-rot-90", "app-rot-180", "app-rot-270");
+        if (ref.rot) el.classList.add(`app-rot-${ref.rot}`);
       });
 
       realiseCopies(sequence, paged);
@@ -818,7 +819,7 @@ export function printDocument(fullHtml: string, native?: NativePrint): Promise<v
         if (!body) return;
         for (let c = 1; c < n; c++) {
           const seam = body.ownerDocument.createElement("div");
-          seam.className = "eldrun-copy-break";
+          seam.className = "app-copy-break";
           body.appendChild(seam);
           copyNodes.push(seam);
           for (const node of flowNodes) {
@@ -1068,7 +1069,7 @@ export function printDocument(fullHtml: string, native?: NativePrint): Promise<v
       // Injected last, so it wins over the document's own rules at equal
       // specificity — including for documents Eldrun did not assemble.
       styleEl = doc.createElement("style");
-      styleEl.id = "eldrun-print-options";
+      styleEl.id = "app-print-options";
       (doc.head ?? doc.documentElement).appendChild(styleEl);
 
       pageEls = Array.from(doc.querySelectorAll<HTMLElement>(".print-page"));

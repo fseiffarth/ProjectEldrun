@@ -19,6 +19,7 @@ import { formatStampTime } from "../../lib/calendar/calendarTime";
 import { readUse24h } from "../../lib/timeFormat";
 import { translate, useI18nStore } from "../../lib/i18n";
 import { useCalendarStore } from "./calendar";
+import { storageKey } from "../../lib/brand";
 
 /** How often the ticker looks for due reminders. */
 const TICK_MS = 30_000;
@@ -31,7 +32,7 @@ const TICK_MS = 30_000;
  * "this user already dismissed this" — which is nobody else's business, and would
  * churn the file on every reminder.
  */
-const FIRED_KEY = "eldrun.calendar.firedAlarms";
+const FIRED_KEY = storageKey("calendar.firedAlarms");
 
 /** Cap on remembered keys, so the list cannot grow without bound. */
 const MAX_FIRED = 500;

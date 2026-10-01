@@ -10,6 +10,7 @@ import { IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab } from "../../lib/installCommand";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
 import { ErrorNote } from "../common/ErrorNote";
+import { MOBILE_ACCESS_KEY, MOBILE_HOST_KEY } from "../../lib/brand";
 
 /** `translate` at the live language, for code that runs outside a render: the
  *  module-level parser below and the async callbacks, whose `useCallback`
@@ -131,7 +132,7 @@ export function MobileSettings() {
   const setBoxMobileAccess = useBoxesStore((state) => state.setBoxMobileAccess);
   const rootDir = useProjectsStore((state) => state.rootDir);
   const setProjectMobileAccess = useProjectsStore((state) => state.setProjectMobileAccess);
-  const stored = settings?.eldrun_mobile_host;
+  const stored = settings?.[MOBILE_HOST_KEY];
   // The sidecar's `discovery::root_open`, repeated so the switch can say why
   // root is missing from the phone while it is on.
   const [reviewEnforced, setReviewEnforced] = useState(true);
@@ -264,7 +265,7 @@ export function MobileSettings() {
     setError(null);
     try {
       await updateSettings({
-        eldrun_mobile_host: {
+        [MOBILE_HOST_KEY]: {
           ...(stored ?? { enabled: false }),
           // `mail_read` defaults on, so only its "off" is stored; the writes
           // default off, so only their "on" is.
@@ -294,7 +295,7 @@ export function MobileSettings() {
         });
       }
       await updateSettings({
-        eldrun_mobile_host: {
+        [MOBILE_HOST_KEY]: {
           enabled,
           display_name: displayName.trim() || "Workstation",
           port: parsedPort || 8742,
@@ -373,7 +374,7 @@ export function MobileSettings() {
       setOrigin(detected.origin);
       setServeVerification({ verified: true });
       await updateSettings({
-        eldrun_mobile_host: {
+        [MOBILE_HOST_KEY]: {
           enabled: stored?.enabled ?? false,
           display_name: detected.display_name,
           port: detected.port,
@@ -422,7 +423,7 @@ export function MobileSettings() {
       const response = await invoke<AdminResponse>("mobile_admin", { request: { type: "forget_all" } });
       if (response.status === "error") throw new Error(response.message);
       await updateSettings({
-        eldrun_mobile_host: {
+        [MOBILE_HOST_KEY]: {
           enabled: false,
           display_name: displayName.trim() || "Workstation",
           port: Number(port) || 8742,
@@ -663,7 +664,7 @@ export function MobileSettings() {
           <ToggleRow
             key={project.id}
             label={project.name}
-            checked={project.eldrun_mobile_access ?? false}
+            checked={project[MOBILE_ACCESS_KEY] ?? false}
             onChange={(event) => {
               setError(null);
               void setProjectMobileAccess(project.id, event.target.checked).catch((reason) => setError(String(reason)));
@@ -682,7 +683,7 @@ export function MobileSettings() {
             <ToggleRow
               key={box.id}
               label={box.name}
-              checked={box.eldrun_mobile_access ?? false}
+              checked={box[MOBILE_ACCESS_KEY] ?? false}
               onChange={(event) => {
                 setError(null);
                 void setBoxMobileAccess(box.id, event.target.checked).catch((reason) => setError(String(reason)));

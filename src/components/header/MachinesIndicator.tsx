@@ -28,6 +28,7 @@ import { ErrorNote } from "../common/ErrorNote";
 import { useMachinesOverlayStore } from "../../stores/machinesOverlay";
 import { MachinesOverlayFrame } from "./MachinesOverlay";
 import { MachinesGlyph } from "./HeaderGlyphs";
+import { BRAND } from "../../lib/brand";
 
 const MENU_ID = "machines";
 
@@ -1313,7 +1314,7 @@ function MachinesSurface({ surface }: { surface: "menu" | "overlay" }) {
       // keeps it from closing while the native picker is up.
       const path = await saveDialog({
         title: t("machines.exportDialogTitle"),
-        defaultPath: "eldrun-machines.json",
+        defaultPath: `${BRAND.slug}-machines.json`,
         filters: [{ name: t("machines.jsonFilter"), extensions: ["json"] }],
       });
       if (!path) {

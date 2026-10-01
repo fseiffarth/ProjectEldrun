@@ -23,6 +23,7 @@ import { MailMessageView } from "./MailMessageView";
 import { MailComposeDialog, composeSubject, composeTitle } from "./MailComposeDialog";
 import { MailAddressBook } from "./MailAddressBook";
 import { ErrorNote } from "../common/ErrorNote";
+import { storageKey } from "../../lib/brand";
 
 /**
  * The header mail button's overlay — **the** mail surface, floated over the
@@ -79,7 +80,7 @@ function MailOverlay({ open }: { open: boolean }) {
   );
   // Moves, resizes and fills like the root console; remembered per overlay.
   const { frameRef, frameStyle, frameClass, barProps, grips, fillButton } =
-    useFloatingFrame("eldrun.mailOverlayFrame");
+    useFloatingFrame(storageKey("mailOverlayFrame"));
   const activeTab = tabs.find((tab) => tab.id === active);
   const inboxActive = !activeTab;
   const bodyRef = useRef<HTMLDivElement>(null);

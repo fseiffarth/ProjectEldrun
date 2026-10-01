@@ -20,6 +20,7 @@ import {
   normalizeCursorPack,
   type CursorPack,
 } from "../lib/theme/cursorPacks";
+import { storageDashKey } from "../lib/brand";
 
 /** Each Tauri window is its own JS runtime with its own copy of this store, so
  *  a theme change made in one (normally the main window's Settings dialog)
@@ -27,12 +28,12 @@ import {
  *  out subwindow (`DetachedApp`) keeps whatever theme it loaded at open time.
  *  Broadcast the new scheme so every live window can re-apply it; see the
  *  listener in `DetachedApp`. */
-export const THEME_CHANGED_EVENT = "eldrun:theme-changed";
+export const THEME_CHANGED_EVENT = "app:theme-changed";
 
 /** Like THEME_CHANGED_EVENT, but for the UI language: broadcast so every live
  *  window (including detached popouts, which each hold their own i18n store)
  *  re-applies the new language. See the listener in `DetachedApp`. */
-export const LANGUAGE_CHANGED_EVENT = "eldrun:language-changed";
+export const LANGUAGE_CHANGED_EVENT = "app:language-changed";
 
 /**
  * Group B #226: the whole settings object, broadcast after every write, so every
@@ -44,7 +45,7 @@ export const LANGUAGE_CHANGED_EVENT = "eldrun:language-changed";
  * included — a redundant `set` of equal content) applies the payload via
  * `listenSettingsChanged`.
  */
-export const SETTINGS_CHANGED_EVENT = "eldrun:settings-changed";
+export const SETTINGS_CHANGED_EVENT = "app:settings-changed";
 
 // Serialize refreshes inside each JS heap. Two backend patches are serialized,
 // but their IPC responses/broadcasts can be delivered in the opposite order;
@@ -137,7 +138,7 @@ export function applyTheme(scheme: string) {
   // verbatim and cannot resolve. If the OS scheme flipped while the app was
   // closed, the pre-paint is one frame behind and load() corrects it.
   try {
-    localStorage.setItem("eldrun-theme", resolved);
+    localStorage.setItem(storageDashKey("theme"), resolved);
   } catch {
     // localStorage unavailable — worst case is the old one-frame flash.
   }
@@ -150,7 +151,7 @@ export function applyTheme(scheme: string) {
  *  corner style, per-token theme colors): broadcast so every live window
  *  re-applies them. Payload is the full set — a popout cannot know which part
  *  changed. */
-export const APPEARANCE_CHANGED_EVENT = "eldrun:appearance-changed";
+export const APPEARANCE_CHANGED_EVENT = "app:appearance-changed";
 
 export interface AppearancePayload {
   accent: string | null;
@@ -203,8 +204,8 @@ export function applyAccent(accent: string | null | undefined) {
   // Pre-paint cache, applyTheme's bargain: index.html re-applies this before
   // first paint so launch doesn't flash the theme accent and then snap.
   try {
-    if (value) localStorage.setItem("eldrun-accent", value);
-    else localStorage.removeItem("eldrun-accent");
+    if (value) localStorage.setItem(storageDashKey("accent"), value);
+    else localStorage.removeItem(storageDashKey("accent"));
   } catch {
     // localStorage unavailable — worst case is a one-frame accent flash.
   }
@@ -254,9 +255,9 @@ export function applyThemeVars(vars: Record<string, string> | null | undefined) 
   // before first paint so launch doesn't flash the theme's own palette.
   try {
     if (Object.keys(clean).length > 0) {
-      localStorage.setItem("eldrun-theme-vars", JSON.stringify(clean));
+      localStorage.setItem(storageDashKey("theme-vars"), JSON.stringify(clean));
     } else {
-      localStorage.removeItem("eldrun-theme-vars");
+      localStorage.removeItem(storageDashKey("theme-vars"));
     }
   } catch {
     // localStorage unavailable — worst case is a one-frame palette flash.
@@ -340,9 +341,9 @@ export function applyCorners(corners: string | null | undefined) {
   }
   try {
     if (radii && (corners === "square" || corners === "rounded")) {
-      localStorage.setItem("eldrun-corners", corners);
+      localStorage.setItem(storageDashKey("corners"), corners);
     } else {
-      localStorage.removeItem("eldrun-corners");
+      localStorage.removeItem(storageDashKey("corners"));
     }
   } catch {
     // localStorage unavailable — worst case is a one-frame corner flash.

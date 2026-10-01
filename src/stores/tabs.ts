@@ -19,6 +19,7 @@ import { useRunHostPrefStore } from "./remote/runHostPref";
 import { withdrawnTabKinds } from "../lib/experimental";
 import { useSettingsStore } from "./settings";
 import { getDetachedWindowContext } from "./detachedContext";
+import { envName, tabCommand } from "../lib/brand";
 
 /** A shell tab, or a remote agent tab (Claude/Codex/…), gets a stable persisted
  *  tmux session name at creation (TODO #85), so a persistent remote run reattaches
@@ -216,7 +217,7 @@ export function workerRunnable(h: LocalityHost): boolean {
  */
 export const ROOT_SCOPE = "root";
 
-export const FILES_TAB_CMD = "__eldrun_files__";
+export const FILES_TAB_CMD = tabCommand("files");
 
 /**
  * Sentinel `cmd` for the "Files (Project)" tab: the SAME file view the right
@@ -225,7 +226,7 @@ export const FILES_TAB_CMD = "__eldrun_files__";
  * `FILES_TAB_CMD`, which is the separate two-pane `FileBrowser` explorer; both
  * are offered, they are different tools.
  */
-export const PROJECT_FILES_TAB_CMD = "__eldrun_project_files__";
+export const PROJECT_FILES_TAB_CMD = tabCommand("project_files");
 
 /**
  * Sentinel `cmd` for the 3D project-blob tab (root scope only): a navigable 3D
@@ -233,24 +234,24 @@ export const PROJECT_FILES_TAB_CMD = "__eldrun_project_files__";
  * files tab it's a pure-frontend pane, identified by this command so cmdToKind
  * can recover its kind from a bare command string.
  */
-export const BLOB_TAB_CMD = "__eldrun_blob__";
+export const BLOB_TAB_CMD = tabCommand("blob");
 
 /** Sentinel command for the read-only local/SSH host traffic dashboard. */
-export const NETWORK_TAB_CMD = "__eldrun_network__";
+export const NETWORK_TAB_CMD = tabCommand("network");
 
 /**
  * Sentinel `cmd` for the native htop-like system monitor tab: a read-only,
  * whole-machine process/CPU/memory view. Carries no PTY — like the network pane
  * it's identified by this command so cmdToKind can recover its kind on restore.
  */
-export const MONITOR_TAB_CMD = "__eldrun_monitor__";
+export const MONITOR_TAB_CMD = tabCommand("monitor");
 
 /**
  * Sentinel `cmd` for the native disk usage analyzer tab: a baobab-like rings/
  * treemap view of what is filling a folder. Carries no PTY — like the monitor pane
  * it is identified by this command so cmdToKind can recover its kind on restore.
  */
-export const DISKUSAGE_TAB_CMD = "__eldrun_diskusage__";
+export const DISKUSAGE_TAB_CMD = tabCommand("diskusage");
 
 /**
  * Sentinel `cmd` for the native calendar tab: a local, self-contained month-grid
@@ -260,7 +261,7 @@ export const DISKUSAGE_TAB_CMD = "__eldrun_diskusage__";
  * are seen live by the others. Carries no PTY — like the files pane it's identified
  * by this command so cmdToKind can recover its kind.
  */
-export const CALENDAR_TAB_CMD = "__eldrun_calendar__";
+export const CALENDAR_TAB_CMD = tabCommand("calendar");
 
 /**
  * Sentinel `cmd` of the **retired** mail tab.
@@ -277,7 +278,7 @@ export const CALENDAR_TAB_CMD = "__eldrun_calendar__";
  * without `RETIRED_TAB_CMDS` below, `cmdToKind` would fall through to `"shell"`
  * and restore each one as a terminal trying to run `__eldrun_mail__`.
  */
-export const MAIL_TAB_CMD = "__eldrun_mail__";
+export const MAIL_TAB_CMD = tabCommand("mail");
 
 /**
  * Sentinel commands of tab kinds Eldrun no longer has, dropped unconditionally
@@ -320,7 +321,7 @@ export const RETIRED_TAB_CMDS = new Set<string>([MAIL_TAB_CMD]);
  *    states ("nothing about a window being reopened is consent to dial out")
  *    and the same bargain diskusage already makes about not replaying its scan.
  */
-export const BROWSER_TAB_CMD = "__eldrun_browser__";
+export const BROWSER_TAB_CMD = tabCommand("browser");
 
 /**
  * Sentinel `cmd` for the native print manager: the machine's printers, their
@@ -340,7 +341,7 @@ export const BROWSER_TAB_CMD = "__eldrun_browser__";
  *    against the local print system and nothing else: no job is sent, nothing
  *    is cancelled, and the pane polls only while it is on screen.
  */
-export const PRINTING_TAB_CMD = "__eldrun_printing__";
+export const PRINTING_TAB_CMD = tabCommand("printing");
 
 /**
  * Sentinel `cmd` for the Skills Library tab (`docs/skills_plan.md`): browse a
@@ -362,7 +363,7 @@ export const PRINTING_TAB_CMD = "__eldrun_printing__";
  *    disk read (installed list + whatever catalog was already cached); no
  *    source is cloned/pulled without an explicit Refresh click.
  */
-export const SKILLSLIBRARY_TAB_CMD = "__eldrun_skillslibrary__";
+export const SKILLSLIBRARY_TAB_CMD = tabCommand("skillslibrary");
 
 /**
  * Sentinel `cmd` for the Prompt chart tab: the one timeline of a scope's
@@ -378,7 +379,7 @@ export const SKILLSLIBRARY_TAB_CMD = "__eldrun_skillslibrary__";
  *    three list reads the pane makes on show; nothing is sent, scheduled or
  *    linked without a click.
  */
-export const PROMPTCHART_TAB_CMD = "__eldrun_promptchart__";
+export const PROMPTCHART_TAB_CMD = tabCommand("promptchart");
 
 /**
  * Synthetic group id for the empty-state placeholder subwindow (rendered by
@@ -4906,7 +4907,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // tab; it is not a user-configurable environment override.
       const env = { ...(t.env ?? {}) };
       if ((t.cmd === "codex" || t.cmd === "vibe") && t.sessionId) {
-        env.ELDRUN_TAB_UID = t.sessionId;
+        env[envName("TAB_UID")] = t.sessionId;
       }
       return {
         key: freshKey,

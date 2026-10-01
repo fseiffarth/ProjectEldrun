@@ -12,6 +12,7 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 import { GitMergeBar, GitPullPanel, type MergeState } from "./GitPullPanel";
 import { LockIcon, UnlockIcon, WarningIcon } from "../common/icons/Icon";
 import { ErrorNote } from "../common/ErrorNote";
+import { NAMES, storageKey } from "../../lib/brand";
 
 interface GitCommit {
   hash: string;
@@ -154,7 +155,7 @@ function worktreesRoot(worktrees: Worktree[]): string {
   if (!main) return "";
   const root = main.path.replace(/[/\\]+$/, "");
   const sep = /^[a-zA-Z]:[\\/]/.test(root) || root.includes("\\") ? "\\" : "/";
-  return `${root}${sep}.eldrun${sep}worktrees`;
+  return `${root}${sep}${NAMES.projectDir}${sep}worktrees`;
 }
 
 function parseRefs(refs: string): string[] {
@@ -313,7 +314,7 @@ function CommitGraphCell({
   );
 }
 
-const GRAPH_MODE_KEY = "eldrun.gitHistoryGraph";
+const GRAPH_MODE_KEY = storageKey("gitHistoryGraph");
 
 /**
  * How many commits one page of history is. The list used to ask for exactly this
@@ -741,7 +742,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
         // host tree, where the peer ref isn't.
         location: "local",
         initialInput: branch
-          ? `git log --oneline --graph HEAD refs/eldrun/peer/${branch}`
+          ? `git log --oneline --graph HEAD ${NAMES.gitRefPeer}/${branch}`
           : undefined,
       });
     } catch (e) {

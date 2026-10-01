@@ -589,7 +589,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                   {deckEnabled && (
                     <div className="context-menu-group">
                       <div className="context-menu-group-label">
-                        {t("fileTree.eldrunNativeGroup")}
+                        {t("fileTree.appNativeGroup")}
                       </div>
                       <button
                         className="untested"

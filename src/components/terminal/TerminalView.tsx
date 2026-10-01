@@ -51,6 +51,7 @@ import { noteTypedLine } from "../../lib/agents/typedClear";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
 import { notePromptTrailInput } from "../../stores/agents/promptTrail";
 import "@xterm/xterm/css/xterm.css";
+import { envName, storageKey } from "../../lib/brand";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
 // one encoder rather than allocating a `new TextEncoder()` per keystroke. The
@@ -382,8 +383,8 @@ export const RENDERER_RELEASE_MS = 60_000;
 // persisted in localStorage — mirrors the view-pref pattern used by FileTree /
 // GitHistory — and broadcast on a window event so all open agent panes restyle
 // live, not just the one being scrolled. Non-agent shells keep the fixed default.
-const AGENT_FONT_KEY = "eldrun.agentTermFontSize";
-const AGENT_ZOOM_EVENT = "eldrun-agent-zoom";
+const AGENT_FONT_KEY = storageKey("agentTermFontSize");
+const AGENT_ZOOM_EVENT = "app-agent-zoom";
 const DEFAULT_FONT_SIZE = 13;
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 32;
@@ -882,7 +883,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // signal here that distinguishes it from the cloud agent of the same command
     // (a local model driven through `vibe` still has cmd "vibe") — TerminalView
     // is handed cmd/env, not the TabEntry's kind.
-    const localModel = env.ELDRUN_LOCAL_MODEL || env.VIBE_ACTIVE_MODEL;
+    const localModel = env[envName("LOCAL_MODEL")] || env.VIBE_ACTIVE_MODEL;
     const kind: TabKind = declaredKind ?? (localModel ? "local_agent" : cmdToKind(cmd));
     const agentLeaf = agentPromptLeaf({ kind, cmd, env });
     // A shell tab can be RESUMED with no initialInput to type — a tmux reattach on
@@ -2015,7 +2016,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   };
 
   // The spawn effect's own reading of the tab kind (see there).
-  const paneKind: TabKind = declaredKind ?? (env.ELDRUN_LOCAL_MODEL || env.VIBE_ACTIVE_MODEL ? "local_agent" : cmdToKind(cmd));
+  const paneKind: TabKind = declaredKind ?? (env[envName("LOCAL_MODEL")] || env.VIBE_ACTIVE_MODEL ? "local_agent" : cmdToKind(cmd));
   const splitId = splitPtyId(id);
   return (
     <>

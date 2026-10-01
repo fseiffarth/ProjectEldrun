@@ -66,6 +66,7 @@ class FakeWebSocket {
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { BRAND } from "../../lib/brand";
 
 const ESC = String.fromCharCode(27);
 const DOWN = `${ESC}[B`;
@@ -117,7 +118,7 @@ const pick = (label: string) => {
   fireEvent.click(row);
 };
 
-describe("Eldrun Mobile — a multi-step /model picker", () => {
+describe(`${BRAND.display} Mobile — a multi-step /model picker`, () => {
   beforeEach(() => {
     terminalState.lines = [];
     FakeWebSocket.instances = [];
@@ -181,7 +182,7 @@ describe("Eldrun Mobile — a multi-step /model picker", () => {
     expect(screen.getByRole("dialog").getAttribute("aria-label")).toBe("Select Model");
 
     pick("Default (recommended)");
-    await paint("> \n\n  ~/projects/eldrun · Opus 5");
+    await paint(`> \n\n  ~/projects/${BRAND.slug} · Opus 5`);
     await settle(900);
     expect(screen.queryByRole("dialog")).toBeNull();
   });

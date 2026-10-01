@@ -12,6 +12,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Project } from "../../../mobile-web/src/screens/Project";
 import type { TabRow } from "../../../mobile-web/src/api";
+import { NAMES } from "../../lib/brand";
 
 const fetchMock = vi.fn();
 
@@ -84,7 +85,7 @@ describe("Mobile project screen — the ＋", () => {
     serve(DETAIL);
     const base = fetchMock.getMockImplementation();
     fetchMock.mockImplementation((url: string, init?: RequestInit) => String(url).includes("/inbox")
-      ? Promise.resolve(new Response(JSON.stringify({ attachment: { name: "20260923-120000-notes.pdf", reference: ".eldrun/inbox/20260923-120000-notes.pdf", size: 3 } }), { status: 201 }))
+      ? Promise.resolve(new Response(JSON.stringify({ attachment: { name: "20260923-120000-notes.pdf", reference: `${NAMES.inboxDir}/20260923-120000-notes.pdf`, size: 3 } }), { status: 201 }))
       : base?.(url, init));
     render(<Project id="p" back={() => {}} terminal={() => {}} />);
     await screen.findByText("claude 1");
@@ -97,7 +98,7 @@ describe("Mobile project screen — the ＋", () => {
     Object.defineProperty(input, "files", { value: [new File(["pdf"], "notes.pdf", { type: "application/pdf" })], configurable: true });
     fireEvent.change(input);
 
-    expect(await screen.findByText("In the project as @.eldrun/inbox/20260923-120000-notes.pdf")).toBeTruthy();
+    expect(await screen.findByText(`In the project as @${NAMES.inboxDir}/20260923-120000-notes.pdf`)).toBeTruthy();
     const post = fetchMock.mock.calls.find(([url]) => String(url).includes("/inbox"));
     expect(String(post?.[0])).toBe("/api/v1/projects/p/inbox?name=notes.pdf");
     expect((post?.[1] as RequestInit).method).toBe("POST");

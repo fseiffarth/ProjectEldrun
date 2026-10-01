@@ -30,6 +30,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { UpdatesPanel } from "../../components/layout/UpdatesPanel";
 import type { InstallKind, StagedUpdate, UpdateCheck } from "../../types/update";
+import { BRAND } from "../../lib/brand";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -40,14 +41,14 @@ function check(overrides: Partial<UpdateCheck> = {}): UpdateCheck {
     current: CURRENT,
     latest: "0.1.53",
     tag: "v0.1.53",
-    name: "Eldrun 0.1.53",
+    name: `${BRAND.display} 0.1.53`,
     notes: "- something changed",
     publishedAt: "2026-08-20T10:00:00Z",
-    htmlUrl: "https://github.com/fseiffarth/ProjectEldrun/releases/tag/v0.1.53",
+    htmlUrl: `https://github.com/fseiffarth/Project${BRAND.display}/releases/tag/v0.1.53`,
     updateAvailable: true,
     asset: {
-      name: "eldrun_0.1.53_amd64.AppImage",
-      url: "https://github.com/fseiffarth/ProjectEldrun/releases/download/v0.1.53/eldrun_0.1.53_amd64.AppImage",
+      name: `${BRAND.slug}_0.1.53_amd64.AppImage`,
+      url: `https://github.com/fseiffarth/Project${BRAND.display}/releases/download/v0.1.53/${BRAND.slug}_0.1.53_amd64.AppImage`,
       size: 120 * 1024 * 1024,
     },
     installKind: "appimage",
@@ -57,7 +58,7 @@ function check(overrides: Partial<UpdateCheck> = {}): UpdateCheck {
 
 function staged(kind: InstallKind): StagedUpdate {
   return {
-    name: "eldrun_0.1.53_amd64.AppImage",
+    name: `${BRAND.slug}_0.1.53_amd64.AppImage`,
     version: "0.1.53",
     installKind: kind,
     bytes: 120 * 1024 * 1024,
@@ -85,7 +86,7 @@ describe("UpdatesPanel", () => {
     backend({ check_app_update: check() });
     render(<UpdatesPanel onBack={() => {}} />);
 
-    await screen.findByText(/Eldrun 0\.1\.53/);
+    await screen.findByText(new RegExp(String.raw`${BRAND.display} 0\.1\.53`));
     expect(calls("check_app_update")).toHaveLength(1);
     expect(calls("download_app_update")).toHaveLength(0);
   });
@@ -134,7 +135,7 @@ describe("UpdatesPanel", () => {
   });
 
   it("reports a failed check, and still offers the way to the releases page", async () => {
-    const RELEASES = "https://github.com/fseiffarth/ProjectEldrun/releases/latest";
+    const RELEASES = `https://github.com/fseiffarth/Project${BRAND.display}/releases/latest`;
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "check_app_update") return Promise.reject("GitHub answered 503");
       if (cmd === "app_update_releases_url") return Promise.resolve(RELEASES);

@@ -3,6 +3,7 @@ import type { PyMainVerdict } from "../lib/terminal/pythonMainCache";
 import type { AgentCron } from "../lib/agents/agentCron";
 import type { CursorPack } from "../lib/theme/cursorPacks";
 import type { TranslationKey } from "../lib/i18n";
+import { MOBILE_ACCESS_KEY, MOBILE_HOST_KEY } from "../lib/brand";
 
 export interface GlobalAppEntry {
   exec: string;
@@ -134,7 +135,7 @@ export type FilesPanelView =
 
 export interface Settings {
   debug?: boolean;
-  eldrun_mobile_host?: {
+  [MOBILE_HOST_KEY]?: {
     enabled: boolean;
     display_name?: string;
     port?: number;
@@ -1187,7 +1188,7 @@ export interface ProjectEntry {
    *  flattened `extra` (mirrored into project.json). */
   categories?: string[];
   /** Explicit trusted-state opt-in for phone/tablet terminal access. */
-  eldrun_mobile_access?: boolean;
+  [MOBILE_ACCESS_KEY]?: boolean;
   [key: string]: unknown;
 }
 
@@ -1372,7 +1373,7 @@ export interface ProjectBox {
   relations?: BoxRelation[];
   /** Eldrun Mobile reach (#31aa): the box's `box:<id>` scope is listed on a
    *  paired phone. Off/absent by default, like a project's switch. */
-  eldrun_mobile_access?: boolean;
+  [MOBILE_ACCESS_KEY]?: boolean;
   /** User-picked colour (`#rrggbb`); absent = hashed from the id
    *  (`lib/theme/boxColor`). Rides the Rust struct's flattened `extra`. */
   color?: string;

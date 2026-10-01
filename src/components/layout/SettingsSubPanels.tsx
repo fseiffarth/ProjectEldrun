@@ -68,6 +68,7 @@ import {
 import { AGENT_TAB_ACTIONS, chordLabel, resolveChord } from "../../lib/shortcuts/shortcuts";
 import { useShortcutOverrides } from "../../lib/shortcuts/shortcutHint";
 import { ErrorNote } from "../common/ErrorNote";
+import { NAMES } from "../../lib/brand";
 
 interface OllamaModelInfo {
   name: string;
@@ -635,7 +636,7 @@ function CodexHookNotice() {
       </p>
       <p className="settings-help">
         {t("agents.codexHookFindPre")} <code>/hooks</code>{" "}
-        {t("agents.codexHookFindMid")} <strong>eldrun_session_start</strong>
+        {t("agents.codexHookFindMid")} <strong>{NAMES.sessionHookSh.replace(/\.sh$/, "")}</strong>
         {off ? t("agents.codexHookActionDisabled") : t("agents.codexHookActionUntrusted")}
       </p>
       <div className="ollama-install-cmd-row">

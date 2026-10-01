@@ -4,6 +4,7 @@ import { pendingPrompt, withPending } from "../../../mobile-web/src/terminal/pen
 import { transcriptTurns } from "../../../mobile-web/src/terminal/transcriptTurns";
 import { outboxPosts } from "../../../mobile-web/src/terminal/outboxPosts";
 import type { OutboxFile } from "../../../mobile-web/src/api";
+import { BRAND } from "../../lib/brand";
 
 function dom(html: string): HTMLElement {
   const host = document.createElement("div");
@@ -11,7 +12,7 @@ function dom(html: string): HTMLElement {
   return host;
 }
 
-describe("Eldrun Mobile Focus formats an answer's Markdown", () => {
+describe(`${BRAND.display} Mobile Focus formats an answer's Markdown`, () => {
   it("keeps the formatting: headings, lists, emphasis, code, tables", () => {
     const host = dom(answerHtml([
       "## Done",
@@ -61,7 +62,7 @@ describe("Eldrun Mobile Focus formats an answer's Markdown", () => {
   });
 });
 
-describe("Eldrun Mobile Focus holds a sent prompt in its place", () => {
+describe(`${BRAND.display} Mobile Focus holds a sent prompt in its place`, () => {
   const prompt = (text: string, at?: string) => ({ kind: "prompt" as const, text, at });
   const answer = (text: string, at?: string) => ({ kind: "answer" as const, text, at });
   const shape = (entries: { kind: string; text: string }[]) => entries.map((entry) => `${entry.kind}:${entry.text}`);

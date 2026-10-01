@@ -92,11 +92,11 @@ function SettingsOwner() {
   useEffect(() => {
     const show = () => setOpen(true);
     const hide = () => setOpen(false);
-    window.addEventListener("eldrun:open-settings", show);
-    window.addEventListener("eldrun:close-settings", hide);
+    window.addEventListener("app:open-settings", show);
+    window.addEventListener("app:close-settings", hide);
     return () => {
-      window.removeEventListener("eldrun:open-settings", show);
-      window.removeEventListener("eldrun:close-settings", hide);
+      window.removeEventListener("app:open-settings", show);
+      window.removeEventListener("app:close-settings", hide);
     };
   }, []);
   return open ? <Dialog onClose={() => setOpen(false)} /> : null;
@@ -243,7 +243,7 @@ describe("steering through settings", () => {
 
   it("a plain key over settings is the dialog's; steering left elsewhere joins settings opened by the pointer", async () => {
     render(<Harness />);
-    act(() => void window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "main" })));
+    act(() => void window.dispatchEvent(new CustomEvent("app:open-settings", { detail: "main" })));
     // Not steering: a plain key over settings is left to the dialog.
     press({ key: "d" });
     expect(steering().active).toBe(false);

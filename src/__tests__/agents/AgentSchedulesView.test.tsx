@@ -15,6 +15,7 @@ import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
 import type { ReadableBufferLike } from "../../../mobile-web/src/terminal/readableScreen";
 import type { Terminal } from "@xterm/xterm";
+import { storageKey } from "../../lib/brand";
 
 const agent: TabEntry = { key: "agent-1", label: "Claude", cmd: "claude", cwd: "/project", kind: "agent", sessionId: "session-abc", scheduleTargetId: "target-1" };
 const shell: TabEntry = { key: "shell", label: "Shell", cmd: "bash", cwd: "/project", kind: "shell" };
@@ -37,7 +38,7 @@ describe("AgentSchedulesView order and model tag", () => {
   const names = () => screen.getAllByTestId("agent-prompts-tab").map((row) => row.querySelector(".agent-prompts-tab-name")?.textContent);
 
   beforeEach(() => {
-    localStorage.removeItem("eldrun.agentsSort");
+    localStorage.removeItem(storageKey("agentsSort"));
     useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [agent, second, shell] } }));
   });
 
@@ -71,7 +72,7 @@ describe("AgentSchedulesView order and model tag", () => {
     fireEvent.click(screen.getByRole("button", { name: /Last working/ }));
     fireEvent.click(screen.getByRole("option", { name: "Last done" }));
     expect(names()).toEqual(["Codex", "Claude"]);
-    expect(localStorage.getItem("eldrun.agentsSort")).toBe("lastDone");
+    expect(localStorage.getItem(storageKey("agentsSort"))).toBe("lastDone");
     fireEvent.click(screen.getByRole("button", { name: /Last done/ }));
     fireEvent.click(screen.getByRole("option", { name: "Tab order" }));
     expect(names()).toEqual(["Claude", "Codex"]);
@@ -193,7 +194,7 @@ describe("AgentSchedulesView prompt chart", () => {
   });
 
   it("hides the timeline to leave the drafts alone, and remembers it", async () => {
-    localStorage.removeItem("eldrun.promptChart.timeline");
+    localStorage.removeItem(storageKey("promptChart.timeline"));
     const { unmount } = await act(async () => render(<PromptChartTab scope="p" />));
     expect(screen.getByTestId("prompt-timeline")).toBeTruthy();
     // The toggle lives in the timeline's own head, beside its name and count.
@@ -210,7 +211,7 @@ describe("AgentSchedulesView prompt chart", () => {
     expect(screen.queryByTestId("prompt-timeline")).toBeNull();
     fireEvent.click(within(screen.getByTestId("prompt-chart-timeline-bar")).getByRole("button", { name: "Show" }));
     expect(screen.getByTestId("prompt-timeline")).toBeTruthy();
-    localStorage.removeItem("eldrun.promptChart.timeline");
+    localStorage.removeItem(storageKey("promptChart.timeline"));
   });
 
   it("opens a draft's Markdown editor on double click and saves the edit", async () => {

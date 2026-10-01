@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../../mobile-web/src/api";
 import { hasPairedDevice, logoutAuth, pair, resumeAuth } from "../../../mobile-web/src/auth";
+import { BRAND } from "../../lib/brand";
 
 // ── A minimal IndexedDB: one database, named stores, get/put by key ─────────
 type Req<T> = { result: T; error: unknown; onsuccess: null | (() => void); onerror: null | (() => void) };
@@ -104,7 +105,7 @@ afterEach(() => {
   subtle.exportKey.mockClear();
 });
 
-describe("Eldrun Mobile auth — resume", () => {
+describe(`${BRAND.display} Mobile auth — resume`, () => {
   it("is unpaired when no device record exists, without touching the network", async () => {
     const fetchMock = fetchAnswering({});
     await expect(resumeAuth()).resolves.toEqual({ kind: "unpaired" });
@@ -290,7 +291,7 @@ describe("Eldrun Mobile auth — resume", () => {
   });
 });
 
-describe("Eldrun Mobile auth — pair and logout", () => {
+describe(`${BRAND.display} Mobile auth — pair and logout`, () => {
   it("pairs with the code, the device name and the public key, then remembers the device", async () => {
     const fetchMock = fetchAnswering({ "POST /api/v1/pair": json({ device_id: "dev-9" }) });
     await pair("123456", "Pixel");

@@ -8,6 +8,7 @@ import {
   readOpenCodePicker,
 } from "../../../mobile-web/src/terminal/openCodeMini";
 import type { ReadableLine } from "../../../mobile-web/src/terminal/readableScreen";
+import { BRAND } from "../../lib/brand";
 
 /**
  * `opencode --mini` as the phone reads it. Every screen below is a real one:
@@ -29,7 +30,7 @@ const texts = (rows: readonly { text: string }[]) => rows.map((row) => row.text)
  * the status row. */
 const FRAME = ["", " BUILD                                                    223.0K (21%) · ctrl+p cmd"];
 
-describe("Eldrun Mobile OpenCode mini status", () => {
+describe(`${BRAND.display} Mobile OpenCode mini status`, () => {
   it("reads the agent, the context and the model a turn footer named", () => {
     expect(sessionStatus(lines(
       "The tests pass.",
@@ -86,11 +87,11 @@ describe("Eldrun Mobile OpenCode mini status", () => {
   });
 });
 
-describe("Eldrun Mobile OpenCode mini turns", () => {
+describe(`${BRAND.display} Mobile OpenCode mini turns`, () => {
   it("drops the banner, the tool calls and the turn footer", () => {
     const turns = chatTurns(lines(
       "█▀▀█  OpenCode",
-      "█  █  ~/eldrun/projects/projecteldrun",
+      `█  █  ~/${BRAND.slug}/projects/project${BRAND.slug}`,
       "",
       "› fix the failing test",
       "",
@@ -153,7 +154,7 @@ describe("Eldrun Mobile OpenCode mini turns", () => {
   });
 });
 
-describe("Eldrun Mobile OpenCode wrapped rows", () => {
+describe(`${BRAND.display} Mobile OpenCode wrapped rows`, () => {
   const joined = (columns: number, ...rows: string[]) => texts(joinOpenCodeWraps(lines(...rows), columns));
 
   it("puts back the space a word wrap broke at", () => {
@@ -203,7 +204,7 @@ describe("Eldrun Mobile OpenCode wrapped rows", () => {
   });
 });
 
-describe("Eldrun Mobile OpenCode mode chip", () => {
+describe(`${BRAND.display} Mobile OpenCode mode chip`, () => {
   it("lists the agents a mini session can be in, for a tab labelled OpenCode", () => {
     const choices = modeChoices("build", "OpenCode");
     expect(choices.map((choice) => choice.value)).toEqual(["build", "plan"]);
@@ -225,7 +226,7 @@ describe("Eldrun Mobile OpenCode mode chip", () => {
   });
 });
 
-describe("Eldrun Mobile OpenCode model picker", () => {
+describe(`${BRAND.display} Mobile OpenCode model picker`, () => {
   const picker = lines(
     "  Select model 25                                                          esc",
     "",

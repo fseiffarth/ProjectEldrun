@@ -6,7 +6,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useScreenshotPendingStore } from "../../stores/screenshotPending";
 import { resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
-import { ELDRUN_SCREENSHOTS_DIR } from "../../lib/window/screenshot";
+import { APP_SCREENSHOTS_DIR } from "../../lib/window/screenshot";
 import { UntestedTag } from "../common/UntestedTag";
 import { ErrorNote } from "../common/ErrorNote";
 
@@ -43,7 +43,7 @@ export function ScreenshotSaveOverlay() {
   const activeId = useProjectsStore((s) => s.activeId);
 
   const [projectId, setProjectId] = useState<string>("");
-  const [folder, setFolder] = useState(ELDRUN_SCREENSHOTS_DIR);
+  const [folder, setFolder] = useState(APP_SCREENSHOTS_DIR);
   const [name, setName] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -75,7 +75,7 @@ export function ScreenshotSaveOverlay() {
     if (!pending) return;
     setError(null);
     setBusy(false);
-    setFolder(ELDRUN_SCREENSHOTS_DIR);
+    setFolder(APP_SCREENSHOTS_DIR);
     setName(pending.name);
     const hinted = pending.hintDir
       ? savable.find((p) => p.dir === pending.hintDir)

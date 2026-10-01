@@ -76,7 +76,7 @@ export const TOUR_LESSON_ID = "tour";
 
 /** Reveal the right-side file panel so a step's anchor exists to spotlight.
  *  AppShell listens for this (the panel is otherwise hover-revealed). */
-const revealFilePanel = () => window.dispatchEvent(new Event("eldrun:reveal-side-panel"));
+const revealFilePanel = () => window.dispatchEvent(new Event("app:reveal-side-panel"));
 
 export const LESSONS: Lesson[] = [
   // ── Basics ──────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { chatTurns, isPromptEcho } from "../../../mobile-web/src/terminal/chatTurns";
 import type { ReadableLine } from "../../../mobile-web/src/terminal/readableScreen";
+import { BRAND } from "../../lib/brand";
 
 let seq = 0;
 const line = (text: string, className?: string): ReadableLine => ({
@@ -10,7 +11,7 @@ const line = (text: string, className?: string): ReadableLine => ({
 });
 const lines = (...texts: string[]) => texts.map((text) => line(text));
 
-describe("Eldrun Mobile chat turns", () => {
+describe(`${BRAND.display} Mobile chat turns`, () => {
   it("puts the echoed prompt in a user turn and the answer in an agent turn", () => {
     const turns = chatTurns(lines(
       "> fix the failing test",
@@ -184,7 +185,7 @@ describe("Eldrun Mobile chat turns", () => {
       "  ⎿  Available Libraries (top matches):",
       "     - Title: React",
       "",
-      "⏺ mcp__github__list_issues (MCP)(repo: \"eldrun\")",
+      `⏺ mcp__github__list_issues (MCP)(repo: "${BRAND.slug}")`,
       "  ⎿  []",
       "",
       "● claude-in-chrome - tabs_context (MCP)",
@@ -380,7 +381,7 @@ describe("Eldrun Mobile chat turns", () => {
     // `classify` reads a branch out of the same segment as the path before it,
     // so counting *fields* scored this sentence two and handed the prompt to
     // the agent. A status row is two or more columns, not two fields.
-    const turns = chatTurns(lines("> where am I?", "", "~/eldrun/projects/app (main)"));
+    const turns = chatTurns(lines("> where am I?", "", `~/${BRAND.slug}/projects/app (main)`));
     expect(turns.map((turn) => turn.role)).toEqual(["user", "agent"]);
     expect(turns[0].prompt?.map((row) => row.text)).toEqual(["where am I?"]);
     const ran = chatTurns(lines("> what did you run?", "", "Running /usr/bin/foo (again) now"));

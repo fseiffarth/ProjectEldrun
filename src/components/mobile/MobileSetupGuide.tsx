@@ -4,6 +4,7 @@ import { SETTINGS_ANCHORS } from "../layout/settingsUi";
 import { runInstallInTab } from "../../lib/installCommand";
 import { UntestedTag } from "../common/UntestedTag";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
+import { MOBILE_HOST_KEY } from "../../lib/brand";
 
 /** `translate` at the live language, for the callbacks below (the component's
  *  `t` inside a `window.confirm` string would read a stale language). */
@@ -33,7 +34,7 @@ const DEFAULT_PORT = 8742;
  */
 export function MobileSetupGuide({ onClose }: { onClose: () => void }) {
   const t = useT();
-  const stored = useSettingsStore((s) => s.settings?.eldrun_mobile_host);
+  const stored = useSettingsStore((s) => s.settings?.[MOBILE_HOST_KEY]);
   // The command has to name the port Eldrun will actually listen on, so a user
   // who already changed it in Mobile settings is not told to publish 8742.
   const port = Number.isInteger(stored?.port) && (stored?.port ?? 0) >= 1024 && (stored?.port ?? 0) <= 65535
@@ -59,7 +60,7 @@ export function MobileSetupGuide({ onClose }: { onClose: () => void }) {
   };
 
   const openMobileSettings = () => {
-    window.dispatchEvent(new CustomEvent("eldrun:open-settings", {
+    window.dispatchEvent(new CustomEvent("app:open-settings", {
       detail: { panel: "main", anchor: SETTINGS_ANCHORS.mobile },
     }));
     onClose();

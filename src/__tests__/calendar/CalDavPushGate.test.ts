@@ -24,6 +24,7 @@ import { CALDAV_CONFLICT_ERROR, isCalDavConflict, useCalDavStore } from "../../s
 import { useCalendarStore } from "../../stores/calendar/calendar";
 import type { CalendarEvent } from "../../types";
 import type { CalDavAccount } from "../../types/caldav";
+import { BRAND } from "../../lib/brand";
 
 const HREF = "https://dav.example.org/dav/me/personal/";
 const RESOURCE = "https://dav.example.org/dav/me/personal/e1.ics";
@@ -139,7 +140,7 @@ describe("a push that goes through", () => {
     const [, args] = invoke.mock.calls[0] as [string, Record<string, unknown>];
     expect(args.resourceHref).toBeNull();
     expect(args.etag).toBeNull();
-    expect(args.uid).toBe("e1@eldrun");
+    expect(args.uid).toBe(`e1@${BRAND.slug}`);
   });
 });
 

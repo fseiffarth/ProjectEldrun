@@ -40,6 +40,7 @@ import {
   type SlowCommit,
   type Stall,
 } from "./perfStats";
+import { storageDashKey } from "../lib/brand";
 
 export const IPC_RING_CAP = 3000;
 export const SLOW_CALL_MS = 50;
@@ -53,7 +54,7 @@ const LAG_INTERVAL_MS = 200;
 const LAG_STALL_MS = 60;
 
 /** localStorage key arming react-scan at the next boot (and live, best-effort). */
-export const REACT_SCAN_KEY = "eldrun-dev-react-scan";
+export const REACT_SCAN_KEY = storageDashKey("dev-react-scan");
 /** react-scan's OWN persisted options. It reads this back inside `setOptions`
  * and lets a stored `enabled` win over the value just passed, so switching the
  * scan off has to clear the key or the next call re-enables it. */
@@ -88,8 +89,8 @@ export interface PerfState {
 }
 
 function ensureState(): PerfState {
-  const w = window as unknown as { __ELDRUN_PERF__?: PerfState };
-  if (w.__ELDRUN_PERF__) return w.__ELDRUN_PERF__;
+  const w = window as unknown as { __APP_PERF__?: PerfState };
+  if (w.__APP_PERF__) return w.__APP_PERF__;
   const st: PerfState = {
     startedAt: Date.now(),
     calls: [],
@@ -106,7 +107,7 @@ function ensureState(): PerfState {
       }
     },
   };
-  w.__ELDRUN_PERF__ = st;
+  w.__APP_PERF__ = st;
   return st;
 }
 

@@ -5,6 +5,7 @@
  * store→component→store cycle that would make) into its graph.
  */
 import type { TabKind } from "../../stores/tabs";
+import { NAMES } from "../brand";
 
 /** Mirrors `commands::git::Worktree` (serde field names). */
 export interface GitWorktree {
@@ -21,7 +22,7 @@ export interface GitWorktree {
 }
 
 /** The one place a worktree may live, relative to the project root. */
-export const WORKTREES_SUBDIR = ".eldrun/worktrees";
+export const WORKTREES_SUBDIR = NAMES.worktreesDir;
 
 function stripTrailingSep(p: string): string {
   return p.replace(/[/\\]+$/, "");

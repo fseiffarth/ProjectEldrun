@@ -113,8 +113,8 @@ export function TourHost() {
   // lesson directly; every other lesson starts from the Lessons picker.
   useEffect(() => {
     const onStart = () => start();
-    window.addEventListener("eldrun:start-tour", onStart);
-    return () => window.removeEventListener("eldrun:start-tour", onStart);
+    window.addEventListener("app:start-tour", onStart);
+    return () => window.removeEventListener("app:start-tour", onStart);
   }, [start]);
 
   // Run a step's optional prepare side-effect (e.g. reveal the file panel so

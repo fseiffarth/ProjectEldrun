@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { agentWork, agentWorking } from "../../../mobile-web/src/terminal/agentBusy";
+import { BRAND } from "../../lib/brand";
 
 const rows = (...text: string[]) => text.map((line) => ({ text: line }));
 
-describe("Eldrun Mobile agent busy reader", () => {
+describe(`${BRAND.display} Mobile agent busy reader`, () => {
   it("reads each family's working hint", () => {
     expect(agentWorking(rows("⏺ Reading files", "", "✻ Thinking… (9s · ↓ 1.2k tokens · esc to interrupt)", "> ", "  ? for shortcuts"))).toBe(true);
     expect(agentWorking(rows("✻ Pondering… (esc to interrupt)", "> "))).toBe(true);

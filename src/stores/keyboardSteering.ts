@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { useProjectsStore } from "./projects";
+import { storageKey } from "../lib/brand";
 
 /**
  * Where in the window steering is pointing. The mode is a small hierarchy the
@@ -102,7 +103,7 @@ interface KeyboardSteeringState {
   dropHandoff: () => void;
 }
 
-const LEGEND_HIDDEN_KEY = "eldrun.steering.legendHidden";
+const LEGEND_HIDDEN_KEY = storageKey("steering.legendHidden");
 
 function readLegendHidden(): boolean {
   try {

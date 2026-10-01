@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../../../mobile-web/src/terminal/protocol";
 import { readRustBrand } from "../helpers/rustBrand";
+import { BRAND } from "../../lib/brand";
 
 // vitest runs from the repo root, as the other source-reading tests assume.
 const RUST = readFileSync("src-tauri/src/services/mobile_control/protocol.rs", "utf8");
@@ -20,7 +21,7 @@ function rustConst(name: string): string {
   return m[1].trim();
 }
 
-describe("Eldrun Mobile terminal protocol mirror", () => {
+describe(`${BRAND.display} Mobile terminal protocol mirror`, () => {
   it("names the same subprotocol as the sidecar", () => {
     // The sidecar takes the name from its brand module; resolve it there.
     expect(rustConst("TERMINAL_PROTOCOL")).toBe("crate::brand::TERMINAL_PROTOCOL");

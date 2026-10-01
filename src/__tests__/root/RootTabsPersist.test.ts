@@ -20,6 +20,7 @@ import { invoke } from "@tauri-apps/api/core";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 import { useTabsStore, BLOB_TAB_CMD, type TabEntry } from "../../stores/tabs";
+import { BRAND } from "../../lib/brand";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -30,7 +31,7 @@ function shellTab(over: Partial<TabEntry> = {}): TabEntry {
     cmd: "bash",
     args: [],
     env: {},
-    cwd: "/home/u/eldrun/root",
+    cwd: `/home/u/${BRAND.slug}/root`,
     kind: "shell",
     scope: "root",
     ...over,

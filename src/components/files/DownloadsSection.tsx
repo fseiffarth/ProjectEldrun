@@ -11,6 +11,7 @@ import { FileIcon } from "../common/icons/FileIcon";
 import { InboxIcon } from "../common/icons/Icon";
 import { useResizableSection } from "./useResizableSection";
 import { ErrorNote } from "../common/ErrorNote";
+import { BRAND } from "../../lib/brand";
 
 /**
  * The side-panel Downloads section (fast-copy of freshly downloaded files into a
@@ -167,7 +168,7 @@ export function DownloadsSection({
     void useWindowsStore
       .getState()
       .openFile(entry.path, undefined, projectId, "downloads")
-      .catch((e) => console.error("[eldrun] open download preview:", e));
+      .catch((e) => console.error(`[${BRAND.slug}] open download preview:`, e));
   }
 
   // Pointer-based drag of a download row onto a tree folder above → copy it there.

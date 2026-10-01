@@ -6,6 +6,7 @@ import { boxScopeId, useBoxesStore } from "./boxes";
 import { useProjectsStore } from "./projects";
 import { BOX_SCOPE_PREFIX } from "../lib/terminal/ptyId";
 import { resolveLocalMirror, resolveProjectDirectory } from "../types";
+import { storageKey } from "../lib/brand";
 
 /**
  * The **root console** — the root scope, reached as an overlay instead of as a
@@ -60,7 +61,7 @@ export const ROOT_OVERLAY_FILL_MARGIN = 16;
 /** Which edge (or the whole thing) a frame drag is moving. */
 export type RootOverlayDragMode = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
-const FRAME_STORAGE_KEY = "eldrun.rootConsoleFrame";
+const FRAME_STORAGE_KEY = storageKey("rootConsoleFrame");
 
 /**
  * Keep a frame inside the window and above the minimum. Applied on every write

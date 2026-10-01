@@ -27,6 +27,7 @@ vi.mock("../../../mobile-web/src/markup/rasterize", async (original) => ({
 
 import { MarkupView } from "../../../mobile-web/src/components/MarkupView";
 import { OutboxViewer } from "../../../mobile-web/src/components/OutboxViewer";
+import { NAMES } from "../../lib/brand";
 
 const PICTURE = { name: "20261001-120000-plot.png", original: "plot.png", kind: "image/png", size: 4_000, modified: 1_790_000_000 };
 const LAYER = addMark(EMPTY_LAYER, 1, [800, 600], { kind: "ink", color: "red", width: 2, points: [[10, 10, 0.5], [40, 30, 0.5]] });
@@ -43,7 +44,7 @@ function desktop(failUpload = false) {
       if (failUpload) return new Response(JSON.stringify({ error: "inbox_full" }), { status: 507 });
       uploads += 1;
       const name = decodeURIComponent(url.split("name=")[1]);
-      return new Response(JSON.stringify({ attachment: { name, reference: `.eldrun/inbox/2026-${uploads}-${name}`, size: 6 } }), { status: 201 });
+      return new Response(JSON.stringify({ attachment: { name, reference: `${NAMES.inboxDir}/2026-${uploads}-${name}`, size: 6 } }), { status: 201 });
     }
     if (url.endsWith("/markup")) return new Response(JSON.stringify({ prompt: "Apply the changes I marked by hand on `plot.png`.", marked: null }), { status: 200 });
     return new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
@@ -87,8 +88,8 @@ describe("MarkupView", () => {
     const body = JSON.parse(String(calls.find((call) => call.url.endsWith("/markup"))!.body));
     expect(body).toEqual({
       source: { outbox: PICTURE.name },
-      pages: [{ n: 1, size: [800, 600], marks: LAYER.pages[1].marks, layer: ".eldrun/inbox/2026-1-plot-p1-layer.png" }],
-      picture: ".eldrun/inbox/2026-2-plot-marked.png",
+      pages: [{ n: 1, size: [800, 600], marks: LAYER.pages[1].marks, layer: `${NAMES.inboxDir}/2026-1-plot-p1-layer.png` }],
+      picture: `${NAMES.inboxDir}/2026-2-plot-marked.png`,
     });
     await waitFor(() => expect(store.clearLayer).toHaveBeenCalledWith("p1:outbox:20261001-120000-plot.png"));
     expect(onClose).toHaveBeenCalled();

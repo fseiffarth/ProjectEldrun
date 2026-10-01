@@ -28,6 +28,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { HpcInfo, ProjectEntry } from "../../../types";
 import type { TranslationKey } from "../../i18n";
+import { BRAND } from "../../brand";
 
 export type { HpcInfo };
 
@@ -269,7 +270,7 @@ export function expiryTone(ws: HpcWorkspace): "none" | "ok" | "warn" | "urgent" 
  *  caller has to know the remote home). */
 export function defaultAnchorRel(safeName: string): string {
   const clean = safeName.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  return `eldrun/${clean || "project"}`;
+  return `${BRAND.slug}/${clean || "project"}`;
 }
 
 /** The `#SBATCH --output` value that routes a job's log into the home anchor —

@@ -342,7 +342,7 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
               <p className="settings-help">{t("stats.noTrackedTime")}</p>
             )}
             <div className="stats-metrics">
-              <Metric label={t("stats.metricEldrunOpen")} value={formatTime(appSecs)} />
+              <Metric label={t("stats.metricAppOpen")} value={formatTime(appSecs)} />
               <Metric
                 label={t("stats.metricCommandsRun")}
                 value={String(shellCommands)}

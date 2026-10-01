@@ -382,7 +382,7 @@ export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
         // The menu request toggles; only send it while the menu is still up.
         if (regionRoot("addTab")) requestNewTab({ kind: "menu" });
       } else if (region === "settings") {
-        if (settingsDialog()) window.dispatchEvent(new Event("eldrun:close-settings"));
+        if (settingsDialog()) window.dispatchEvent(new Event("app:close-settings"));
       } else if (region === "overlay") {
         dropOverlay();
       } else if (region !== "header" && region !== "card") {
@@ -627,7 +627,7 @@ export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
         // Open settings — same door the header ⚙ menu fires — and walk it:
         // ←/→ its pages, ↑/↓ the page's controls, Escape closes it.
         case "settings":
-          window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "main" }));
+          window.dispatchEvent(new CustomEvent("app:open-settings", { detail: "main" }));
           enterRegion("settings");
           return;
         // Type a project's name in the header search, open or inactive; the
@@ -915,7 +915,7 @@ export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
       // The shortcut cheat sheet, from every level (its host listens for the
       // event): ↑/↓ scroll it, Escape closes it.
       if (action === "help") {
-        window.dispatchEvent(new Event("eldrun:open-shortcut-help"));
+        window.dispatchEvent(new Event("app:open-shortcut-help"));
         return;
       }
       // Space (by default) leaves the mode from anywhere.
@@ -1095,7 +1095,7 @@ export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
       // (the header-menu pattern); the overlay host owns the dialog.
       if (is("shortcutHelp")) {
         e.preventDefault();
-        window.dispatchEvent(new Event("eldrun:open-shortcut-help"));
+        window.dispatchEvent(new Event("app:open-shortcut-help"));
         return;
       }
 

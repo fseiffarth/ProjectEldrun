@@ -7,6 +7,7 @@ import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
 import { ErrorNote } from "../common/ErrorNote";
+import { MOBILE_HOST_KEY } from "../../lib/brand";
 
 /** `translate` at the live language, for the async callbacks below (component
  *  `t` inside them would churn their identity on a language switch). */
@@ -83,8 +84,8 @@ function MobileIcon({ tone }: { tone: StatusTone }) {
  */
 export function MobileIndicator() {
   const t = useT();
-  const mobileHost = useSettingsStore((s) => s.settings?.eldrun_mobile_host);
-  const mobileEnabled = useSettingsStore((s) => s.settings?.eldrun_mobile_host?.enabled ?? false);
+  const mobileHost = useSettingsStore((s) => s.settings?.[MOBILE_HOST_KEY]);
+  const mobileEnabled = useSettingsStore((s) => s.settings?.[MOBILE_HOST_KEY]?.enabled ?? false);
   const visible = useSettingsStore((s) => s.settings?.mobile_indicator ?? true);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const open = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
@@ -222,7 +223,7 @@ export function MobileIndicator() {
     try {
       const response = await invoke<{ status: string; message?: string }>("mobile_admin", { request: { type: "forget_all" } });
       if (response.status === "error") throw new Error(response.message ?? tr("mobile.indRevokeError"));
-      await updateSettings({ eldrun_mobile_host: { ...mobileHost, enabled: false } });
+      await updateSettings({ [MOBILE_HOST_KEY]: { ...mobileHost, enabled: false } });
       await invoke("mobile_host_apply", { enabled: false });
       setPairCode(null);
       closeMenu(MENU_ID);

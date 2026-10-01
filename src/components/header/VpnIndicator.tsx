@@ -598,7 +598,7 @@ export function VpnIndicator() {
         )}
         {on && armed !== null && (
           <div className="vpn-indicator-hint">
-            {t("vpnIndicator.startsWithEldrun")}{headless ? "" : t("vpnIndicator.waitsInRootTerminal")}.
+            {t("vpnIndicator.startsWithApp")}{headless ? "" : t("vpnIndicator.waitsInRootTerminal")}.
           </div>
         )}
       </>

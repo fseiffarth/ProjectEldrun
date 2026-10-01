@@ -37,6 +37,7 @@ class FakeWebSocket {
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { BRAND } from "../../lib/brand";
 
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, available: true, viewer_busy: false };
 const NOW = 1_788_609_600; // 2026-09-04 12:00:00 UTC
@@ -62,7 +63,7 @@ function statusFetch(usage: unknown) {
 
 const settle = () => act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
 
-describe("Eldrun Mobile facts row shows the account's 5h and weekly windows", () => {
+describe(`${BRAND.display} Mobile facts row shows the account's 5h and weekly windows`, () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);

@@ -78,6 +78,7 @@ import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
 import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
+import { MOBILE_ACCESS_KEY } from "../../lib/brand";
 
 /** Pixel coordinates of a group's pane region, relative to the center panel. */
 interface Rect {
@@ -1313,7 +1314,7 @@ function CenterPanelImpl() {
           if (!mobileAgentTmuxReady.current.has(mobileReadyKey)) {
             mobileAgentTmuxReady.current.set(
               mobileReadyKey,
-              !!paneProject?.eldrun_mobile_access || !!paneBox?.eldrun_mobile_access,
+              !!paneProject?.[MOBILE_ACCESS_KEY] || !!paneBox?.[MOBILE_ACCESS_KEY],
             );
           }
           const tmuxSession =

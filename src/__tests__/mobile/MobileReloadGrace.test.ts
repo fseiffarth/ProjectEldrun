@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { clearConnectReload, isConnectReload, noteUnlockedLeave, RELOAD_GRACE_MS, takeConnectReload, takeReloadGrace } from "../../../mobile-web/src/reloadGrace";
+import { BRAND, storageKey } from "../../lib/brand";
 
 const T = 1_000_000;
 
-describe("Eldrun Mobile reload grace", () => {
+describe(`${BRAND.display} Mobile reload grace`, () => {
   beforeEach(() => sessionStorage.clear());
 
   it("lets a reload moments after an unlocked page was left skip the lock, once", () => {
@@ -28,16 +29,16 @@ describe("Eldrun Mobile reload grace", () => {
 
   it("asks without a stamp, with a malformed one, or one from the future", () => {
     expect(takeReloadGrace(T, sessionStorage, "reload", false)).toBe(false);
-    sessionStorage.setItem("eldrun.mobile.reloadGrace", "1");
+    sessionStorage.setItem(storageKey("mobile.reloadGrace"), "1");
     expect(takeReloadGrace(T, sessionStorage, "reload", false)).toBe(false);
-    sessionStorage.setItem("eldrun.mobile.reloadGrace", "yes");
+    sessionStorage.setItem(storageKey("mobile.reloadGrace"), "yes");
     expect(takeReloadGrace(T, sessionStorage, "reload", false)).toBe(false);
     noteUnlockedLeave(T + 5_000, sessionStorage);
     expect(takeReloadGrace(T, sessionStorage, "reload", false)).toBe(false);
   });
 });
 
-describe("Eldrun Mobile failed-connect reload", () => {
+describe(`${BRAND.display} Mobile failed-connect reload`, () => {
   beforeEach(() => sessionStorage.clear());
 
   it("hands out one reload per failure streak", () => {

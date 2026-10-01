@@ -33,6 +33,7 @@ import { useAgentPromptsStore, type SentAgentPrompt } from "../../stores/agents/
 import { useAgentModelsStore } from "../../stores/agents/agentModels";
 import type { TabEntry } from "../../stores/tabs";
 import type { ProjectEntry, Settings } from "../../types";
+import { BRAND, MOBILE_ACCESS_KEY, NAMES } from "../../lib/brand";
 
 const project: ProjectEntry = {
   id: "p-mobile",
@@ -40,17 +41,17 @@ const project: ProjectEntry = {
   status: "active",
   position: 1,
   local_file: "/projects/alpha/project.json",
-  eldrun_mobile_access: true,
+  [MOBILE_ACCESS_KEY]: true,
 };
 
-const TMUX = "eldrun-p-mobile--agent-123456789";
+const TMUX = `${BRAND.slug}-p-mobile--agent-123456789`;
 const PTY = "p-mobile:agent-1";
 
 interface Status { status: string; working_at?: number; done_at?: number }
 
 /** Hand the bridge one desktop request and give back what it answered. */
 async function ask(request: Record<string, unknown>) {
-  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === "eldrun-mobile-desktop-request");
+  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === NAMES.mobileDesktopEvent);
   const deliver = listener![1] as (event: { payload: unknown }) => void;
   const invokeMock = vi.mocked(invoke);
   invokeMock.mockClear();
@@ -141,7 +142,7 @@ describe("Mobile bridge — the status of a tab the phone is driving", () => {
       .toEqual({ status: "seen" });
     expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "agent_prompt_record")).toBe(false);
 
-    expect((await ask({ type: "tab_prompt", request_id: "p3", project_id: project.id, tmux_session: "eldrun-nope", message: "x" })).status)
+    expect((await ask({ type: "tab_prompt", request_id: "p3", project_id: project.id, tmux_session: `${BRAND.slug}-nope`, message: "x" })).status)
       .toBe("error");
   });
 
@@ -192,7 +193,7 @@ describe("Mobile bridge — the status of a tab the phone is driving", () => {
       .toMatchObject({ status: "error", code: "invalid_prompt" });
   });
 
-  it("lists an OpenCode tab's prompts from the history Eldrun wrote, never off its screen", async () => {
+  it(`lists an OpenCode tab's prompts from the history ${BRAND.display} wrote, never off its screen`, async () => {
     const sessionId = "1a2b3c4d-0b0a-4908-8706-050403020100";
     useTabsStore.setState((state) => ({
       tabsByScope: { [project.id]: state.tabsByScope[project.id].map((tab) => ({ ...tab, label: "OpenCode", cmd: "opencode", sessionId })) },
@@ -261,7 +262,7 @@ describe("Mobile bridge — the status of a tab the phone is driving", () => {
   });
 
   it("says nothing about a project the Mobile switch is off for", async () => {
-    useProjectsStore.setState({ projects: [{ ...project, eldrun_mobile_access: false }] });
+    useProjectsStore.setState({ projects: [{ ...project, [MOBILE_ACCESS_KEY]: false }] });
     const response = await ask({ type: "tab_input", request_id: "i3", project_id: project.id, tmux_session: TMUX });
     expect(response.status).toBe("error");
   });
