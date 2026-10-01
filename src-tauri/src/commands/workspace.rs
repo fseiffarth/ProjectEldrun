@@ -557,9 +557,14 @@ pub(crate) fn parse_proc_default_gateway(text: &str) -> Option<String> {
 }
 
 /// The opaque id [`NetworkIdentity::gateway_id`] carries for a MAC.
+///
+/// The hash's context string is pinned to the one the app had when these ids
+/// were first stored (`LEGACY_…`): it is an input of every remembered
+/// network's id, so a context that followed a rename would forget them all.
+/// It is never shown or written anywhere.
 pub(crate) fn gateway_id_of(mac: &str) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(format!("{}{}", crate::brand::GATEWAY_ID_CONTEXT, mac.to_ascii_lowercase()));
+    let digest = Sha256::digest(format!("{}{}", crate::brand::LEGACY_GATEWAY_ID_CONTEXT, mac.to_ascii_lowercase()));
     digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 

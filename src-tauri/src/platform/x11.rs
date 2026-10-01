@@ -24,7 +24,10 @@ use super::{WorkspaceBackend, WorkspaceInfo};
 const ACTIVE_DESKTOP: u32 = 0;
 const PARKED_DESKTOP: u32 = 1;
 
-const PROTECTED_CLASSES: &[&str] = &[crate::brand::BIN_NAME, "plasmashell", "kwin", "cinnamon"];
+// The app's own windows under its current binary name and under the one an
+// older build runs as (the same entry twice until the name changes).
+const PROTECTED_CLASSES: &[&str] =
+    &[crate::brand::BIN_NAME, crate::brand::LEGACY_BIN_NAME, "plasmashell", "kwin", "cinnamon"];
 
 // ── Backend ────────────────────────────────────────────────────────────────
 

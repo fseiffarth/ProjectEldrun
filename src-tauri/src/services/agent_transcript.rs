@@ -265,9 +265,13 @@ pub fn agent_session_transcript(
 /// so no id of the CLI's — a resume handle — crosses to the phone, and a
 /// handle read back can only be matched against the subagents of the session
 /// asked about, never followed as a name.
+///
+/// The hash's context string is pinned to the app's old name (`LEGACY_…`),
+/// like `gateway_id_of`'s: a handle the phone already holds must still match
+/// after a rename, and the string is never shown or written anywhere.
 pub fn subagent_token(id: &str) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(format!("{}{id}", crate::brand::SUBAGENT_TOKEN_CONTEXT).as_bytes());
+    let digest = Sha256::digest(format!("{}{id}", crate::brand::LEGACY_SUBAGENT_TOKEN_CONTEXT).as_bytes());
     digest[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 

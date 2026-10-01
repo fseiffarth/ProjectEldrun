@@ -26,6 +26,9 @@ use std::collections::HashSet;
 /// the FFI layer, so `eldrun` here only guards same-named helper processes.
 pub const PROTECTED_PROCESSES: &[&str] = &[
     crate::brand::BIN_NAME,
+    // An older build still running under the app's old name (the same
+    // entry twice until the name changes).
+    crate::brand::LEGACY_BIN_NAME,
     "explorer",
     "dwm",
     "shellexperiencehost",

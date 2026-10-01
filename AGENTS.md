@@ -63,7 +63,7 @@ tool is unavailable, say so — never skip silently.
   is: grep `docs/filemap_rationale/` (frozen, verify against code).
 - Design rationale, one file per subsystem in `docs/context/` — open only the
   one you're touching: agent_authority, agent_schedule_mcp, agent_sessions,
-  caldav, dev_builds, docker_containers, git_push_mcp, git_sync, help_mcp, hpc_careful_mode, mail_encryption,
+  brand_migration, caldav, dev_builds, docker_containers, git_push_mcp, git_sync, help_mcp, hpc_careful_mode, mail_encryption,
   multi_host_remote, openvpn, project_boxes, project_transfer,
   release_signing, remote_autoconnect, remote_credentials, remote_projects, root_console,
   tmux_sessions, usage_stats, vm_projects.
@@ -81,7 +81,10 @@ tool is unavailable, say so — never skip silently.
 - Never spell the app's name in code. Rust: `crate::brand` constants and
   `app_name!`/`app_slug!` macros; TS (desktop and phone): `src/lib/brand.ts`
   (`BRAND`, `NAMES`, `storageKey`, …); dictionaries: `{app}`/`{slug}`; shell:
-  source `scripts/lib/brand.sh`. Comments and docs may name it.
+  source `scripts/lib/brand.sh`. Comments and docs may name it. Something an
+  older build may have written under the old name is looked up through
+  `brand::PAIR.legacy(Name::…)` (`None` while the name is unchanged, so no
+  second lookup) and counted with `brand::legacy_hit`.
 - All user-facing strings via `src/lib/i18n.ts` (`useT()`); English holds
   every key. Never hardcode display text.
 - Tag new, not-live-verified features with the `UntestedTag` pill, and give it

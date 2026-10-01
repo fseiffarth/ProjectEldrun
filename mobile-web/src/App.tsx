@@ -25,7 +25,7 @@ import { SECTION_GLYPH } from "./glyphs";
  * fails is exactly when the reader needs to know whether the phone picked up
  * the desktop's current bundle or is booting a stale one out of the cache. */
 import { BUNDLE_VERSION as SPLASH_VERSION } from "./buildInfo";
-import { BRAND, NAMES, storageDashKey } from "../../src/lib/brand";
+import { BRAND, LEGACY_NAMES, NAMES, storageDashKey } from "../../src/lib/brand";
 
 /**
  * The four top-level sections. To-do, Calendar and Mail used to be pushed on
@@ -358,7 +358,9 @@ export function App() {
     if (!("serviceWorker" in navigator)) return;
     const onMessage = (event: MessageEvent) => {
       const data = event.data as { type?: unknown } | null;
-      if (data?.type !== NAMES.mobileOpenMessage) return;
+      // The worker and the page update at different moments, so across a
+      // rename a still-old worker posts the old message type.
+      if (data?.type !== NAMES.mobileOpenMessage && data?.type !== LEGACY_NAMES.mobileOpenMessage) return;
       const place = parsePlace(data);
       if (!place) return;
       if (authRef.current === "paired") void resolvePlace(place).then(goTo);

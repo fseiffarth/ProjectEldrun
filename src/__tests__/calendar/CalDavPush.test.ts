@@ -25,7 +25,7 @@ import {
   resourceUid,
 } from "../../lib/calendar/caldavPush";
 import type { CalendarEvent, CalendarTask } from "../../types";
-import { BRAND } from "../../lib/brand";
+import { LEGACY_BRAND } from "../../lib/brand";
 
 const AT = new Date("2026-08-01T12:00:00Z");
 
@@ -60,9 +60,9 @@ describe("icsUid", () => {
   it("mints a stable synthetic one for a row written here", () => {
     // Stable because the row id is: a UID derived from anything that changes
     // (a title, a start time) would make every edit a new object on the server.
-    expect(icsUid(event())).toBe(`e1@${BRAND.slug}`);
-    expect(icsUid(event({ title: "renamed" }))).toBe(`e1@${BRAND.slug}`);
-    expect(icsUid(event({ uid: "   " }))).toBe(`e1@${BRAND.slug}`);
+    expect(icsUid(event())).toBe(`e1@${LEGACY_BRAND.slug}`);
+    expect(icsUid(event({ title: "renamed" }))).toBe(`e1@${LEGACY_BRAND.slug}`);
+    expect(icsUid(event({ uid: "   " }))).toBe(`e1@${LEGACY_BRAND.slug}`);
   });
 });
 

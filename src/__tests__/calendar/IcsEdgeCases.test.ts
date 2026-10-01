@@ -24,7 +24,7 @@ import {
   unfold,
 } from "../../lib/calendar/ics";
 import type { CalendarEvent } from "../../types";
-import { BRAND } from "../../lib/brand";
+import { BRAND, LEGACY_BRAND } from "../../lib/brand";
 
 function event(over: Partial<CalendarEvent> = {}): CalendarEvent {
   return {
@@ -303,8 +303,8 @@ describe("serialize → parse round-trips", () => {
     expect(out).toContain("CONFERENCE;VALUE=URI;FEATURE=AUDIO,VIDEO:https://meet.example.org/x?y=1,2;3");
     const { events } = parseIcs(out);
     expect(events[0]).toMatchObject({ uid: "abc@server", conference: original.conference, recurrence_id: "2026-07-01T09:00" });
-    expect(icsUid({ id: "row-9", uid: "  " })).toBe(`row-9@${BRAND.slug}`);
-    expect(parseIcs(serializeIcs([event({ id: "row-9" })], [], AT)).events[0].uid).toBe(`row-9@${BRAND.slug}`);
+    expect(icsUid({ id: "row-9", uid: "  " })).toBe(`row-9@${LEGACY_BRAND.slug}`);
+    expect(parseIcs(serializeIcs([event({ id: "row-9" })], [], AT)).events[0].uid).toBe(`row-9@${LEGACY_BRAND.slug}`);
   });
 
   it("writes an all-day series' exdates as dates and reads them back as dates", () => {

@@ -379,6 +379,27 @@ pub fn upgraded_install(pair: &Pair, state_dir: &Path) -> bool {
     pair.renamed() && record_in(state_dir).upgraded
 }
 
+/// The file `<dir>/<name>` under the current brand. When only the file an
+/// older build wrote exists, it is renamed to the current name first (counted
+/// as a legacy hit under `hit_id`); if that fails, the old path is returned
+/// so the caller still reads what is there. No lookup while the name is
+/// unchanged.
+pub fn adopt_named_file(pair: &Pair, name: Name, dir: &Path, hit_id: &str) -> PathBuf {
+    let current = dir.join(pair.cur(name));
+    let Some(old) = pair.legacy(name) else {
+        return current;
+    };
+    let old = dir.join(old);
+    if current.exists() || !old.is_file() {
+        return current;
+    }
+    crate::brand::legacy_hit(hit_id);
+    match std::fs::rename(&old, &current) {
+        Ok(()) => current,
+        Err(_) => old,
+    }
+}
+
 /// One lookup's tally, for the settings panel.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct HitRow {

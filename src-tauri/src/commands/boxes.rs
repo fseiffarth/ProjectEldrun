@@ -233,6 +233,7 @@ so it is reachable by relative path from this folder.\n",
 /// symlinks on disk) are ever removed on regeneration — a user file or folder
 /// that happens to share a member's name is never touched (the member's link
 /// gets a `-1`/`-2` suffixed name instead).
+#[cfg(test)]
 const BOX_LINKS_MANIFEST: &str = crate::brand::BOX_LINKS_MANIFEST;
 
 type BoxLinksManifest = std::collections::BTreeMap<String, String>;
@@ -284,7 +285,14 @@ fn plan_member_links(
 /// do not hold, a junction does not, and both read back through the same
 /// `symlink_metadata` / `read_link` calls this planner relies on.
 fn write_box_member_links(folder: &Path, members: &[(String, PathBuf)]) -> std::io::Result<()> {
-    let manifest_path = folder.join(BOX_LINKS_MANIFEST);
+    // The manifest an older build wrote under the app's old name is taken
+    // over (renamed); `folder.join(BOX_LINKS_MANIFEST)` while it is unchanged.
+    let manifest_path = crate::services::brand_migration::adopt_named_file(
+        &crate::brand::PAIR,
+        crate::brand::Name::BOX_LINKS_MANIFEST,
+        folder,
+        "box-links-manifest",
+    );
     let manifest: BoxLinksManifest = if manifest_path.exists() {
         crate::storage::read_json(&manifest_path).unwrap_or_default()
     } else {
@@ -420,17 +428,33 @@ fn remove_member_link(link: &Path) -> std::io::Result<()> {
 /// previous managed block (between the markers) and leaving the rest untouched.
 /// When no file exists, `existing` is empty and a titled doc is created.
 fn merge_box_doc(agent_file: &str, existing: &str, block: &str) -> String {
-    if let (Some(start), Some(end)) = (existing.find(BOX_LINKS_START), existing.find(BOX_LINKS_END))
-    {
-        if end > start {
-            let end = end + BOX_LINKS_END.len();
-            // Drop a trailing newline right after the old end marker so we don't
-            // accumulate blank lines on each regeneration.
-            let tail = existing[end..]
-                .strip_prefix('\n')
-                .unwrap_or(&existing[end..]);
-            return format!("{}{}\n{}", &existing[..start], block.trim_end(), tail);
-        }
+    merge_box_doc_for(&crate::brand::PAIR, agent_file, existing, block)
+}
+
+/// [`merge_box_doc`] for a brand pair. A block an older build wrote sits
+/// between markers that carry the app's old name: it is found there (counted
+/// as a legacy hit) and replaced in place by `block`, which carries the
+/// current markers — never left beside a second block.
+fn merge_box_doc_for(pair: &crate::brand::Pair, agent_file: &str, existing: &str, block: &str) -> String {
+    use crate::brand::Name;
+    let current = (pair.cur(Name::BOX_LINKS_START), pair.cur(Name::BOX_LINKS_END));
+    let old = pair.legacy(Name::BOX_LINKS_START).zip(pair.legacy(Name::BOX_LINKS_END));
+    let found = |(start_marker, end_marker): &(String, String)| {
+        let (start, end) = (existing.find(start_marker.as_str())?, existing.find(end_marker.as_str())?);
+        (end > start).then(|| (start, end + end_marker.len()))
+    };
+    let span = found(&current).or_else(|| {
+        let span = found(old.as_ref()?)?;
+        crate::brand::legacy_hit("box-links-marker");
+        Some(span)
+    });
+    if let Some((start, end)) = span {
+        // Drop a trailing newline right after the old end marker so we don't
+        // accumulate blank lines on each regeneration.
+        let tail = existing[end..]
+            .strip_prefix('\n')
+            .unwrap_or(&existing[end..]);
+        return format!("{}{}\n{}", &existing[..start], block.trim_end(), tail);
     }
     if existing.trim().is_empty() {
         let title = agent_file.strip_suffix(".md").unwrap_or(agent_file);
@@ -924,6 +948,51 @@ mod tests {
         // Exactly one managed block survives.
         assert_eq!(merged.matches(BOX_LINKS_START).count(), 1);
         assert_eq!(merged.matches(BOX_LINKS_END).count(), 1);
+    }
+
+    /// A block an older build wrote (old markers) is replaced in place by the
+    /// current one — one block afterwards, the user's notes kept — and the
+    /// old manifest is taken over under its current name.
+    #[test]
+    fn a_block_and_manifest_under_the_old_name_are_taken_over() {
+        use crate::brand::{Name, LEGACY};
+        use crate::services::brand_migration::{adopt_named_file, hits, testing::RENAMED};
+        let old_block = format!(
+            "{}\n- /p/old\n{}\n",
+            LEGACY.name(Name::BOX_LINKS_START),
+            LEGACY.name(Name::BOX_LINKS_END)
+        );
+        let existing = format!("# CLAUDE\n\n{old_block}\n## My notes\nkeep me\n");
+        let new_block = format!(
+            "{}\n- /p/new\n{}\n",
+            RENAMED.cur(Name::BOX_LINKS_START),
+            RENAMED.cur(Name::BOX_LINKS_END)
+        );
+        let _ = hits::taken();
+        let merged = merge_box_doc_for(&RENAMED, "CLAUDE.md", &existing, &new_block);
+        assert_eq!(hits::taken(), ["box-links-marker"]);
+        assert!(merged.contains("/p/new") && !merged.contains("/p/old"));
+        assert!(merged.contains("## My notes\nkeep me"));
+        assert!(!merged.contains(&LEGACY.name(Name::BOX_LINKS_START)));
+        assert_eq!(merged.matches(&RENAMED.cur(Name::BOX_LINKS_START)).count(), 1);
+        // The next refresh finds the current block: no second one, no hit.
+        let again = merge_box_doc_for(&RENAMED, "CLAUDE.md", &merged, &new_block);
+        assert_eq!(again.matches(&RENAMED.cur(Name::BOX_LINKS_START)).count(), 1);
+        assert!(hits::taken().is_empty());
+
+        let folder = tempfile::tempdir().unwrap();
+        let old_manifest = folder.path().join(LEGACY.name(Name::BOX_LINKS_MANIFEST));
+        std::fs::write(&old_manifest, "{\"alpha\":\"/p/alpha\"}").unwrap();
+        let path = adopt_named_file(&RENAMED, Name::BOX_LINKS_MANIFEST, folder.path(), "box-links-manifest");
+        assert_eq!(path, folder.path().join(RENAMED.cur(Name::BOX_LINKS_MANIFEST)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"alpha\":\"/p/alpha\"}");
+        assert!(!old_manifest.exists());
+        assert_eq!(hits::taken(), ["box-links-manifest"]);
+        // The production pair: the constant's path, nothing looked up.
+        assert_eq!(
+            adopt_named_file(&crate::brand::PAIR, Name::BOX_LINKS_MANIFEST, folder.path(), "x"),
+            folder.path().join(BOX_LINKS_MANIFEST)
+        );
     }
 
     fn project_entry(id: &str, dir: &str) -> crate::schema::projects::ProjectEntry {

@@ -772,7 +772,7 @@ pub fn session_visible_for_project(
     // A session an older build minted carries the app's old prefix; it is
     // attributed the same way. (No old prefix while the name is unchanged.)
     let scoped = crate::services::brand_migration::compat::tmux_session_rest(&crate::brand::PAIR, name)
-        .filter(|rest| rest.contains("--"));
+        .filter(|_| name.contains("--"));
     if scoped.is_some_and(|rest| rest.starts_with(&format!("{}--", sanitize_tmux_key(own_project_id)))) {
         return true;
     }
