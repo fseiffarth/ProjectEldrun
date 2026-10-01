@@ -592,8 +592,39 @@ fn take_dir(src: &Path, dst: &Path, depth: usize) -> usize {
 }
 
 /// Whether a hook entry is one of Eldrun's own session hooks.
+///
+/// Recognised by the hooks dir in the command. A user's own CLI config that
+/// an older build registered its hook in names that build's state dir, so
+/// the hooks dir under the app's old name counts as well.
 fn is_app_hook(command: &str, hooks_dir: &str) -> bool {
-    !hooks_dir.is_empty() && command.contains(hooks_dir)
+    is_app_hook_for(&crate::brand::PAIR, command, hooks_dir)
+}
+
+pub(crate) fn is_app_hook_for(pair: &crate::brand::Pair, command: &str, hooks_dir: &str) -> bool {
+    if hooks_dir.is_empty() {
+        return false;
+    }
+    if command.contains(hooks_dir) {
+        return true;
+    }
+    let (Some(old_name), cur_name) = (
+        pair.legacy(crate::brand::Name::STATE_DIR_NAME),
+        pair.cur(crate::brand::Name::STATE_DIR_NAME),
+    ) else {
+        return false;
+    };
+    // `<base>/<current name>/hooks` → `<base>/<old name>/hooks`.
+    let hooks = Path::new(hooks_dir);
+    let Some(state) = hooks.parent() else { return false };
+    if state.file_name().and_then(|name| name.to_str()) != Some(cur_name.as_str()) {
+        return false;
+    }
+    let old_hooks = state.with_file_name(old_name).join(hooks.file_name().unwrap_or_default());
+    let matched = command.contains(old_hooks.to_string_lossy().as_ref());
+    if matched {
+        crate::brand::legacy_hit("hook-entry");
+    }
+    matched
 }
 
 /// Drop Eldrun's own hook commands from a Claude/Gemini-style `hooks` map
@@ -673,11 +704,15 @@ pub(crate) fn filtered_codex_config(text: &str, hooks_dir: &str) -> Option<Strin
 /// every home gets registered anyway (`agent_session::register_hooks_in_home`).
 pub(crate) fn filtered_vibe_hooks(text: &str, hooks_dir: &str) -> Option<String> {
     let mut doc: toml_edit::DocumentMut = text.parse().ok()?;
+    // The hook's name under the app's old name; `None` while it is unchanged.
+    let legacy_vibe_hook = crate::brand::PAIR.legacy(crate::brand::Name::VIBE_SESSION_HOOK);
     if let Some(hooks) = doc.get_mut("hooks").and_then(toml_edit::Item::as_array_of_tables_mut) {
         hooks.retain(|h| {
             let name = h.get("name").and_then(toml_edit::Item::as_str);
             let command = h.get("command").and_then(toml_edit::Item::as_str).unwrap_or("");
-            name != Some(crate::brand::VIBE_SESSION_HOOK) && !is_app_hook(command, hooks_dir)
+            name != Some(crate::brand::VIBE_SESSION_HOOK)
+                && name.is_none_or(|name| Some(name) != legacy_vibe_hook.as_deref())
+                && !is_app_hook(command, hooks_dir)
         });
         if hooks.is_empty() {
             doc.remove("hooks");

@@ -23,6 +23,8 @@
 //! `AppHandle`-free. Everything outside the file system that a step touches
 //! (the service manager, the phone host) goes through [`World`].
 
+pub mod agent_homes;
+pub mod compat;
 pub mod hits;
 pub mod host;
 pub mod state_dir;
@@ -210,6 +212,7 @@ const STARTUP_STEPS: &[Step] = &[
     Step { id: "share-dir", run: state_dir::move_share_dir },
     Step { id: "state-paths", run: state_dir::rewrite_state_paths },
     Step { id: "webview-data", run: state_dir::copy_webview_data },
+    Step { id: "agent-homes", run: agent_homes::migrate_agent_homes },
 ];
 
 /// Steps that cannot run at launch, with what each waits for. A launch only

@@ -98,7 +98,7 @@ impl Shape {
 
 /// Claude-shaped `settings.json` files (`{"hooks": {"SessionStart": [{"hooks":
 /// [{type, command}]}]}}`) whose CLI adds `additionalContext` to the session.
-const SETTINGS_HOOKS: &[&str] = &[
+pub(crate) const SETTINGS_HOOKS: &[&str] = &[
     ".gemini/settings.json",
     ".qwen/settings.json",
     ".augment/settings.json",
@@ -106,15 +106,15 @@ const SETTINGS_HOOKS: &[&str] = &[
 ];
 
 /// Droid's user hooks: the same groups with the events at the top level.
-const DROID_HOOKS: &str = ".factory/hooks.json";
-const CURSOR_HOOKS: &str = ".cursor/hooks.json";
+pub(crate) const DROID_HOOKS: &str = ".factory/hooks.json";
+pub(crate) const CURSOR_HOOKS: &str = ".cursor/hooks.json";
 /// Copilot loads every `*.json` in its user hooks directory, so this file is
 /// Eldrun's alone and simply rewritten.
 const COPILOT_HOOKS: &str = crate::brand::COPILOT_HINT_HOOKS;
 /// Vibe's user-level instructions, loaded beside the project's `AGENTS.md`.
-const VIBE_INSTRUCTIONS: &str = ".vibe/AGENTS.md";
+pub(crate) const VIBE_INSTRUCTIONS: &str = ".vibe/AGENTS.md";
 /// OpenCode's global config; its `instructions` files add to `AGENTS.md`.
-const OPENCODE_CONFIG: &str = ".config/opencode/opencode.json";
+pub(crate) const OPENCODE_CONFIG: &str = ".config/opencode/opencode.json";
 /// The hint as an instructions file, beside the script: the hooks dir is
 /// mounted read-only at its own path in the fence.
 const INSTRUCTIONS_NAME: &str = crate::brand::AGENT_HINT_MD;
@@ -148,6 +148,9 @@ fn command(shape: Shape) -> String {
     }
 }
 
+/// The app's variables the script reads; see `agent_session::HOOK_ENV`.
+const HINT_ENV: &[&str] = &["TAB_UID", "PROJECT_DIR"];
+
 /// POSIX body. Every printed string is a single-quoted literal, which is why
 /// [`HINT`] must never hold a `'` (a test pins that).
 #[cfg_attr(windows, allow(dead_code))]
@@ -165,11 +168,12 @@ fn posix_script_body() -> String {
          # {DISPLAY} agent hint (SessionStart): tells an agent in an {DISPLAY} project tab\n\
          # how to put a file on the user's phone, in the output shape its CLI reads\n\
          # ($1). Silent anywhere else. Managed by {DISPLAY}; do not edit.\n\
-         if [ -z \"${UPPER}_TAB_UID\" ] || [ -z \"${UPPER}_PROJECT_DIR\" ]; then\n\
+         {legacy_env}if [ -z \"${UPPER}_TAB_UID\" ] || [ -z \"${UPPER}_PROJECT_DIR\" ]; then\n\
          \x20 case \"$1\" in\n{quiet}  esac\n\
          \x20 exit 0\n\
          fi\n\
-         case \"$1\" in\n{cases}esac\n"
+         case \"$1\" in\n{cases}esac\n",
+        legacy_env = crate::services::brand_migration::compat::legacy_env_preamble_sh(&crate::brand::PAIR, HINT_ENV),
     )
 }
 
@@ -187,11 +191,12 @@ fn powershell_script_body() -> String {
     format!(
         "param([string]$Shape = 'plain')\r\n\
          # {DISPLAY} agent hint (SessionStart) - see the POSIX twin. Managed by {DISPLAY}; do not edit.\r\n\
-         if (-not $env:{UPPER}_TAB_UID -or -not $env:{UPPER}_PROJECT_DIR) {{\r\n\
+         {legacy_env}if (-not $env:{UPPER}_TAB_UID -or -not $env:{UPPER}_PROJECT_DIR) {{\r\n\
          \x20 switch ($Shape) {{\r\n{quiet}  }}\r\n\
          \x20 exit 0\r\n\
          }}\r\n\
-         switch ($Shape) {{\r\n{cases}}}\r\n"
+         switch ($Shape) {{\r\n{cases}}}\r\n",
+        legacy_env = crate::services::brand_migration::compat::legacy_env_preamble_ps1(&crate::brand::PAIR, HINT_ENV),
     )
 }
 

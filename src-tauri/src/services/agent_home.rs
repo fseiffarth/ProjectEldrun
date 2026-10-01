@@ -122,6 +122,15 @@ fn prepare_home_in(
     seed_scope_state: bool,
 ) -> io::Result<PreparedHome> {
     create_private_dir(&homes_root_in(state_dir))?;
+    // A home an older build seeded carries its markers under the old name:
+    // bring it to the current names first, or it would count as fresh and be
+    // seeded a second time. The launch does this for every home; this covers
+    // a home that appeared since. Not reached while the name is unchanged.
+    let pair = crate::brand::PAIR;
+    if crate::services::brand_migration::agent_homes::has_legacy_marker(&pair, home) {
+        crate::brand::legacy_hit("agent-home-marker");
+        crate::services::brand_migration::agent_homes::migrate_home(&pair, home, None);
+    }
     let fresh = !home.join(SEEDED_MARKER).is_file();
     create_private_dir(home)?;
     if fresh {

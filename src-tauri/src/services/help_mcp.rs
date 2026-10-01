@@ -451,6 +451,9 @@ pub fn tools() -> Value {
 /// One tool call against `index`. Arguments are schema-checked first
 /// (unknown fields refused, bounds enforced) — the registry's validator.
 pub fn call(index: &Index, name: &str, args: &Value) -> Result<Value, String> {
+    // A session that outlived a rename still calls the tools by the names it
+    // was listed; the list itself only ever carries the current ones.
+    let name = &*crate::services::brand_migration::compat::current_tool_name(&crate::brand::PAIR, name);
     if !security::tool(name).is_some_and(|t| t.serves(Caller::Helper)) { return Err("unknown tool".into()); }
     security::validate(&schema(name), args)?;
     match name {

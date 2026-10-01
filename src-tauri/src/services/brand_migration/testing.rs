@@ -129,10 +129,118 @@ impl Machine {
             "#!host\n",
         );
 
+        self.seed_agent_home(forms, "alpha");
+        for script in [Name::SESSION_HOOK_SH, Name::AGENT_HINT_SH, Name::AGENT_HINT_MD] {
+            write(&state.join("hooks").join(forms.name(script)), "#!/bin/sh\n");
+        }
+        // The app-wide layer: the user's own allow rules, imported.
+        write_json(
+            &state.join("agent-global").join(".claude").join("settings.json"),
+            &serde_json::json!({ "permissions": { "allow": [
+                format!("mcp__{}__git_push", forms.name(Name::MCP_GIT_SERVER))
+            ] } }),
+        );
+
         let webview = self.webview_data(forms);
         write(&webview.join("localstorage").join("app.localstorage"), "theme=dark");
         write(&webview.join("databases").join("indexeddb").join("db.sqlite"), "idb");
         project
+    }
+}
+
+impl Machine {
+    /// The session hook command a build named `forms` registers.
+    pub fn hook_command(&self, forms: &Forms) -> String {
+        self.state_dir(forms)
+            .join("hooks")
+            .join(forms.name(Name::SESSION_HOOK_SH))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// The hint command a build named `forms` registers for `shape`.
+    pub fn hint_command(&self, forms: &Forms, shape: &str) -> String {
+        format!(
+            "\"{}\" {shape}",
+            self.state_dir(forms).join("hooks").join(forms.name(Name::AGENT_HINT_SH)).display()
+        )
+    }
+
+    /// An agent home as a build named `forms` leaves it after a few spawns:
+    /// seeded, the hooks of every CLI registered, the app-wide layer applied,
+    /// and a few allow rules the user granted. Returns the home.
+    pub fn seed_agent_home(&self, forms: &Forms, scope: &str) -> PathBuf {
+        let home = self.state_dir(forms).join("agent-homes").join(scope);
+        let hook = self.hook_command(forms);
+        write(&home.join(forms.name(Name::AGENT_HOME_MARKER)), "");
+        write_json(
+            &home.join(forms.name(Name::AGENT_GLOBAL_MANIFEST)),
+            &serde_json::json!({ "files": [".claude/CLAUDE.md"], "merged": {} }),
+        );
+        write(
+            &home.join(forms.name(Name::AGENT_GLOBAL_BACKUP_DIR)).join(".claude").join("CLAUDE.md"),
+            "the scope's own instructions\n",
+        );
+        let group = |cmd: &str| serde_json::json!({ "hooks": [{ "type": "command", "command": cmd }] });
+        write_json(
+            &home.join(".claude").join("settings.json"),
+            &serde_json::json!({
+                "model": "opus",
+                "permissions": { "allow": [
+                    format!("mcp__{}__git_push", forms.name(Name::MCP_GIT_SERVER)),
+                    format!("mcp__{}__{}", forms.name(Name::MCP_HELP_SERVER), forms.name(Name::HELP_TOOL_SEARCH)),
+                    "Bash(ls:*)"
+                ] },
+                "hooks": {
+                    "SessionStart": [group(&hook), group("/usr/local/bin/my-own-hook")],
+                    "Stop": [group(&hook)],
+                    "UserPromptSubmit": [group(&hook)],
+                    "PostToolUse": [group(&hook)],
+                    "Notification": [group(&hook)],
+                    "SessionEnd": [group(&hook)]
+                }
+            }),
+        );
+        let mut codex = String::from("model = \"gpt\"\n\n# managed\n");
+        for event in crate::services::agent_session::CODEX_HOOK_EVENTS {
+            codex.push_str(&format!(
+                "[[hooks.{event}]]\n\n[[hooks.{event}.hooks]]\ntype = \"command\"\ncommand = '{hook}'\ntimeout = 10\n\n"
+            ));
+        }
+        write(&home.join(".codex").join("config.toml"), &codex);
+        write(
+            &home.join(".vibe").join("hooks.toml"),
+            &format!(
+                "[[hooks]]\nname = \"mine\"\ntype = \"post_agent\"\ncommand = \"true\"\n\n[[hooks]]\nname = \"{}\"\ntype = \"post_agent\"\ncommand = {}\ntimeout = 10.0\n",
+                forms.name(Name::VIBE_SESSION_HOOK),
+                serde_json::to_string(&hook).expect("json")
+            ),
+        );
+        write(
+            &home.join(".vibe").join("AGENTS.md"),
+            &format!(
+                "my notes\n\n{}\nhint\n{}\n",
+                forms.name(Name::AGENT_HINT_START),
+                forms.name(Name::AGENT_HINT_END)
+            ),
+        );
+        write_json(
+            &home.join(".gemini").join("settings.json"),
+            &serde_json::json!({ "hooks": { "SessionStart": [group(&self.hint_command(forms, "context"))] } }),
+        );
+        write_json(
+            &home.join(forms.name(Name::COPILOT_HINT_HOOKS)),
+            &serde_json::json!({ "version": 1, "hooks": { "sessionStart": [
+                { "type": "command", "bash": self.hint_command(forms, "copilot") }
+            ] } }),
+        );
+        write_json(
+            &home.join(".config").join("opencode").join("opencode.json"),
+            &serde_json::json!({ "instructions": [
+                self.state_dir(forms).join("hooks").join(forms.name(Name::AGENT_HINT_MD))
+            ] }),
+        );
+        home
     }
 }
 

@@ -1912,6 +1912,11 @@ fn hook_script_body(live_dir: &str) -> String {
     posix_hook_script_body(live_dir)
 }
 
+/// The app's variables the hook reads. A session an older build started has
+/// them under the old prefix only; the script takes those when the current
+/// names are unset (nothing is added while the prefix is unchanged).
+const HOOK_ENV: &[&str] = &["TAB_UID", "TAB_AGENT", "PROJECT_DIR"];
+
 /// The POSIX body itself — the hook on Unix, and on Windows the container twin
 /// (see `write_hook_script`), so it is compiled everywhere.
 fn posix_hook_script_body(live_dir: &str) -> String {
@@ -1926,7 +1931,7 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          # one), and its turn state (working / decision / done / idle), which\n\
          # lights the tab's working and finished marks. No-op\n\
          # unless launched by {DISPLAY} ({UPPER}_TAB_UID set). Managed by {DISPLAY}; do not edit.\n\
-         [ -n \"${UPPER}_TAB_UID\" ] || exit 0\n\
+         {legacy_env}[ -n \"${UPPER}_TAB_UID\" ] || exit 0\n\
          case \"${UPPER}_TAB_UID\" in *[!a-zA-Z0-9-]*|\"\") exit 0 ;; esac\n\
          input=$(cat | tr '\\n' ' ')\n\
          sid=$(printf '%s' \"$input\" | sed -n 's/.*\"session_id\"[[:space:]]*:[[:space:]]*\"\\([0-9a-fA-F-]*\\)\".*/\\1/p')\n\
@@ -2005,6 +2010,7 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          esac\n\
          exit 0\n",
         live_dir = live_dir,
+        legacy_env = crate::services::brand_migration::compat::legacy_env_preamble_sh(&crate::brand::PAIR, HOOK_ENV),
     )
 }
 
@@ -2027,7 +2033,7 @@ fn hook_script_body(live_dir: &str) -> String {
          # was left in, incl. after /clear) and its turn state (working / decision /\r\n\
          # done / idle), which lights the tab's working and finished marks. No-op\r\n\
          # unless launched by {DISPLAY} ({UPPER}_TAB_UID set). Managed by {DISPLAY}; do not edit.\r\n\
-         $ErrorActionPreference = 'SilentlyContinue'\r\n\
+         {legacy_env}$ErrorActionPreference = 'SilentlyContinue'\r\n\
          $uid = $env:{UPPER}_TAB_UID\r\n\
          if ([string]::IsNullOrEmpty($uid)) {{ exit 0 }}\r\n\
          if ($uid -notmatch '^[A-Za-z0-9-]+$') {{ exit 0 }}\r\n\
@@ -2106,6 +2112,7 @@ fn hook_script_body(live_dir: &str) -> String {
          }}\r\n\
          exit 0\r\n",
         live_dir = live_dir,
+        legacy_env = crate::services::brand_migration::compat::legacy_env_preamble_ps1(&crate::brand::PAIR, HOOK_ENV),
     )
 }
 
@@ -2133,6 +2140,11 @@ pub const HOOK_EVENTS: [&str; 6] = [
 /// install that predates an event gains just that event. Matchers are omitted
 /// so each hook fires for every `source` / tool / notification type.
 fn register_hook_in_settings(settings: &HomeFile) -> std::io::Result<()> {
+    register_hook_in_settings_as(settings, &hook_command())
+}
+
+/// [`register_hook_in_settings`] for a given hook command.
+pub(crate) fn register_hook_in_settings_as(settings: &HomeFile, cmd: &str) -> std::io::Result<()> {
     let mut root: serde_json::Value = settings
         .read()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -2140,7 +2152,6 @@ fn register_hook_in_settings(settings: &HomeFile) -> std::io::Result<()> {
     if !root.is_object() {
         root = serde_json::json!({});
     }
-    let cmd = hook_command();
 
     let obj = root.as_object_mut().unwrap();
     let hooks = obj.entry("hooks").or_insert_with(|| serde_json::json!({}));
@@ -2164,7 +2175,7 @@ fn register_hook_in_settings(settings: &HomeFile) -> std::io::Result<()> {
                 .and_then(|h| h.as_array())
                 .is_some_and(|hs| {
                     hs.iter()
-                        .any(|h| h.get("command").and_then(|c| c.as_str()) == Some(cmd.as_str()))
+                        .any(|h| h.get("command").and_then(|c| c.as_str()) == Some(cmd))
                 })
         });
         if !already {
@@ -2239,12 +2250,16 @@ pub fn codex_registered_events(src: &str, cmd: &str) -> std::collections::HashSe
 /// Appends one block per event of [`CODEX_HOOK_EVENTS`] the file does not
 /// already hold.
 fn register_codex_hook_in(config: &HomeFile) -> std::io::Result<()> {
-    let cmd = hook_command();
+    register_codex_hook_as(config, &hook_command())
+}
+
+/// [`register_codex_hook_in`] for a given hook command.
+pub(crate) fn register_codex_hook_as(config: &HomeFile, cmd: &str) -> std::io::Result<()> {
     let mut content = config
         .read()
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .unwrap_or_default();
-    let have = codex_registered_events(&content, &cmd);
+    let have = codex_registered_events(&content, cmd);
     let missing: Vec<&str> = CODEX_HOOK_EVENTS
         .iter()
         .copied()

@@ -51,7 +51,7 @@ pub(crate) fn shim_script(cli: &str, exe: &Path, dir: &Path) -> String {
     format!(
         "#!/bin/sh\n\
          # {DISPLAY} agent shim: runs {cli} fenced in this tab's scope (services::agent_shim).\n\
-         if [ -n \"${{{UPPER}_AGENT_FENCE:-}}\" ] || [ -n \"${{{UPPER}_HOST_SESSION:-}}\" ]; then\n\
+         {legacy_env}if [ -n \"${{{UPPER}_AGENT_FENCE:-}}\" ] || [ -n \"${{{UPPER}_HOST_SESSION:-}}\" ]; then\n\
          \x20   real=$(PATH=$(printf '%s' \"$PATH\" | tr ':' '\\n' | grep -vx -- {dir} | paste -sd: -); command -v {cli_q}) || {{\n\
          \x20       echo {not_found} >&2\n\
          \x20       exit 127\n\
@@ -60,6 +60,10 @@ pub(crate) fn shim_script(cli: &str, exe: &Path, dir: &Path) -> String {
          fi\n\
          exec {exe} --agent-shim {cli_q} \"$@\"\n",
         cli = cli,
+        legacy_env = crate::services::brand_migration::compat::legacy_env_preamble_sh(
+            &crate::brand::PAIR,
+            &["AGENT_FENCE", "HOST_SESSION"],
+        ),
         cli_q = quote(cli),
         not_found = quote(&format!("{cli}: command not found")),
         dir = quote(&dir.to_string_lossy()),

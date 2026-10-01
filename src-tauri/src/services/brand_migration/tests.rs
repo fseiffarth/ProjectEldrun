@@ -89,9 +89,12 @@ fn an_upgrade_moves_the_state_dir_and_leaves_a_link() {
     assert!(std::fs::symlink_metadata(&old_state).expect("old path").file_type().is_symlink());
     assert_eq!(old_state.canonicalize().expect("link"), new_state);
     let moved = snapshot(&new_state);
-    for path in seeded.keys().filter(|path| !path.contains("mobile-control/bin")) {
+    // (Entries that carry the old name themselves are renamed by their own
+    // steps, and checked there.)
+    for path in seeded.keys().filter(|path| !path.contains(LEGACY.slug)) {
         assert!(moved.contains_key(path), "{path} is missing after the move");
     }
+    assert_eq!(moved.len(), seeded.len() - 1 + 1, "only the old host's copy went, and the record came");
     // The old host was retired first, from the folder it ran in, and its
     // old-named copy is gone.
     assert_eq!(
@@ -106,7 +109,7 @@ fn an_upgrade_moves_the_state_dir_and_leaves_a_link() {
         .exists());
 
     let record = env.record();
-    for id in ["mobile-host", "state-dir", "share-dir", "state-paths", "webview-data"] {
+    for id in ["mobile-host", "state-dir", "share-dir", "state-paths", "webview-data", "agent-homes"] {
         assert_eq!(record.state_of(id), Some(StepState::Done), "{id}");
     }
 }
@@ -201,6 +204,7 @@ fn a_crash_at_any_checkpoint_is_finished_by_the_next_launch() {
         "paths:before-file",
         "copy:before-file",
         "webview:after-copy",
+        "homes:before-home",
     ] {
         let machine = Machine::new();
         machine.seed_install(&LEGACY);
