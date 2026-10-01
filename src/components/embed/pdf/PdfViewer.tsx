@@ -154,6 +154,7 @@ import {
   type CaretPhrase,
 } from "../../../lib/viewers/tex/tex";
 import { useT, type TranslationKey } from "../../../lib/i18n";
+import { pdfRasterRatio } from "./raster";
 import { useUnsavedWork } from "../../../lib/window/unsavedWork";
 import { ArrowUpRightIcon, CommentIcon, PlayIcon, SearchIcon, TagIcon } from "../../common/icons/Icon";
 
@@ -660,11 +661,13 @@ function PdfPageCanvas({
         return;
       }
       if (cancelled) return;
-      const dpr = window.devicePixelRatio || 1;
-      const viewport = page.getViewport({
-        scale: scale * dpr,
-        rotation: (((page.rotate + rot) % 360) + 360) % 360,
-      });
+      const rotation = (((page.rotate + rot) % 360) + 360) % 360;
+      // The screen's pixel ratio, capped so one page canvas stays within
+      // `PDF_MAX_CANVAS_PIXELS` at high zoom or on a poster-sized page (see
+      // `raster.ts`); the canvas is still laid out at its full CSS size.
+      const cssBox = page.getViewport({ scale, rotation });
+      const dpr = pdfRasterRatio(cssBox.width, cssBox.height, window.devicePixelRatio || 1);
+      const viewport = page.getViewport({ scale: scale * dpr, rotation });
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext("2d");
       if (!canvas || !ctx) return;
