@@ -19,7 +19,7 @@ import { readSpeechLang, type SpeechLang } from "../speechLang";
 import { NotificationsSheet, pushSummary } from "../components/NotificationsSheet";
 import { getPushState, pushSupport, type HostPushState } from "../push";
 import { AppMark } from "../AppMark";
-import { BRAND } from "../../../src/lib/brand";
+import { BRAND, PHONE_APP_NAME } from "../../../src/lib/brand";
 
 const ALERT_ICON: Record<MobileAlertItem["kind"], string> = {
   mail: SECTION_GLYPH.mail,
@@ -259,7 +259,7 @@ export function Home({ open, openTab, todo, mail }: {
     <header className="home-header">
       <div className="home-brand" aria-label={BRAND.display}>
         <span className="home-logo-frame" aria-hidden="true"><AppMark className="home-logo" /></span>
-        <span className="home-brand-copy"><strong>{BRAND.display}</strong><small>{BUNDLE_VERSION}{isUntested("mobile.version.commit") && <span className="untested">Untested</span>}</small></span>
+        <span className="home-brand-copy"><strong>{PHONE_APP_NAME}</strong><small>{BUNDLE_VERSION}{isUntested("mobile.version.commit") && <span className="untested">Untested</span>}</small></span>
       </div>
       {/* The global views used to live here as a header rail; they are tabs of
           their own now, so the bar at the bottom of every screen carries them. */}

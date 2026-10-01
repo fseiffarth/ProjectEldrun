@@ -3679,6 +3679,7 @@ export const enSource = {
   "terminal.reader.answering": "Answering…",
   "terminal.reader.working": "Agent is working…",
   "terminal.reader.workingModel": "{model} is working…",
+  "terminal.reader.backgroundSubagents": "Subagents working in the background… ({count})",
   "terminal.reader.shellWorking": "Shell is running…",
   "terminal.reader.shellBackground": "Background shell running…",
   "terminal.reader.shellShow": "Show the command it runs",

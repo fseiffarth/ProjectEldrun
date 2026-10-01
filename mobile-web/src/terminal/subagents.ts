@@ -10,6 +10,8 @@ export interface SubagentRef {
   role?: string;
   /** It had not reported back when its entry was read (`running`). */
   running?: boolean;
+  /** It runs in the background (`background`). */
+  background?: boolean;
 }
 
 /** One conversation the Reader has walked into from the stored session. */
@@ -27,21 +29,29 @@ export interface SubagentStep extends SubagentRef {
  * stepped to. */
 export function subagentsIn(entries: readonly TranscriptEntry[]): SubagentRef[] {
   return entries.flatMap((entry) => entry.kind === "agent" && entry.subagent
-    ? [{ token: entry.subagent, task: entry.text, role: entry.role, ...(entry.running ? { running: true } : {}) }]
+    ? [{ token: entry.subagent, task: entry.text, role: entry.role, ...(entry.running ? { running: true } : {}), ...(entry.background ? { background: true } : {}) }]
     : []);
 }
 
+/** Whether a subagent the session's entry describes is at work: it has not
+ * reported back, and — one the session waits on — the session is at work
+ * (`sessionBusy`): a session that died mid-turn never records the result. A
+ * background one works on after the session's turn is over, until its task
+ * notification says it is done. */
+export function subagentAtWork(ref: Pick<SubagentRef, "running" | "background">, sessionBusy: boolean): boolean {
+  return ref.running === true && (sessionBusy || ref.background === true);
+}
+
 /** Whether the open subagent of `path` is still at work, by the session's
- * own `entries`, read live: its outermost subagent has not reported back, and
- * — one nested inside it, whose parent conversation is not read again — had
- * not when it was opened. A subagent that finished stays finished. The
- * caller adds that the session itself is at work: a session that died
- * mid-turn never records the result. */
-export function openSubagentRunning(path: readonly SubagentStep[], entries: readonly TranscriptEntry[]): boolean {
+ * own `entries`, read live: its outermost subagent is at work
+ * ([`subagentAtWork`]), and — one nested inside it, whose parent conversation
+ * is not read again — had not reported back when it was opened. A subagent
+ * that finished stays finished. */
+export function openSubagentRunning(path: readonly SubagentStep[], entries: readonly TranscriptEntry[], sessionBusy: boolean): boolean {
   const outer = path[0];
   const open = path[path.length - 1];
   if (!outer || !open) return false;
-  const outerRunning = entries.some((entry) => entry.kind === "agent" && entry.subagent === outer.token && entry.running === true);
+  const outerRunning = entries.some((entry) => entry.kind === "agent" && entry.subagent === outer.token && subagentAtWork(entry, sessionBusy));
   return outerRunning && (path.length === 1 || open.running === true);
 }
 

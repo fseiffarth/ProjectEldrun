@@ -3338,9 +3338,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   /** Where the open subagent stands among its siblings, and the conversation
    * the bar goes back up to. */
   const subagentPosition = openStep ? siblingPosition(openStep) : { index: -1, count: 0 };
-  /** The open subagent at work: the session is, and that subagent has not
-   * reported back. Its row names the subagent's own model, not the session's. */
-  const subagentWorking = sessionBusy && openSubagentRunning(subagentPath, sessionEntries);
+  /** The open subagent at work: it has not reported back, and the session is
+   * at work or it runs in the background. Its row names the subagent's own
+   * model, not the session's. */
+  const subagentWorking = openSubagentRunning(subagentPath, sessionEntries, sessionBusy);
   const subagentModel = workingModelName(subTranscript?.model);
   const subagentParent = subagentPath.length > 1 ? subagentPath[subagentPath.length - 2].task : t("mobile.subagent.main");
   /** A subagent's conversation in the Reader: under a bar that goes back up

@@ -3592,6 +3592,7 @@ export const dict: Dict = {
   "terminal.reader.answering": "Risposta in corso…",
   "terminal.reader.working": "L'agente sta lavorando…",
   "terminal.reader.workingModel": "{model} sta lavorando…",
+  "terminal.reader.backgroundSubagents": "Subagenti al lavoro in background… ({count})",
   "terminal.reader.shellWorking": "La shell è in esecuzione…",
   "terminal.reader.shellBackground": "Shell in background in esecuzione…",
   "terminal.reader.shellShow": "Mostra il comando in esecuzione",

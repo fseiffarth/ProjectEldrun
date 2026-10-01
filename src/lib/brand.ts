@@ -24,6 +24,10 @@ export const BRAND = {
   envPrefix: "ELDRUN_",
 } as const;
 
+/** The name the phone app already shows on its home card, lock screen and
+ *  splash, ahead of the rename. Once `BRAND.display` carries it, this goes. */
+export const PHONE_APP_NAME = "Tabtivity";
+
 /** The old brand: what builds before the rename wrote. */
 export const LEGACY_BRAND = {
   display: "Eldrun",

@@ -55,7 +55,7 @@ class FakeWebSocket {
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
 import type { TranscriptEntry } from "../../../mobile-web/src/api";
-import { openSubagent, openSubagentRunning, siblingPosition, stepSibling, subagentsIn, workingModelName } from "../../../mobile-web/src/terminal/subagents";
+import { openSubagent, openSubagentRunning, siblingPosition, stepSibling, subagentAtWork, subagentsIn, workingModelName } from "../../../mobile-web/src/terminal/subagents";
 import { BRAND, storageKey } from "../../lib/brand";
 
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, agent_label: "Claude Code", available: true, viewer_busy: false };
@@ -127,14 +127,26 @@ describe("the pure path through subagents", () => {
     const live = entries.map((entry) => (entry.subagent === "00000000000000a1" ? { ...entry, running: true } : entry));
     const ref = { token: "00000000000000a1", task: "Map the backend" };
     const path = openSubagent([], ref, live, 0);
-    expect(openSubagentRunning(path, live)).toBe(true);
+    expect(openSubagentRunning(path, live, true)).toBe(true);
+    // A subagent the session waits on is not at work once the session is not.
+    expect(openSubagentRunning(path, live, false)).toBe(false);
     // It reported back since it was opened.
-    expect(openSubagentRunning(path, entries)).toBe(false);
+    expect(openSubagentRunning(path, entries, true)).toBe(false);
     // A nested one runs only while its outermost does and it did when opened.
     const nested = openSubagent(path, { token: "c3", task: "Dig", running: true }, [], 0);
-    expect(openSubagentRunning(nested, live)).toBe(true);
-    expect(openSubagentRunning(openSubagent(path, { token: "c3", task: "Dig" }, [], 0), live)).toBe(false);
-    expect(openSubagentRunning([], live)).toBe(false);
+    expect(openSubagentRunning(nested, live, true)).toBe(true);
+    expect(openSubagentRunning(openSubagent(path, { token: "c3", task: "Dig" }, [], 0), live, true)).toBe(false);
+    expect(openSubagentRunning([], live, true)).toBe(false);
+  });
+
+  it("keeps a background subagent at work after the session's turn ends", () => {
+    const live = entries.map((entry) => (entry.subagent === "00000000000000a1" ? { ...entry, running: true, background: true } : entry));
+    const path = openSubagent([], { token: "00000000000000a1", task: "Map the backend" }, live, 0);
+    expect(openSubagentRunning(path, live, false)).toBe(true);
+    expect(subagentsIn(live)[0]).toMatchObject({ running: true, background: true });
+    expect(subagentAtWork({ running: true, background: true }, false)).toBe(true);
+    expect(subagentAtWork({ running: true }, false)).toBe(false);
+    expect(subagentAtWork({ background: true }, true)).toBe(false);
   });
 
   it("names a working model by its family", () => {

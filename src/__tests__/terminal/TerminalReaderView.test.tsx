@@ -333,6 +333,25 @@ describe("the Reader's subagents", () => {
     await screen.findByText("Tests sit beside the sources.");
     expect(screen.queryByText(/is working…/)).toBeNull();
   });
+
+  it("keeps a background subagent at work after the session's turn ends", async () => {
+    const running = { ...session, version: "s2", entries: session.entries.map((entry) => (entry.subagent === "sa-1" ? { ...entry, running: true, background: true } : entry)) };
+    const sub = { ...(conversations["sa-1"] as object), model: "claude-haiku-4-5-20251001" };
+    invoke.mockImplementation((command: string, args?: { subagent?: string | null }) => {
+      if (command !== "agent_tab_transcript") return Promise.resolve([]);
+      return Promise.resolve(args?.subagent === "sa-1" ? sub : args?.subagent ? conversations[args.subagent] : running);
+    });
+    reader(host);
+    // The session's turn is over: its working row stands for the subagent.
+    expect(await screen.findByText("Subagents working in the background… (1)")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /Subagents \(3\)/ }));
+    expect(screen.getAllByRole("img", { name: "Agent is working…" })).toHaveLength(1);
+    await openListed("Find the parser");
+    expect(await screen.findByText("Haiku is working…")).toBeTruthy();
+    expect(screen.queryByText(/in the background…/)).toBeNull();
+    // The session is idle: Esc would stop nothing.
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+  });
 });
 
 describe("the Reader's live rows", () => {

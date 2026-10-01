@@ -26,7 +26,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { TabStatusMark } from "../tabs/TabLocalityBadges";
 import { answerHtml } from "../../../mobile-web/src/terminal/answerMarkdown";
 import { chatDayLabel, chatMoment, chatTime, dayOpeners } from "../../../mobile-web/src/terminal/chatTimes";
-import { openSubagent, openSubagentRunning, siblingPosition, stepSibling, workingModelName, type SubagentStep } from "../../../mobile-web/src/terminal/subagents";
+import { openSubagent, openSubagentRunning, siblingPosition, stepSibling, subagentAtWork, workingModelName, type SubagentStep } from "../../../mobile-web/src/terminal/subagents";
 import { commandArgsInline, transcriptTurns, type TranscriptTurn } from "../../../mobile-web/src/terminal/transcriptTurns";
 import type { RunningShell } from "../../../mobile-web/src/api";
 
@@ -675,10 +675,14 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
     name: subagentPath.length > 1 ? subagentPath[subagentPath.length - 2].task : t("mobile.subagent.main"),
   });
   const moreEarlier = !!transcript?.available && transcript.truncated;
-  /** The open subagent at work — the session is, and it has not reported
-   * back — and the model its own conversation names. */
-  const subagentWorking = !!live.working && openSubagentRunning(subagentPath, entries);
+  /** The open subagent at work — it has not reported back, and the session
+   * is at work or it runs in the background — and the model its own
+   * conversation names. */
+  const subagentWorking = openSubagentRunning(subagentPath, entries, !!live.working);
   const subagentModel = workingModelName(subTranscript?.model);
+  /** Subagents sent to the background still at work once the session's own
+   * turn is over: the main conversation's working row stands for them. */
+  const backgroundAtWork = openStep || live.working ? 0 : sessionAgents.filter((entry) => subagentAtWork(entry, false)).length;
   /** The shells the shown conversation runs, beside its working row. One it
    * waits on shows only while that row does — a call the CLI never answered
    * (killed mid-command) is not a shell at work; a background one shows while
@@ -726,7 +730,7 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
                 <button type="button" key={`${entry.at ?? ""}:${index}`} disabled={!entry.subagent} onClick={() => openAgent(entry, true)}>
                   <small>
                     {entry.role ?? subagentLabel}
-                    {entry.running && live.working && (
+                    {subagentAtWork(entry, !!live.working) && (
                       <span className="terminal-reader-working-dots" role="img" aria-label={t("terminal.reader.working")}><i /><i /><i /></span>
                     )}
                   </small>
@@ -790,9 +794,13 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
               <span className="terminal-reader-working-dots" aria-hidden="true"><i /><i /><i /></span>
               <span>{subagentModel ? t("terminal.reader.workingModel", { model: subagentModel }) : t("terminal.reader.working")}</span>
               <UntestedTag id="terminal.reader.subagentWorking" />
-              <button type="button" className="terminal-reader-stop" onClick={stop} title={t("terminal.reader.stopHint")}>
-                {t("terminal.reader.stop")}
-              </button>
+              {/* Esc stops the session's turn: nothing to stop while only a
+                  background subagent works on. */}
+              {live.working && (
+                <button type="button" className="terminal-reader-stop" onClick={stop} title={t("terminal.reader.stopHint")}>
+                  {t("terminal.reader.stop")}
+                </button>
+              )}
             </div>
           ) : live.working && (
             <div className="terminal-reader-working" role="status">
@@ -804,6 +812,13 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
               <button type="button" className="terminal-reader-stop" onClick={stop} title={t("terminal.reader.stopHint")}>
                 {t("terminal.reader.stop")}
               </button>
+            </div>
+          )}
+          {backgroundAtWork > 0 && (
+            <div className="terminal-reader-working" role="status">
+              <span className="terminal-reader-working-dots" aria-hidden="true"><i /><i /><i /></span>
+              <span>{t("terminal.reader.backgroundSubagents", { count: backgroundAtWork })}</span>
+              <UntestedTag id="terminal.reader.backgroundSubagents" />
             </div>
           )}
           {runningShells.map((shell, index) => (
