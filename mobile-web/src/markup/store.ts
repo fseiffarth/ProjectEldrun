@@ -11,6 +11,7 @@
  */
 
 import { isLayer, LIMITS, markCount, type Layer } from "./layer";
+import { NAMES } from "../../../src/lib/brand";
 
 /** What a layer was drawn against: the file's size and modified time. A
  * different file under the same name is told apart by them. */
@@ -25,7 +26,7 @@ export interface LayerBackend {
   delete(key: string): Promise<void>;
 }
 
-const DB = "eldrun-mobile-markup";
+const DB = NAMES.mobileMarkupDb;
 const STORE = "layers";
 
 function promised<T>(request: IDBRequest<T>): Promise<T> {

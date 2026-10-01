@@ -5,7 +5,9 @@
 // phone the same toggle sits above a one-column list that is re-mounted by every
 // tab switch, so "hide done" was being asked for again a dozen times a session.
 
-const PREFIX = "eldrun.mobile.";
+import { storageKey } from "../../src/lib/brand";
+
+const PREFIX = storageKey("mobile.");
 
 type FlagStorage = Pick<Storage, "getItem" | "setItem">;
 

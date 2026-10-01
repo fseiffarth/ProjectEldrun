@@ -107,6 +107,11 @@ function namesFor(b: BrandForms) {
     mobileMarkupDb: `${b.slug}-mobile-markup`,
     /** Prefix of the phone service worker's cache names. */
     mobileShellCachePrefix: `${b.slug}-mobile-shell-`,
+    /** Message the phone service worker posts to an open window when a
+     *  notification is tapped. */
+    mobileOpenMessage: `${b.slug}-open`,
+    /** Prefix of the phone's notification tags. */
+    mobileNotificationTagPrefix: `${b.slug}-`,
   };
 }
 

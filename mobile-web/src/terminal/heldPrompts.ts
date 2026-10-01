@@ -1,5 +1,6 @@
 import type { ScheduledPrompt } from "../api";
 import type { PendingPrompt } from "./pendingPrompts";
+import { storageKey } from "../../../src/lib/brand";
 
 /**
  * The prompts this phone asked the desktop to hold (`holdPrompt`), kept per
@@ -8,7 +9,7 @@ import type { PendingPrompt } from "./pendingPrompts";
  * the session's record does not have it until the agent takes it in. Held
  * only until then — an arrived prompt is the record's.
  */
-const KEY = "eldrun.mobile.heldPrompts";
+const KEY = storageKey("mobile.heldPrompts");
 /** A prompt still here after this long belongs to a tab long gone. */
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /** A hold asked for this long ago and never answered was lost with the page;

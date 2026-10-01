@@ -157,7 +157,7 @@ async function enrollBiometric(): Promise<string | null> {
     rp: { name: `${BRAND.display} Mobile`, id: location.hostname },
     user: {
       id: arrayBuffer(randomBytes(32)),
-      name: "eldrun-mobile",
+      name: `${BRAND.slug}-mobile`,
       displayName: `${BRAND.display} Mobile local unlock`,
     },
     pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],

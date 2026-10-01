@@ -122,9 +122,9 @@ describe(`${BRAND.display} Mobile service worker`, () => {
     expect(assets).toEqual(["/assets/index-CYdYva-W.js", "/assets/index-BazsAu1K.css"]);
 
     // The same substitution the build plugin performs.
-    expect(SOURCE).toContain(`__${BRAND.envPrefix}BUILD__`);
-    expect(SOURCE).toContain(`__${BRAND.envPrefix}ASSETS__`);
-    const stamped = SOURCE.split(`__${BRAND.envPrefix}BUILD__`).join("CYdYva-W").split(`__${BRAND.envPrefix}ASSETS__`).join(assets.join(","));
+    expect(SOURCE).toContain("__APP_BUILD__");
+    expect(SOURCE).toContain("__APP_ASSETS__");
+    const stamped = SOURCE.split("__APP_BUILD__").join("CYdYva-W").split("__APP_ASSETS__").join(assets.join(","));
     const { install, added } = boot({}, () => Promise.resolve(script), stamped);
     await install();
     expect(added).toEqual(expect.arrayContaining(["/", "/manifest.webmanifest", ...assets]));

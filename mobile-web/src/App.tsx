@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { EldrunMark } from "./EldrunMark";
+import { AppMark } from "./AppMark";
 import { hasPairedDevice, logoutAuth, resumeAuth } from "./auth";
 import { connectTrace, getMobileStatus, primeConnection, setUnauthorizedHandler, traceConnect, type TabRow } from "./api";
 import { classifyUnavailable, describeUnavailable, suspectsTunnel, tailscaleAppLink, TUNNEL_STEPS, unavailableDetail, type UnavailableReason } from "./connection";
@@ -25,6 +25,7 @@ import { SECTION_GLYPH } from "./glyphs";
  * fails is exactly when the reader needs to know whether the phone picked up
  * the desktop's current bundle or is booting a stale one out of the cache. */
 import { BUNDLE_VERSION as SPLASH_VERSION } from "./buildInfo";
+import { BRAND, NAMES, storageDashKey } from "../../src/lib/brand";
 
 /**
  * The four top-level sections. To-do, Calendar and Mail used to be pushed on
@@ -94,7 +95,7 @@ const launchPlace = takeLaunchPlace();
 // Keep the last known desktop preference through the lock and connection
 // screens, before the authenticated status probe can refresh it.
 try {
-  setUntestedTagsVisible(localStorage.getItem("eldrun-show-untested-tags") === "true");
+  setUntestedTagsVisible(localStorage.getItem(storageDashKey("show-untested-tags")) === "true");
 } catch {
   // Private browsing may refuse localStorage; default to hiding the tags.
   setUntestedTagsVisible(false);
@@ -122,9 +123,9 @@ function Splash({ message, progress, tone, children }: { message: string; progre
       <div className="splash-mark" aria-hidden="true">
         <span className="splash-orbit splash-orbit-one" />
         <span className="splash-orbit splash-orbit-two" />
-        <EldrunMark />
+        <AppMark />
       </div>
-      <div className="splash-name">ELDRUN</div>
+      <div className="splash-name">{BRAND.display.toUpperCase()}</div>
       <p className="splash-message">{message}</p>
       {progress ? <div className="splash-progress" aria-hidden="true"><span /></div> : null}
       {children}
@@ -338,7 +339,7 @@ export function App() {
         noteDesktopTheme(color_scheme);
         const visible = show_untested_tags === true;
         if (setUntestedTagsVisible(visible)) refreshTags((tick) => tick + 1);
-        try { localStorage.setItem("eldrun-show-untested-tags", String(visible)); } catch { /* unavailable */ }
+        try { localStorage.setItem(storageDashKey("show-untested-tags"), String(visible)); } catch { /* unavailable */ }
       }).catch(() => undefined);
     };
     refresh();
@@ -357,7 +358,7 @@ export function App() {
     if (!("serviceWorker" in navigator)) return;
     const onMessage = (event: MessageEvent) => {
       const data = event.data as { type?: unknown } | null;
-      if (data?.type !== "eldrun-open") return;
+      if (data?.type !== NAMES.mobileOpenMessage) return;
       const place = parsePlace(data);
       if (!place) return;
       if (authRef.current === "paired") void resolvePlace(place).then(goTo);

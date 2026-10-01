@@ -12,7 +12,7 @@ const files = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const ANY = /eldrun/i;
 
 const DOM_EVENTS = new Set(['open-settings','close-settings','open-shortcut-help','start-tour','open-lessons','reveal-side-panel','open-how-to-start','theme-changed','steering-prompt','settings-changed','screenshot-capture','project-jump','open-stats','open-project-dialog','language-changed','appearance-changed','agent-registry-changed','new-tab-slots','new-tab-shortcut']);
-const DASH_STORAGE = new Set(['theme','accent','theme-vars','corners','dev-react-scan','lang','show-untested-tags']);
+const DASH_STORAGE = new Set(['theme','accent','theme-vars','corners','dev-react-scan','lang','show-untested-tags','markup-pen']);
 // code-only names: plain neutral rename (value -> value)
 const NEUTRAL = new Map(Object.entries({
   'eldrun-icon':'app-icon','eldrun-agent-zoom':'app-agent-zoom','eldrun-dev-perf-layer':'app-dev-perf-layer',
@@ -23,6 +23,9 @@ const NEUTRAL = new Map(Object.entries({
   'fileTree.eldrunNativeGroup':'fileTree.appNativeGroup','vpnIndicator.startsWithEldrun':'vpnIndicator.startsWithApp',
   'vpn.startsWithEldrun':'vpn.startsWithApp','stats.metricEldrunOpen':'stats.metricAppOpen','intro.page.askEldrun':'intro.page.askApp',
   'askEldrun':'askApp','desktop.intro.askEldrun':'desktop.intro.askApp',
+  // mobile + vite configs: build-time placeholders and plugin names
+  'eldrun-mobile-theme-colors':'app-mobile-theme-colors','eldrun-stamp-sw':'app-stamp-sw','eldrun-pdf-frame-page':'app-pdf-frame-page',
+  '__ELDRUN_BUILD__':'__APP_BUILD__','__ELDRUN_ASSETS__':'__APP_ASSETS__',
 }));
 // whole value -> expression
 const EXACT = new Map(Object.entries({
@@ -34,7 +37,7 @@ const EXACT = new Map(Object.entries({
   '__eldrun__':'NAMES.appTimerId','eldrun:file-drag-ended':'NAMES.fileDragEndedEvent','eldrun-send':'NAMES.sendCli',
   'eldrun-help':'NAMES.mcpHelpServer','eldrun-terminal.v1':'NAMES.terminalProtocol','eldrun':'BRAND.slug','Eldrun':'BRAND.display','ELDRUN':'BRAND.upper',
   'eldrun_mobile_host':'MOBILE_HOST_KEY','eldrun_mobile_access':'MOBILE_ACCESS_KEY','ELDRUN_':'BRAND.envPrefix',
-  'eldrun-mobile-auth':'NAMES.mobileAuthDb','eldrun-mobile-markup':'NAMES.mobileMarkupDb',
+  'eldrun-mobile-auth':'NAMES.mobileAuthDb','eldrun-mobile-markup':'NAMES.mobileMarkupDb','eldrun-open':'NAMES.mobileOpenMessage',
 }));
 function exactExpr(v, neutralDash) {
   if (NEUTRAL.has(v)) return JSON.stringify(NEUTRAL.get(v));

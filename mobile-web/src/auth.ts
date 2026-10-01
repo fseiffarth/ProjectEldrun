@@ -1,7 +1,8 @@
 import { ApiError, api, traceConnect } from "./api";
 import { classifyUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
+import { NAMES } from "../../src/lib/brand";
 
-const DB = "eldrun-mobile-auth";
+const DB = NAMES.mobileAuthDb;
 const STORE = "keys";
 const DEVICE = "device";
 

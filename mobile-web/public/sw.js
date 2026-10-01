@@ -9,7 +9,7 @@
  * a *different* name — never purged anything. The cache accumulated every
  * bundle ever served, and the offline fallback below could still boot a
  * months-old shell out of it long after the desktop had upgraded. */
-const CACHE = "eldrun-mobile-shell-__ELDRUN_BUILD__";
+const CACHE = "eldrun-mobile-shell-__APP_BUILD__";
 /* A stalled connection — the common mobile-data failure — is not a network
  * *error*, so a plain `.catch()` fallback left the user on a white screen for
  * the browser's full timeout with the cached shell sitting right there. */
@@ -23,7 +23,7 @@ const NETWORK_TIMEOUT = 3000;
  * replace. */
 /* Only stamped paths count: in dev (`mobile:dev` serves `public/` verbatim)
  * the placeholder is still here, and precaching *it* would fail the install. */
-const ASSETS = "__ELDRUN_ASSETS__".split(",").filter((asset) => asset.startsWith("/assets/"));
+const ASSETS = "__APP_ASSETS__".split(",").filter((asset) => asset.startsWith("/assets/"));
 const SHELL = ["/", "/manifest.webmanifest", "/icons/icon.svg"].concat(ASSETS);
 /* Take over on the next navigation rather than waiting for every client to
  * close. A phone PWA is rarely "closed", so waiting is what kept a superseded

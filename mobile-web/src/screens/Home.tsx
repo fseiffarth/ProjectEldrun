@@ -18,7 +18,7 @@ import { GitMark } from "../components/GitMark";
 import { readSpeechLang, type SpeechLang } from "../speechLang";
 import { NotificationsSheet, pushSummary } from "../components/NotificationsSheet";
 import { getPushState, pushSupport, type HostPushState } from "../push";
-import { EldrunMark } from "../EldrunMark";
+import { AppMark } from "../AppMark";
 import { BRAND } from "../../../src/lib/brand";
 
 const ALERT_ICON: Record<MobileAlertItem["kind"], string> = {
@@ -258,7 +258,7 @@ export function Home({ open, openTab, todo, mail }: {
   return <main className="screen home-screen">
     <header className="home-header">
       <div className="home-brand" aria-label={BRAND.display}>
-        <span className="home-logo-frame" aria-hidden="true"><EldrunMark className="home-logo" /></span>
+        <span className="home-logo-frame" aria-hidden="true"><AppMark className="home-logo" /></span>
         <span className="home-brand-copy"><strong>{BRAND.display}</strong><small>{BUNDLE_VERSION}{isUntested("mobile.version.commit") && <span className="untested">Untested</span>}</small></span>
       </div>
       {/* The global views used to live here as a header rail; they are tabs of

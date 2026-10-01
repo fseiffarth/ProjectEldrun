@@ -16,7 +16,7 @@ import { BRAND } from "../../src/lib/brand";
  * so it cannot import the desktop component; this is the copy, and the two are
  * the same paths.
  */
-export function EldrunMark({ className }: { className?: string }) {
+export function AppMark({ className }: { className?: string }) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"

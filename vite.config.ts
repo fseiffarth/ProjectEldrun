@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { NAMES } from "./src/lib/brand";
 
 export default defineConfig(async () => ({
   plugins: [react()],
@@ -45,7 +46,7 @@ export default defineConfig(async () => ({
       ignored: [
         "**/src-tauri/**",
         "**/target/**",
-        "**/.eldrun/**",
+        `**/${NAMES.projectDir}/**`,
         "**/src/__tests__/**",
         "**/dist/**",
         "**/mobile-dist/**",

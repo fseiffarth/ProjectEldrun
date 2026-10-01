@@ -40,6 +40,8 @@ const FRONTEND_ONLY = new Set([
   "mobileAuthDb",
   "mobileMarkupDb",
   "mobileShellCachePrefix",
+  "mobileOpenMessage",
+  "mobileNotificationTagPrefix",
 ]);
 
 describe("brand mirror", () => {
@@ -92,5 +94,26 @@ describe("brand mirror", () => {
       expect(html).toContain(`localStorage.getItem("${storageDashKey(key)}")`);
     }
     expect(html).toContain(`<title>${BRAND.display}</title>`);
+  });
+
+  it("the phone service worker spells its names as the brand module does", () => {
+    // `sw.js` is served as a static file and cannot import a module, so it
+    // spells its cache name, its message type and its tag prefix itself.
+    const sw: string = readFileSync("mobile-web/public/sw.js", "utf8");
+    expect(sw).toContain(`const CACHE = "${NAMES.mobileShellCachePrefix}__APP_BUILD__";`);
+    expect(sw).toContain(`type: "${NAMES.mobileOpenMessage}"`);
+    expect(sw).toContain(`\`${NAMES.mobileNotificationTagPrefix}\${data.tag}\``);
+  });
+
+  it("the phone's static pages show the brand's display name", () => {
+    const html: string = readFileSync("mobile-web/index.html", "utf8");
+    expect(html).toContain(`<title>${BRAND.display} Mobile</title>`);
+    expect(html).toContain(`name="apple-mobile-web-app-title" content="${BRAND.display}"`);
+    const manifest = JSON.parse(readFileSync("mobile-web/public/manifest.webmanifest", "utf8")) as {
+      name: string;
+      short_name: string;
+    };
+    expect(manifest.name).toBe(`${BRAND.display} Mobile`);
+    expect(manifest.short_name).toBe(BRAND.display);
   });
 });

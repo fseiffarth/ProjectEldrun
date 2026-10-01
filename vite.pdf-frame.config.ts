@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
+import { BRAND } from "./src/lib/brand";
 
 /* The sealed pdf.js frame of the phone's markup view
  * (`mobile-web/src/pdfFrame/main.ts`), built after the app bundle into the
@@ -19,7 +20,7 @@ function framePage(): Plugin {
   let outDir = "";
   let script = "";
   return {
-    name: "eldrun-pdf-frame-page",
+    name: "app-pdf-frame-page",
     apply: "build",
     configResolved(config) {
       outDir = resolve(config.root, config.build.outDir);
@@ -34,7 +35,7 @@ function framePage(): Plugin {
       }
       writeFileSync(
         resolve(outDir, "pdf-frame.html"),
-        `<!doctype html>\n<html><head><meta charset="utf-8"><title>Eldrun PDF frame</title></head>` +
+        `<!doctype html>\n<html><head><meta charset="utf-8"><title>${BRAND.display} PDF frame</title></head>` +
           `<body><script src="/${script}"></script></body></html>\n`,
       );
     },

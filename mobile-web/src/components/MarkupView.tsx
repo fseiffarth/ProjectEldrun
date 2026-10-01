@@ -9,6 +9,7 @@ import {
 } from "../markup/layer";
 import { composedPng, drawMark, drawPage, INK, layerPng } from "../markup/rasterize";
 import { clearLayer, layerKey, loadLayer, saveLayer, stale, type Fingerprint } from "../markup/store";
+import { storageDashKey } from "../../../src/lib/brand";
 
 type Tool = "ink" | "box" | "text" | "eraser";
 type Size = [number, number];
@@ -26,7 +27,7 @@ const MAX_ALIVE = 6;
 const OPEN_TIMEOUT = 45_000;
 const RENDER_TIMEOUT = 20_000;
 /** Remembered once a pen has drawn here: from then on fingers only scroll. */
-const PEN_KEY = "eldrun-markup-pen";
+const PEN_KEY = storageDashKey("markup-pen");
 
 const FAILURE_KEYS: Record<Failure, TranslationKey> = {
   unreadable: "mobile.markup.failed.unreadable",

@@ -203,7 +203,7 @@ function staysLiteral(color: Rgba, prop: string): boolean {
  * anchors themselves (`--m-*`) are never rewritten. */
 export function themeColors(options: { include?: (file: string) => boolean } = {}): Plugin {
   return {
-    postcssPlugin: "eldrun-mobile-theme-colors",
+    postcssPlugin: "app-mobile-theme-colors",
     prepare(result) {
       // A vendor sheet (xterm's) styles what it draws in its own palette.
       const file = result.opts.from ?? "";

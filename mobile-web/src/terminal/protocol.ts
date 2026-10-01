@@ -1,4 +1,6 @@
-export const TERMINAL_PROTOCOL = "eldrun-terminal.v1";
+import { NAMES } from "../../../src/lib/brand";
+
+export const TERMINAL_PROTOCOL = NAMES.terminalProtocol;
 export type TerminalControl =
   | { type: "ready" }
   | { type: "resize"; cols: number; rows: number }
