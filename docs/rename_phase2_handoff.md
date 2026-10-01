@@ -111,8 +111,25 @@ Not the plan's recipe (state-dir override on a copy + a local flip): an
 overridden state dir marks the instance sandboxed, and a sandboxed instance
 skips the state-dir move — the step most worth running.
 
-**Status: built, run only against an invented install here; the run against
-the real one is the user's and is still owed.**
+**Status: run by the user against their real install on 2026-10-01 — passed.**
+All seven launch steps finished (state dir moved and linked, 14 files
+re-pointed, 42 state files' names rewritten, 109 agent-home files renamed or
+re-pointed, 1,663 webview files copied), a second launch did nothing, and no
+step was pending. `mail-store` and `docker-image` stay pending by design.
+
+What still held a path under the old state dir afterwards, and why each is
+harmless (the link keeps every one of them resolving):
+- agent history: Claude transcripts, paste cache, file history and shell
+  snapshots, Codex rollouts and shell snapshots, Vibe session logs (~1,350
+  files). Text the CLIs wrote; never read back as paths by the app.
+- `bin/*` (the CLI shims) and the hook script's body: both are rewritten at
+  every launch (`agent_bin::install`, `install_session_start_hook`), which
+  the driver does not run.
+- `remote-projects/<id>/<project dir>/sessions/terminals.json`: the copy of
+  the tab layout kept in the mirror; written, never read.
+- logs and one settings backup.
+Release B's link removal must wait until these have aged out or are
+rewritten; the transcripts are the long tail.
 
 ## Flip points phase 3 must handle
 
