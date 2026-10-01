@@ -1339,6 +1339,10 @@ function useEditHistory(initial: string) {
 // Poll interval for the diff-aware auto-reload (#43), ~1.5s.
 const RELOAD_POLL_MS = 1500;
 
+/** How long Source-mode typing in a YAML/JSON file must pause before the Cards
+ *  toggle re-asks whether the file nests anything to card (a whole-file parse). */
+const GRID_PROBE_SETTLE_MS = 400;
+
 /**
  * Editable-file state shared by the editable viewers — the code and markdown
  * editors, and the table viewer, whose cell edits are splices into this same
@@ -7583,10 +7587,7 @@ function TextView({
   // cards, editing the same draft by splice (see YamlGrid). Offered only when the
   // file actually nests a collection worth carding, so the Cards toggle appears
   // exactly where it does something (the tree's honesty rule).
-  const gridAvailable = useMemo(
-    () => (isYaml && loaded ? hasCards(draft, jsonStrict) : false),
-    [isYaml, loaded, draft, jsonStrict],
-  );
+  // (`gridAvailable` itself is computed below, once the mode is known.)
   // A `.bib` gets the bibliography CARD list as its "preview" half (see BibCards):
   // one card per entry, its `field = {value}` pairs as rows, splicing this same
   // draft — so Cards and Source are two views on one text exactly as Tree and
@@ -7603,6 +7604,30 @@ function TextView({
   // nests something to card) but is no longer the default — it still needs work.
   const [mode, setMode] = useState<"preview" | "grid" | "edit">(
     structured ? "preview" : previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
+  );
+  // Whether the Cards toggle is offered re-parses the whole file. In Source mode
+  // that question only decides a header button, so it is asked of the draft once
+  // typing settles rather than on every keystroke — a parse of a large JSON file
+  // is tens of milliseconds of UI thread per key. The tree and the cards always
+  // see the live draft (an edit there must retire the card mode at once).
+  const editingSource = mode === "edit";
+  const [settledDraft, setSettledDraft] = useState(draft);
+  // Entering (or leaving) Source starts from the live draft, set during render
+  // (React's derived-state pattern) so the toggle never shows a stale answer.
+  const [settledFor, setSettledFor] = useState(editingSource);
+  if (settledFor !== editingSource) {
+    setSettledFor(editingSource);
+    setSettledDraft(draft);
+  }
+  useEffect(() => {
+    if (!isYaml || !editingSource) return;
+    const id = window.setTimeout(() => setSettledDraft(draft), GRID_PROBE_SETTLE_MS);
+    return () => window.clearTimeout(id);
+  }, [isYaml, editingSource, draft]);
+  const gridText = editingSource ? settledDraft : draft;
+  const gridAvailable = useMemo(
+    () => (isYaml && loaded ? hasCards(gridText, jsonStrict) : false),
+    [isYaml, loaded, gridText, jsonStrict],
   );
   // A flat file (or a card edit that removes all nesting) has no card view — retire
   // the mode rather than strand it on a toggle with no button, dropping to the tree.
