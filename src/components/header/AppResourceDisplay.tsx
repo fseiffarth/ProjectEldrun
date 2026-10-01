@@ -55,8 +55,10 @@ export function AppResourceDisplay() {
     }
 
     let cancelled = false;
+    // `gpu: false` with the GPU row hidden: the backend then skips its GPU and
+    // Ollama reads instead of sampling what nobody will see.
     const poll = () => {
-      invoke<AppResourceUsage>("debug_app_resource_usage")
+      invoke<AppResourceUsage>("debug_app_resource_usage", { gpu: showGpu })
         .then((next) => {
           if (!cancelled) setUsage(next);
         })
@@ -71,7 +73,7 @@ export function AppResourceDisplay() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [anyShown, quiesce]);
+  }, [anyShown, showGpu, quiesce]);
 
   // Never tones up. A build pegs the CPU for minutes at a time, so toning this
   // `attention` would turn a collapsed header's summary lamp amber for the

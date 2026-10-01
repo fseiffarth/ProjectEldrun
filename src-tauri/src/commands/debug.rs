@@ -22,28 +22,46 @@ pub struct AppResourceUsage {
 /// In `tauri dev`, the useful total is the npm/tauri/vite tree that owns the
 /// running app process. In a packaged build, this naturally resolves to the app
 /// process and any descendants.
+///
+/// `gpu: false` skips the GPU half (`gpus` empty, `vram_bytes` 0): the header
+/// polls this every few seconds, and with its GPU row hidden there is no reason
+/// to ask Ollama's HTTP port or the GPU driver anything. Absent = true, so a
+/// caller that predates the flag (the dev perf host) keeps the full answer.
+///
+/// Every read here is blocking I/O — a `/proc` walk, a stat read per pid, sysfs,
+/// a loopback HTTP request — so it runs on the blocking pool, never on the async
+/// workers that drive the PTY output batchers.
 #[tauri::command]
-pub async fn debug_app_resource_usage() -> Result<AppResourceUsage, String> {
+pub async fn debug_app_resource_usage(gpu: Option<bool>) -> Result<AppResourceUsage, String> {
     use crate::sysstat;
 
-    let root = eldrun_process_root(std::process::id());
-    let pids = sysstat::descendant_pids(&[root]);
-    let interval = std::time::Duration::from_millis(300);
-    let t0 = sysstat::sum_jiffies(&pids);
-    tokio::time::sleep(interval).await;
-    let t1 = sysstat::sum_jiffies(&pids);
-
-    let busy_secs = t1.saturating_sub(t0) as f64 / sysstat::clk_tck() as f64;
-    let cpu_percent = busy_secs / interval.as_secs_f64() * 100.0;
-    let rss_bytes = sysstat::sum_rss_kib(&pids) * 1024;
-
-    Ok(AppResourceUsage {
-        cpu_percent: (cpu_percent * 10.0).round() / 10.0,
-        rss_bytes,
-        process_count: pids.len(),
-        vram_bytes: crate::commands::ollama::total_vram_in_use(),
-        gpus: crate::gpustat::snapshot(),
+    let (pids, t0) = tauri::async_runtime::spawn_blocking(|| {
+        let root = eldrun_process_root(std::process::id());
+        let pids = sysstat::descendant_pids(&[root]);
+        let t0 = sysstat::sum_jiffies(&pids);
+        (pids, t0)
     })
+    .await
+    .map_err(|e| e.to_string())?;
+    let interval = std::time::Duration::from_millis(300);
+    tokio::time::sleep(interval).await;
+    let with_gpu = gpu.unwrap_or(true);
+    tauri::async_runtime::spawn_blocking(move || {
+        let t1 = sysstat::sum_jiffies(&pids);
+        let busy_secs = t1.saturating_sub(t0) as f64 / sysstat::clk_tck() as f64;
+        let cpu_percent = busy_secs / interval.as_secs_f64() * 100.0;
+        let rss_bytes = sysstat::sum_rss_kib(&pids) * 1024;
+
+        AppResourceUsage {
+            cpu_percent: (cpu_percent * 10.0).round() / 10.0,
+            rss_bytes,
+            process_count: pids.len(),
+            vram_bytes: if with_gpu { crate::commands::ollama::total_vram_in_use() } else { 0 },
+            gpus: if with_gpu { crate::gpustat::snapshot() } else { Vec::new() },
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// The short commit this binary was compiled from (see `build.rs`), shown
@@ -151,9 +169,17 @@ pub async fn dev_todo_write(
 /// later (observed 2026-09-01: a 4.7 GB `win-1` renderer, and the main window
 /// reloading every poll). Kept as the fallback a frontend uses when it is served
 /// ahead of its backend — the hot-reloaded dev window against a stale binary.
+///
+/// This and the other `webview_renderer_*` commands are `async` on purpose: a
+/// synchronous command runs on the main (GTK) thread, and each of these walks
+/// the whole process table and reads a command line per descendant — a stall
+/// of the very event loop that pumps every window's IPC, taken every couple of
+/// seconds by the debug footer and every 30 s by each window's watchdog.
 #[tauri::command]
-pub fn webview_rss_kib() -> u64 {
-    largest_renderer_rss_kib()
+pub async fn webview_rss_kib() -> u64 {
+    tauri::async_runtime::spawn_blocking(largest_renderer_rss_kib)
+        .await
+        .unwrap_or(0)
 }
 
 fn largest_renderer_rss_kib() -> u64 {
@@ -211,7 +237,14 @@ pub struct MappingRss {
 /// that [`webview_renderer_rss`] would list is read — a made-up pid gets `None`,
 /// as does any platform without `/proc`.
 #[tauri::command]
-pub fn webview_renderer_memory(pid: u32) -> Option<RendererMemory> {
+pub async fn webview_renderer_memory(pid: u32) -> Option<RendererMemory> {
+    tauri::async_runtime::spawn_blocking(move || renderer_memory(pid))
+        .await
+        .ok()
+        .flatten()
+}
+
+fn renderer_memory(pid: u32) -> Option<RendererMemory> {
     let root = eldrun_process_root(std::process::id());
     let ours = crate::sysstat::descendant_pids(&[root]).contains(&pid) && is_webview_renderer(pid);
     if !ours {
@@ -249,7 +282,13 @@ static RENDERER_CLAIMS: std::sync::Mutex<Vec<(u32, String)>> = std::sync::Mutex:
 /// pid is no longer a live renderer (the process was replaced after a crash),
 /// and a window that finds its claim gone simply probes again.
 #[tauri::command]
-pub fn webview_renderer_rss(app: tauri::AppHandle) -> Vec<RendererRss> {
+pub async fn webview_renderer_rss(app: tauri::AppHandle) -> Vec<RendererRss> {
+    tauri::async_runtime::spawn_blocking(move || renderer_rss(&app))
+        .await
+        .unwrap_or_default()
+}
+
+fn renderer_rss(app: &tauri::AppHandle) -> Vec<RendererRss> {
     use tauri::Manager;
 
     let root = eldrun_process_root(std::process::id());
@@ -295,7 +334,14 @@ pub fn webview_renderer_rss(app: tauri::AppHandle) -> Vec<RendererRss> {
 /// not a live renderer under the app is refused. One claim per window and one
 /// per pid — a re-probe after a crash replaces both sides.
 #[tauri::command]
-pub fn webview_renderer_claim(window: tauri::WebviewWindow, pid: u32) -> Result<(), String> {
+pub async fn webview_renderer_claim(window: tauri::WebviewWindow, pid: u32) -> Result<(), String> {
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || claim_renderer(label, pid))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn claim_renderer(label: String, pid: u32) -> Result<(), String> {
     let root = eldrun_process_root(std::process::id());
     let live = crate::sysstat::descendant_pids(&[root])
         .into_iter()
@@ -303,7 +349,6 @@ pub fn webview_renderer_claim(window: tauri::WebviewWindow, pid: u32) -> Result<
     if !live {
         return Err(format!("pid {pid} is not a webview renderer of this app"));
     }
-    let label = window.label().to_string();
     let mut guard = RENDERER_CLAIMS.lock().unwrap_or_else(|e| e.into_inner());
     guard.retain(|(p, l)| *p != pid && *l != label);
     guard.push((pid, label));
