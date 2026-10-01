@@ -83,6 +83,8 @@ export class PdfWorkerSlot {
   /** The slot's worker, started now if it is not running; `undefined` once disposed. */
   get(): PDFWorker | undefined {
     if (this.disposed) return undefined;
+    // A worker something else destroyed would fail every later load on it.
+    if (this.worker?.destroyed) this.worker = null;
     this.worker ??= new pdfjs.PDFWorker();
     return this.worker;
   }

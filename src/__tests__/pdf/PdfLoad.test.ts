@@ -82,6 +82,16 @@ describe("PdfWorkerSlot", () => {
     expect(workers).toHaveLength(1);
   });
 
+  it("starts a fresh worker when its worker was destroyed elsewhere", () => {
+    workers.length = 0;
+    const slot = new PdfWorkerSlot();
+    const a = slot.get() as unknown as { destroyed: boolean };
+    a.destroyed = true;
+    const b = slot.get();
+    expect(b).not.toBe(a);
+    expect(workers).toHaveLength(2);
+  });
+
   it("never starts a worker just to dispose of it", () => {
     workers.length = 0;
     new PdfWorkerSlot().dispose();
