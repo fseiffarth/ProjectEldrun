@@ -100,10 +100,11 @@ ALLOW=(
   # --- Flip points: files NAMED after the app. Phase 3 (renamed, with a ------
   # forwarding stub under the old name until release B). Their contents read
   # the name through scripts/lib/brand.sh already, unless listed further down.
-  'start-eldrun-dev-build.sh'
-  'start-eldrun-dev-sandbox.sh'
-  'start-eldrun-tauri-hotreload.sh'
-  'screenshots/eldrun-current.png'
+  # Spelled with the helper's old-name variable: this script is checked too.
+  "start-$APP_LEGACY_SLUG-dev-build.sh"
+  "start-$APP_LEGACY_SLUG-dev-sandbox.sh"
+  "start-$APP_LEGACY_SLUG-tauri-hotreload.sh"
+  "screenshots/$APP_LEGACY_SLUG-current.png"
 
   # --- Flip points: tooling that cannot source the brand helper. Phase 3. ---
   # Git hooks: run in any state of the tree, so they stay self-contained. The
@@ -121,10 +122,10 @@ ALLOW=(
   # The shims the app copies into agent homes (`include_bytes!`, so they run
   # with no repo around them), and the Windows dev launcher. Phase 3 renames
   # them and ships the old send name as a logging alias (phase 2 builds it).
-  'scripts/eldrun-send.sh'
-  'scripts/eldrun-send.ps1'
-  'scripts/eldrun-send.cmd'
-  'scripts/eldrun-dev.cmd'
+  "scripts/$APP_LEGACY_SLUG-send.sh"
+  "scripts/$APP_LEGACY_SLUG-send.ps1"
+  "scripts/$APP_LEGACY_SLUG-send.cmd"
+  "scripts/$APP_LEGACY_SLUG-dev.cmd"
   # Standalone scripts that still spell the name, the state dir or a persisted
   # key themselves. Phase 2 for the lookups (state dir and the phone-host
   # settings key need the old-name fallback there), phase 3 for the text.
