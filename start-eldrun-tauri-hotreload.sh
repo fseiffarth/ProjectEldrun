@@ -3,7 +3,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="$HOME/.local/share/eldrun"
+# The app's names (scripts/lib/brand.sh): $APP_DISPLAY, $APP_SLUG, $APP_BIN_NAME, …
+. "$ROOT/scripts/lib/brand.sh" || {
+  # Nothing is logged yet (the log's path needs the name), and a desktop entry
+  # has no terminal: say it where it is seen.
+  notify-send -u critical 'The hot-reload session was not started' "scripts/lib/brand.sh could not read the app's name in $ROOT." 2>/dev/null || true
+  exit 1
+}
+LOG_DIR="$APP_SHARE_DIR"
 LOG_FILE="$LOG_DIR/hotreload.log"
 LOG_MAX_BYTES=$((64 * 1024 * 1024))
 
@@ -92,8 +99,8 @@ done
 if [ -n "$missing" ]; then
   printf 'REFUSING TO START: build toolchain incomplete (missing: %s)\n' "$missing" >&2
   printf '  the hot-reload session builds from source and needs all of node, npm, cargo, rustc\n' >&2
-  notify-send -u critical -a Eldrun 'Eldrun hot-reload not started' \
-    "Missing build tools: $missing. Install them, or use the frozen Eldrun (dev) build." 2>/dev/null || true
+  notify-send -u critical -a "$APP_DISPLAY" "$APP_DISPLAY hot-reload not started" \
+    "Missing build tools: $missing. Install them, or use the frozen $APP_DISPLAY (dev) build." 2>/dev/null || true
   exit 1
 fi
 node --version
@@ -108,9 +115,9 @@ rustc --version
 # it the dev window's sidecar has no overlay path compiled in and keeps serving
 # the bundle `beforeDevCommand` built at session start — fine for an hour, stale
 # by the end of a long session.
-export ELDRUN_MOBILE_LIVE_DIR="$ROOT/target/mobile-pwa"
+app_export MOBILE_LIVE_DIR "$ROOT/target/mobile-pwa"
 # The checkout the header's dev-build chip reads HEAD from (services::dev_build).
 # Unset — CI, a release — means no chip.
-export ELDRUN_DEV_SOURCE_ROOT="$ROOT"
+app_export DEV_SOURCE_ROOT "$ROOT"
 
 exec npm run tauri:dev

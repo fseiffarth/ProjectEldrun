@@ -19,11 +19,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SANDBOX="${ELDRUN_SANDBOX_DIR:-$HOME/.local/share/eldrun-dev}"
+# The app's names (scripts/lib/brand.sh): $APP_DISPLAY, $APP_SLUG, $APP_BIN_NAME, …
+. "$ROOT/scripts/lib/brand.sh"
+SANDBOX="$(app_env SANDBOX_DIR "$APP_SHARE_DIR-dev")"
 
-export ELDRUN_STATE_DIR="$SANDBOX/state"
-export ELDRUN_HOME="$SANDBOX/eldrun"
-mkdir -p "$ELDRUN_STATE_DIR" "$ELDRUN_HOME"
+SANDBOX_STATE="$SANDBOX/state"
+SANDBOX_HOME="$SANDBOX/$APP_SLUG"
+app_export STATE_DIR "$SANDBOX_STATE"
+app_export HOME "$SANDBOX_HOME"
+mkdir -p "$SANDBOX_STATE" "$SANDBOX_HOME"
 
 cd "$ROOT"
 
@@ -38,6 +42,6 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # WebKitGTK renders itself and themes from our CSS.
 export GTK_OVERLAY_SCROLLING=0
 
-printf 'sandbox: state=%s home=%s\n' "$ELDRUN_STATE_DIR" "$ELDRUN_HOME"
+printf 'sandbox: state=%s home=%s\n' "$SANDBOX_STATE" "$SANDBOX_HOME"
 
 exec npm run tauri:dev

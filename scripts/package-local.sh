@@ -2,11 +2,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="$HOME/.local/share/eldrun"
+# The app's names (scripts/lib/brand.sh): $APP_DISPLAY, $APP_SLUG, $APP_BIN_NAME, …
+. "$ROOT/scripts/lib/brand.sh"
+APP_DIR="$APP_SHARE_DIR"
 DESKTOP_DIR="$HOME/.local/share/applications"
-BINARY_DEST="$APP_DIR/eldrun"
-DESKTOP_STABLE_DEST="$DESKTOP_DIR/Eldrun.desktop"
-DESKTOP_HOTRELOAD_DEST="$DESKTOP_DIR/EldrunHotReload.desktop"
+BINARY_DEST="$APP_DIR/$APP_BIN_NAME"
+DESKTOP_STABLE_DEST="$DESKTOP_DIR/$APP_DISPLAY.desktop"
+DESKTOP_HOTRELOAD_DEST="$DESKTOP_DIR/${APP_DISPLAY}HotReload.desktop"
 
 mkdir -p "$APP_DIR" "$DESKTOP_DIR"
 
@@ -24,7 +26,7 @@ if [[ -n "${APPIMAGE_SRC:-}" && -f "$APPIMAGE_SRC" ]]; then
   echo "Installed AppImage to: $BINARY_DEST"
 else
   # AppImage bundling unavailable (no FUSE); use the raw release binary.
-  RAW_BIN="$ROOT/target/release/eldrun"
+  RAW_BIN="$ROOT/target/release/$APP_BIN_NAME"
   if [[ ! -f "$RAW_BIN" ]]; then
     # Bundle failed before linking — do a plain cargo build. `--features
     # custom-protocol` is what the tauri CLI would have supplied: without it the
@@ -42,26 +44,26 @@ fi
 cat >"$DESKTOP_STABLE_DEST" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Eldrun
+Name=$APP_DISPLAY
 Comment=Terminal workspace manager
 Exec=$BINARY_DEST
 Icon=$ROOT/src-tauri/icons/128x128.png
 Terminal=false
 Categories=Utility;TerminalEmulator;Development;
-StartupWMClass=eldrun
+StartupWMClass=$APP_BIN_NAME
 EOF
 chmod 755 "$DESKTOP_STABLE_DEST"
 
 cat >"$DESKTOP_HOTRELOAD_DEST" <<EOF
 [Desktop Entry]
 Type=Application
-Name=EldrunHotReload
+Name=${APP_DISPLAY}HotReload
 Comment=Terminal workspace manager hot reload
-Exec=$ROOT/start-eldrun-tauri-hotreload.sh
+Exec=$ROOT/start-$APP_SLUG-tauri-hotreload.sh
 Icon=$ROOT/src-tauri/icons/128x128.png
 Terminal=false
 Categories=Utility;TerminalEmulator;Development;
-StartupWMClass=eldrun
+StartupWMClass=$APP_BIN_NAME
 EOF
 chmod 755 "$DESKTOP_HOTRELOAD_DEST"
 

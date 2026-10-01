@@ -31,11 +31,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="$HOME/.local/share/eldrun"
+# The app's names (scripts/lib/brand.sh): $APP_DISPLAY, $APP_SLUG, $APP_BIN_NAME, …
+. "$ROOT/scripts/lib/brand.sh"
+APP_DIR="$APP_SHARE_DIR"
 DESKTOP_DIR="$HOME/.local/share/applications"
-BINARY_DEST="$APP_DIR/eldrun-dev"
-DESKTOP_DEST="$DESKTOP_DIR/EldrunDev.desktop"
-LAUNCHER="$ROOT/start-eldrun-dev-build.sh"
+BINARY_DEST="$APP_DIR/$APP_DEV_BIN_NAME"
+DESKTOP_DEST="$DESKTOP_DIR/${APP_DISPLAY}Dev.desktop"
+LAUNCHER="$ROOT/start-$APP_SLUG-dev-build.sh"
 FREEZE_TREE="$ROOT/target/freeze-tree"
 LIVE_PWA_DIR="$ROOT/target/mobile-pwa"
 
@@ -103,11 +105,11 @@ publish_live_pwa() {
 # Compiled into the binary as the one directory it may serve a newer bundle
 # from. Unset in CI and in every release build, where the overlay does not exist
 # at all.
-export ELDRUN_MOBILE_LIVE_DIR="$LIVE_PWA_DIR"
+app_export MOBILE_LIVE_DIR "$LIVE_PWA_DIR"
 # The checkout the header's dev-build chip compares the installed snapshot with
 # (services::dev_build) — the main one even in --head mode, whose freeze tree
 # is a detached copy that never moves. Unset in CI and every release: no chip.
-export ELDRUN_DEV_SOURCE_ROOT="$ROOT"
+app_export DEV_SOURCE_ROOT "$ROOT"
 
 MODE=tree
 for arg in "$@"; do
@@ -206,7 +208,7 @@ fi
 # behind the desktop icon.
 [ -n "${PACKAGE_DEV_INSTALLING_MARK:-}" ] && : >"$PACKAGE_DEV_INSTALLING_MARK"
 
-RAW_BIN="$ROOT/target/release/eldrun"
+RAW_BIN="$ROOT/target/release/$APP_BIN_NAME"
 if [[ ! -f "$RAW_BIN" ]]; then
   echo "package-dev: release binary not found at $RAW_BIN after build" >&2
   exit 1
@@ -260,14 +262,14 @@ FROZEN_STAMP="$RAW_BIN.frozen"
 # So stop at the artifact and say so. start-eldrun-dev-build.sh adopts it at
 # launch, in the user's own session, where no fence can swallow it.
 if [ "$(stat -f -c %T "$APP_DIR" 2>/dev/null || echo unknown)" = "tmpfs" ] ||
-   [ "${ELDRUN_AGENT_FENCE:-}" = "1" ]; then
+   [ "$(app_env AGENT_FENCE)" = "1" ]; then
   cat <<MSG
 package-dev: built $RAW_BIN ($VERSION @ $COMMIT$DIRTY, from $MODE), and stopped there.
   $APP_DIR is a tmpfs, so this is running inside an agent fence and anything
   installed there evaporates with the tab. The build is real; the install
   would not be.
-  The "Eldrun (dev)" launcher adopts that binary on its next start, so
-  relaunching Eldrun (dev) picks this snapshot up. Nothing else to do.
+  The "$APP_DISPLAY (dev)" launcher adopts that binary on its next start, so
+  relaunching $APP_DISPLAY (dev) picks this snapshot up. Nothing else to do.
 MSG
   exit 0
 fi
@@ -282,8 +284,8 @@ fi
 if pgrep -f "^$BINARY_DEST" >/dev/null 2>&1; then
   cat <<MSG
 package-dev: built $RAW_BIN ($VERSION @ $COMMIT$DIRTY, from $MODE), and left it
-  there: Eldrun (dev) is running from $BINARY_DEST, and replacing that path
-  under it costs the window its core dump if it crashes. Relaunching Eldrun
+  there: $APP_DISPLAY (dev) is running from $BINARY_DEST, and replacing that path
+  under it costs the window its core dump if it crashes. Relaunching $APP_DISPLAY
   (dev) adopts this snapshot.
 MSG
   exit 0
@@ -305,7 +307,7 @@ STAMP="$(date +%Y-%m-%d)"
 cat >"$DESKTOP_DEST" <<DESKTOP
 [Desktop Entry]
 Type=Application
-Name=Eldrun (dev)
+Name=$APP_DISPLAY (dev)
 Comment=Frozen build $VERSION @ $COMMIT$DIRTY ($STAMP) — no hot reload
 Exec=$LAUNCHER
 Icon=$ROOT/src-tauri/icons/128x128.png

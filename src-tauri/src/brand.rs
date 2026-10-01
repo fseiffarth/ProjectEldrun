@@ -495,4 +495,72 @@ mod tests {
         }
         assert_eq!(LEGACY_ENV_PREFIX, "ELDRUN_");
     }
+
+    /// `name = "…"` of the first `[[bin]]` table in the crate's manifest.
+    fn manifest_bin_name() -> String {
+        let manifest = include_str!("../Cargo.toml");
+        let table = manifest.split("[[bin]]").nth(1).expect("Cargo.toml has a [[bin]] table");
+        let line = table
+            .lines()
+            .take_while(|line| !line.starts_with('['))
+            .find(|line| line.trim_start().starts_with("name"))
+            .expect("the [[bin]] table names the binary");
+        line.split('"').nth(1).expect("a quoted name").to_string()
+    }
+
+    /// `BIN_NAME` is what the code looks for under `target/<profile>/` and in
+    /// a window manager's process list; cargo names the file from the
+    /// manifest. The two are written separately, so hold them together.
+    #[test]
+    fn the_bin_name_is_the_manifests() {
+        assert_eq!(manifest_bin_name(), BIN_NAME);
+    }
+
+    /// The dev scripts read the name through `scripts/lib/brand.sh`, which
+    /// parses this file and the manifest. Source it and hold every value to
+    /// the constants here: a script pointed at the wrong binary or folder
+    /// fails without an error. Linux only, like the scripts themselves.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_shell_helper_reads_the_same_names() {
+        let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/lib/brand.sh");
+        let script = r#"set -eu
+. "$1"
+printf '%s\n' "$APP_DISPLAY" "$APP_SLUG" "$APP_UPPER" "$APP_ENV_PREFIX" "$APP_BIN_NAME" "$APP_DEV_BIN_NAME" "$APP_SHARE_DIR"
+export "${APP_ENV_PREFIX}PROBE=set"
+app_env PROBE; echo
+app_env MISSING fallback; echo
+app_export OTHER value
+app_env OTHER; echo
+"#;
+        let output = std::process::Command::new("bash")
+            .args(["-c", script, "bash"])
+            .arg(&helper)
+            .env("HOME", "/home/someone")
+            .output()
+            .expect("bash runs");
+        assert!(
+            output.status.success(),
+            "brand.sh failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+        let share_dir = format!("/home/someone/.local/share/{STATE_DIR_NAME}");
+        assert_eq!(
+            lines,
+            [
+                DISPLAY,
+                SLUG,
+                UPPER,
+                ENV_PREFIX,
+                BIN_NAME,
+                DEV_BIN_NAME,
+                share_dir.as_str(),
+                "set",
+                "fallback",
+                "value",
+            ]
+        );
+    }
 }

@@ -17,9 +17,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BINARY="$HOME/.local/share/eldrun/eldrun-dev"
-LOG_DIR="$HOME/.local/share/eldrun"
-LOG_FILE="$LOG_DIR/eldrun-dev.log"
+# The app's names (scripts/lib/brand.sh): $APP_DISPLAY, $APP_SLUG, $APP_BIN_NAME, …
+. "$ROOT/scripts/lib/brand.sh" || {
+  # Nothing is logged yet (the log's path needs the name), and a desktop entry
+  # has no terminal: say it where it is seen.
+  notify-send -u critical 'The frozen dev build was not started' "scripts/lib/brand.sh could not read the app's name in $ROOT." 2>/dev/null || true
+  exit 1
+}
+BINARY="$APP_SHARE_DIR/$APP_DEV_BIN_NAME"
+LOG_DIR="$APP_SHARE_DIR"
+LOG_FILE="$LOG_DIR/$APP_DEV_BIN_NAME.log"
 LOG_MAX_BYTES=$((16 * 1024 * 1024))
 
 mkdir -p "$LOG_DIR"
@@ -27,23 +34,23 @@ if [ -f "$LOG_FILE" ] && [ "$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)" -gt
   mv -f "$LOG_FILE" "$LOG_FILE.1"
 fi
 exec >>"$LOG_FILE" 2>&1
-printf '\n=== ELDRUN (dev) START %s ===\n' "$(date -Is)"
+printf '\n=== %s (dev) START %s ===\n' "$APP_UPPER" "$(date -Is)"
 
 bail() {
   printf 'REFUSING TO START: %s\n  %s\n' "$1" "$2" >&2
-  notify-send -u critical -a Eldrun 'Eldrun (dev) not started' "$1" 2>/dev/null || true
+  notify-send -u critical -a "$APP_DISPLAY" "$APP_DISPLAY (dev) not started" "$1" 2>/dev/null || true
   exit 1
 }
 
 if pgrep -f "^$BINARY" >/dev/null; then
-  bail "Eldrun (dev) is already running." "Use that window."
+  bail "$APP_DISPLAY (dev) is already running." "Use that window."
 fi
 
-dev_pids="$(pgrep -f "^$ROOT/target/debug/eldrun" || true)"
+dev_pids="$(pgrep -f "^$ROOT/target/debug/$APP_BIN_NAME" || true)"
 tauri_pids="$(pgrep -f "$ROOT/node_modules/.bin/tauri" || true)"
 if [ -n "$dev_pids" ] || [ -n "$tauri_pids" ]; then
-  bail "a hot-reload Eldrun is running (app=${dev_pids:-none} dev=${tauri_pids:-none}); only one Eldrun runs at a time." \
-       "Close that window first, then start Eldrun (dev)."
+  bail "a hot-reload $APP_DISPLAY is running (app=${dev_pids:-none} dev=${tauri_pids:-none}); only one $APP_DISPLAY runs at a time." \
+       "Close that window first, then start $APP_DISPLAY (dev)."
 fi
 
 # Adopt the tree's newest snapshot, if there is one.
@@ -76,7 +83,7 @@ fi
 # (2026-09-14). The check itself stays as the fallback for an artifact that
 # predates the record. Whatever happens is said out loud: a notification names
 # the snapshot adopted, or why the older one is still running.
-BUILT="$ROOT/target/release/eldrun"
+BUILT="$ROOT/target/release/$APP_BIN_NAME"
 FROZEN="$BUILT.frozen"
 if [ -f "$BUILT" ] && [ "$BUILT" -nt "$BINARY" ]; then
   printf 'newer snapshot in the tree: %s\n' "$BUILT"
@@ -91,8 +98,8 @@ if [ -f "$BUILT" ] && [ "$BUILT" -nt "$BINARY" ]; then
   fi
   if [ -z "$verdict" ]; then
     printf 'not adopting it: no build-time record and it does not carry the current dist/ frontend\n'
-    notify-send -u normal -a Eldrun 'Eldrun (dev) is running an older snapshot' \
-      "target/release/eldrun is newer but unverified; run npm run package:dev and relaunch." 2>/dev/null || true
+    notify-send -u normal -a "$APP_DISPLAY" "$APP_DISPLAY (dev) is running an older snapshot" \
+      "target/release/$APP_BIN_NAME is newer but unverified; run npm run package:dev and relaunch." 2>/dev/null || true
   # `-p` keeps the build's mtime, and apport needs it: this shell exec()s the
   # binary under its own pid, whose /proc/<pid>/cmdline the pgrep above has
   # already stamped with the launch time. A binary installed after that stamp
@@ -109,15 +116,15 @@ if [ -f "$BUILT" ] && [ "$BUILT" -nt "$BINARY" ]; then
       "$ROOT/scripts/retain-dev-build.sh" "$BINARY" "$(sed -n 's/^commit=//p' "$FROZEN")" 2>/dev/null || true
     fi
     # The desktop entry's Comment names the frozen snapshot; keep it honest.
-    desktop="$HOME/.local/share/applications/EldrunDev.desktop"
+    desktop="$HOME/.local/share/applications/${APP_DISPLAY}Dev.desktop"
     if [ -f "$desktop" ]; then
       sed -i "s|^Comment=.*|Comment=Frozen build $label ($(date +%Y-%m-%d)) — no hot reload|" "$desktop" 2>/dev/null || true
     fi
-    notify-send -u low -a Eldrun 'Eldrun (dev) moved forward' "Now running $label." 2>/dev/null || true
+    notify-send -u low -a "$APP_DISPLAY" "$APP_DISPLAY (dev) moved forward" "Now running $label." 2>/dev/null || true
   else
     printf 'could not install it; launching the binary that is already there\n'
-    notify-send -u normal -a Eldrun 'Eldrun (dev) is running an older snapshot' \
-      "Could not install the newer build into $BINARY; see eldrun-dev.log." 2>/dev/null || true
+    notify-send -u normal -a "$APP_DISPLAY" "$APP_DISPLAY (dev) is running an older snapshot" \
+      "Could not install the newer build into $BINARY; see $APP_DEV_BIN_NAME.log." 2>/dev/null || true
   fi
 fi
 
@@ -149,7 +156,7 @@ if [ -n "$frozen_commit" ] && git -C "$ROOT" rev-parse --verify --quiet "$frozen
       why="the post-commit freeze FAILED at $fcommit (status $fstatus) — see $APP_DIR/package-dev-auto.log."
     fi
     printf 'snapshot %s is %s commit(s) behind HEAD: %s\n' "$frozen_commit" "$behind" "$why"
-    notify-send -u normal -a Eldrun "Eldrun (dev) is $behind commit(s) behind" \
+    notify-send -u normal -a "$APP_DISPLAY" "$APP_DISPLAY (dev) is $behind commit(s) behind" \
       "Opening $frozen_commit; $why" 2>/dev/null || true
   fi
 fi

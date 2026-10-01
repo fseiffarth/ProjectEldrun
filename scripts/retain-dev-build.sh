@@ -21,6 +21,10 @@
 # `<sha>+local`, so it never shadows the clean build of that commit.
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The app's names (scripts/lib/brand.sh): $APP_DISPLAY, $APP_SLUG, $APP_BIN_NAME, …
+. "$ROOT/scripts/lib/brand.sh"
+
 bin="${1:-}"
 commit="${2:-}"
 if [ -z "$bin" ] || [ -z "$commit" ] || [ ! -f "$bin" ]; then
@@ -30,12 +34,12 @@ fi
 case "$commit" in
   unknown|*/*|*' '*) exit 0 ;;
 esac
-keep="${ELDRUN_DEV_BUILDS_KEEP:-6}"
+keep="$(app_env DEV_BUILDS_KEEP 6)"
 case "$keep" in ''|*[!0-9]*) keep=6 ;; esac
 
 dir="$(dirname "$bin")/dev-builds"
 mkdir -p "$dir"
-dest="$dir/eldrun-$commit"
+dest="$dir/$APP_SLUG-$commit"
 # Same inode as the installed file where the filesystem allows it; a copy
 # where it does not. Either way the file outlives the next install.
 if ! ln -f "$bin" "$dest" 2>/dev/null; then
@@ -45,7 +49,7 @@ fi
 # Prune: newest $keep by modification time (a hardlink carries the build's
 # mtime, so this is build order, not retention order).
 if [ "$keep" -gt 0 ]; then
-  ls -1t "$dir"/eldrun-* 2>/dev/null | tail -n +$((keep + 1)) | while IFS= read -r old; do
+  ls -1t "$dir/$APP_SLUG"-* 2>/dev/null | tail -n +$((keep + 1)) | while IFS= read -r old; do
     rm -f -- "$old"
   done
 fi

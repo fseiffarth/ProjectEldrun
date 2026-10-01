@@ -25,21 +25,23 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The app's names (scripts/lib/brand.sh): $APP_DISPLAY, $APP_SLUG, $APP_BIN_NAME, …
+. "$ROOT/scripts/lib/brand.sh"
 DEV_PORT=1420
 
 bail() {
   printf 'REFUSING TO START: %s\n' "$1" >&2
   printf '  %s\n' "$2" >&2
-  notify-send -u critical -a Eldrun 'Eldrun is already running' "$1" 2>/dev/null || true
+  notify-send -u critical -a "$APP_DISPLAY" "$APP_DISPLAY is already running" "$1" 2>/dev/null || true
   exit 1
 }
 
-app_pids="$(pgrep -f "^$ROOT/target/debug/eldrun" || true)"
+app_pids="$(pgrep -f "^$ROOT/target/debug/$APP_BIN_NAME" || true)"
 dev_pids="$(pgrep -f "$ROOT/node_modules/.bin/tauri" || true)"
 
 if [ -n "$app_pids" ] || [ -n "$dev_pids" ]; then
-  bail "an Eldrun dev session is already up (app=${app_pids:-none} dev=${dev_pids:-none})." \
-       "Use that window, or stop it: pkill -f '$ROOT/node_modules/.bin/tauri'; pkill -f '$ROOT/target/debug/eldrun'"
+  bail "an $APP_DISPLAY dev session is already up (app=${app_pids:-none} dev=${dev_pids:-none})." \
+       "Use that window, or stop it: pkill -f '$ROOT/node_modules/.bin/tauri'; pkill -f '$ROOT/target/debug/$APP_BIN_NAME'"
 fi
 
 # The frozen "Eldrun (dev)" build (scripts/package-dev.sh) is the other window
@@ -47,10 +49,10 @@ fi
 # both (user, 2026-09-02). It runs on the real state, and a second instance on
 # that state corrupts it — a sandboxed session is refused too, so that the rule
 # has no exception to remember.
-FROZEN_BIN="$HOME/.local/share/eldrun/eldrun-dev"
+FROZEN_BIN="$APP_SHARE_DIR/$APP_DEV_BIN_NAME"
 frozen_pids="$(pgrep -f "^$FROZEN_BIN" || true)"
 if [ -n "$frozen_pids" ]; then
-  bail "Eldrun (dev) is running (pid $frozen_pids); only one Eldrun runs at a time." \
+  bail "$APP_DISPLAY (dev) is running (pid $frozen_pids); only one $APP_DISPLAY runs at a time." \
        "Close that window first, then start the hot-reload session."
 fi
 
@@ -58,6 +60,6 @@ fi
 # supervisor died. Starting now would silently attach to it.
 if (exec 3<>"/dev/tcp/127.0.0.1/$DEV_PORT") 2>/dev/null; then
   exec 3>&-
-  bail "port $DEV_PORT is held by an orphaned dev server (no Eldrun process owns it)." \
+  bail "port $DEV_PORT is held by an orphaned dev server (no $APP_DISPLAY process owns it)." \
        "Clear it first: fuser -k $DEV_PORT/tcp"
 fi
