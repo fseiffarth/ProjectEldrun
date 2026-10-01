@@ -1027,6 +1027,13 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     services::webkit_a11y::install();
 
+    // The main thread and every webview renderer's main thread ask rtkit for
+    // nice -10, so the compile and test jobs agent tabs start cannot starve
+    // typing (2026-10-01: 48 ms median / 440 ms worst to reach the renderer's
+    // JS at load 121). Best effort; see `services::ui_priority`.
+    #[cfg(target_os = "linux")]
+    services::ui_priority::install();
+
     // First, so nothing below creates the state dir with the umask's mode.
     storage::ensure_private_state_dir();
 

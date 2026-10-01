@@ -148,6 +148,10 @@ pub mod state_gc;
 pub mod sync_auto;
 pub mod terminal_service;
 pub mod tmux_local;
+// The UI's main threads (this process's, each renderer's) asked to rtkit for
+// nice -10, so the work agent tabs start cannot outrank typing.
+#[cfg(target_os = "linux")]
+pub mod ui_priority;
 pub mod usage_stats;
 // Project VMs (`docs/vm_projects_plan.md`): the third trust tier — the whole
 // project inside a hardware-accelerated QEMU guest (KVM on Linux, HVF on
