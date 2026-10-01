@@ -2,6 +2,9 @@
 
 use app_lib::brand::SLUG;
 fn main() {
+    // Before anything looks a name up: where a lookup that only finds the old
+    // name is counted (`<state>/legacy-hits.json`).
+    app_lib::services::brand_migration::hits::install();
     // `eldrun --agent-shim <cli> [args…]`: the shell-tab shim
     // (`services::agent_shim`) — builds the calling tab's fence and execs it.
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--agent-shim")) {

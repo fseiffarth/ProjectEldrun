@@ -888,7 +888,7 @@ fn with_macos_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri:
 fn install_scrollbar_theme() {
     use gtk::prelude::*;
 
-    if std::env::var_os(crate::app_env!("NO_SCROLLBAR_THEME")).is_some() {
+    if crate::brand::env_os("NO_SCROLLBAR_THEME").is_some() {
         return;
     }
 
@@ -1034,6 +1034,13 @@ pub fn run() {
     // JS at load 121). Best effort; see `services::ui_priority`.
     #[cfg(target_os = "linux")]
     services::ui_priority::install();
+
+    services::brand_migration::hits::install();
+    // Before anything creates or opens the state dir, and before the webview
+    // context exists: what an older build wrote under the app's old name moves
+    // to the current one (`services::brand_migration`). Returns at once while
+    // the name is unchanged.
+    services::brand_migration::run_at_launch();
 
     // First, so nothing below creates the state dir with the umask's mode.
     storage::ensure_private_state_dir();

@@ -225,29 +225,42 @@ pub fn state_dir() -> std::path::PathBuf {
     // `ELDRUN_HOME` (see `paths::app_home`), so a dev window keeps its state
     // away from the packaged daily-driver instance's. Still not a user-facing
     // knob — whatever sets it for the app already owns the process.
-    if let Ok(dir) = std::env::var(crate::app_env!("STATE_DIR")) {
-        if !dir.is_empty() {
-            return std::path::PathBuf::from(dir);
-        }
+    if let Some(dir) = state_dir_override() {
+        return dir;
     }
+    crate::services::brand_migration::resolve_named_dir(
+        &crate::brand::PAIR,
+        crate::brand::Name::STATE_DIR_NAME,
+        &state_dir_base(),
+        "state-dir",
+    )
+}
+
+/// The folder the environment names as the state dir, if it names one.
+pub fn state_dir_override() -> Option<std::path::PathBuf> {
+    crate::brand::env("STATE_DIR").map(std::path::PathBuf::from)
+}
+
+/// The per-OS folder the state dir sits in.
+pub fn state_dir_base() -> std::path::PathBuf {
     if cfg!(target_os = "windows") {
-        let base = std::env::var("APPDATA")
+        std::env::var("APPDATA")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| paths::home_dir());
-        base.join(crate::brand::STATE_DIR_NAME)
+            .unwrap_or_else(|_| paths::home_dir())
     } else if cfg!(target_os = "macos") {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         std::path::PathBuf::from(home)
             .join("Library")
             .join("Application Support")
-            .join(crate::brand::STATE_DIR_NAME)
     } else {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-        std::path::PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join(crate::brand::STATE_DIR_NAME)
+        std::path::PathBuf::from(home).join(".local").join("share")
     }
+}
+
+/// `~/.local/share`, the folder [`home_share_dir`] sits in on every OS.
+pub fn home_share_base() -> std::path::PathBuf {
+    paths::home_dir().join(".local").join("share")
 }
 
 /// `~/.local/share/<state dir name>` on every OS, whatever the state-dir
@@ -256,10 +269,12 @@ pub fn state_dir() -> std::path::PathBuf {
 /// so this is the one place that path is built. On Linux without an override
 /// it is [`state_dir`].
 pub fn home_share_dir() -> std::path::PathBuf {
-    paths::home_dir()
-        .join(".local")
-        .join("share")
-        .join(crate::brand::STATE_DIR_NAME)
+    crate::services::brand_migration::resolve_named_dir(
+        &crate::brand::PAIR,
+        crate::brand::Name::STATE_DIR_NAME,
+        &home_share_base(),
+        "share-dir",
+    )
 }
 
 /// The scope id of the root terminal — the one scope that is not a project and

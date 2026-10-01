@@ -64,7 +64,7 @@ fn needs_raise(current_nice: Option<i32>) -> bool {
 /// thread of its own (rtkit answers over the system bus, and a renderer only
 /// exists once the first webview is built).
 pub fn install() {
-    if opted_out(std::env::var_os(OPT_OUT_VAR).as_deref()) {
+    if opted_out(crate::brand::env_os("UI_PRIORITY").as_deref()) {
         return;
     }
     let spawned = std::thread::Builder::new()

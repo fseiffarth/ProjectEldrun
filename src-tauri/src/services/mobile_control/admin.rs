@@ -189,6 +189,12 @@ pub mod pipe {
 
     /// Stable per-path pipe name so two Eldrun state dirs never collide.
     pub fn pipe_name(socket: &Path) -> String {
+        pipe_name_with(crate::brand::CONTROL_PIPE_PREFIX, socket)
+    }
+
+    /// [`pipe_name`] under a given prefix: the current one, or the one an
+    /// older build's host listens on.
+    pub fn pipe_name_with(prefix: &str, socket: &Path) -> String {
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(socket.to_string_lossy().as_bytes());
         let mut hex = String::with_capacity(32);
@@ -196,7 +202,7 @@ pub mod pipe {
             use std::fmt::Write;
             let _ = write!(hex, "{byte:02x}");
         }
-        format!(r"\\.\pipe\{}{hex}", crate::brand::CONTROL_PIPE_PREFIX)
+        format!(r"\\.\pipe\{prefix}{hex}")
     }
 
     pub fn token_path(socket: &Path) -> PathBuf {
@@ -239,6 +245,12 @@ pub mod pipe {
     ) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, String> {
         use tokio::net::windows::named_pipe::ClientOptions;
         let name = pipe_name(socket);
+        // A host an older build started listens under the old prefix. Tried
+        // only when nothing answers under the current one, and only while
+        // the two differ.
+        let legacy_name = crate::brand::PAIR
+            .legacy(crate::brand::Name::CONTROL_PIPE_PREFIX)
+            .map(|prefix| pipe_name_with(&prefix, socket));
         // `ERROR_PIPE_BUSY`: every instance is taken — the one condition a
         // retry can resolve, since the listener creates the next instance right
         // after each accept.
@@ -257,7 +269,15 @@ pub mod pipe {
                 // host simply not running — is the answer, not a wait: retrying
                 // it made every bridge call with the desktop closed sit out the
                 // whole deadline before it could say `desktop_unavailable`.
-                Err(error) => return Err(error.to_string()),
+                Err(error) => {
+                    if let Some(legacy_name) = &legacy_name {
+                        if let Ok(client) = ClientOptions::new().open(legacy_name) {
+                            crate::brand::legacy_hit("control-pipe");
+                            return Ok(client);
+                        }
+                    }
+                    return Err(error.to_string());
+                }
             }
         }
     }

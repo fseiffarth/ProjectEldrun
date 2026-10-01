@@ -593,13 +593,31 @@ pub fn app_home() -> PathBuf {
     app_home_for(|key| std::env::var(key).ok())
 }
 
-pub fn app_home_for<F>(mut env: F) -> PathBuf
+pub fn app_home_for<F>(env: F) -> PathBuf
 where
     F: FnMut(&str) -> Option<String>,
 {
-    match non_empty(env(crate::app_env!("HOME"))) {
+    app_home_in(&crate::brand::PAIR, env, &home_dir())
+}
+
+/// [`app_home`] for any brand pair and home. The environment override wins
+/// (current name, then the old one). Otherwise an install made by an older
+/// build keeps its tree under the old name — it holds the user's projects,
+/// and moving it is a step of its own that only the user starts — and
+/// everything else gets the current name: `~/<current>` if it exists, else
+/// `~/<old>` if that exists, else `~/<current>`.
+pub fn app_home_in<F>(pair: &crate::brand::Pair, env: F, home: &Path) -> PathBuf
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    match pair.env_in("HOME", env) {
         Some(dir) => PathBuf::from(dir),
-        None => home_dir().join(crate::brand::HOME_DIR_NAME),
+        None => crate::services::brand_migration::resolve_named_dir(
+            pair,
+            crate::brand::Name::HOME_DIR_NAME,
+            home,
+            "home-tree",
+        ),
     }
 }
 

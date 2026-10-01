@@ -69,7 +69,7 @@ pub fn should_install(bus_address: Option<&OsStr>, opt_in: Option<&OsStr>) -> bo
 /// read once, when WebKit launches its first web process.
 pub fn install() {
     let bus = std::env::var_os(BUS_ADDRESS_VAR);
-    let opt_in = std::env::var_os(OPT_IN_VAR);
+    let opt_in = crate::brand::env_os("ENABLE_A11Y");
     if !should_install(bus.as_deref(), opt_in.as_deref()) {
         return;
     }

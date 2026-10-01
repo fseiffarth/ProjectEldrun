@@ -126,6 +126,171 @@ pub fn user_agent() -> String {
     format!("{DISPLAY}/{}", env!("CARGO_PKG_VERSION"))
 }
 
+/// One brand's three forms. The constants above are [`CURRENT`] and [`LEGACY`]
+/// spelled out; a test builds an invented brand to run the migrator and the
+/// dual reads with names that differ.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Forms {
+    /// The name as shown to the user.
+    pub display: &'static str,
+    /// Lowercase form.
+    pub slug: &'static str,
+    /// Uppercase form.
+    pub upper: &'static str,
+}
+
+impl Forms {
+    /// Prefix of this brand's environment variables.
+    pub fn env_prefix(&self) -> String {
+        format!("{}_", self.upper)
+    }
+
+    /// This brand's environment variable `<prefix><name>`.
+    pub fn env_name(&self, name: &str) -> String {
+        format!("{}_{name}", self.upper)
+    }
+}
+
+/// The brand this build writes.
+pub const CURRENT: Forms = Forms { display: DISPLAY, slug: SLUG, upper: UPPER };
+
+/// The brand older builds wrote.
+pub const LEGACY: Forms = Forms { display: LEGACY_DISPLAY, slug: LEGACY_SLUG, upper: LEGACY_UPPER };
+
+/// The current brand and the old one it replaced. Everything that looks a name
+/// up twice, and every migration step, takes one of these instead of reading
+/// the constants: production passes [`PAIR`], a test an invented pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pair {
+    /// What this build writes and looks up first.
+    pub cur: Forms,
+    /// What older builds wrote.
+    pub legacy: Forms,
+}
+
+/// The pair this build runs with.
+pub const PAIR: Pair = Pair { cur: CURRENT, legacy: LEGACY };
+
+impl Pair {
+    /// Whether the name changed at all. While it has not, there is nothing to
+    /// migrate and no second place to look.
+    pub fn renamed(&self) -> bool {
+        self.cur != self.legacy
+    }
+
+    /// `name` as this build writes it.
+    pub fn cur(&self, name: Name) -> String {
+        self.cur.name(name)
+    }
+
+    /// `name` as an older build wrote it — `None` when that is the current
+    /// spelling, so a dual read written `if let Some(old) = pair.legacy(..)`
+    /// never looks twice in the same place.
+    pub fn legacy(&self, name: Name) -> Option<String> {
+        let old = self.legacy.name(name);
+        (old != self.cur.name(name)).then_some(old)
+    }
+
+    /// The old environment variable `<old prefix><name>`, or `None` when the
+    /// prefix did not change.
+    pub fn legacy_env_name(&self, name: &str) -> Option<String> {
+        (self.cur.upper != self.legacy.upper).then(|| self.legacy.env_name(name))
+    }
+
+    /// The value of the app's environment variable `name`: the current
+    /// spelling first, then the old one (counted as a legacy hit). `lookup`
+    /// is the environment; an empty value counts as unset.
+    pub fn env_in(&self, name: &str, mut lookup: impl FnMut(&str) -> Option<String>) -> Option<String> {
+        if let Some(value) = lookup(&self.cur.env_name(name)).filter(|v| !v.is_empty()) {
+            return Some(value);
+        }
+        let value = lookup(&self.legacy_env_name(name)?).filter(|v| !v.is_empty())?;
+        legacy_hit(&format!("env:{name}"));
+        Some(value)
+    }
+
+    /// Bring an environment an older build saved or exported up to date:
+    /// each variable under the old prefix moves to the current one, unless
+    /// the current one is already set. Returns whether anything moved.
+    pub fn adopt_legacy_env(&self, env: &mut std::collections::HashMap<String, String>) -> bool {
+        if self.cur.upper == self.legacy.upper {
+            return false;
+        }
+        let old_prefix = self.legacy.env_prefix();
+        let old_keys: Vec<String> = env.keys().filter(|k| k.starts_with(&old_prefix)).cloned().collect();
+        for old_key in &old_keys {
+            let Some(value) = env.remove(old_key) else { continue };
+            let name = &old_key[old_prefix.len()..];
+            legacy_hit(&format!("env:{name}"));
+            env.entry(self.cur.env_name(name)).or_insert(value);
+        }
+        !old_keys.is_empty()
+    }
+
+    /// Export every one of the app's variables in `env` under the old prefix
+    /// as well, for a program that still reads the old name (an agent CLI's
+    /// hook written by an older build, a user's script). A variable already
+    /// set under the old name is left alone.
+    pub fn export_both(&self, env: &mut std::collections::HashMap<String, String>) {
+        if self.cur.upper == self.legacy.upper {
+            return;
+        }
+        let prefix = self.cur.env_prefix();
+        let twins: Vec<(String, String)> = env
+            .iter()
+            .filter_map(|(key, value)| {
+                let name = key.strip_prefix(&prefix)?;
+                Some((self.legacy.env_name(name), value.clone()))
+            })
+            .collect();
+        for (key, value) in twins {
+            env.entry(key).or_insert(value);
+        }
+    }
+}
+
+/// The app's environment variable `name` from the process environment: the
+/// current spelling, then the old one. See [`Pair::env_in`].
+pub fn env(name: &str) -> Option<String> {
+    PAIR.env_in(name, |key| std::env::var(key).ok())
+}
+
+/// The app's environment variable `name` as the process has it, set-but-empty
+/// included: the current spelling if it is set at all, else the old one.
+pub fn env_os(name: &str) -> Option<std::ffi::OsString> {
+    if let Some(value) = std::env::var_os(PAIR.cur.env_name(name)) {
+        return Some(value);
+    }
+    let value = std::env::var_os(PAIR.legacy_env_name(name)?)?;
+    legacy_hit(&format!("env:{name}"));
+    Some(value)
+}
+
+/// Count one lookup that found something only under its old name. `id` says
+/// which lookup (`"state-dir"`, `"tmux-prefix"`, `"env:TAB_UID"`); the counts
+/// land in `<state>/legacy-hits.json` and Settings → About shows them. The
+/// old-name lookups can be deleted once that file stays empty.
+///
+/// A lookup can only miss under the current name and hit under the old one
+/// when the two differ, so this is never reached while the brand is
+/// unchanged; the log refuses to write then anyway.
+///
+/// This file is also compiled into the build script, so it cannot name the
+/// module that keeps the log: the app installs it with
+/// [`set_legacy_hit_sink`] first thing, and until then a hit is dropped.
+pub fn legacy_hit(id: &str) {
+    if let Some(sink) = LEGACY_HIT_SINK.get() {
+        sink(id);
+    }
+}
+
+static LEGACY_HIT_SINK: std::sync::OnceLock<fn(&str)> = std::sync::OnceLock::new();
+
+/// Say where [`legacy_hit`] counts. The first call wins.
+pub fn set_legacy_hit_sink(sink: fn(&str)) {
+    let _ = LEGACY_HIT_SINK.set(sink);
+}
+
 /// Declare a current name and its `LEGACY_*` twin from one pattern. `slug`,
 /// `name` and `upper` stand for the brand's three forms; every other piece is
 /// a literal.
@@ -137,6 +302,31 @@ macro_rules! names {
             /// The name an older build used for the constant it is the twin of.
             pub const $legacy: &str = concat!($(names!(@legacy $part)),+);
         )+
+
+        /// Every name declared above, as a value: `forms.name(Name::PROJECT_DIR)`
+        /// builds it for any brand. The migrator and the dual reads take their
+        /// names this way, so a test can run them under an invented brand
+        /// while the constants stay what they are.
+        #[allow(non_camel_case_types)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum Name {
+            $( $(#[$doc])* $cur, )+
+        }
+
+        impl Name {
+            /// Every name with its current and its old constant.
+            pub const ALL: &'static [(Name, &'static str, &'static str)] =
+                &[$( (Name::$cur, $cur, $legacy) ),+];
+        }
+
+        impl Forms {
+            /// `name` as this brand spells it.
+            pub fn name(&self, name: Name) -> String {
+                match name {
+                    $( Name::$cur => [$(names!(@forms self $part)),+].concat(), )+
+                }
+            }
+        }
     };
     (@cur slug) => { $crate::app_slug!() };
     (@cur name) => { $crate::app_name!() };
@@ -146,6 +336,10 @@ macro_rules! names {
     (@legacy name) => { $crate::legacy_name!() };
     (@legacy upper) => { $crate::legacy_upper!() };
     (@legacy $lit:literal) => { $lit };
+    (@forms $forms:ident slug) => { $forms.slug };
+    (@forms $forms:ident name) => { $forms.display };
+    (@forms $forms:ident upper) => { $forms.upper };
+    (@forms $forms:ident $lit:literal) => { $lit };
 }
 
 names! {
@@ -494,6 +688,116 @@ mod tests {
             assert_eq!(actual, literal);
         }
         assert_eq!(LEGACY_ENV_PREFIX, "ELDRUN_");
+    }
+
+    /// The runtime spelling of every name is the constant: the migrator and
+    /// the dual reads build names from a [`Pair`], the rest of the code reads
+    /// the constants, and the two must never drift.
+    #[test]
+    fn a_name_built_at_runtime_is_its_constant() {
+        for (name, current, legacy) in Name::ALL {
+            assert_eq!(CURRENT.name(*name), *current, "{name:?}");
+            assert_eq!(LEGACY.name(*name), *legacy, "{name:?}");
+            assert_eq!(PAIR.cur(*name), *current);
+            assert_eq!(PAIR.legacy(*name), (current != legacy).then(|| legacy.to_string()));
+        }
+        assert_eq!(CURRENT.env_prefix(), ENV_PREFIX);
+        assert_eq!(LEGACY.env_prefix(), LEGACY_ENV_PREFIX);
+        assert_eq!(CURRENT.env_name("TAB_UID"), env_name("TAB_UID"));
+        assert_eq!(PAIR.renamed(), SLUG != LEGACY_SLUG || DISPLAY != LEGACY_DISPLAY || UPPER != LEGACY_UPPER);
+    }
+
+    /// An invented current brand over the real old one.
+    const RENAMED: Pair = Pair {
+        cur: Forms { display: "Newname", slug: "newname", upper: "NEWNAME" },
+        legacy: LEGACY,
+    };
+
+    fn env_map(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn a_renamed_pair_has_an_old_spelling_for_every_name() {
+        assert!(RENAMED.renamed());
+        for (name, _, legacy) in Name::ALL {
+            assert_eq!(RENAMED.legacy(*name).as_deref(), Some(*legacy), "{name:?}");
+            assert_ne!(RENAMED.cur(*name), *legacy, "{name:?}");
+        }
+        assert_eq!(RENAMED.cur(Name::PROJECT_DIR), ".newname");
+        assert_eq!(RENAMED.cur(Name::MOBILE_HOST_RUN_VALUE), "NewnameMobileHost");
+        assert_eq!(RENAMED.cur.env_name("TAB_UID"), "NEWNAME_TAB_UID");
+        assert_eq!(RENAMED.legacy_env_name("TAB_UID"), Some(LEGACY.env_name("TAB_UID")));
+    }
+
+    #[test]
+    fn an_environment_variable_is_read_under_the_current_name_then_the_old_one() {
+        let env = env_map(&[
+            ("NEWNAME_HOME", "/new"),
+            (&LEGACY.env_name("HOME"), "/old"),
+            (&LEGACY.env_name("STATE_DIR"), "/old-state"),
+            ("NEWNAME_EMPTY", ""),
+            (&LEGACY.env_name("EMPTY"), "old-value"),
+        ]);
+        let lookup = |key: &str| env.get(key).cloned();
+        assert_eq!(RENAMED.env_in("HOME", lookup), Some("/new".into()));
+        assert_eq!(RENAMED.env_in("STATE_DIR", lookup), Some("/old-state".into()));
+        // An empty value counts as unset, under either name.
+        assert_eq!(RENAMED.env_in("EMPTY", lookup), Some("old-value".into()));
+        assert_eq!(RENAMED.env_in("MISSING", lookup), None);
+        // The unchanged pair looks once.
+        let mut asked = Vec::new();
+        assert_eq!(
+            PAIR.env_in("MISSING", |key| {
+                asked.push(key.to_string());
+                None
+            }),
+            None
+        );
+        if !PAIR.renamed() {
+            assert_eq!(asked, [env_name("MISSING")]);
+        }
+    }
+
+    #[test]
+    fn a_saved_environment_moves_to_the_current_prefix() {
+        let mut env = env_map(&[
+            (&LEGACY.env_name("TAB_UID"), "uid-1"),
+            (&LEGACY.env_name("LOCAL_MODEL"), "old-model"),
+            ("NEWNAME_LOCAL_MODEL", "new-model"),
+            ("PATH", "/bin"),
+        ]);
+        assert!(RENAMED.adopt_legacy_env(&mut env));
+        assert_eq!(
+            env,
+            env_map(&[("NEWNAME_TAB_UID", "uid-1"), ("NEWNAME_LOCAL_MODEL", "new-model"), ("PATH", "/bin")])
+        );
+        assert!(!RENAMED.adopt_legacy_env(&mut env));
+
+        // Unchanged pair: the map is not touched.
+        if !PAIR.renamed() {
+            let mut env = env_map(&[(&env_name("TAB_UID"), "uid-1")]);
+            let before = env.clone();
+            assert!(!PAIR.adopt_legacy_env(&mut env));
+            PAIR.export_both(&mut env);
+            assert_eq!(env, before);
+        }
+    }
+
+    #[test]
+    fn both_names_are_exported() {
+        let mut env = env_map(&[("NEWNAME_TAB_UID", "uid-1"), ("NEWNAME_SCOPE", "root"), ("PATH", "/bin")]);
+        RENAMED.export_both(&mut env);
+        assert_eq!(
+            env,
+            env_map(&[
+                ("NEWNAME_TAB_UID", "uid-1"),
+                (&LEGACY.env_name("TAB_UID"), "uid-1"),
+                ("NEWNAME_SCOPE", "root"),
+                (&LEGACY.env_name("SCOPE"), "root"),
+                ("PATH", "/bin"),
+            ])
+        );
     }
 
     /// `name = "…"` of the first `[[bin]]` table in the crate's manifest.
