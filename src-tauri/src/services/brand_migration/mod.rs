@@ -230,6 +230,11 @@ pub const LAZY_STEPS: &[(&str, StepState, &str)] = &[
         StepState::Lazy,
         "needs root: the command that next writes a drop-in also removes the old file",
     ),
+    (
+        "mail-store",
+        StepState::Pending,
+        "not attempted: a store written under the old labels keeps them and opens as before",
+    ),
     ("keyring", StepState::Lazy, "each saved secret, when it is next read"),
     ("project-folders", StepState::Lazy, "each project, when it is opened"),
     ("remote-projects", StepState::Lazy, "each remote project, when it connects"),
