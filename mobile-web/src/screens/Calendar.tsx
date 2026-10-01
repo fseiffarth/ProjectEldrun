@@ -5,6 +5,7 @@ import { describeFailure } from "../connection";
 import { NotificationsSheet } from "../components/NotificationsSheet";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
+import { BRAND } from "../../../src/lib/brand";
 
 /** A destructive act waiting on a second tap: the shared option sheet, with
  * one option, in place of `window.confirm` — the same sheet the composer's
@@ -114,7 +115,7 @@ function CalendarEditSheet({ calendar, busy, save, onClose }: { calendar: Mobile
     <section className="option-sheet schedule-sheet" role="dialog" aria-modal="true" aria-label="Edit calendar" onClick={(event) => event.stopPropagation()}>
       <span className="sheet-grip" aria-hidden="true" />
       <header><button className="sheet-close" onClick={onClose} aria-label="Close">✕</button><h2>Edit calendar {isUntested("mobile.calendar.manage") && <small>Untested</small>}</h2><span className="sheet-close" aria-hidden="true" /></header>
-      <p className="sheet-note">The name and colour are the desktop's own — changing them here changes the Eldrun window too.</p>
+      <p className="sheet-note">The name and colour are the desktop's own — changing them here changes the {BRAND.display} window too.</p>
       {error && <p className="sheet-note error" role="alert">{error}</p>}
       <div className="mobile-schedule-form">
         <label>Calendar name<input type="text" value={name} autoFocus maxLength={160} disabled={busy} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void submit(); } }} /></label>

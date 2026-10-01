@@ -1178,7 +1178,7 @@ fn ensure_image(spec: Option<&SandboxSpec>, project_dir: &str, image: &str) -> R
     Err(format!(
         "Project container: image '{image}' not found. Toggle the container off and on again \
          to get a one-click build, or provide the image yourself (`docker build -t {image} \
-         docker/agent-sandbox` from the Eldrun repo, or `docker pull` for a registry image)."
+         docker/agent-sandbox` from the {app} repo, or `docker pull` for a registry image).", app = crate::brand::DISPLAY
     ))
 }
 

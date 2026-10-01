@@ -627,7 +627,7 @@ fn username_for(uid: u32, map: &HashMap<u32, String>) -> String {
 /// [`parse_who`]). Not a terminal name, because there is no terminal: it is the
 /// pooled SSH connection this very sample arrived over.
 const SELF_SESSION_TTY: &str = "ssh";
-const SELF_SESSION_DETAIL: &str = "(this Eldrun connection — no tty)";
+const SELF_SESSION_DETAIL: &str = concat!("(this ", crate::app_name!(), " connection — no tty)");
 
 /// Parse `who` output into one [`LoginSession`] per non-blank line. Each line is
 /// `user  tty  <login-time> (<origin>)`; the first two whitespace fields are the

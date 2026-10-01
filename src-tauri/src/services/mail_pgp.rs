@@ -188,7 +188,7 @@ impl PgpKeyring {
                     .map_err(|e| format!("the keyring is corrupt: {e}"))?;
                 if file.version != KEYRING_VERSION {
                     return Err(format!(
-                        "this keyring was written by a newer version of Eldrun (v{})",
+                        concat!("this keyring was written by a newer version of ", crate::app_name!(), " (v{})"),
                         file.version
                     ));
                 }

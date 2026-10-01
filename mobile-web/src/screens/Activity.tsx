@@ -7,6 +7,7 @@ import { AgentModeMarks, agentModeClass } from "../components/AgentModeMarks";
 import { tabColorCss } from "../tabColors";
 import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
 import { readChoice, writeChoice } from "../prefs";
+import { BRAND } from "../../../src/lib/brand";
 
 /**
  * Every agent tab that is working, waiting on a decision, or done — across
@@ -125,7 +126,7 @@ export function Activity({ open, onConnection }: {
       <span>{tabs.length ? "Showing the last list this session loaded." : "Agent activity is never loaded from cache."}</span>
     </p>}
     {!loaded && !offline && <p className="projects-empty" role="status">Loading agent tabs…</p>}
-    {loaded && !desktop && <p className="notice">Desktop unavailable — Eldrun on the desktop is what tells a working session from one waiting on you.</p>}
+    {loaded && !desktop && <p className="notice">Desktop unavailable — {BRAND.display} on the desktop is what tells a working session from one waiting on you.</p>}
     {loaded && desktop && tabs.length === 0 && <p className="projects-empty">Nothing is working, waiting or done. Quiet tabs are not listed here — open a project to reach one.</p>}
     {tabs.length > 1 && <label className="activity-sort">
       <span>Sort</span>

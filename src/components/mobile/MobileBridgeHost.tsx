@@ -77,6 +77,7 @@ import {
   type ScheduleRule,
   type ScheduledAgentPrompt,
 } from "../../lib/agents/agentSchedule";
+import { BRAND } from "../../lib/brand";
 
 const MOBILE_DESKTOP_EVENT = "eldrun-mobile-desktop-request";
 
@@ -1828,7 +1829,7 @@ function mailReadAllowed() {
 const MAIL_READ_DISABLED: DesktopResponse = {
   status: "error",
   code: "mail_read_disabled",
-  message: "Mail on the phone is switched off in Eldrun",
+  message: `Mail on the phone is switched off in ${BRAND.display}`,
 };
 
 async function configuredMailAccounts() {
@@ -1934,7 +1935,7 @@ async function mailMessage(folderId: string, messageId: string, offset: number):
  * round trip. Only the four verbs exist; delete and move never reach here. */
 async function mailMark(folderId: string, messageId: string, offset: number, action: MailMarkAction): Promise<DesktopResponse> {
   if (!mailWriteGates().actions) {
-    return { status: "error", code: "mail_actions_disabled", message: "Mail actions from the phone are switched off in Eldrun" };
+    return { status: "error", code: "mail_actions_disabled", message: `Mail actions from the phone are switched off in ${BRAND.display}` };
   }
   const resolved = await resolveMailMessage(folderId, messageId, offset);
   if ("status" in resolved) return resolved;
@@ -1963,7 +1964,7 @@ async function mailReply(
   t: ReturnType<typeof useT>,
 ): Promise<DesktopResponse> {
   if (!mailWriteGates().reply) {
-    return { status: "error", code: "mail_reply_disabled", message: "Replies from the phone are switched off in Eldrun" };
+    return { status: "error", code: "mail_reply_disabled", message: `Replies from the phone are switched off in ${BRAND.display}` };
   }
   if (!text.trim()) return { status: "error", code: "empty_reply", message: "The reply is empty" };
   const resolved = await resolveMailMessage(folderId, messageId, offset);

@@ -333,9 +333,9 @@ impl Refusal {
     }
     fn text(self) -> &'static str {
         match self {
-            Refusal::Unavailable => "Eldrun's MCP settings are unavailable; the tools stay off until they can be read",
-            Refusal::Off => "Eldrun's tools are switched off in Eldrun's Settings; the user has to turn them on first",
-            Refusal::Revoked => "this tab's MCP access was revoked or changed in Eldrun's MCP session access; retry once (a changed grant applies to the next call), and if it stays refused the tab has to be reopened to get the tools back",
+            Refusal::Unavailable => concat!(crate::app_name!(), "'s MCP settings are unavailable; the tools stay off until they can be read"),
+            Refusal::Off => concat!(crate::app_name!(), "'s tools are switched off in ", crate::app_name!(), "'s Settings; the user has to turn them on first"),
+            Refusal::Revoked => concat!("this tab's MCP access was revoked or changed in ", crate::app_name!(), "'s MCP session access; retry once (a changed grant applies to the next call), and if it stays refused the tab has to be reopened to get the tools back"),
         }
     }
     fn reason(self) -> &'static str {

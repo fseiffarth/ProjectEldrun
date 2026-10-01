@@ -3,6 +3,7 @@ import { ApiError, setTabColor, type TabRow } from "../api";
 import { TAB_COLORS, TAB_COLOR_IDS, TAB_COLOR_LABELS } from "../tabColors";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
+import { BRAND } from "../../../src/lib/brand";
 
 /** Paint one tab from the phone, or clear its colour (#264).
  *
@@ -39,7 +40,7 @@ export function ColorSheet({ tab, onClose, onColored }: {
       onColored(stored ?? undefined);
     } catch (cause) {
       setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
-        ? "Open desktop Eldrun to colour a tab."
+        ? `Open desktop ${BRAND.display} to colour a tab.`
         : "The colour could not be set.");
     } finally {
       setBusy(false);
@@ -50,7 +51,7 @@ export function ColorSheet({ tab, onClose, onColored }: {
     <section className="option-sheet schedule-sheet" role="dialog" aria-modal="true" aria-label={`Colour ${tab.label}`} onClick={(event) => event.stopPropagation()}>
       <span className="sheet-grip" aria-hidden="true" />
       <header><button className="sheet-close" onClick={onClose} aria-label="Close">✕</button><h2>Tab colour {isUntested("mobile.sheet.color") && <small>{t("mobile.newTab.untested")}</small>}</h2><span className="sheet-close" aria-hidden="true" /></header>
-      <p className="sheet-note">The colour is the desktop's own tab colour — picking one here paints “{tab.label}” in the Eldrun window too.</p>
+      <p className="sheet-note">The colour is the desktop's own tab colour — picking one here paints “{tab.label}” in the {BRAND.display} window too.</p>
       {error && <p className="sheet-note error" role="alert">{error}</p>}
       <div className="tab-color-grid" role="group" aria-label="Tab colour">
         <button

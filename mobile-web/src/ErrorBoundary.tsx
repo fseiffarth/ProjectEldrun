@@ -1,5 +1,6 @@
 import React from "react";
 import { forgetLastPlace } from "./lastPlace";
+import { BRAND } from "../../src/lib/brand";
 
 /**
  * A render error anywhere used to leave a permanently blank PWA that only a
@@ -28,7 +29,7 @@ export class ErrorBoundary extends React.Component<
     if (!this.state.failed) return this.props.children;
     return (
       <main className="screen splash">
-        <p>Eldrun Mobile hit an unexpected error and stopped drawing this screen.</p>
+        <p>{BRAND.display} Mobile hit an unexpected error and stopped drawing this screen.</p>
         <button className="primary" onClick={() => this.setState({ failed: false })}>
           Try again
         </button>

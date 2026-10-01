@@ -22,6 +22,7 @@ import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
 import { describeFailure } from "../connection";
 import { installFocusSwipe } from "../terminal/focusSwipe";
+import { BRAND } from "../../../src/lib/brand";
 
 /** The orders this list offers, in the words this screen can use for them. The
  * cross-project Agents list calls `native` "Status", because there the arrival
@@ -87,7 +88,7 @@ function PromptLines({ tab }: { tab: TabRow }) {
     {lines.length === 0
       ? <p className="tab-card-prompt empty">{promptsFromTranscript(tab)
         ? "Nothing read from this session's transcript yet."
-        : "OpenCode's own history is not read yet — prompts sent from Eldrun show here."}</p>
+        : `OpenCode's own history is not read yet — prompts sent from ${BRAND.display} show here.`}</p>
       : lines.map((prompt, index) => {
         const when = promptClock(prompt.at);
         return <p className={index === 0 ? "tab-card-prompt latest" : "tab-card-prompt"} key={`${prompt.at ?? ""}-${index}`}>
@@ -332,7 +333,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       if (tab.kind === "agent") void load();
     } catch (cause) {
       setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
-        ? "Open desktop Eldrun to close a tab."
+        ? `Open desktop ${BRAND.display} to close a tab.`
         : "The tab could not be closed.");
     } finally {
       setClosingId(null);
@@ -380,7 +381,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     } catch (cause) {
       setDetail((prev) => prev ? { ...prev, tabs: applyServerOrder(prev.tabs, (row) => row.id, before) } : prev);
       setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
-        ? "Open desktop Eldrun to rearrange tabs."
+        ? `Open desktop ${BRAND.display} to rearrange tabs.`
         : "The tab could not be moved.");
     } finally {
       moving.current = false;
@@ -464,10 +465,10 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {/* Only once the host has answered: `!detail?.desktop_available` was also
         true while the first load was in flight, so every project opened on a
         "Desktop unavailable" notice that vanished a moment later. */}
-    {detail && !detail.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
+    {detail && !detail.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require {BRAND.display}.</p>}
     {error && <p className="error">{error}</p>}
     {projectInbox.view}
-    {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the Eldrun window follows. {isUntested("mobile.project.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
+    {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the {BRAND.display} window follows. {isUntested("mobile.project.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
     <section className="cards">{tabs.map((tab) => <div
       className={`tab-card${tabColorCss(tab.color) ? " has-tab-color" : ""}${agentModeClass(tab)}${drag.rowClass(tab.id)}`}
       key={tab.id}

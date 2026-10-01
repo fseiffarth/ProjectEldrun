@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// parsed and says `enabled: false`. Everything else about reading that file is
 /// a [`SETTINGS_UNREADABLE_ERROR`], because the two need opposite exit codes and
 /// used to share one — see [`HostConfig::load`].
-pub const DISABLED_ERROR: &str = "Eldrun Mobile is disabled";
+pub const DISABLED_ERROR: &str = concat!(crate::app_name!(), " Mobile is disabled");
 
 /// The load error meaning "the settings file could not be read or parsed".
 ///
@@ -23,7 +23,7 @@ pub const DISABLED_ERROR: &str = "Eldrun Mobile is disabled";
 /// settings change, and a transient read error is over by the next attempt),
 /// whereas a clean exit would take Mobile down until somebody noticed and
 /// pressed Reconnect.
-pub const SETTINGS_UNREADABLE_ERROR: &str = "Eldrun Mobile settings could not be read";
+pub const SETTINGS_UNREADABLE_ERROR: &str = concat!(crate::app_name!(), " Mobile settings could not be read");
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MobileHostSettings {
@@ -234,7 +234,7 @@ pub fn detect_serve_settings_json(
     match candidates.len() {
         1 => Ok(candidates.remove(0)),
         0 => Err("No private HTTPS root handler proxies to http://127.0.0.1:<port>".into()),
-        _ => Err("Multiple eligible Tailscale Serve mappings were found; keep only the Eldrun root mapping before detecting settings".into()),
+        _ => Err(concat!("Multiple eligible Tailscale Serve mappings were found; keep only the ", crate::app_name!(), " root mapping before detecting settings").into()),
     }
 }
 
@@ -278,7 +278,7 @@ pub fn verify_serve_json(
         .and_then(serde_json::Value::as_bool)
         == Some(true)
     {
-        return Err("The configured origin is exposed through Tailscale Funnel; disable Funnel before enabling Eldrun Mobile".into());
+        return Err(concat!("The configured origin is exposed through Tailscale Funnel; disable Funnel before enabling ", crate::app_name!(), " Mobile").into());
     }
     Ok(())
 }

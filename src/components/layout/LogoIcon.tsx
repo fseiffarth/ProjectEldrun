@@ -1,3 +1,4 @@
+import { BRAND } from "../../lib/brand";
 interface LogoIconProps {
   className?: string;
 }
@@ -16,10 +17,10 @@ export function LogoIcon({ className }: LogoIconProps) {
       viewBox="0 0 512 512"
       fill="none"
       role="img"
-      aria-label="Eldrun"
+      aria-label={BRAND.display}
       className={className}
     >
-      <title>Eldrun</title>
+      <title>{BRAND.display}</title>
       <g
         stroke="currentColor"
         strokeLinecap="round"

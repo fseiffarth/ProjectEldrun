@@ -122,11 +122,11 @@ pub(crate) fn resolve_ollama_addr(raw: Option<&str>, allow_remote: bool) -> Resu
     } else if let Some(r) = raw.strip_prefix("https://") {
         let _ = r;
         return Err(format!(
-            "Ollama host `{raw}` asks for HTTPS, which Eldrun's Ollama transport \
+            "Ollama host `{raw}` asks for HTTPS, which {app}'s Ollama transport \
              cannot speak — it would have to connect in the clear instead, and \
              sending prompts unencrypted to an address written as `https://` is \
              not something to do quietly. Use `http://` (or drop the scheme) for \
-             a server on this machine."
+             a server on this machine.", app = crate::brand::DISPLAY
         ));
     } else if let Some((scheme, _)) = raw.split_once("://") {
         return Err(format!(
@@ -1711,7 +1711,7 @@ pub async fn ollama_version_status(check_remote: bool) -> OllamaVersionStatus {
                 "--max-time",
                 "15",
                 "-H",
-                "User-Agent: Eldrun",
+                concat!("User-Agent: ", crate::app_name!()),
                 "-H",
                 "Accept: application/vnd.github+json",
                 OLLAMA_RELEASES_URL,
@@ -2746,7 +2746,7 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
     if !addr_is_loopback(&addr) {
         return Err(format!(
             "No Ollama server is answering at {addr}. It is on another machine, \
-             so Eldrun cannot start it — start it there."
+             so {app} cannot start it — start it there.", app = crate::brand::DISPLAY
         ));
     }
 

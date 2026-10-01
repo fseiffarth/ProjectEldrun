@@ -19,6 +19,7 @@ import { readSpeechLang, type SpeechLang } from "../speechLang";
 import { NotificationsSheet, pushSummary } from "../components/NotificationsSheet";
 import { getPushState, pushSupport, type HostPushState } from "../push";
 import { EldrunMark } from "../EldrunMark";
+import { BRAND } from "../../../src/lib/brand";
 
 const ALERT_ICON: Record<MobileAlertItem["kind"], string> = {
   mail: SECTION_GLYPH.mail,
@@ -75,7 +76,7 @@ function AlertRows({ alerts, onAlerts, todo, mail }: {
       // truth the phone should show rather than hide.
       onAlerts((await resolveAlert(alertId)).alerts);
     } catch {
-      setError("That alert could not be completed. Eldrun on the desktop owns it.");
+      setError(`That alert could not be completed. ${BRAND.display} on the desktop owns it.`);
     } finally {
       setFinishing(null);
     }
@@ -256,9 +257,9 @@ export function Home({ open, openTab, todo, mail }: {
   const drag = useRowDrag(listed.map((project) => project.id), moveProject, canReorder);
   return <main className="screen home-screen">
     <header className="home-header">
-      <div className="home-brand" aria-label="Eldrun">
+      <div className="home-brand" aria-label={BRAND.display}>
         <span className="home-logo-frame" aria-hidden="true"><EldrunMark className="home-logo" /></span>
-        <span className="home-brand-copy"><strong>Eldrun</strong><small>{BUNDLE_VERSION}{isUntested("mobile.version.commit") && <span className="untested">Untested</span>}</small></span>
+        <span className="home-brand-copy"><strong>{BRAND.display}</strong><small>{BUNDLE_VERSION}{isUntested("mobile.version.commit") && <span className="untested">Untested</span>}</small></span>
       </div>
       {/* The global views used to live here as a header rail; they are tabs of
           their own now, so the bar at the bottom of every screen carries them. */}
@@ -284,9 +285,9 @@ export function Home({ open, openTab, todo, mail }: {
       </p>}
       {!loaded && !offline && <p className="projects-empty" role="status">Loading projects…</p>}
       {loaded && rows.length === 0 && <p className="projects-empty">{view === "search"
-        ? query.trim() ? "No project by that name has Eldrun Mobile access." : "Type a project's name to find it."
-        : "No project is active right now. Search finds any project with Eldrun Mobile access."}</p>}
-      {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this order is kept on this phone, so the Eldrun window's own project pills stay as they are. A project that has only just become active joins the end. {isUntested("mobile.home.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
+        ? query.trim() ? `No project by that name has ${BRAND.display} Mobile access.` : "Type a project's name to find it."
+        : `No project is active right now. Search finds any project with ${BRAND.display} Mobile access.`}</p>}
+      {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this order is kept on this phone, so the {BRAND.display} window's own project pills stay as they are. A project that has only just become active joins the end. {isUntested("mobile.home.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
       {/* A box row says it is one where a project row says its status: a box
           has no status of its own (listing it is what its switch means), and
           a "Paper" box beside a "Paper" project must be tellable apart.

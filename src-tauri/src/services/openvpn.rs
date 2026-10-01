@@ -273,7 +273,7 @@ fn kill_root_pid(pid: i32) {
 fn kill_root_pid(pid: i32) {
     let script = macos_admin_shell_command(
         &format!("kill -TERM {pid}"),
-        "Eldrun needs to stop the OpenVPN tunnel.",
+        concat!(crate::app_name!(), " needs to stop the OpenVPN tunnel."),
     );
     let _ = crate::paths::command_no_window("osascript")
         .arg("-e")
@@ -932,9 +932,9 @@ pub fn explain_openvpn_error(log: &str) -> Option<String> {
     // script. Say so — otherwise it reads like a network failure.
     if s.contains("may not be called unless '--script-security 2'") {
         return Some(
-            "This VPN config runs a script (an up/down or similar hook), and Eldrun never lets \
+            concat!("This VPN config runs a script (an up/down or similar hook), and ", crate::app_name!(), " never lets \
              OpenVPN run config scripts as root. Remove the script lines from the config, or \
-             connect it outside Eldrun."
+             connect it outside ", crate::app_name!(), ".")
                 .to_string(),
         );
     }
@@ -2339,8 +2339,8 @@ pub fn connect_streaming(
         Err(e) => {
             remove_credfiles();
             return Err(format!(
-                "failed to launch openvpn.exe: {e} — the OpenVPN Interactive Service is not \
-                 running, and a direct spawn needs Eldrun itself to run as Administrator"
+                concat!("failed to launch openvpn.exe: {e} — the OpenVPN Interactive Service is not \
+                 running, and a direct spawn needs ", crate::app_name!(), " itself to run as Administrator")
             ));
         }
     };
@@ -2364,10 +2364,10 @@ pub fn connect_streaming(
             // adapter/Administrator hint to "wrong password" would just mislead.
             Err(explain_openvpn_error(&msg).unwrap_or_else(|| {
                 format!(
-                    "{msg} — if this is a permissions/adapter error, start the OpenVPN \
-                     Interactive Service (OpenVPNServiceInteractive) so Eldrun can connect \
-                     unelevated, run Eldrun as Administrator, or (re)install the OpenVPN \
-                     TAP/Wintun driver"
+                    concat!("{msg} — if this is a permissions/adapter error, start the OpenVPN \
+                     Interactive Service (OpenVPNServiceInteractive) so ", crate::app_name!(), " can connect \
+                     unelevated, run ", crate::app_name!(), " as Administrator, or (re)install the OpenVPN \
+                     TAP/Wintun driver")
                 )
             }))
         }
@@ -2627,7 +2627,7 @@ pub fn connect_streaming(
         .map(|a| shell_quote(&a))
         .collect::<Vec<_>>()
         .join(" ");
-    let script = macos_admin_shell_command(&shell_cmd, "Eldrun needs to start the OpenVPN tunnel.");
+    let script = macos_admin_shell_command(&shell_cmd, concat!(crate::app_name!(), " needs to start the OpenVPN tunnel."));
 
     // Blocks until the admin dialog is answered AND openvpn daemonizes (its
     // parent exits) — or fails. "User canceled." on stderr = dialog declined.

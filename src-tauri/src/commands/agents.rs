@@ -938,9 +938,9 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
         if !sudo_cmd.is_empty() && is_permission_error(&msg) {
             msg.push_str(&format!(
                 "\n\nThis needs elevated rights (a system-wide npm global directory owned by \
-                root — common when Node was installed system-wide rather than per-user). Eldrun \
+                root — common when Node was installed system-wide rather than per-user). {app} \
                 never prompts for a password itself: use the \"Run with sudo\" button below, or \
-                run `{sudo_cmd}` yourself in a terminal."
+                run `{sudo_cmd}` yourself in a terminal.", app = crate::brand::DISPLAY
             ));
         }
         return Err(msg);
@@ -1078,9 +1078,9 @@ pub async fn uninstall_agent(id: String) -> Result<String, String> {
                 format!(
                     "Permission denied — this machine's npm global directory needs \
                     elevated rights (common when Node was installed system-wide rather \
-                    than per-user). Eldrun never prompts for a password itself: run \
+                    than per-user). {app} never prompts for a password itself: run \
                     `npm uninstall -g {pkg}` yourself in an elevated terminal (or via \
-                    the terminal button below).\n\n{e}"
+                    the terminal button below).\n\n{e}", app = crate::brand::DISPLAY
                 )
             } else {
                 e

@@ -478,7 +478,7 @@ fn download_client() -> Result<reqwest::Client, String> {
     // process default is installed — the same guard `app_update` uses.
     crate::services::mail_engine::install_crypto_provider();
     reqwest::Client::builder()
-        .user_agent("eldrun-spell")
+        .user_agent(format!("{}-spell", crate::brand::SLUG))
         .timeout(DOWNLOAD_TIMEOUT)
         .referer(false)
         .build()

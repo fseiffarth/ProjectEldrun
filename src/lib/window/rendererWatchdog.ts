@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect } from "react";
 import { isPtyTabKind, useTabsStore } from "../../stores/tabs";
+import { BRAND } from "../brand";
 
 /**
  * Renderer memory watchdog.
@@ -101,6 +102,8 @@ const RELOAD_AT_KEY = "eldrun:renderer-watchdog-reload-at";
 const RESTART_AT_KEY = "eldrun:renderer-watchdog-restart-at";
 const WORKING_SET_KEY = "eldrun:renderer-watchdog-working-set-mb";
 const OWN_PID_KEY = "eldrun:renderer-watchdog-own-pid";
+/** The app's name leading a window title (`"Eldrun win-1"`). */
+const APP_TITLE_PREFIX = new RegExp(`^${BRAND.display}\\b[\\s—–-]*`);
 
 /** One webview renderer as the backend reports it (`commands::debug::RendererRss`). */
 export interface RendererRss {
@@ -297,7 +300,7 @@ export function shouldReplaceRenderer(
  *  name (`"Eldrun win-1"` → `"win-1"`), its label when there is no title, the
  *  pid while unclaimed, and a generic word for an unattributed reading. */
 export function rendererName(r: Pick<RendererRss, "label" | "title" | "pid">): string {
-  const title = r.title.replace(/^Eldrun\b[\s—–-]*/, "").trim();
+  const title = r.title.replace(APP_TITLE_PREFIX, "").trim();
   if (title) return title;
   if (r.label) return r.label;
   if (r.pid > 0) return `pid ${r.pid}`;

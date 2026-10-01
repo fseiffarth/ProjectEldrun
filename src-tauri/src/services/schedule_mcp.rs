@@ -6,7 +6,7 @@ use crate::schema::agent_tasks::{AgentPromptTarget, AgentScheduleResult, AgentSc
 use super::{agent_tasks, root_mcp::{Caller, Session}};
 
 pub const SERVER_NAME: &str = "eldrun-schedule";
-pub const CONTRACT: &str = "Schedules fire only while Eldrun is running and this tab is open, when it is next idle at/after the time. Occurrences over one hour late are missed. By default the user must approve proposals first. Recurring prompts always require approval. Times are desktop-local YYYY-MM-DDTHH:MM / HH:MM. Weekdays are numbered 1 = Monday … 7 = Sunday (the calendar tools' 0 = Sunday convention does not apply here). A one-time schedule needs five minutes' lead; a daily or weekday rule whose next occurrence is closer than that starts at the occurrence after it. Arguments are validated before anything else runs — a malformed call costs no budget. Prompts only: no commands or prefix commands.";
+pub const CONTRACT: &str = concat!("Schedules fire only while ", crate::app_name!(), " is running and this tab is open, when it is next idle at/after the time. Occurrences over one hour late are missed. By default the user must approve proposals first. Recurring prompts always require approval. Times are desktop-local YYYY-MM-DDTHH:MM / HH:MM. Weekdays are numbered 1 = Monday … 7 = Sunday (the calendar tools' 0 = Sunday convention does not apply here). A one-time schedule needs five minutes' lead; a daily or weekday rule whose next occurrence is closer than that starts at the occurrence after it. Arguments are validated before anything else runs — a malformed call costs no budget. Prompts only: no commands or prefix commands.");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]

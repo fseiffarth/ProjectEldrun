@@ -126,7 +126,7 @@ impl std::fmt::Display for CryptError {
         match self {
             CryptError::NotAnEnvelope => f.write_str("not a sealed value"),
             CryptError::UnsupportedVersion(v) => {
-                write!(f, "sealed by a newer version of Eldrun (envelope v{v})")
+                write!(f, "sealed by a newer version of {app} (envelope v{v})", app = crate::brand::DISPLAY)
             }
             CryptError::UnsupportedAlgorithm(a) => {
                 write!(
@@ -506,7 +506,7 @@ fn derive_passphrase_kek(passphrase: &str, salt: &[u8], kdf: KdfParams) -> Resul
     // 3 passes) and well below what would hurt.
     const MAX_M_COST_KIB: u32 = 1024 * 1024;
     if kdf.m_cost > MAX_M_COST_KIB || kdf.t_cost > 16 || kdf.p_cost > 8 {
-        return Err("the key file asks for Argon2 parameters beyond what Eldrun accepts".into());
+        return Err(concat!("the key file asks for Argon2 parameters beyond what ", crate::app_name!(), " accepts").into());
     }
     let params = Params::new(kdf.m_cost, kdf.t_cost, kdf.p_cost, Some(32))
         .map_err(|e| format!("bad Argon2 parameters: {e}"))?;
@@ -571,7 +571,7 @@ pub fn unlock(dir: &Path) -> Unlock {
     };
     if file.version != KEY_FILE_VERSION {
         return Unlock::Unavailable(format!(
-            "this mailbox was encrypted by a newer version of Eldrun (key file v{})",
+            concat!("this mailbox was encrypted by a newer version of ", crate::app_name!(), " (key file v{})"),
             file.version
         ));
     }

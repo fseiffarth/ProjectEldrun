@@ -3806,7 +3806,7 @@ impl crate::services::root_mcp_mail::MailAccess for AgentMail {
         }).map_err(
             |e| {
                 if e == no_password_message() {
-                    "open this account in Eldrun first".to_string()
+                    concat!("open this account in ", crate::app_name!(), " first").to_string()
                 } else {
                     e
                 }

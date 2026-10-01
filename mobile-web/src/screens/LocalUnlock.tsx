@@ -4,6 +4,7 @@ import { localFailureText } from "../connection";
 import { isUntested } from "../../../src/lib/untested";
 import { BrandHead } from "../components/BrandHead";
 import { BUNDLE_VERSION } from "../buildInfo";
+import { BRAND } from "../../../src/lib/brand";
 
 /** A ridge-arch fingerprint, drawn for this screen: open loops over a centre
  * stem, with the broken ridges on the right that make it read as a print
@@ -153,7 +154,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
   const verifying = biometricBusy && !unlocked;
   const phase = unlocked ? " unlocked" : verifying ? " verifying" : "";
   const content = <>
-    <BrandHead>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}{!setup && isUntested("mobile.link.silentResume") && <small className="untested"> Untested</small>}{!setup && isUntested("mobile.lock.homeSheet") && <small className="untested"> Untested</small>}{!setup && isUntested("mobile.lock.reloadGrace") && <small className="untested"> Untested</small>}</BrandHead>
+    <BrandHead>{setup ? `Secure ${BRAND.display} Mobile` : `${BRAND.display} Mobile locked`}{!setup && isUntested("mobile.link.silentResume") && <small className="untested"> Untested</small>}{!setup && isUntested("mobile.lock.homeSheet") && <small className="untested"> Untested</small>}{!setup && isUntested("mobile.lock.reloadGrace") && <small className="untested"> Untested</small>}</BrandHead>
     <p className="local-unlock-status" aria-live="polite">
       {unlocked ? "Unlocked" : verifying ? "Touch the fingerprint sensor" : ""}
       {verifying && isUntested("mobile.lock.brandedSheet") && <small className="untested"> Untested</small>}
@@ -172,14 +173,14 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
         ? "Unlock with your fingerprint or device screen lock — or enter your app PIN below."
         : biometricAvailable
           ? "Enter your app PIN. Unlocking also registers your fingerprint or screen lock as the default unlock for next time."
-          : "Enter your app PIN before Eldrun reconnects."}</p>
+          : `Enter your app PIN before ${BRAND.display} reconnects.`}</p>
       {/* A missing fingerprint option must not read as a broken one. Some
         * phone browsers are built on the system WebView and expose no platform
         * authenticator at all, so the lock can only ever be the PIN there —
         * say which browsers do offer it rather than leaving it unexplained. */}
       {!biometricEnrolled && biometricAvailable === false && <p className="local-unlock-note">
         This browser offers no fingerprint or Face ID unlock — browsers built on the
-        system WebView (DuckDuckGo among them) do not support it. Open Eldrun Mobile in
+        system WebView (DuckDuckGo among them) do not support it. Open {BRAND.display} Mobile in
         Chrome or Safari to unlock with a fingerprint; that means pairing the phone once more,
         since a pairing belongs to the browser it was made in.
       </p>}
@@ -200,8 +201,8 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       : biometricEnrolled !== null && pinLength === null && <button className="primary" disabled={busy || !validPin(pin)} onClick={submit}>
           {busy ? "Checking…" : "Unlock"}
         </button>}
-    <p className="local-unlock-note">This local lock protects against casual access to an unlocked phone. It does not replace the phone’s own device lock or Eldrun’s paired-device authentication.</p>
-    <p className="splash-version">Eldrun Mobile {BUNDLE_VERSION}{isUntested("mobile.lock.version") && <small className="untested"> Untested</small>}</p>
+    <p className="local-unlock-note">This local lock protects against casual access to an unlocked phone. It does not replace the phone’s own device lock or {BRAND.display}’s paired-device authentication.</p>
+    <p className="splash-version">{BRAND.display} Mobile {BUNDLE_VERSION}{isUntested("mobile.lock.version") && <small className="untested"> Untested</small>}</p>
   </>;
   // Setup runs once, right after pairing, with no project data to stand
   // behind it yet — its own full screen. The lock met on every later cold
@@ -210,7 +211,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
   // are going rather than a screen unto itself.
   if (setup) return <main className={`pair screen brand-screen local-unlock${phase}`}>{content}</main>;
   return <div className={`sheet-backdrop lock-sheet-backdrop${phase}`} role="presentation">
-    <section className={`option-sheet brand-screen local-unlock-sheet local-unlock${phase}`} role="dialog" aria-modal="true" aria-label="Eldrun Mobile locked">
+    <section className={`option-sheet brand-screen local-unlock-sheet local-unlock${phase}`} role="dialog" aria-modal="true" aria-label={`${BRAND.display} Mobile locked`}>
       <span className="sheet-grip" aria-hidden="true" />
       {content}
     </section>

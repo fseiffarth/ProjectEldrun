@@ -197,10 +197,10 @@ fn box_links_block(agent_file: &str, box_name: &str, members: &[(String, PathBuf
     let mut out = String::new();
     out.push_str(BOX_LINKS_START);
     out.push('\n');
-    out.push_str("<!-- Managed by Eldrun — do not edit between these markers. -->\n\n");
+    out.push_str(concat!("<!-- Managed by ", crate::app_name!(), " — do not edit between these markers. -->\n\n"));
     out.push_str(&format!(
-        "## Box \"{box_name}\" — member projects\n\nThis folder is an Eldrun project box grouping the projects below. Each entry \
-links to the project root and its `{agent_file}`:\n\n"
+        "## Box \"{box_name}\" — member projects\n\nThis folder is an {app} project box grouping the projects below. Each entry \
+links to the project root and its `{agent_file}`:\n\n", app = crate::brand::DISPLAY
     ));
     if members.is_empty() {
         out.push_str("_No member projects yet._\n");
@@ -434,7 +434,7 @@ fn merge_box_doc(agent_file: &str, existing: &str, block: &str) -> String {
     }
     if existing.trim().is_empty() {
         let title = agent_file.strip_suffix(".md").unwrap_or(agent_file);
-        return format!("# {title} — Eldrun box context\n\n{block}");
+        return format!("# {title} — {app} box context\n\n{block}", app = crate::brand::DISPLAY);
     }
     // Existing content without a managed block: append the block at the end.
     format!("{}\n\n{block}", existing.trim_end())
@@ -897,7 +897,7 @@ mod tests {
     fn merge_box_doc_creates_titled_doc_when_empty() {
         let block = box_links_block("CLAUDE.md", "B", &[]);
         let merged = merge_box_doc("CLAUDE.md", "", &block);
-        assert!(merged.starts_with("# CLAUDE — Eldrun box context"));
+        assert!(merged.starts_with(concat!("# CLAUDE — ", crate::app_name!(), " box context")));
         assert!(merged.contains(BOX_LINKS_START));
     }
 

@@ -1133,11 +1133,11 @@ pub fn sanitize_prompt(raw: &str) -> String {
 /// "Permission denied" and no idea the host asked for something else.
 pub fn unexpected_prompt_error(prompt: &str) -> String {
     format!(
-        "The host asked for something other than a password, so Eldrun sent nothing.\n\n\
+        "The host asked for something other than a password, so {app} sent nothing.\n\n\
          It asked: \"{prompt}\"\n\n\
          Only OpenSSH's own password request is answered automatically. If this host \
          wants a verification code, a key passphrase, or a confirmation, connect from a \
-         login terminal where you can answer it yourself."
+         login terminal where you can answer it yourself.", app = crate::brand::DISPLAY
     )
 }
 

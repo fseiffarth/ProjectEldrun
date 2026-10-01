@@ -1033,8 +1033,8 @@ pub fn forget_project_blocking(project_id: String) -> Result<(), String> {
         .ok_or_else(|| format!("project '{project_id}' not found"))?
         .clone();
     if entry_is_vm(&entry) {
-        return Err("A VM project's disk lives in Eldrun's state, so there is no folder to \
-                    keep — use \"Delete project…\", which archives the disk with it."
+        return Err(concat!("A VM project's disk lives in ", crate::app_name!(), "'s state, so there is no folder to \
+                    keep — use \"Delete project…\", which archives the disk with it.")
             .into());
     }
     let remote = entry_is_remote(&entry);
@@ -2855,11 +2855,11 @@ Other agent files: [AGENTS.md](./AGENTS.md) · [CLAUDE.md](./CLAUDE.md)
 /// point — the links are relative, so the markdown viewer's link-following
 /// (#49/#50) opens each target in-app. Scaffolded like the rest (never
 /// overwritten), and listed first so previews show the map before the mapped.
-const PROJECT_SCAFFOLD: &str = r#"# Project Map
+const PROJECT_SCAFFOLD: &str = concat!(r#"# Project Map
 
 Start here. This file links every scaffold file with what it is for, so the
 project can be navigated from one place. The links are relative and open
-in Eldrun's markdown viewer.
+in "#, crate::app_name!(), r#"'s markdown viewer.
 
 ## Docs
 
@@ -2883,7 +2883,7 @@ in Eldrun's markdown viewer.
 
 _Add links to your own key files and folders here so this stays the map of
 the project._
-"#;
+"#);
 
 const REMARKS_SCAFFOLD: &str = r#"# Remarks
 
@@ -3025,7 +3025,7 @@ fn git_scaffold_commit(dir: &Path) {
     // local repo, whose `.git/config` and hooks a fenced agent may have written.
     use crate::commands::git::hookless_git_command_in;
     let _ = hookless_git_command_in(dir, &["add", "-A"]).output();
-    const MSG: &str = "Initial Eldrun scaffold";
+    const MSG: &str = concat!("Initial ", crate::app_name!(), " scaffold");
     let committed = hookless_git_command_in(dir, &["commit", "-m", MSG])
         .output()
         .map(|o| o.status.success())
@@ -3035,7 +3035,7 @@ fn git_scaffold_commit(dir: &Path) {
             dir,
             &[
                 "-c",
-                "user.name=Eldrun",
+                concat!("user.name=", crate::app_name!()),
                 "-c",
                 "user.email=eldrun@localhost",
                 "commit",
@@ -6080,7 +6080,7 @@ mod tests {
         for link in &["(./README.md)", "(./TODO.md)", "(./AGENTS.md)"] {
             assert!(!agents.contains(link), "AGENTS.md repeats the map: {link}");
         }
-        assert!(!agents.contains("eldrun-send"), "Eldrun's own hint is not the project's");
+        assert!(!agents.contains("eldrun-send"), concat!(crate::app_name!(), "'s own hint is not the project's"));
 
         // The agent-specific docs carry no instructions of their own: each
         // imports AGENTS.md and links the other agent files.

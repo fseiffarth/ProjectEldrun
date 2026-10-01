@@ -87,7 +87,7 @@ pub fn mark_downloaded(path: &std::path::Path) {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let value = quarantine_xattr_value(now, "Eldrun");
+        let value = quarantine_xattr_value(now, crate::brand::DISPLAY);
         // SAFETY: `value` is a live byte buffer of exactly `value.len()` bytes.
         unsafe {
             libc::setxattr(
@@ -986,7 +986,7 @@ mod download_mark_tests {
 
     #[test]
     fn quarantine_value_shape() {
-        assert_eq!(quarantine_xattr_value(0x5f1e_2f3a, "Eldrun"), "0081;5f1e2f3a;Eldrun;");
+        assert_eq!(quarantine_xattr_value(0x5f1e_2f3a, crate::brand::DISPLAY), concat!("0081;5f1e2f3a;", crate::app_name!(), ";"));
         assert_eq!(quarantine_xattr_value(1, "a;b\n"), "0081;00000001;ab;");
     }
 

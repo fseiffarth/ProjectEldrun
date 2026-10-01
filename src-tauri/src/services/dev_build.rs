@@ -451,7 +451,7 @@ pub fn spawn_relauncher() -> Result<(), String> {
     let root = SOURCE_ROOT.ok_or("not a dev build")?;
     let binary = app_dir().join("eldrun-dev");
     if !own_exe().is_some_and(|(exe, _)| exe == binary) {
-        return Err("this window is not the frozen Eldrun (dev) binary".into());
+        return Err(concat!("this window is not the frozen ", crate::app_name!(), " (dev) binary").into());
     }
     let launcher = Path::new(root).join("start-eldrun-dev-build.sh");
     if !launcher.is_file() {

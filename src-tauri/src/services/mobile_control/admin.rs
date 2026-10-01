@@ -311,7 +311,7 @@ pub async fn serve(socket: &Path, context: AdminContext) -> Result<(), String> {
 
 #[cfg(not(any(unix, windows)))]
 pub async fn serve(_: &Path, _: AdminContext) -> Result<(), String> {
-    Err("Eldrun Mobile host is not supported on this platform".into())
+    Err(concat!(crate::app_name!(), " Mobile host is not supported on this platform").into())
 }
 
 /// The sidecar's most common state — not running — reaching a caller as a
@@ -322,7 +322,7 @@ pub async fn serve(_: &Path, _: AdminContext) -> Result<(), String> {
 /// ordinary down state in the Mobile menu as `Connection refused (os error
 /// 111)`, which names neither Eldrun Mobile nor anything the reader can act on.
 /// `NotFound` is the same state with the socket file already gone.
-pub const NOT_RUNNING_ERROR: &str = "The Eldrun Mobile host is not running";
+pub const NOT_RUNNING_ERROR: &str = concat!("The ", crate::app_name!(), " Mobile host is not running");
 
 #[cfg(unix)]
 fn connect_error(error: std::io::Error) -> String {

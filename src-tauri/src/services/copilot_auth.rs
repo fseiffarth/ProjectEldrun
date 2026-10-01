@@ -236,7 +236,7 @@ fn client() -> Result<reqwest::Client, String> {
     // `reqwest` is built with `rustls-no-provider`; see `app_update::client`.
     crate::services::mail_engine::install_crypto_provider();
     reqwest::Client::builder()
-        .user_agent(concat!("Eldrun/", env!("CARGO_PKG_VERSION")))
+        .user_agent(crate::brand::user_agent())
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .build()

@@ -2942,8 +2942,8 @@ fn git_worktree_remove_blocking(
     // tab, the file watcher and the container bind mount are rooted there.
     if same_dir(&ctx, &path, &ctx.root) {
         return Err(
-            "That is this project's own checkout — removing it would delete the tree Eldrun is \
-             working in. Switch to another worktree first."
+            concat!("That is this project's own checkout — removing it would delete the tree ", crate::app_name!(), " is \
+             working in. Switch to another worktree first.")
                 .to_string(),
         );
     }

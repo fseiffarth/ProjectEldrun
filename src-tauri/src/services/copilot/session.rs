@@ -220,8 +220,8 @@ impl Session {
                 "workspaceFolders": [{"uri": uri.as_str(), "name": "project"}],
                 "capabilities": {"workspace": {"workspaceFolders": true}, "window":{"showDocument":{"support":true}}},
                 "initializationOptions": {
-                    "editorInfo": {"name": "Eldrun", "version": version},
-                    "editorPluginInfo": {"name": "Eldrun autocomplete", "version": version},
+                    "editorInfo": {"name": crate::brand::DISPLAY, "version": version},
+                    "editorPluginInfo": {"name": concat!(crate::app_name!(), " autocomplete"), "version": version},
                 },
             }), INITIALIZE_TIMEOUT)
             .await?;

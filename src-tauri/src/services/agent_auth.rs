@@ -613,7 +613,7 @@ pub fn import_from_user_home_in(state_dir: &Path, user_home: &Path, cli: &str) -
         }
     }
     if copied == 0 {
-        return Err("this computer holds no login file for that CLI (it may keep it in a keyring — log in once in an Eldrun tab instead)".into());
+        return Err(concat!("this computer holds no login file for that CLI (it may keep it in a keyring — log in once in an ", crate::app_name!(), " tab instead)").into());
     }
     for home in crate::services::agent_home::existing_homes_in(state_dir) {
         remove_copies(&home, paths);

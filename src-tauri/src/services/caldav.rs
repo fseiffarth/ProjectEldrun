@@ -68,7 +68,7 @@ const MAX_REDIRECTS: usize = 5;
 /// resources does not become one enormous request body.
 const MULTIGET_CHUNK: usize = 50;
 
-const USER_AGENT: &str = "Eldrun-CalDAV/1.0";
+const USER_AGENT: &str = concat!(crate::app_name!(), "-CalDAV/1.0");
 
 // ── Credentials ─────────────────────────────────────────────────────────────
 
@@ -628,10 +628,10 @@ async fn dav_reply(
             // the fix for the second is not "retype your password".
             if !authorized {
                 return Err(format!(
-                    "the server redirected to {} and that host asked for the password. Eldrun \
+                    concat!("the server redirected to {} and that host asked for the password. ", crate::app_name!(), " \
                      only sends CalDAV credentials to the server the account's URL names (or a \
                      subdomain of it over HTTPS) — if you trust that address, set the account's \
-                     server URL to it directly.",
+                     server URL to it directly."),
                     url.host_str().unwrap_or("another host")
                 ));
             }

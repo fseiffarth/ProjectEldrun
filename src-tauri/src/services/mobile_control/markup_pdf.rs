@@ -1542,7 +1542,7 @@ fn bake_by(source: &[u8], pages: &[MarkupPage], deadline: Instant) -> Result<Vec
             dict.extend([
                 (b"Rect".to_vec(), reals(&built.rect)),
                 (b"F".to_vec(), Obj::Int(4)),
-                (b"T".to_vec(), text_string("Eldrun Mobile")),
+                (b"T".to_vec(), text_string(concat!(crate::app_name!(), " Mobile"))),
                 (b"P".to_vec(), page_ref.clone()),
                 (b"AP".to_vec(), Obj::Dict(vec![(b"N".to_vec(), Obj::Ref(appearance, 0))])),
             ]);

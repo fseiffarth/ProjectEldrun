@@ -126,7 +126,7 @@ pub async fn open_presenter_window(
         &label,
         WebviewUrl::App(presenter_query(&label).into()),
     )
-    .title("Eldrun — Presentation")
+    .title(concat!(crate::app_name!(), " — Presentation"))
     // Decorated on purpose, unlike a popout: with one monitor this window is
     // dragged to a projector by hand, and a borderless window is awkward to move
     // and impossible to close if the renderer never seeds.
@@ -322,7 +322,7 @@ fn inhibit_reason(reason: &str) -> String {
 fn linux_inhibit_argv(reason: &str) -> Vec<String> {
     vec![
         "--what=idle:sleep".to_string(),
-        "--who=Eldrun".to_string(),
+        concat!("--who=", crate::app_name!()).to_string(),
         format!("--why={}", inhibit_reason(reason)),
         "--mode=block".to_string(),
         "cat".to_string(),

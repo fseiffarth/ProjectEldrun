@@ -572,7 +572,7 @@ pub fn doctor_verdict(p: &VmDoctorProbes) -> VmDoctorReport {
         if let Some(free) = p.disk_free_gb {
             if free < 8 {
                 reasons.push(format!(
-                    "Low disk space in the Eldrun state dir ({free} GiB free); a VM overlay can grow to tens of GiB."
+                    "Low disk space in the {app} state dir ({free} GiB free); a VM overlay can grow to tens of GiB.", app = crate::brand::DISPLAY
                 ));
             }
         }
@@ -920,7 +920,7 @@ pub fn build_base_command() -> Result<String, String> {
     let iso_line = if tool == BUILTIN_ISO_TOOL {
         let _ = std::fs::remove_file(bake.join("seed.iso"));
         write_seed_iso(&bake, tool)?;
-        "# seed.iso was written by Eldrun's built-in ISO 9660 writer".to_string()
+        concat!("# seed.iso was written by ", crate::app_name!(), "'s built-in ISO 9660 writer").to_string()
     } else {
         let argv = seed_iso_args(tool)
             .iter()
@@ -936,9 +936,9 @@ pub fn build_base_command() -> Result<String, String> {
     let machine = machine_args()?.join(" ");
     if cfg!(windows) {
         let script = format!(
-            r#"$ErrorActionPreference = 'Stop'
+            concat!(r#"$ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath '{bake}'
-Write-Output '── Building the Eldrun VM base image (installs git, build tools, node, agent CLIs) ──'
+Write-Output '── Building the "#, crate::app_name!(), r#" VM base image (installs git, build tools, node, agent CLIs) ──'
 Remove-Item -Force -ErrorAction SilentlyContinue disk.qcow2
 {iso_line}
 & qemu-img create -f qcow2 -b '{stock}' -F qcow2 disk.qcow2 32G
@@ -950,7 +950,7 @@ Move-Item -Force -LiteralPath '{baked}.part' -Destination '{baked}'
 Remove-Item -Force -ErrorAction SilentlyContinue disk.qcow2, seed.iso
 Write-Output '── Baked base image ready: {baked} ──'
 Write-Output '   New VM projects boot from it; existing VMs keep their current disk.'
-"#,
+"#),
             bake = bake.display(),
             iso_line = iso_line,
             qemu = qemu,
@@ -966,10 +966,10 @@ Write-Output '   New VM projects boot from it; existing VMs keep their current d
         ));
     }
     let script = format!(
-        r#"#!/usr/bin/env bash
+        concat!(r#"#!/usr/bin/env bash
 set -euo pipefail
 cd '{bake}'
-echo '── Building the Eldrun VM base image (installs git, build tools, node, agent CLIs) ──'
+echo '── Building the "#, crate::app_name!(), r#" VM base image (installs git, build tools, node, agent CLIs) ──'
 rm -f disk.qcow2
 {iso_line}
 qemu-img create -f qcow2 -b '{stock}' -F qcow2 disk.qcow2 32G
@@ -985,7 +985,7 @@ mv '{baked}.part' '{baked}'
 rm -f disk.qcow2 seed.iso
 echo '── Baked base image ready: {baked} ──'
 echo '   New VM projects boot from it; existing VMs keep their current disk.'
-"#,
+"#),
         bake = bake.display(),
         iso_line = iso_line,
         qemu = qemu,

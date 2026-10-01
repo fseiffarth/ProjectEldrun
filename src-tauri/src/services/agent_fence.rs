@@ -143,8 +143,8 @@ pub const PLATFORM_UNACCEPTED_SENTINEL: &str = "ELDRUN_FENCE_PLATFORM_UNACCEPTED
 /// The spawn refusal on a fence-less platform nobody has accepted yet.
 pub fn platform_unaccepted_message() -> String {
     format!(
-        "{PLATFORM_UNACCEPTED_SENTINEL} Agent sandbox: {} has no agent sandbox, so this agent would run with your full rights. Accept that once in the prompt Eldrun shows, or open the project in a container.",
-        platform_reason()
+        "{PLATFORM_UNACCEPTED_SENTINEL} Agent sandbox: {} has no agent sandbox, so this agent would run with your full rights. Accept that once in the prompt {app} shows, or open the project in a container.",
+        platform_reason(), app = crate::brand::DISPLAY
     )
 }
 

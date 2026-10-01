@@ -11,6 +11,7 @@ import {
 } from "../api";
 import { readChoice, writeChoice } from "../prefs";
 import { isUntested } from "../../../src/lib/untested";
+import { BRAND } from "../../../src/lib/brand";
 
 const PAGE_SIZE = 25;
 const FORMAT_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
@@ -209,8 +210,8 @@ export function Mail() {
       <button onClick={refresh} disabled={busy}>↻</button>
     </header>
     <p className="notice">{writes.actions || writes.reply
-      ? `Mail through the connected Eldrun desktop. ${writes.actions ? "Read state and star can be changed here. " : ""}${writes.reply ? "Plain-text replies go to the original sender only. " : ""}No sync, delete, move, links, or downloads.`
-      : "Read-only mail through the connected Eldrun desktop. No sync, reply, state changes, links, or downloads."}</p>
+      ? `Mail through the connected ${BRAND.display} desktop. ${writes.actions ? "Read state and star can be changed here. " : ""}${writes.reply ? "Plain-text replies go to the original sender only. " : ""}No sync, delete, move, links, or downloads.`
+      : `Read-only mail through the connected ${BRAND.display} desktop. No sync, reply, state changes, links, or downloads.`}</p>
     {error && <p className="error">{error}</p>}
     {busy && !accounts && <p className="mail-mobile-empty">Loading…</p>}
 
@@ -296,7 +297,7 @@ export function Mail() {
           <i aria-hidden="true">{KIND_GLYPH[item.kind] ?? "📁"}</i><span>{safeText(item.name)}</span><small>{item.unread} unread · {item.total}</small>
         </button>)}</div>
       </div>}
-      {accounts.length === 0 && <p className="mail-mobile-empty">No mail accounts are configured in Eldrun.</p>}
+      {accounts.length === 0 && <p className="mail-mobile-empty">No mail accounts are configured in {BRAND.display}.</p>}
     </section>}
   </main>;
 }

@@ -30,7 +30,7 @@ mod corpus {
 }
 
 pub const SERVER_NAME: &str = "eldrun-help";
-pub const INSTRUCTIONS: &str = "Eldrun's own user documentation, read-only. Use it to answer questions about using Eldrun (projects, tabs, agent CLIs, local models, remote projects, sync, mobile, mail/calendar, containers, troubleshooting). Start with eldrun_help_search, then eldrun_help_read the best topic or section; eldrun_help_topics lists everything. It knows nothing about the user's projects, files or settings.";
+pub const INSTRUCTIONS: &str = concat!(crate::app_name!(), "'s own user documentation, read-only. Use it to answer questions about using ", crate::app_name!(), " (projects, tabs, agent CLIs, local models, remote projects, sync, mobile, mail/calendar, containers, troubleshooting). Start with eldrun_help_search, then eldrun_help_read the best topic or section; eldrun_help_topics lists everything. It knows nothing about the user's projects, files or settings.");
 
 /// The tools, in the order `tools/list` gives them.
 pub const TOOLS: &[&str] = &["eldrun_help_search", "eldrun_help_read", "eldrun_help_topics", "eldrun_help_status"];
@@ -431,10 +431,10 @@ fn schema(name: &str) -> Value {
 
 pub fn tools() -> Value {
     let describe = |name: &str| match name {
-        "eldrun_help_search" => "Search Eldrun's user documentation. Returns ranked topic sections with a snippet; follow up with eldrun_help_read.",
-        "eldrun_help_read" => "Read one Eldrun help topic (or one of its sections) as markdown. Output is capped; read by section for long topics.",
-        "eldrun_help_topics" => "List every Eldrun help topic with its sections and keywords.",
-        _ => "Which Eldrun build this is (version, OS) and which agent tabs have these help tools. No user data.",
+        "eldrun_help_search" => concat!("Search ", crate::app_name!(), "'s user documentation. Returns ranked topic sections with a snippet; follow up with eldrun_help_read."),
+        "eldrun_help_read" => concat!("Read one ", crate::app_name!(), " help topic (or one of its sections) as markdown. Output is capped; read by section for long topics."),
+        "eldrun_help_topics" => concat!("List every ", crate::app_name!(), " help topic with its sections and keywords."),
+        _ => concat!("Which ", crate::app_name!(), " build this is (version, OS) and which agent tabs have these help tools. No user data."),
     };
     Value::Array(TOOLS.iter().map(|name| json!({
         "name": name,
@@ -514,7 +514,7 @@ mod tests {
 
     const LOCAL: &str = "---\nid: local-models\ntitle: Installing local models\nkeywords: [ollama, model, gpu, pull, offline]\n---\n\nRun models on your own machine.\n\n## Install Ollama\n\n1. Open Settings → Models.\n2. Click Install Ollama.\n\n## Pull a model\n\nPick a model and click Pull. Models need disk space.\n\n```sh\n## not a heading\nollama pull qwen\n```\n\n## Pull a model\n\nDuplicate heading.\n";
     const SYNC: &str = "---\nid: sync\ntitle: Syncing remote projects\nkeywords: [\"git\", 'lockstep', byte-sync]\n---\n## Lockstep\n\nTracked files follow git commits. A model of the peer is kept.\n\n## Byte sync\n\nOpt in per path.\n";
-    const PROJECTS: &str = "---\nid: projects\ntitle: Projects\nkeywords: [project, create, folder]\n---\n\n## What a project is\n\nA folder Eldrun manages.\n";
+    const PROJECTS: &str = concat!("---\nid: projects\ntitle: Projects\nkeywords: [project, create, folder]\n---\n\n## What a project is\n\nA folder ", crate::app_name!(), " manages.\n");
 
     fn fixture() -> Index {
         Index::build(&[("sync.md", SYNC), ("local-models.md", LOCAL), ("projects.md", PROJECTS), ("notes.txt", "ignored")])

@@ -33,7 +33,7 @@ pub fn plan(cli: &str, env: &HashMap<String, String>) -> Result<(Option<String>,
         .get("ELDRUN_SCOPE")
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            "agent shim: not an Eldrun tab (no ELDRUN_SCOPE); open the CLI from an Eldrun tab".to_string()
+            concat!("agent shim: not an ", crate::app_name!(), " tab (no ELDRUN_SCOPE); open the CLI from an ", crate::app_name!(), " tab").to_string()
         })?;
     let project_id = (scope != crate::storage::ROOT_SCOPE).then(|| scope.clone());
     let cwd = std::env::current_dir().map_err(|e| format!("agent shim: cwd: {e}"))?;
@@ -164,7 +164,7 @@ pub fn run(cli: &str, args: &[String]) -> i32 {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (cli, args);
-        eprintln!("agent shim: no agent sandbox on this platform; open the CLI from an Eldrun agent tab");
+        eprintln!(concat!("agent shim: no agent sandbox on this platform; open the CLI from an ", crate::app_name!(), " agent tab"));
         1
     }
 }

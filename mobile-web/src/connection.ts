@@ -1,5 +1,6 @@
 import { ApiError } from "./api";
 import type { TranslationKey } from "../../src/lib/i18n";
+import { BRAND } from "../../src/lib/brand";
 
 /**
  * Why Eldrun Mobile could not reach the workspace, at the granularity the
@@ -109,33 +110,33 @@ export function describeUnavailable(reason: UnavailableReason): UnavailableCopy 
       };
     case "host_down":
       return {
-        title: "Eldrun Mobile isn't running on your desktop.",
-        hint: "The desktop is reachable, but nothing is serving Eldrun Mobile on it. Start Eldrun on the desktop, or switch Eldrun Mobile back on in its settings.",
+        title: `${BRAND.display} Mobile isn't running on your desktop.`,
+        hint: `The desktop is reachable, but nothing is serving ${BRAND.display} Mobile on it. Start ${BRAND.display} on the desktop, or switch ${BRAND.display} Mobile back on in its settings.`,
       };
     case "desktop_down":
       return {
-        title: "Eldrun isn't running on your desktop.",
-        hint: "Eldrun Mobile is up and answering, but the Eldrun app itself is not connected to it. Start Eldrun on the desktop.",
+        title: `${BRAND.display} isn't running on your desktop.`,
+        hint: `${BRAND.display} Mobile is up and answering, but the ${BRAND.display} app itself is not connected to it. Start ${BRAND.display} on the desktop.`,
       };
     case "busy":
       return {
         title: "Too many sign-in attempts.",
-        hint: "Eldrun Mobile is rate-limiting sign-ins from this device. Wait a moment before retrying.",
+        hint: `${BRAND.display} Mobile is rate-limiting sign-ins from this device. Wait a moment before retrying.`,
       };
     case "blocked_origin":
       return {
         title: "This isn't the address your desktop expects.",
-        hint: "Eldrun Mobile only answers on the exact address configured on the desktop. Open it from the address shown in the desktop's Eldrun Mobile settings — renaming your tailnet changes it.",
+        hint: `${BRAND.display} Mobile only answers on the exact address configured on the desktop. Open it from the address shown in the desktop's ${BRAND.display} Mobile settings — renaming your tailnet changes it.`,
       };
     case "storage_blocked":
       return {
-        title: "This browser blocked Eldrun Mobile's key store.",
+        title: `This browser blocked ${BRAND.display} Mobile's key store.`,
         hint: "The paired device key lives in this browser's storage. Leave private browsing, or allow site data for this address, then retry.",
       };
     case "server_error":
       return {
         title: "Your desktop reported an error.",
-        hint: "Eldrun Mobile answered but could not complete the request. Retry — if it keeps failing, check Eldrun Mobile on the desktop.",
+        hint: `${BRAND.display} Mobile answered but could not complete the request. Retry — if it keeps failing, check ${BRAND.display} Mobile on the desktop.`,
       };
   }
 }
@@ -173,7 +174,7 @@ const FAILURE_TEXT: Record<string, string> = {
   session_busy: "Another viewer is holding this session.",
   session_gone: "This session has ended on the desktop.",
   // The sidecar's own refusals (`host.rs`).
-  desktop_unavailable: "Eldrun isn't running on your desktop.",
+  desktop_unavailable: `${BRAND.display} isn't running on your desktop.`,
   launch_pending: "The desktop is still opening that tab. Try again in a moment.",
   catalog_unavailable: "The desktop's project list could not be read.",
   request_failed: "Your desktop reported an error.",
@@ -210,7 +211,7 @@ const FAILURE_TEXT: Record<string, string> = {
   reply_too_long: "The reply is too long.",
   empty_reply: "The reply is empty.",
   // The desktop bridge's refusals (`MobileBridgeHost.tsx`).
-  desktop_error: "Eldrun on the desktop hit an error handling that.",
+  desktop_error: `${BRAND.display} on the desktop hit an error handling that.`,
   launch_failed: "The desktop could not open that tab.",
   unknown_agent: "The desktop does not know that agent.",
   unsupported_sign_in: "The desktop cannot sign that agent in from the phone.",
@@ -220,7 +221,7 @@ const FAILURE_TEXT: Record<string, string> = {
   // Reminders on this phone (`push.ts`).
   invalid_push_subscription: "The desktop refused this browser's push subscription.",
   push_unavailable: "The desktop could not change reminders for this phone.",
-  permission_denied: "Notifications are blocked for Eldrun Mobile in this phone's settings.",
+  permission_denied: `Notifications are blocked for ${BRAND.display} Mobile in this phone's settings.`,
   invalid_event: "The desktop rejected that event.",
   event_not_found: "That event is no longer in the calendar.",
   invalid_task: "The desktop rejected that card.",
@@ -229,10 +230,10 @@ const FAILURE_TEXT: Record<string, string> = {
   column_follows_date: "That column is set by the card's date; change the date instead.",
   prompt_not_found: "That prompt is no longer collected.",
   alert_gone: "That alert has already been handled.",
-  alert_resolve_failed: "That alert could not be completed. Eldrun on the desktop owns it.",
-  mail_read_disabled: "Mail on the phone is switched off in Eldrun → Settings → Eldrun Mobile.",
-  mail_actions_disabled: "Switched off in Eldrun → Settings → Eldrun Mobile → Mail from the phone.",
-  mail_reply_disabled: "Replies from the phone are switched off in Eldrun → Settings → Eldrun Mobile.",
+  alert_resolve_failed: `That alert could not be completed. ${BRAND.display} on the desktop owns it.`,
+  mail_read_disabled: `Mail on the phone is switched off in ${BRAND.display} → Settings → ${BRAND.display} Mobile.`,
+  mail_actions_disabled: `Switched off in ${BRAND.display} → Settings → ${BRAND.display} Mobile → Mail from the phone.`,
+  mail_reply_disabled: `Replies from the phone are switched off in ${BRAND.display} → Settings → ${BRAND.display} Mobile.`,
   mail_mark_failed: "The desktop could not change that flag.",
   mail_reply_failed: "The desktop could not send that reply.",
   no_reply_address: "That message has no address to reply to.",
@@ -240,7 +241,7 @@ const FAILURE_TEXT: Record<string, string> = {
   message_not_found: "The message moved; refresh the folder.",
   unexpected_mail_view: "The desktop answered in a shape this app does not recognize.",
   // The usage sheet (`commands::agent_usage`).
-  no_usage_readout: "This agent has no usage readout Eldrun can ask for without opening a tab.",
+  no_usage_readout: `This agent has no usage readout ${BRAND.display} can ask for without opening a tab.`,
   cli_not_installed: "This agent's CLI is not installed on the desktop.",
   cli_failed: "The agent's CLI could not be run on the desktop.",
   cli_timeout: "The agent's CLI did not answer in time. Try again.",

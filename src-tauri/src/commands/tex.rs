@@ -251,8 +251,8 @@ fn run_in_within_env<S: AsRef<std::ffi::OsStr>>(
         }),
         None => {
             text.push_str(&format!(
-                "\n! Eldrun stopped {bin} after {} seconds — the build appears to be stuck.\n",
-                timeout.as_secs()
+                "\n! {app} stopped {bin} after {} seconds — the build appears to be stuck.\n",
+                timeout.as_secs(), app = crate::brand::DISPLAY
             ));
             Ok(RunOut { ok: false, text })
         }

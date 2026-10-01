@@ -48,7 +48,7 @@ pub fn detached_label(scope: &str, group_id: &str) -> String {
 /// Uniqueness comes from the caller assigning a distinct sequence number per
 /// live window (lowest free positive int); see `detach_subwindow`.
 pub fn detached_title(seq: u32) -> String {
-    format!("Eldrun win-{seq}")
+    format!("{app} win-{seq}", app = crate::brand::DISPLAY)
 }
 
 /// The query string the DetachedApp renderer reads to mount a single group.
@@ -1492,8 +1492,8 @@ mod tests {
 
     #[test]
     fn title_is_a_human_friendly_sequence_name() {
-        assert_eq!(detached_title(1), "Eldrun win-1");
-        assert_eq!(detached_title(2), "Eldrun win-2");
+        assert_eq!(detached_title(1), concat!(crate::app_name!(), " win-1"));
+        assert_eq!(detached_title(2), concat!(crate::app_name!(), " win-2"));
         // Distinct numbers produce distinct titles (the X11 resolver key must be
         // unique per live window).
         assert_ne!(detached_title(1), detached_title(2));

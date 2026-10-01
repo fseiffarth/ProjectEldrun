@@ -29,6 +29,7 @@ import type {
 } from "../../types";
 import { addDays, addMinutes, datePart, minutesBetween, parseStamp } from "./calendarTime";
 import { stripFormatControls } from "../textSafety";
+import { BRAND } from "../brand";
 
 const ICS_WEEKDAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 
@@ -689,7 +690,7 @@ export function serializeIcs(
   const lines: string[] = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Eldrun//Calendar//EN",
+    `PRODID:-//${BRAND.display}//Calendar//EN`,
     "CALSCALE:GREGORIAN",
   ];
 

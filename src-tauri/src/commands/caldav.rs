@@ -808,7 +808,7 @@ mod tests {
         assert_eq!(
             account_key(&a),
             account_key(&b),
-            "two Eldrun accounts on one login share one saved secret"
+            concat!("two ", crate::app_name!(), " accounts on one login share one saved secret")
         );
         assert!(!account_key(&a).contains("account-1"));
     }

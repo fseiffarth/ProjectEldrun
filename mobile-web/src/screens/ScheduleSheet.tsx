@@ -11,6 +11,7 @@ import {
 } from "../api";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
+import { BRAND } from "../../../src/lib/brand";
 
 /** Per-tab scheduled prompts, opened from the project tab overview — the phone's
  * counterpart to the desktop Agents view, and deliberately not from inside the
@@ -58,7 +59,7 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
   const fail = useCallback((cause: unknown) => {
     const unavailable = cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable");
     setOffline(unavailable);
-    setError(unavailable ? "Open desktop Eldrun to manage scheduled prompts." : "Schedules could not be loaded.");
+    setError(unavailable ? `Open desktop ${BRAND.display} to manage scheduled prompts.` : "Schedules could not be loaded.");
   }, []);
   const refresh = useCallback(
     () => getSchedules(tabId).then(apply, fail).finally(() => setLoading(false)),
@@ -129,7 +130,7 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
       <header><button className="sheet-close" onClick={onClose} aria-label="Close">✕</button><h2>Scheduled prompts {isUntested("mobile.sheet.schedules") && <small>{t("mobile.newTab.untested")}</small>}</h2><span className="sheet-close" aria-hidden="true" /></header>
       {label && <p className="sheet-note">Tab: {label}</p>}
       {timeZone && <p className="sheet-note">Desktop time zone: {timeZone}</p>}
-      <p className="sheet-note">Due prompts wait up to one hour for an idle point. They replace any unsent composer draft, even when the tab is focused, and run only while desktop Eldrun is open.</p>
+      <p className="sheet-note">Due prompts wait up to one hour for an idle point. They replace any unsent composer draft, even when the tab is focused, and run only while desktop {BRAND.display} is open.</p>
       {error && <p className="sheet-note error" role="alert">{error}</p>}
       {offline && !error && <p className="sheet-note" role="status">{t("mobile.headless.readOnly")} {isUntested("mobile.headless.schedules") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
       {loading ? <p className="sheet-note">Loading schedules…</p> : schedules.length === 0 ? <p className="sheet-note">No prompts are scheduled for this tab.</p> : <div className="mobile-schedule-list">{schedules.map((schedule) => <article key={schedule.id}>

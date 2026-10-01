@@ -1,3 +1,4 @@
+import { BRAND } from "../../src/lib/brand";
 /**
  * The Eldrun mark — the same circuit "tree of life" the desktop app draws in
  * its launch splash (`src/components/layout/LogoIcon.tsx`, geometry from
@@ -22,10 +23,10 @@ export function EldrunMark({ className }: { className?: string }) {
       viewBox="0 0 512 512"
       fill="none"
       role="img"
-      aria-label="Eldrun"
+      aria-label={BRAND.display}
       className={className}
     >
-      <title>Eldrun</title>
+      <title>{BRAND.display}</title>
       <g
         stroke="currentColor"
         strokeLinecap="round"

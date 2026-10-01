@@ -12,6 +12,7 @@ import {
 } from "../api";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
+import { BRAND } from "../../../src/lib/brand";
 
 /** The project's collected prompts — text kept without a tab. Sending aims
  * one at an agent tab now (the desktop queues a one-time schedule at its own
@@ -45,7 +46,7 @@ export function PromptsSheet({ projectId, tabs, onClose, onSchedule }: {
   const fail = useCallback((cause: unknown) => {
     const unavailable = cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable");
     setOffline(unavailable);
-    setError(unavailable ? "Open desktop Eldrun to manage collected prompts." : "Prompts could not be loaded.");
+    setError(unavailable ? `Open desktop ${BRAND.display} to manage collected prompts.` : "Prompts could not be loaded.");
   }, []);
   const refresh = useCallback(
     () => getPrompts(projectId).then(apply, fail).finally(() => setLoading(false)),

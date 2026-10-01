@@ -9,6 +9,7 @@
 // change nothing about the call site the lint is worried about.
 #![allow(clippy::too_many_arguments)]
 
+pub mod brand;
 pub mod commands;
 pub mod duscan;
 pub mod gpustat;
@@ -668,7 +669,7 @@ pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
                         "renderer unresponsive"
                     }
                     COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED => {
-                        "browser process exited (WebView2 is gone; relaunch Eldrun)"
+                        concat!("browser process exited (WebView2 is gone; relaunch ", crate::app_name!(), ")")
                     }
                     _ => "helper process failed",
                 };
@@ -791,7 +792,7 @@ fn macos_menu_plan() -> Vec<(&'static str, Vec<MacMenuItem>)> {
     use MacMenuItem::*;
     vec![
         (
-            "Eldrun",
+            crate::brand::DISPLAY,
             vec![About, Separator, Services, Separator, Hide, HideOthers, Separator, Quit],
         ),
         ("Edit", vec![Undo, Redo, Separator, Cut, Copy, Paste, SelectAll]),
@@ -816,7 +817,7 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<t
                 MacMenuItem::Quit => Box::new(MenuItem::with_id(
                     app,
                     MAC_MENU_QUIT_ID,
-                    "Quit Eldrun",
+                    concat!("Quit ", crate::app_name!()),
                     true,
                     Some("CmdOrCtrl+Q"),
                 )?),
@@ -1194,7 +1195,7 @@ pub fn run() {
                 use tauri::Manager;
                 let workspace = _app.state::<WorkspaceStateArc>().inner().clone();
                 std::thread::spawn(move || {
-                    if let Some(id) = platform::x11::find_window_for_title("Eldrun", 30) {
+                    if let Some(id) = platform::x11::find_window_for_title(crate::brand::DISPLAY, 30) {
                         workspace.lock().unwrap().backend.set_main_window_id(id);
                     }
                 });
@@ -2309,7 +2310,7 @@ mod tests {
     fn macos_menu_never_offers_close_window_and_keeps_edit() {
         let plan = macos_menu_plan();
         let titles: Vec<&str> = plan.iter().map(|(t, _)| *t).collect();
-        assert_eq!(titles, ["Eldrun", "Edit", "Window"]);
+        assert_eq!(titles, [crate::brand::DISPLAY, "Edit", "Window"]);
         // No item of any submenu is a window close (⌘W is the frontend's).
         for (_, items) in &plan {
             for item in items {

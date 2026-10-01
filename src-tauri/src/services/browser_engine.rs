@@ -135,7 +135,7 @@ const MAX_TITLE_CHARS: usize = 200;
 /// string, not anything that varies between users — a reader fetch should not
 /// be a fingerprint, and pretending to be a specific Chrome build would be a
 /// lie that breaks the day sites start branching on it.
-const READER_USER_AGENT: &str = "Mozilla/5.0 (compatible; Eldrun Reader)";
+const READER_USER_AGENT: &str = concat!("Mozilla/5.0 (compatible; ", crate::app_name!(), " Reader)");
 
 // ── Where things live ───────────────────────────────────────────────────────
 

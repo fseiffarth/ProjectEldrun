@@ -101,7 +101,7 @@ fn desktop_image_folders() -> Vec<ImageFolder> {
     let mut folders =
         desktop_images::image_folders(crate::paths::OsKind::current(), &home, &user_dirs);
     folders.push(ImageFolder {
-        label: "Eldrun screenshots".into(),
+        label: concat!(crate::app_name!(), " screenshots").into(),
         path: storage::state_dir().join("screenshots-pending"),
     });
     folders
@@ -450,7 +450,7 @@ fn systemd_path(path: &Path) -> Result<String, String> {
 /// `on-failure` does not restart.
 #[cfg(target_os = "linux")]
 fn systemd_unit(binary: &Path, state_dir: &Path) -> Result<String, String> {
-    Ok(format!("[Unit]\nDescription=Eldrun Mobile Host\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart={} --mobile-host\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={}\n\n[Install]\nWantedBy=default.target\n", systemd_path(binary)?, systemd_path(state_dir)?))
+    Ok(format!(concat!("[Unit]\nDescription=", crate::app_name!(), " Mobile Host\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart={} --mobile-host\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={}\n\n[Install]\nWantedBy=default.target\n"), systemd_path(binary)?, systemd_path(state_dir)?))
 }
 
 /// Delete every `bin/<version>/` directory except `keep`.
@@ -626,7 +626,7 @@ async fn disable_host_service() -> Result<(), String> {
         return Err(if shutdown.is_ok() {
             "Mobile host stopped, but its systemd user service could not be disabled".into()
         } else {
-            "Could not stop or disable the Eldrun Mobile user service".into()
+            concat!("Could not stop or disable the ", crate::app_name!(), " Mobile user service").into()
         });
     }
     Ok(())
@@ -653,14 +653,14 @@ async fn enable_host_service(target: &Path, config: &HostConfig) -> Result<(), S
         .status()
         .map_err(|e| e.to_string())?;
     if !start.success() {
-        return Err("could not enable the Eldrun Mobile user service".into());
+        return Err(concat!("could not enable the ", crate::app_name!(), " Mobile user service").into());
     }
     let restart = crate::paths::command_no_window("systemctl")
         .args(["--user", "restart", "eldrun-mobile-host.service"])
         .status()
         .map_err(|e| e.to_string())?;
     if !restart.success() {
-        return Err("could not start the Eldrun Mobile user service".into());
+        return Err(concat!("could not start the ", crate::app_name!(), " Mobile user service").into());
     }
     Ok(())
 }
@@ -688,7 +688,7 @@ async fn disable_host_service() -> Result<(), String> {
             return Err(if shutdown.is_ok() {
                 "Mobile host stopped, but its launch agent could not be unloaded".into()
             } else {
-                "Could not stop or unload the Eldrun Mobile launch agent".into()
+                concat!("Could not stop or unload the ", crate::app_name!(), " Mobile launch agent").into()
             });
         }
     }
@@ -721,7 +721,7 @@ async fn enable_host_service(target: &Path, _config: &HostConfig) -> Result<(), 
         .status()
         .map_err(|e| e.to_string())?;
     if !bootstrap.success() {
-        return Err("could not start the Eldrun Mobile launch agent".into());
+        return Err(concat!("could not start the ", crate::app_name!(), " Mobile launch agent").into());
     }
     Ok(())
 }
@@ -735,7 +735,7 @@ async fn disable_host_service() -> Result<(), String> {
         .args(["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])
         .status();
     if shutdown.is_err() && mobile_admin(AdminRequest::Status).await.is_ok() {
-        return Err("Could not stop the Eldrun Mobile host".into());
+        return Err(concat!("Could not stop the ", crate::app_name!(), " Mobile host").into());
     }
     Ok(())
 }
@@ -750,7 +750,7 @@ async fn enable_host_service(target: &Path, _config: &HostConfig) -> Result<(), 
         .status()
         .map_err(|e| e.to_string())?;
     if !add.success() {
-        return Err("could not register the Eldrun Mobile autostart entry".into());
+        return Err(concat!("could not register the ", crate::app_name!(), " Mobile autostart entry").into());
     }
     let mut child = crate::paths::command_no_window(target)
         .arg("--mobile-host")
@@ -767,7 +767,7 @@ async fn enable_host_service(target: &Path, _config: &HostConfig) -> Result<(), 
             break;
         }
     }
-    Err("the Eldrun Mobile host did not start".into())
+    Err(concat!("the ", crate::app_name!(), " Mobile host did not start").into())
 }
 
 /// The Mobile host's lifetime is the app's, and these two are the pair that

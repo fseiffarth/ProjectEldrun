@@ -6,6 +6,7 @@ import { describeFailure } from "../connection";
 import { limitMeters, noteParts, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
 import { resetCountdown, resetText } from "../terminal/limitResets";
 import type { SessionStatus } from "../terminal/statusLine";
+import { BRAND } from "../../../src/lib/brand";
 
 export { resetCountdown, resetText };
 
@@ -113,7 +114,7 @@ export function StatusSheet({ tab, live, onLimits, onClose, signIn }: {
         {usage?.supported === false && <p className="sheet-note">
           {usage.error && usage.error !== "no_usage_readout" && usage.error !== "unknown_agent"
             ? describeFailure(usage.error)
-            : `${usage.label} has no usage readout Eldrun can ask for without opening a tab.`}
+            : `${usage.label} has no usage readout ${BRAND.display} can ask for without opening a tab.`}
         </p>}
         {usage?.supported && usage.error && <p className="sheet-note error">{describeFailure(usage.error)}</p>}
         {panel && panel.meters.map((meter) => <div className="usage-meter" key={meter.label}>
@@ -127,7 +128,7 @@ export function StatusSheet({ tab, live, onLimits, onClose, signIn }: {
           {meter.resets && <small title={`resets ${meter.resets}`}>{resetText(meter.resets, new Date())}</small>}
         </div>)}
         {panel?.unparsed && <p className="sheet-note">
-          {usage?.label} answered in a shape Eldrun does not recognize. The Terminal view has all of it.
+          {usage?.label} answered in a shape {BRAND.display} does not recognize. The Terminal view has all of it.
         </p>}
         {panel && panel.notes.length > 0 && <ul className="usage-notes">
           {panel.notes.map((note, index) => <li key={`${note.label ?? ""}-${index}`}>

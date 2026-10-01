@@ -975,14 +975,14 @@ fn open_bundle(path: &str) -> Result<(Bundle, ExportManifest), String> {
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("read {path}: {e}"))?;
     let manifest: ExportManifest = {
         let entry = zip.by_name(BUNDLE_MANIFEST).map_err(|_| {
-            "That file is not an Eldrun project export (no eldrun-export.json inside)".to_string()
+            concat!("That file is not an ", crate::app_name!(), " project export (no eldrun-export.json inside)").to_string()
         })?;
         serde_json::from_reader(entry).map_err(|e| format!("read {BUNDLE_MANIFEST}: {e}"))?
     };
     if manifest.format > BUNDLE_FORMAT {
         return Err(format!(
-            "This bundle was written by a newer Eldrun (bundle format {}, this build reads {}). \
-             Update Eldrun and try again.",
+            concat!("This bundle was written by a newer ", crate::app_name!(), " (bundle format {}, this build reads {}). \
+             Update ", crate::app_name!(), " and try again."),
             manifest.format, BUNDLE_FORMAT
         ));
     }
@@ -1608,7 +1608,7 @@ mod tests {
             zip.finish().unwrap();
         }
         let err = open_bundle(path.to_str().unwrap()).unwrap_err();
-        assert!(err.contains("not an Eldrun project export"), "{err}");
+        assert!(err.contains(concat!("not an ", crate::app_name!(), " project export")), "{err}");
     }
 
     /// The zip-slip guard, on the extractor this module owns: an entry naming

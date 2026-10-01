@@ -126,7 +126,7 @@ pub fn kill_eldrun_sessions() -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "could not stop every Eldrun local tmux session: {}",
+            concat!("could not stop every ", crate::app_name!(), " local tmux session: {}"),
             failures.join("; ")
         ))
     }

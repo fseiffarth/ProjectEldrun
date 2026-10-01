@@ -3081,7 +3081,7 @@ pub async fn restore_backup(
     if !connected(pool, project_id).await {
         return Err("Not connected to the remote host".to_string());
     }
-    let (_, branch) = parse_backup_ref_name(refname).ok_or("Not an Eldrun backup ref")?;
+    let (_, branch) = parse_backup_ref_name(refname).ok_or(concat!("Not an ", crate::app_name!(), " backup ref"))?;
     let peer = if peer_label == "remote" {
         Peer::Remote(spec.clone())
     } else {

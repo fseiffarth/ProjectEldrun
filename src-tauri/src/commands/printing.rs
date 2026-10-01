@@ -1246,14 +1246,14 @@ pub async fn print_test_page(printer: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         check_printer_name(&printer)?;
         let body = format!(
-            "Eldrun print test\n\n\
+            "{app} print test\n\n\
              Printer: {printer}\n\
-             If you are reading this on paper, the queue works.\n"
+             If you are reading this on paper, the queue works.\n", app = crate::brand::DISPLAY
         );
         let path = std::env::temp_dir().join("eldrun-print-test.txt");
         std::fs::write(&path, body).map_err(|e| format!("test page: {e}"))?;
         let path_str = path.to_string_lossy().into_owned();
-        print_file_impl(&printer, &path_str, "Eldrun print test")
+        print_file_impl(&printer, &path_str, concat!(crate::app_name!(), " print test"))
     })
     .await
     .map_err(|e| e.to_string())?

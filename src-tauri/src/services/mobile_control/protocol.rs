@@ -2003,7 +2003,7 @@ mod tests {
                     kind: "task".into(),
                     severity: "soon".into(),
                     title: "Ship mobile alerts".into(),
-                    detail: "Eldrun".into(),
+                    detail: crate::brand::DISPLAY.into(),
                     at: Some("2026-08-25T17:00".into()),
                     all_day: false,
                     minutes_away: Some(30),

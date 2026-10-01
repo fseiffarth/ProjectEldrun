@@ -308,7 +308,7 @@ fn spawn_live_window(app: &AppHandle, label: &str, url: url::Url) -> Result<(), 
     let title_app = app.clone();
 
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url.clone()))
-        .title("Eldrun — Web")
+        .title(concat!(crate::app_name!(), " — Web"))
         .inner_size(1100.0, 800.0)
         // **Ephemeral, always.** On Linux this is
         // `WebContext::new_ephemeral()`: no website-data-manager base directory,
@@ -1104,7 +1104,7 @@ mod tests {
             ] {
                 assert!(
                     !src.contains(banned),
-                    "`{banned}` in {name}: Eldrun never touches another app's config"
+                    "`{banned}` in {name}: {app} never touches another app's config", app = crate::brand::DISPLAY
                 );
             }
         }
@@ -1124,8 +1124,8 @@ mod tests {
             ),
             (
                 "browser_extensions_enabled(false)",
-                "an extension here runs with the page's privileges plus the extension \
-                 API's, in a process that also hosts Eldrun's window",
+                concat!("an extension here runs with the page's privileges plus the extension \
+                 API's, in a process that also hosts ", crate::app_name!(), "'s window"),
             ),
             (
                 "on_new_window",

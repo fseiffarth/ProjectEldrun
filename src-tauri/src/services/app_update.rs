@@ -8,11 +8,11 @@
 //! Three rules hold the trust boundary, because this ends with *running a
 //! downloaded executable*:
 //!
-//! 1. Every asset URL is checked against [`DOWNLOAD_PREFIX`] before it is
+//! 1. Every asset URL is checked by [`is_repo_download_url`] before it is
 //!    fetched and again before anything is installed. The release JSON comes
 //!    off the network, so `browser_download_url` is attacker-controlled input
-//!    until it has been proven to live under this repository's release
-//!    downloads.
+//!    until it has been proven to be a release download of one of
+//!    [`RELEASE_OWNERS`]' repositories.
 //! 2. The frontend never names a path. `stage_download` remembers what it wrote
 //!    in [`STAGED`], and `install` acts on *that*, so no renderer-supplied
 //!    string can select what gets executed.
@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// The repository releases are published from. Any change here must also change
-/// [`DOWNLOAD_PREFIX`] and [`RELEASES_PAGE`].
+/// [`LATEST_API`] and [`RELEASES_PAGE`].
 pub const REPO: &str = "fseiffarth/ProjectEldrun";
 
 /// The one API endpoint. `/releases/latest` skips drafts and pre-releases,
@@ -42,16 +42,21 @@ const LATEST_API: &str = "https://api.github.com/repos/fseiffarth/ProjectEldrun/
 /// Where a human goes when the in-app path can't finish the job.
 pub const RELEASES_PAGE: &str = "https://github.com/fseiffarth/ProjectEldrun/releases/latest";
 
-/// The only prefix a downloadable asset may have. GitHub serves release assets
-/// from this exact shape; anything else in the JSON is not our release.
-const DOWNLOAD_PREFIX: &str = "https://github.com/fseiffarth/ProjectEldrun/releases/download/";
+/// Where GitHub serves release assets from: `<owner>/<repo>/releases/download/…`
+/// under this host.
+const DOWNLOAD_HOST: &str = "https://github.com/";
+
+/// The GitHub accounts whose release downloads are accepted, whatever the
+/// repository is called — so a renamed repository strands no installed client.
+/// An account belongs here only while we control it, and the list is final for
+/// every build that ships with it: a client rejects each later release
+/// published under an owner it does not know.
+const RELEASE_OWNERS: &[&str] = &["fseiffarth"];
 
 /// Identify ourselves — GitHub rejects API requests with no `User-Agent`.
-const USER_AGENT: &str = concat!(
-    "Eldrun/",
-    env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/fseiffarth/ProjectEldrun)"
-);
+fn user_agent() -> String {
+    format!("{} (+https://github.com/{REPO})", crate::brand::user_agent())
+}
 
 const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -367,7 +372,7 @@ fn sha256_hex(digest: impl AsRef<[u8]>) -> String {
 /// Fetch a small release file (the checksum list or its signature).
 async fn fetch_small(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
     if !is_repo_download_url(url) {
-        return Err("refusing to fetch a file from outside the Eldrun releases".to_string());
+        return Err(concat!("refusing to fetch a file from outside the ", crate::app_name!(), " releases").to_string());
     }
     let mut response = client
         .get(url)
@@ -409,13 +414,34 @@ async fn verified_digest(
     expected_digest(sums, &asset.name, version)
 }
 
-/// Whether a URL is a release download from *this* repository.
+/// Whether a URL is a release download from one of *our* repositories:
+/// `https://github.com/<owner>/<repo>/releases/download/<file…>` with `<owner>`
+/// in [`RELEASE_OWNERS`] and `<repo>` exactly one path segment.
 ///
-/// The check is on the whole prefix, not the host: `https://github.com/` alone
-/// would accept any repository's assets, which is the exact substitution this
-/// guards against.
+/// The owner is checked, not just the host: `https://github.com/` alone would
+/// accept anyone's assets, which is the exact substitution this guards against.
+/// The repository name is left open so the repository can be renamed; the
+/// signed `SHA256SUMS` stays the trust anchor either way.
 pub fn is_repo_download_url(url: &str) -> bool {
-    url.starts_with(DOWNLOAD_PREFIX) && !url[DOWNLOAD_PREFIX.len()..].is_empty()
+    let Some(rest) = url.strip_prefix(DOWNLOAD_HOST) else {
+        return false;
+    };
+    let mut parts = rest.splitn(3, '/');
+    let (Some(owner), Some(repo), Some(tail)) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    // GitHub's own repository-name alphabet; `.` and `..` would walk the path.
+    let repo_ok = !repo.is_empty()
+        && repo != "."
+        && repo != ".."
+        && repo
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    RELEASE_OWNERS.contains(&owner)
+        && repo_ok
+        && tail
+            .strip_prefix("releases/download/")
+            .is_some_and(|file| !file.is_empty())
 }
 
 /// Parse a GitHub release JSON body into a check result.
@@ -487,7 +513,7 @@ fn client() -> Result<reqwest::Client, String> {
     // when no process default is installed — see `browser_engine::reader_client`.
     crate::services::mail_engine::install_crypto_provider();
     reqwest::Client::builder()
-        .user_agent(USER_AGENT)
+        .user_agent(user_agent())
         .timeout(CHECK_TIMEOUT)
         .referer(false)
         .build()
@@ -497,8 +523,15 @@ fn client() -> Result<reqwest::Client, String> {
 /// Ask GitHub for the latest release.
 pub async fn check() -> Result<UpdateCheck, String> {
     let kind = install_kind_for_running_build();
+    let body = fetch_latest(LATEST_API).await?;
+    parse_release(&body, current_version(), kind)
+}
+
+/// Fetch the latest-release JSON. Redirects are followed: after a repository
+/// rename or transfer GitHub answers the old API path with a 301.
+async fn fetch_latest(url: &str) -> Result<String, String> {
     let response = client()?
-        .get(LATEST_API)
+        .get(url)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
@@ -510,11 +543,10 @@ pub async fn check() -> Result<UpdateCheck, String> {
     if !response.status().is_success() {
         return Err(format!("GitHub answered {}", response.status()));
     }
-    let body = response
+    response
         .text()
         .await
-        .map_err(|e| format!("update check failed: {e}"))?;
-    parse_release(&body, current_version(), kind)
+        .map_err(|e| format!("update check failed: {e}"))
 }
 
 /// Where downloads are staged. Outside the project tree, next to the rest of
@@ -552,7 +584,7 @@ pub async fn stage_download(
     mut on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<Staged, String> {
     if !is_repo_download_url(&asset.url) {
-        return Err("refusing to download an asset from outside the Eldrun releases".to_string());
+        return Err(concat!("refusing to download an asset from outside the ", crate::app_name!(), " releases").to_string());
     }
     let dir = staging_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("update staging dir: {e}"))?;
@@ -800,6 +832,72 @@ mod tests {
         assert!(!is_repo_download_url(
             "https://github.com/fseiffarth/ProjectEldrun/releases/download/"
         ));
+    }
+
+    #[test]
+    fn a_renamed_repository_of_the_same_owner_is_still_accepted() {
+        assert!(is_repo_download_url(
+            "https://github.com/fseiffarth/renamed-repo/releases/download/v0.3.0/App_0.3.0_amd64.deb"
+        ));
+        // The repository is exactly one path segment.
+        for url in [
+            "https://github.com/fseiffarth//releases/download/v1/x",
+            "https://github.com/fseiffarth/../releases/download/v1/x",
+            "https://github.com/fseiffarth/./releases/download/v1/x",
+            "https://github.com/fseiffarth/a/b/releases/download/v1/x",
+            "https://github.com/fseiffarth/a%2Fb/releases/download/v1/x",
+            "https://github.com/fseiffarth/releases/download/v1/x",
+            // Not a release download at all.
+            "https://github.com/fseiffarth/renamed-repo/archive/refs/heads/main.zip",
+            "https://github.com/fseiffarth/renamed-repo/releases/downloadx/v1/x",
+            // An owner that merely starts or ends like ours.
+            "https://github.com/fseiffarth-evil/ProjectEldrun/releases/download/v1/x",
+            "https://github.com/evil/fseiffarth/releases/download/v1/x",
+            "https://github.com/FSEIFFARTH@evil.example.org/x/releases/download/v1/x",
+        ] {
+            assert!(!is_repo_download_url(url), "{url}");
+        }
+    }
+
+    /// Serve `responses` one per connection on a loopback port.
+    async fn serve_once_each(responses: Vec<String>) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            for response in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut seen = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&buf[..n]);
+                }
+                stream.write_all(response.as_bytes()).await.unwrap();
+                let _ = stream.shutdown().await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn the_update_check_follows_a_renamed_repositorys_redirect() {
+        let body = r#"{"tag_name":"v9.9.9"}"#;
+        let addr = serve_once_each(vec![
+            "HTTP/1.1 301 Moved Permanently\r\nLocation: /repositories/1/releases/latest\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            ),
+        ])
+        .await;
+        let fetched = fetch_latest(&format!("http://{addr}/repos/old/name/releases/latest"))
+            .await
+            .unwrap();
+        assert_eq!(fetched, body);
     }
 
     // ── signed checksums (#160) ──────────────────────────────────────────
