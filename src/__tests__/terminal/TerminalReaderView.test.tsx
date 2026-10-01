@@ -18,7 +18,8 @@ vi.mock("../../lib/terminal/terminalInput", () => ({
 
 import { TerminalReaderView } from "../../components/terminal/TerminalReaderView";
 import { TerminalPromptStrip } from "../../components/terminal/TerminalPromptStrip";
-import { mergeTranscript, readerOffered, readerRequest, rememberReader, rememberedReader } from "../../lib/agents/agentReader";
+import { composerHistory, mergeTranscript, readerOffered, readerRequest, rememberReader, rememberedReader, shortPath } from "../../lib/agents/agentReader";
+import { worktreeOfPath } from "../../lib/agents/agentWorktrees";
 import { useAgentReaderStore, useReaderOpen } from "../../stores/agents/agentReader";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
@@ -130,6 +131,36 @@ describe("the agent pane's Reader", () => {
     expect(back).toHaveBeenCalled();
   });
 
+  it("walks the session's prompts with ↑ and ↓, as the CLI's box, and gives the draft back", async () => {
+    reader(host);
+    await screen.findByText("fix the parser");
+    const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "half typed" } });
+    box.setSelectionRange(0, 0);
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(box.value).toBe("/model opus");
+    box.setSelectionRange(0, 0);
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(box.value).toBe("fix the parser");
+    box.setSelectionRange(0, 0);
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(box.value).toBe("fix the parser");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(box.value).toBe("/model opus");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(box.value).toBe("half typed");
+  });
+
+  it("leaves ↑ to the text while the caret is below the first line", async () => {
+    reader(host);
+    await screen.findByText("fix the parser");
+    const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "one\ntwo" } });
+    box.setSelectionRange(6, 6);
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(box.value).toBe("one\ntwo");
+  });
+
   it("hides the composer while steering holds the keyboard, and takes it back after", async () => {
     act(() => useKeyboardSteeringStore.getState().enter());
     try {
@@ -161,7 +192,7 @@ describe("the Reader's subagents", () => {
     truncated: false,
     entries: [
       { kind: "prompt", text: "survey the repo", at: "2026-09-30T08:00:00Z" },
-      { kind: "agent", text: "Find the parser", role: "Explore", subagent: "sa-1", at: "2026-09-30T08:00:10Z" },
+      { kind: "agent", text: "Find the parser", role: "Explore", subagent: "sa-1", at: "2026-09-30T08:00:10Z", finished: true },
       { kind: "agent", text: "Find the tests", role: "Explore", subagent: "sa-2", at: "2026-09-30T08:00:11Z" },
       { kind: "agent", text: "Not recorded yet", at: "2026-09-30T08:00:12Z" },
       { kind: "answer", text: "Both found.", at: "2026-09-30T08:02:00Z" },
@@ -188,11 +219,37 @@ describe("the Reader's subagents", () => {
     host = document.createElement("div");
     document.body.appendChild(host);
   });
-  afterEach(() => host.remove());
+  afterEach(() => {
+    host.remove();
+    if (term) unregisterTerminal("p:agent-1", term);
+    term = undefined;
+  });
+  let term: Terminal | undefined;
 
-  it("opens a subagent's own conversation from its card and goes back up", async () => {
+  /** Opens the session's subagent named `task` from the list over the chat. */
+  async function openListed(task: string) {
+    const toggle = await screen.findByRole("button", { name: /Subagents \(/ });
+    if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+    const list = document.getElementById(toggle.getAttribute("aria-controls")!)!;
+    fireEvent.click(within(list).getByText(task).closest("button")!);
+  }
+
+  it("shows the session's subagents in its chat, when each started, and a ✓ on the finished one", async () => {
     reader(host);
-    fireEvent.click((await screen.findByText("Find the parser")).closest("button")!);
+    await screen.findByText("Both found.");
+    const cards = [...host.querySelectorAll<HTMLElement>(".terminal-reader-subagent")];
+    expect(cards.map((card) => card.textContent)).toEqual([
+      expect.stringContaining("Find the parser"),
+      expect.stringContaining("Find the tests"),
+      expect.stringContaining("Not recorded yet"),
+    ]);
+    expect(cards.every((card) => card.querySelector(".terminal-reader-time"))).toBe(true);
+    expect(cards.map((card) => !!card.querySelector(".tab-status-mark.done"))).toEqual([true, false, false]);
+  });
+
+  it("opens a subagent's own conversation and goes back up", async () => {
+    reader(host);
+    await openListed("Find the parser");
     await screen.findByText("It lives in parse.ts.");
     expect(invoke).toHaveBeenCalledWith("agent_tab_transcript", expect.objectContaining({ sessionId: "launch-1", subagent: "sa-1" }));
     const bar = screen.getByRole("navigation", { name: "Subagent" });
@@ -205,12 +262,16 @@ describe("the Reader's subagents", () => {
 
   it("cannot open a subagent whose CLI has not said where it lives", async () => {
     reader(host);
-    expect((await screen.findByText("Not recorded yet")).closest("button")?.disabled).toBe(true);
+    const toggle = await screen.findByRole("button", { name: /Subagents \(3\)/ });
+    fireEvent.click(toggle);
+    const list = document.getElementById(toggle.getAttribute("aria-controls")!)!;
+    expect(within(list).getByText("Not recorded yet").closest("button")?.disabled).toBe(true);
+    expect(host.querySelectorAll<HTMLButtonElement>(".terminal-reader-subagent")[2].disabled).toBe(true);
   });
 
-  it("steps between siblings and opens nested subagents; Esc goes up one level", async () => {
+  it("steps between siblings and opens nested subagents from cards; Esc goes up one level", async () => {
     reader(host);
-    fireEvent.click((await screen.findByText("Find the parser")).closest("button")!);
+    await openListed("Find the parser");
     await screen.findByText("It lives in parse.ts.");
     expect(screen.getByText("1 of 2")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Next subagent" }));
@@ -237,7 +298,7 @@ describe("the Reader's subagents", () => {
   it("goes back to the session when a prompt is sent from a subagent", async () => {
     sendSteeringPrompt.mockImplementation((_tab: TabEntry, text: string) => { noteSentPrompt("st-1", text); return Promise.resolve(); });
     reader(host);
-    fireEvent.click((await screen.findByText("Find the parser")).closest("button")!);
+    await openListed("Find the parser");
     await screen.findByText("It lives in parse.ts.");
     const box = screen.getByRole("textbox");
     fireEvent.change(box, { target: { value: "now fix it" } });
@@ -245,6 +306,31 @@ describe("the Reader's subagents", () => {
     expect(sendSteeringPrompt).toHaveBeenCalledWith(expect.objectContaining({ key: "agent-1" }), "now fix it");
     await screen.findByText("Both found.");
     expect(host.querySelector(".terminal-reader-turn.pending")?.textContent).toContain("now fix it");
+  });
+
+  it("names the open subagent's own model while it is still at work", async () => {
+    const running = { ...session, version: "s2", entries: session.entries.map((entry) => (entry.subagent === "sa-1" ? { ...entry, running: true } : entry)) };
+    const sub = { ...(conversations["sa-1"] as object), model: "claude-haiku-4-5-20251001" };
+    invoke.mockImplementation((command: string, args?: { subagent?: string | null }) => {
+      if (command !== "agent_tab_transcript") return Promise.resolve([]);
+      return Promise.resolve(args?.subagent === "sa-1" ? sub : args?.subagent ? conversations[args.subagent] : running);
+    });
+    term = fakeTerminal(["> survey", "", "✻ Thinking… (9s · esc to interrupt)", ">", "~/p (develop) · Opus 4.1 · 85% context left"]);
+    registerTerminal("p:agent-1", term);
+    reader(host);
+    await screen.findByText("Opus is working…");
+    fireEvent.click(await screen.findByRole("button", { name: /Subagents \(3\)/ }));
+    // The list marks the one still at work.
+    const busy = screen.getAllByRole("img", { name: "Agent is working…" });
+    expect(busy).toHaveLength(1);
+    expect(busy[0].closest("button")?.textContent).toContain("Find the parser");
+    await openListed("Find the parser");
+    expect(await screen.findByText("Haiku is working…")).toBeTruthy();
+    expect(screen.queryByText("Opus is working…")).toBeNull();
+    // A sibling that has reported back shows no working row.
+    fireEvent.click(screen.getByRole("button", { name: "Next subagent" }));
+    await screen.findByText("Tests sit beside the sources.");
+    expect(screen.queryByText(/is working…/)).toBeNull();
   });
 });
 
@@ -318,6 +404,49 @@ describe("the Reader's live rows", () => {
     expect(written).toEqual(["\u001b"]);
   });
 
+  it("shows the shell at work under the working row, and its whole command on a click", async () => {
+    const command = "cargo test -q --manifest-path src-tauri/Cargo.toml \\\n  -- --test-threads=1";
+    invoke.mockImplementation((name: string) => Promise.resolve(name === "agent_tab_transcript"
+      ? { ...transcript, shells: [{ command, description: "Run the backend tests", at: "2026-09-30T08:03:00Z" }] }
+      : []));
+    term = fakeTerminal(["> fix it", "", "✻ Thinking… (9s · ↓ 1.2k tokens · esc to interrupt)", "> ", "  ? for shortcuts"]);
+    registerTerminal("p:agent-1", term);
+    reader(host);
+    const line = await screen.findByText("Shell is running…");
+    const toggle = line.closest("button")!;
+    expect(toggle.textContent).toMatch(/Run the backend tests/);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText(/--test-threads=1/)).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById(toggle.getAttribute("aria-controls")!)?.textContent).toBe(command);
+    fireEvent.click(toggle);
+    expect(screen.queryByText(/--test-threads=1/)).toBeNull();
+  });
+
+  it("shows no shell line while the agent is not at work", async () => {
+    invoke.mockImplementation((name: string) => Promise.resolve(name === "agent_tab_transcript"
+      ? { ...transcript, shells: [{ command: "sleep 999" }] }
+      : []));
+    term = fakeTerminal(["> fix it", "", "Done.", "> ", "  ? for shortcuts"]);
+    registerTerminal("p:agent-1", term);
+    reader(host);
+    await screen.findByText("fix the parser");
+    expect(screen.queryByText("Shell is running…")).toBeNull();
+  });
+
+  it("shows a background shell while the agent is idle", async () => {
+    invoke.mockImplementation((name: string) => Promise.resolve(name === "agent_tab_transcript"
+      ? { ...transcript, shells: [{ command: "sleep 999" }, { command: "npm run dev", background: true }] }
+      : []));
+    term = fakeTerminal(["> fix it", "", "Done.", "> ", "  ? for shortcuts"]);
+    registerTerminal("p:agent-1", term);
+    reader(host);
+    const line = await screen.findByText("Background shell running…");
+    expect(line.closest("button")?.textContent).toMatch(/npm run dev/);
+    expect(screen.queryByText("Shell is running…")).toBeNull();
+  });
+
   it("names the model at work and shows the status line's facts with the account's limits", async () => {
     invoke.mockImplementation((command: string) => Promise.resolve(
       command === "agent_tab_transcript" ? { ...transcript, truncated: false }
@@ -340,6 +469,39 @@ describe("the Reader's live rows", () => {
     await waitFor(() => expect(facts.textContent).toContain("5h 29%"));
     expect(facts.textContent).toContain("week 6%");
     expect(host.querySelector(".terminal-reader-fact.high")?.textContent).toBe("week 6%");
+  });
+
+  it("shows the mode, the effort the busy row named, the folder and its worktree", async () => {
+    useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [{ ...tab, cwd: "/home/u/p/.eldrun/worktrees/feat-x" }] } }));
+    const rows = ["> fix it", "", "✻ Pondering… (9s · ↓ 1.2k tokens · thinking with high effort)", ">", "⏵⏵ accept edits on (shift+tab to cycle)"];
+    term = fakeTerminal(rows);
+    registerTerminal("p:agent-1", term);
+    reader(host);
+    expect(await screen.findByRole("button", { name: "Accept edits" })).toBeTruthy();
+    const facts = host.querySelector(".terminal-reader-facts")!;
+    expect(facts.textContent).toContain("high effort");
+    expect(facts.textContent).toContain("…/worktrees/feat-x");
+    expect(facts.textContent).toContain("worktree feat-x");
+    // The effort stays once the turn is over.
+    rows.splice(0, rows.length, "Done.", ">", "⏵⏵ accept edits on (shift+tab to cycle)");
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(facts.textContent).toContain("high effort");
+  });
+
+  it("switches the mode from its list by walking Shift+Tab until the session shows it", async () => {
+    const rows = [">", "⏵⏵ accept edits on (shift+tab to cycle)"];
+    term = fakeTerminal(rows);
+    registerTerminal("p:agent-1", term);
+    reader(host);
+    await act(async () => { fireEvent.click(await screen.findByRole("button", { name: "Accept edits" })); });
+    const list = screen.getByRole("dialog", { name: "Permission mode" });
+    await act(async () => { fireEvent.click(within(list).getByRole("button", { name: /Plan/ })); });
+    expect(written).toEqual(["\u001b[Z"]);
+    rows.splice(0, rows.length, ">", "⏸ plan mode on (shift+tab to cycle)");
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(written).toEqual(["\u001b[Z"]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("button", { name: "Plan" })).toBeTruthy();
   });
 
   it("opens the session's own /model picker as a list and answers it there", async () => {
@@ -403,6 +565,22 @@ describe("the Chat switch on the prompt strip", () => {
 
 describe("agentReader helpers", () => {
   beforeEach(() => localStorage.clear());
+
+  it("keeps the session's prompts for ↑, oldest first, a repeat once", () => {
+    expect(composerHistory([
+      { kind: "prompt", text: "a" }, { kind: "answer", text: "x" }, { kind: "prompt", text: " a " }, { kind: "prompt", text: "b" },
+    ], ["b", "c"])).toEqual(["a", "b", "c"]);
+  });
+
+  it("names a linked worktree from the path and shortens the path", () => {
+    expect(worktreeOfPath("/p/.eldrun/worktrees/feat")).toBe("feat");
+    expect(worktreeOfPath("/p/.claude/worktrees/x/src")).toBe("x");
+    expect(worktreeOfPath("C:\\p\\.eldrun\\worktrees\\w")).toBe("w");
+    expect(worktreeOfPath("/p/worktrees/feat")).toBeUndefined();
+    expect(worktreeOfPath(undefined)).toBeUndefined();
+    expect(shortPath("/home/u/p/")).toBe("…/u/p");
+    expect(shortPath("~/p")).toBe("~/p");
+  });
 
   it("offers the Reader only for agents whose transcript is read", () => {
     expect(readerOffered(tab)).toBe(true);

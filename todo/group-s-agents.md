@@ -2433,3 +2433,33 @@ unchanged; the new agents are additive.
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
+
+- [~] **Subagents in the chat: list only, and their own working row** (2026-10-01;
+  ✅ code-complete, automated tests passing — `TerminalReaderView.test.tsx`,
+  `MobileTerminalSubagents.test.tsx`, `agent_transcript` test; ❌ never
+  live-verified — pills `terminal.reader.subagentWorking`,
+  `mobile.subagent.working`). The desktop chat no longer draws the session's
+  subagents as cards (the **Subagents (n)** list above it names them, with
+  dots on the ones still at work); a subagent's own chat keeps its cards for
+  nested ones. An open subagent still at work shows its own working row
+  naming its model (`Haiku is working…`) on the desktop and the phone. The
+  backend marks an `agent` entry `running` while Claude's spawn call has no
+  result, and each read carries the `model` its records name. Limits: Claude
+  only (Codex/OpenCode subagents never show running); a background agent
+  (`run_in_background`) returns at once, so it reads as finished.
+  - [x] 🤖 Automated test
+  - [ ] 🖐️ Manual test — backend changed: `npm run backend:stale`, and the
+    phone needs `npm run mobile:bundle` + a rebuilt binary. In a Claude tab
+    on Chat, ask for two parallel Explore agents with a Haiku model. (1) No
+    subagent cards in the chat; **Subagents (2)** list has working dots on
+    both while they run. (2) Open one → `Haiku is working…` (not Opus)
+    under its conversation, with Stop; gone once it reports back. (3) Same
+    on the phone's Reader.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS

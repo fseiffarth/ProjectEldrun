@@ -55,7 +55,7 @@ class FakeWebSocket {
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
 import type { TranscriptEntry } from "../../../mobile-web/src/api";
-import { openSubagent, siblingPosition, stepSibling, subagentsIn } from "../../../mobile-web/src/terminal/subagents";
+import { openSubagent, openSubagentRunning, siblingPosition, stepSibling, subagentsIn, workingModelName } from "../../../mobile-web/src/terminal/subagents";
 
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, agent_label: "Claude Code", available: true, viewer_busy: false };
 
@@ -73,7 +73,7 @@ const MAIN = {
   entries: [
     { kind: "prompt", text: "look around", at: "2026-09-24T10:00:00Z" },
     { kind: "answer", text: "Sending two scouts.", at: "2026-09-24T10:00:01Z" },
-    { kind: "agent", text: "Map the backend", role: "Explore", subagent: "00000000000000a1", at: "2026-09-24T10:00:02Z" },
+    { kind: "agent", text: "Map the backend", role: "Explore", subagent: "00000000000000a1", at: "2026-09-24T10:00:02Z", finished: true },
     { kind: "agent", text: "Find the tests", role: "general-purpose", subagent: "00000000000000b2", at: "2026-09-24T10:00:03Z" },
     { kind: "agent", text: "Still starting", role: "Plan", at: "2026-09-24T10:00:04Z" },
     { kind: "answer", text: "Both reported.", at: "2026-09-24T10:05:00Z" },
@@ -121,6 +121,28 @@ describe("the pure path through subagents", () => {
     expect(stepSibling(path, -1)).toBe(path);
     expect(stepSibling([], 1)).toEqual([]);
   });
+
+  it("knows an open subagent at work by the session's live entries", () => {
+    const live = entries.map((entry) => (entry.subagent === "00000000000000a1" ? { ...entry, running: true } : entry));
+    const ref = { token: "00000000000000a1", task: "Map the backend" };
+    const path = openSubagent([], ref, live, 0);
+    expect(openSubagentRunning(path, live)).toBe(true);
+    // It reported back since it was opened.
+    expect(openSubagentRunning(path, entries)).toBe(false);
+    // A nested one runs only while its outermost does and it did when opened.
+    const nested = openSubagent(path, { token: "c3", task: "Dig", running: true }, [], 0);
+    expect(openSubagentRunning(nested, live)).toBe(true);
+    expect(openSubagentRunning(openSubagent(path, { token: "c3", task: "Dig" }, [], 0), live)).toBe(false);
+    expect(openSubagentRunning([], live)).toBe(false);
+  });
+
+  it("names a working model by its family", () => {
+    expect(workingModelName("claude-haiku-4-5-20251001")).toBe("Haiku");
+    expect(workingModelName("claude-opus-4-1-20250805")).toBe("Opus");
+    expect(workingModelName("gpt-5-codex")).toBe("gpt-5-codex");
+    expect(workingModelName(" ")).toBeUndefined();
+    expect(workingModelName(undefined)).toBeUndefined();
+  });
 });
 
 describe("Eldrun Mobile Reader opens the subagents an agent spawned", () => {
@@ -147,7 +169,12 @@ describe("Eldrun Mobile Reader opens the subagents an agent spawned", () => {
     const session = screen.getByTestId("session-transcript");
     const card = within(session).getByRole("button", { name: "Subagent: Explore · Map the backend" });
     // One whose CLI has not said where it lives yet is there, but shut.
-    expect((within(session).getByRole("button", { name: "Subagent: Plan · Still starting" }) as HTMLButtonElement).disabled).toBe(true);
+    const starting = within(session).getByRole("button", { name: "Subagent: Plan · Still starting" }) as HTMLButtonElement;
+    expect(starting.disabled).toBe(true);
+    // Each says when it started; the one that has reported back wears the ✓.
+    expect(card.querySelector(".transcript-time")).not.toBeNull();
+    expect(card.querySelector(".agent-status.done")?.textContent).toContain("✓");
+    expect(starting.querySelector(".agent-status")).toBeNull();
 
     fireEvent.click(card);
     await settle();
@@ -166,6 +193,36 @@ describe("Eldrun Mobile Reader opens the subagents an agent spawned", () => {
     await settle();
     screen.getByTestId("session-transcript");
     expect(screen.queryByRole("navigation", { name: "Subagent" })).toBeNull();
+  });
+
+  it("names an open subagent's own model while it is still at work", async () => {
+    const main = { ...MAIN, entries: MAIN.entries.map((entry) => (entry.subagent === "00000000000000a1" ? { ...entry, running: true } : entry)) };
+    const own: Record<string, unknown> = { ...SUBAGENTS, "00000000000000a1": { ...(SUBAGENTS["00000000000000a1"] as object), model: "claude-haiku-4-5-20251001" } };
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.endsWith("/outbox")) return Promise.resolve(jsonResponse(200, { files: [] }));
+      if (url.includes("/transcript")) {
+        const token = new URL(url, "http://phone").searchParams.get("subagent");
+        return Promise.resolve(jsonResponse(200, { transcript: token ? own[token] : main }));
+      }
+      return Promise.resolve(jsonResponse(404, { error: "not_found" }));
+    }));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    // The session at work, as its screen paints it.
+    const bytes = new TextEncoder().encode("> look around\n\n✻ Thinking… (9s · esc to interrupt)\n\n> ");
+    const payload = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(payload).set(bytes);
+    act(() => { FakeWebSocket.instances[0].onmessage?.({ data: payload } as MessageEvent); });
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
+
+    fireEvent.click(screen.getByRole("button", { name: "Subagent: Explore · Map the backend" }));
+    await settle();
+    expect(screen.getByTestId("subagent-working").textContent).toContain("Haiku is working…");
+    // A sibling that has reported back is not at work.
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Subagent" })).getByRole("button", { name: "Next subagent" }));
+    await settle();
+    within(screen.getByTestId("subagent-transcript")).getByText("Tests live beside the code.");
+    expect(screen.queryByTestId("subagent-working")).toBeNull();
   });
 
   it("hides the main conversation's pinned prompt while reading a subagent", async () => {

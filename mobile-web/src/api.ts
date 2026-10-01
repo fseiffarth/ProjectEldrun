@@ -588,6 +588,12 @@ export interface TranscriptEntry {
   /** On an `answer`: the plan the agent put up for approval (Claude's
    * `ExitPlanMode`), set apart from its ordinary answers. */
   plan?: boolean;
+  /** On an `agent`: it has not reported back yet (Claude's spawn call has
+   * no result in the transcript). */
+  running?: boolean;
+  /** On an `agent`: it has reported back (Claude's spawn call has its
+   * result). Absent where the CLI's record does not say. */
+  finished?: boolean;
   /** Phone-only, never on the wire: a prompt sent from here that the session
    * has not recorded yet (`terminal/pendingPrompts`), by its id — and whether
    * the link failed to deliver it, or is trying again. */
@@ -618,6 +624,23 @@ export interface SessionTranscript {
   /** The session's own usage figures, where its transcript records them
    *  (Codex's rollout does; Claude's does not). */
   usage?: SessionUsage;
+  /** The model its newest record names, as an API id — a subagent's own. */
+  model?: string;
+  /** Desktop Reader only (the phone's API strips it): the shell commands the
+   * agent is running now — Claude's `Bash` calls still without a result, and
+   * background ones still running. */
+  shells?: RunningShell[];
+}
+
+/** A shell command the agent started and is waiting on. */
+export interface RunningShell {
+  command: string;
+  description?: string;
+  at?: string;
+  /** The command was cut at the desktop's bound. */
+  cut?: boolean;
+  /** Sent to the background: it can run on past the turn. */
+  background?: boolean;
 }
 
 /** One rate-limit window of a stored session: percent used, and the reset in

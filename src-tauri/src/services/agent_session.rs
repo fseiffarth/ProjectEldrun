@@ -800,7 +800,7 @@ pub(crate) fn claude_queued_prompt(value: &serde_json::Value) -> Option<String> 
     claude_prompt_text(&text)
 }
 
-fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
+pub(crate) fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
     let line = line.trim();
     if line.is_empty() {
         return None;
@@ -1932,6 +1932,7 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          src=$(printf '%s' \"$input\" | sed -n 's/.*\"source\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
          event=$(printf '%s' \"$input\" | sed -n 's/.*\"hook_event_name\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z_]*\\)\".*/\\1/p')\n\
          ntype=$(printf '%s' \"$input\" | sed -n 's/.*\"notification_type\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z_]*\\)\".*/\\1/p')\n\
+         reason=$(printf '%s' \"$input\" | sed -n 's/.*\"reason\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z_]*\\)\".*/\\1/p')\n\
          tpath=$(printf '%s' \"$input\" | sed -n 's/.*\"transcript_path\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p')\n\
          tnull=$(printf '%s' \"$input\" | sed -n 's/.*\"transcript_path\"[[:space:]]*:[[:space:]]*null.*/null/p')\n\
          [ -n \"$sid\" ] || exit 0\n\
@@ -1975,13 +1976,15 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          # The turn state, from the events the agent fires as it works: a prompt\n\
          # submitted or a tool finished means working (a finished tool is also what\n\
          # ends an approval wait), Stop means done, a permission or elicitation\n\
-         # notice means blocked on the user, the end of the session means idle.\n\
+         # notice means blocked on the user, the end of the session means idle —\n\
+         # unless a /clear ended it: the CLI is still at its prompt, and the\n\
+         # verdict it had (done) is what keeps the tab off its stale screen.\n\
          turn=\n\
          case \"$event\" in\n\
          \x20 UserPromptSubmit|PostToolUse) turn=working ;;\n\
          \x20 Stop) turn=done ;;\n\
          \x20 Notification) case \"$ntype\" in permission_prompt|elicitation_dialog) turn=decision ;; idle_prompt) turn=done ;; esac ;;\n\
-         \x20 SessionEnd) turn=idle ;;\n\
+         \x20 SessionEnd) [ \"$reason\" = clear ] || turn=idle ;;\n\
          esac\n\
          [ -n \"$turn\" ] && printf '%s %s' \"$turn\" \"$(date +%s)\" > \"$dir/$ELDRUN_TAB_UID.turn\"\n\
          # A /clear keeps the id of the conversation it ended, so the clear can be\n\
@@ -2032,6 +2035,7 @@ fn hook_script_body(live_dir: &str) -> String {
          $ms = [regex]::Match($payload, '\"source\"\\s*:\\s*\"([A-Za-z]+)\"')\r\n\
          $me = [regex]::Match($payload, '\"hook_event_name\"\\s*:\\s*\"([A-Za-z_]+)\"')\r\n\
          $mn = [regex]::Match($payload, '\"notification_type\"\\s*:\\s*\"([A-Za-z_]+)\"')\r\n\
+         $mr = [regex]::Match($payload, '\"reason\"\\s*:\\s*\"([A-Za-z_]+)\"')\r\n\
          if (-not $m.Success) {{ exit 0 }}\r\n\
          $sid = $m.Groups[1].Value\r\n\
          $event = ''\r\n\
@@ -2084,7 +2088,7 @@ fn hook_script_body(live_dir: &str) -> String {
          \x20 'PostToolUse' {{ $turn = 'working' }}\r\n\
          \x20 'Stop' {{ $turn = 'done' }}\r\n\
          \x20 'Notification' {{ if (($ntype -eq 'permission_prompt') -or ($ntype -eq 'elicitation_dialog')) {{ $turn = 'decision' }} elseif ($ntype -eq 'idle_prompt') {{ $turn = 'done' }} }}\r\n\
-         \x20 'SessionEnd' {{ $turn = 'idle' }}\r\n\
+         \x20 'SessionEnd' {{ if (-not ($mr.Success -and ($mr.Groups[1].Value -eq 'clear'))) {{ $turn = 'idle' }} }}\r\n\
          }}\r\n\
          if ($turn -ne '') {{ [IO.File]::WriteAllText(($rec + '.turn'), ($turn + ' ' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) }}\r\n\
          # A /clear keeps the id of the conversation it ended (see the POSIX twin).\r\n\
@@ -3180,6 +3184,11 @@ mod tests {
         run_hook(&script, &live, uid, claude, true, &ev(nested, "Stop", ""));
         assert_eq!(turn().as_deref(), Some("done"));
 
+        // A /clear ends the session but not the CLI: the tab is still at its
+        // prompt, so its `done` stands instead of handing the tab back to its
+        // screen (where the last reply could read as a question).
+        run_hook(&script, &live, uid, claude, true, &ev(uid, "SessionEnd", r#","reason":"clear""#));
+        assert_eq!(turn().as_deref(), Some("done"));
         run_hook(&script, &live, uid, claude, true, &ev(uid, "SessionEnd", r#","reason":"prompt_input_exit""#));
         assert_eq!(turn().as_deref(), Some("idle"));
 

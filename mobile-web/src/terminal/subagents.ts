@@ -8,6 +8,8 @@ export interface SubagentRef {
   task: string;
   /** Its kind (`Explore`, a Codex role, an OpenCode agent). */
   role?: string;
+  /** It had not reported back when its entry was read (`running`). */
+  running?: boolean;
 }
 
 /** One conversation the Reader has walked into from the stored session. */
@@ -25,8 +27,32 @@ export interface SubagentStep extends SubagentRef {
  * stepped to. */
 export function subagentsIn(entries: readonly TranscriptEntry[]): SubagentRef[] {
   return entries.flatMap((entry) => entry.kind === "agent" && entry.subagent
-    ? [{ token: entry.subagent, task: entry.text, role: entry.role }]
+    ? [{ token: entry.subagent, task: entry.text, role: entry.role, ...(entry.running ? { running: true } : {}) }]
     : []);
+}
+
+/** Whether the open subagent of `path` is still at work, by the session's
+ * own `entries`, read live: its outermost subagent has not reported back, and
+ * — one nested inside it, whose parent conversation is not read again — had
+ * not when it was opened. A subagent that finished stays finished. The
+ * caller adds that the session itself is at work: a session that died
+ * mid-turn never records the result. */
+export function openSubagentRunning(path: readonly SubagentStep[], entries: readonly TranscriptEntry[]): boolean {
+  const outer = path[0];
+  const open = path[path.length - 1];
+  if (!outer || !open) return false;
+  const outerRunning = entries.some((entry) => entry.kind === "agent" && entry.subagent === outer.token && entry.running === true);
+  return outerRunning && (path.length === 1 || open.running === true);
+}
+
+/** The name a working row gives the model a transcript names: a Claude id by
+ * its family, as the session's own row says it (`claude-haiku-4-5-20251001`
+ * → `Haiku`); any other id as it is (`gpt-5-codex`). */
+export function workingModelName(model: string | undefined): string | undefined {
+  const id = model?.trim();
+  if (!id) return undefined;
+  const family = /^claude-([a-z]+)-\d/.exec(id)?.[1];
+  return family ? `${family[0].toUpperCase()}${family.slice(1)}` : id;
 }
 
 /** `path` with `ref` opened from the conversation that holds `entries`,

@@ -61,6 +61,10 @@ const MAX_ANSWER_CHARS: usize = 12_000;
 const MAX_AGENT_CHARS: usize = 200;
 /// Longest subagent kind (`Explore`, a Codex role, an OpenCode agent).
 const MAX_ROLE_CHARS: usize = 48;
+/// Longest command line of a running shell; a heredoc script is cut.
+const MAX_SHELL_CHARS: usize = 8_000;
+/// Longest description of a running shell.
+const MAX_SHELL_DESCRIPTION_CHARS: usize = 200;
 /// How deep a subagent's own subagents are followed.
 pub(crate) const MAX_SUBAGENT_DEPTH: usize = 8;
 
@@ -89,6 +93,15 @@ pub struct TranscriptEntry {
     /// `ExitPlanMode`), which the phone sets apart from its ordinary answers.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plan: bool,
+    /// On an `agent` entry: the subagent has not reported back yet — the call
+    /// that spawned it has no result in the transcript (Claude's).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
+    /// On an `agent` entry: the subagent has reported back — its spawn call
+    /// has a result (Claude's). Neither this nor `running` on a CLI whose
+    /// record does not say, so a missing mark is "unknown", never "done".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub finished: bool,
 }
 
 /// What a tab's stored session answers with. Always a value, never an error:
@@ -120,6 +133,47 @@ pub struct AgentTranscript {
     /// The session's own usage figures, where its transcript records them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TranscriptUsage>,
+    /// The model the newest record that names one ran on, as its API id
+    /// (`claude-opus-4-1-20250805`, `gpt-5-codex`) — a subagent's own, read
+    /// off its own conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The shell commands the agent is running right now — Claude's `Bash`
+    /// calls since the last prompt that have no result in the transcript
+    /// yet. Desktop Reader only: the phone's API strips it, since a command
+    /// line is not something that crosses to the browser.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shells: Vec<RunningShell>,
+}
+
+/// A shell command the agent started and is waiting on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunningShell {
+    /// The command line as the agent wrote it, cut at its bound.
+    pub command: String,
+    /// The agent's own few words on what it does, when it gave them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// When the call was written (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// The command was cut at its bound.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cut: bool,
+    /// Sent to the background (`run_in_background`, or moved there at its
+    /// timeout): the agent no longer waits on it, and it can outlive the turn.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+}
+
+/// The shells a transcript says are running: calls still waiting on their
+/// result, and background ones that no notification has ended yet — each
+/// with the output file its CLI named, by which [`running_outputs`] tells
+/// whether it still runs.
+#[derive(Debug, Default)]
+struct ShellCalls {
+    waiting: Vec<RunningShell>,
+    background: Vec<(RunningShell, String)>,
 }
 
 /// What Claude's status line shows beside the model — context left, the
@@ -435,7 +489,7 @@ fn read_transcript_in(
             current = format!("{current}:{}", fingerprint(&folder));
         }
     }
-    if version == Some(current.as_str()) {
+    if version == Some(current.as_str()) && background_unchanged(path, &current) {
         return Some(AgentTranscript {
             available: true,
             version: Some(current),
@@ -460,7 +514,9 @@ fn read_transcript_in(
         TranscriptKind::Codex => codex_usage(&lines),
         TranscriptKind::Claude => None,
     };
-    let (mut entries, calls) = parse_entries(lines.into_iter(), kind, sidechain);
+    let model = newest_model(&lines, kind);
+    let (mut entries, calls, shell_calls) = parse_entries(lines.into_iter(), kind, sidechain);
+    let shells = running_shells(path, &current, shell_calls);
     match spawns {
         Spawns::None => {}
         Spawns::Claude(folder) => {
@@ -494,7 +550,60 @@ fn read_transcript_in(
         entries,
         truncated,
         usage,
+        model,
+        shells,
     })
+}
+
+/// Each transcript's background shells as last answered: the version, their
+/// output files, and which of those still ran. A shell that died with its CLI
+/// writes nothing to the transcript, so an unchanged file is answered
+/// `unchanged` only while the same ones still run.
+type BackgroundSeen = std::collections::HashMap<PathBuf, (String, Vec<String>, std::collections::HashSet<String>)>;
+static BACKGROUND_SEEN: std::sync::LazyLock<std::sync::Mutex<BackgroundSeen>> = std::sync::LazyLock::new(Default::default);
+/// Transcripts remembered at most; past it the memory starts over, which
+/// costs one full read each.
+const BACKGROUND_SEEN_MAX: usize = 64;
+
+/// Whether `path`'s background shells, at `version`, run as they did when
+/// last answered.
+fn background_unchanged(path: &Path, version: &str) -> bool {
+    let seen = BACKGROUND_SEEN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some((at, outputs, running)) = seen.get(path) else {
+        return true;
+    };
+    if at != version {
+        return true;
+    }
+    let outputs: Vec<&str> = outputs.iter().map(String::as_str).collect();
+    running_outputs(&outputs) == *running
+}
+
+/// The shells to show: every call still waiting on its result, then the
+/// background ones whose output file is still held open — remembered for
+/// [`background_unchanged`].
+fn running_shells(path: &Path, version: &str, calls: ShellCalls) -> Vec<RunningShell> {
+    let outputs: Vec<&str> = calls.background.iter().map(|(_, output)| output.as_str()).collect();
+    let running = running_outputs(&outputs);
+    let mut seen = BACKGROUND_SEEN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if outputs.is_empty() {
+        seen.remove(path);
+    } else {
+        if seen.len() >= BACKGROUND_SEEN_MAX && !seen.contains_key(path) {
+            seen.clear();
+        }
+        seen.insert(path.to_path_buf(), (version.to_string(), outputs.iter().map(|o| o.to_string()).collect(), running.clone()));
+    }
+    drop(seen);
+    let mut shells = calls.waiting;
+    shells.extend(calls.background.into_iter().filter(|(_, output)| running.contains(output)).map(|(shell, _)| shell));
+    shells
+}
+
+/// The model the newest record in `lines` names, as the tab's model tag
+/// reads it ([`agent_session::model_in_record`]).
+fn newest_model(lines: &[&str], kind: TranscriptKind) -> Option<String> {
+    lines.iter().rev().find_map(|line| agent_session::model_in_record(line, kind))
 }
 
 /// The subagents in a Claude session's `folder`, by the tool call that
@@ -641,14 +750,26 @@ fn codex_context_left(info: &Value) -> Option<u8> {
 /// made in between, and the phone shows them as separate bubbles — joined
 /// into one they ran together ("Let me check…" glued to the final answer).
 /// Beside them, each Claude `Agent` call's entry index and call id, for the
-/// caller to match to its subagent.
+/// caller to match to its subagent, and the shells it has started.
 fn parse_entries<'a>(
     lines: impl Iterator<Item = &'a str>,
     kind: TranscriptKind,
     sidechain: bool,
-) -> (Vec<TranscriptEntry>, Vec<(usize, String)>) {
+) -> (Vec<TranscriptEntry>, Vec<(usize, String)>, ShellCalls) {
     let mut entries: Vec<TranscriptEntry> = Vec::new();
-    let mut calls = Vec::new();
+    let mut calls: Vec<(usize, String)> = Vec::new();
+    // Shell calls since the last prompt, by call id: one an earlier turn
+    // never got a result for (the CLI was killed mid-call) is not running.
+    let mut shells: Vec<(String, RunningShell)> = Vec::new();
+    // Every shell call read, for a background one's command; the calls sent
+    // to the background, with their output files; and those a notification
+    // has since ended.
+    let mut commands: std::collections::HashMap<String, RunningShell> = std::collections::HashMap::new();
+    let mut backgrounded: Vec<(String, String)> = Vec::new();
+    let mut ended = std::collections::HashSet::new();
+    // The tool calls that have their result: a spawn call without one is a
+    // subagent still at work.
+    let mut returned = std::collections::HashSet::new();
     for line in lines {
         let line = line.trim();
         if line.is_empty() {
@@ -662,6 +783,11 @@ fn parse_entries<'a>(
                 record.remove("isSidechain");
             }
         }
+        if kind == TranscriptKind::Claude {
+            returned.extend(claude_tool_results(&value));
+            backgrounded.extend(claude_backgrounded(&value));
+            ended.extend(claude_tasks_ended(line));
+        }
         let records = match kind {
             TranscriptKind::Claude => claude_records(&value),
             TranscriptKind::Codex => codex_entry(&value).map(|(role, raw)| Record::Turn(role, raw)).into_iter().collect(),
@@ -670,9 +796,20 @@ fn parse_entries<'a>(
             .get("timestamp")
             .and_then(Value::as_str)
             .map(str::to_string);
+        let typed = value.get("type").and_then(Value::as_str) == Some("user");
         for record in records {
             match record {
-                Record::Turn(role, raw) => entries.extend(transcript_entry(role, &raw, at.clone())),
+                Record::Turn(role, raw) => {
+                    if typed && role == "prompt" {
+                        shells.clear();
+                    }
+                    entries.extend(transcript_entry(role, &raw, at.clone()));
+                }
+                Record::Shell { call, mut shell } => {
+                    shell.at = at.clone();
+                    commands.insert(call.clone(), shell.clone());
+                    shells.push((call, shell));
+                }
                 Record::Plan(raw) => entries.extend(transcript_entry("answer", &raw, at.clone()).map(|entry| TranscriptEntry { plan: true, ..entry })),
                 Record::Spawn { call, task, kind } => {
                     if let Some(entry) = agent_entry(&task, kind.as_deref(), at.clone()) {
@@ -683,7 +820,112 @@ fn parse_entries<'a>(
             }
         }
     }
-    (entries, calls)
+    for (index, call) in &calls {
+        let finished = returned.contains(call);
+        entries[*index].running = !finished;
+        entries[*index].finished = finished;
+    }
+    let waiting = shells.into_iter().filter(|(call, _)| !returned.contains(call)).map(|(_, shell)| shell).collect();
+    let background = backgrounded
+        .into_iter()
+        .filter(|(call, _)| !ended.contains(call))
+        .filter_map(|(call, output)| Some((RunningShell { background: true, ..commands.remove(&call)? }, output)))
+        .collect();
+    (entries, calls, ShellCalls { waiting, background })
+}
+
+/// A Claude `user` record's shell results that went to the background
+/// (`toolUseResult.backgroundTaskId`): the call, and the output file the
+/// result names — `<…>/<task id>.output`, written to while it runs.
+fn claude_backgrounded(value: &Value) -> Option<(String, String)> {
+    let task = value.get("toolUseResult")?.get("backgroundTaskId")?.as_str()?;
+    let Some(Value::Array(blocks)) = value.get("message").and_then(|m| m.get("content")) else {
+        return None;
+    };
+    let result = blocks.iter().find(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))?;
+    let call = result.get("tool_use_id")?.as_str()?;
+    let text = match result.get("content")? {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
+        _ => return None,
+    };
+    let name = format!("/{task}.output");
+    let output = text
+        .split_whitespace()
+        .map(|word| word.trim_end_matches('.'))
+        .find(|word| word.starts_with('/') && word.ends_with(&name))?;
+    Some((call.to_string(), output.to_string()))
+}
+
+/// The background calls a raw Claude record says have ended: each
+/// `<task-notification>` in it — queued, delivered as a prompt, or absorbed
+/// mid-turn — names the call (`<tool-use-id>`) and its status; every status
+/// but `starting` ends it (`completed`, `failed`, `killed`, `stopped`).
+fn claude_tasks_ended(line: &str) -> Vec<String> {
+    let tag = |text: &str, name: &str| -> Option<String> {
+        let open = format!("<{name}>");
+        let start = text.find(&open)? + open.len();
+        let end = text[start..].find(&format!("</{name}>"))?;
+        Some(text[start..start + end].to_string())
+    };
+    line.split("<task-notification>")
+        .skip(1)
+        .filter_map(|note| {
+            let note = note.split("</task-notification>").next()?;
+            let call = tag(note, "tool-use-id")?;
+            let status = tag(note, "status")?;
+            (status != "starting" && call.starts_with("toolu_")).then_some(call)
+        })
+        .collect()
+}
+
+/// Which of `outputs` some process still holds open — a background shell
+/// writes its output file until it exits, and a CLI that quit took its
+/// shells with it without a notification. Read off `/proc/<pid>/fd`, whose
+/// links name the file as the process sees it — the path its CLI wrote down,
+/// inside a fence or a container too. Elsewhere nothing is known to run.
+fn running_outputs(outputs: &[&str]) -> std::collections::HashSet<String> {
+    let mut open = std::collections::HashSet::new();
+    if outputs.is_empty() || !cfg!(target_os = "linux") {
+        return open;
+    }
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return open;
+    };
+    for proc in procs.flatten() {
+        if !proc.file_name().to_str().is_some_and(|name| name.bytes().all(|b| b.is_ascii_digit())) {
+            continue;
+        }
+        let Ok(fds) = std::fs::read_dir(proc.path().join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            if let Ok(target) = std::fs::read_link(fd.path()) {
+                if let Some(output) = outputs.iter().find(|output| target.as_os_str() == **output) {
+                    open.insert(output.to_string());
+                }
+            }
+        }
+        if open.len() == outputs.len() {
+            break;
+        }
+    }
+    open
+}
+
+/// The tool calls a Claude `user` record carries the results of.
+fn claude_tool_results(value: &Value) -> Vec<String> {
+    if value.get("type").and_then(Value::as_str) != Some("user") {
+        return Vec::new();
+    }
+    let Some(Value::Array(blocks)) = value.get("message").and_then(|m| m.get("content")) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str).map(str::to_string))
+        .collect()
 }
 
 /// What one record contributes.
@@ -694,6 +936,8 @@ enum Record {
     Plan(String),
     /// A subagent spawned by tool call `call`, sent to do `task`.
     Spawn { call: String, task: String, kind: Option<String> },
+    /// A shell command started by tool call `call`.
+    Shell { call: String, shell: RunningShell },
 }
 
 /// A subagent's entry: its task as one bounded line, its kind beside it.
@@ -779,7 +1023,10 @@ fn claude_records(value: &Value) -> Vec<Record> {
                         .filter_map(|b| b.get("text").and_then(Value::as_str))
                         .collect::<Vec<_>>()
                         .join("\n\n"),
-                    blocks.iter().filter_map(|b| claude_plan(b).or_else(|| claude_spawn(b))).collect(),
+                    blocks
+                        .iter()
+                        .filter_map(|b| claude_plan(b).or_else(|| claude_spawn(b)).or_else(|| claude_shell(b)))
+                        .collect(),
                 ),
                 _ => return Vec::new(),
             };
@@ -803,6 +1050,26 @@ fn claude_plan(block: &Value) -> Option<Record> {
     }
     let plan = block.get("input")?.get("plan")?.as_str()?.trim();
     (!plan.is_empty()).then(|| Record::Plan(plan.to_string()))
+}
+
+/// A `Bash` `tool_use` block: the command, and the description Claude gave it.
+fn claude_shell(block: &Value) -> Option<Record> {
+    if block.get("type").and_then(Value::as_str) != Some("tool_use")
+        || block.get("name").and_then(Value::as_str) != Some("Bash")
+    {
+        return None;
+    }
+    let call = block.get("id")?.as_str()?.to_string();
+    let input = block.get("input")?;
+    let raw = clean_text(input.get("command")?.as_str()?)?;
+    let cut = raw.chars().count() > MAX_SHELL_CHARS;
+    let command = if cut { raw.chars().take(MAX_SHELL_CHARS).collect() } else { raw };
+    let description = input
+        .get("description")
+        .and_then(Value::as_str)
+        .and_then(clean_text)
+        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(MAX_SHELL_DESCRIPTION_CHARS).collect());
+    Some(Record::Shell { call, shell: RunningShell { command, description, cut, ..Default::default() } })
 }
 
 /// A `tool_use` block that spawns a subagent — `Agent`, `Task` before it was
@@ -1179,6 +1446,130 @@ mod tests {
             vec![("prompt", "long task"), ("agent", "Dig deeper"), ("answer", "The backend is in src-tauri.")]
         );
         assert!(claude_subagent_file(&folder, &subagent_token("elsewhere")).is_none());
+    }
+
+    #[test]
+    fn a_claude_subagent_runs_until_its_call_has_a_result_and_names_its_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        let spawn = |id: &str| format!("{{\"type\":\"assistant\",\"message\":{{\"model\":\"claude-opus-4-1-20250805\",\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Agent\",\"input\":{{\"description\":\"scout {id}\"}}}}]}}}}\n");
+        let result = |id: &str| format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"done\"}}]}}}}\n");
+        std::fs::write(&main, [spawn("toolu_A"), spawn("toolu_B"), result("toolu_A")].concat()).unwrap();
+        let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(read.entries.iter().map(|e| e.running).collect::<Vec<_>>(), vec![false, true]);
+        assert_eq!(read.model.as_deref(), Some("claude-opus-4-1-20250805"));
+        let wire = serde_json::to_value(&read).unwrap();
+        assert_eq!(wire["entries"][1]["running"], true);
+        assert!(wire["entries"][0].get("running").is_none());
+        assert_eq!(wire["entries"][0]["finished"], true);
+        assert!(wire["entries"][1].get("finished").is_none());
+
+        // A subagent's own file names the model it ran on; Claude's own
+        // `<synthetic>` notes are not one.
+        let sub = dir.path().join("agent-x.jsonl");
+        std::fs::write(
+            &sub,
+            concat!(
+                "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"looking\"}]}}\n",
+                "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"note\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript_in(&sub, TranscriptKind::Claude, &Spawns::None, true, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(read.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+    }
+
+    #[test]
+    fn a_claude_shell_runs_until_its_call_has_a_result_since_the_last_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        let prompt = |text: &str| format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n");
+        let bash = |id: &str, command: &str| format!("{{\"type\":\"assistant\",\"timestamp\":\"2026-10-01T10:00:00Z\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"{command}\",\"description\":\"Run  the\\ntests\"}}}}]}}}}\n");
+        let result = |id: &str| format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"ok\"}}]}}}}\n");
+        std::fs::write(
+            &main,
+            [
+                prompt("first"),
+                // Killed mid-call: never answered, and a new prompt came since.
+                bash("toolu_dead", "sleep 999"),
+                prompt("second"),
+                bash("toolu_done", "ls"),
+                result("toolu_done"),
+                bash("toolu_live", "npm test -- --reporter=dot"),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(read.shells.len(), 1);
+        let shell = &read.shells[0];
+        assert_eq!(shell.command, "npm test -- --reporter=dot");
+        assert_eq!(shell.description.as_deref(), Some("Run the tests"));
+        assert_eq!(shell.at.as_deref(), Some("2026-10-01T10:00:00Z"));
+        assert!(!shell.cut);
+        // A shell call is no bubble of the conversation.
+        assert_eq!(kinds(&read), vec![("prompt", "first"), ("prompt", "second")]);
+        let wire = serde_json::to_value(&read).unwrap();
+        assert_eq!(wire["shells"][0]["command"], "npm test -- --reporter=dot");
+
+        assert!(wire["shells"][0].get("background").is_none());
+
+        std::fs::write(&main, [prompt("first"), bash("toolu_live", "ls"), result("toolu_live")].concat()).unwrap();
+        let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        assert!(read.shells.is_empty());
+        assert!(serde_json::to_value(&read).unwrap().get("shells").is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_claude_background_shell_runs_while_its_output_is_held_open_and_no_notification_ended_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        let output = dir.path().join("tasks").join("b1.output");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        let output_text = output.to_str().unwrap().to_string();
+        let lines = |extra: &str| {
+            [
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"run the server\"}}\n".to_string(),
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-10-01T10:00:00Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_bg\",\"name\":\"Bash\",\"input\":{\"command\":\"npm run dev\",\"run_in_background\":true}}]}}\n".to_string(),
+                format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_bg\",\"content\":\"Command running in background with ID: b1. Output is being written to: {output_text}. You will be notified when it completes.\"}}]}},\"toolUseResult\":{{\"backgroundTaskId\":\"b1\"}}}}\n"),
+                // A later prompt does not end a background shell.
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"and now?\"}}\n".to_string(),
+                extra.to_string(),
+            ]
+            .concat()
+        };
+        let read = |version: Option<&str>| read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, version, DEFAULT_LIMIT).unwrap();
+        std::fs::write(&main, lines("")).unwrap();
+
+        // Nobody holds the output open: its CLI quit and took the shell along.
+        assert!(read(None).shells.is_empty());
+
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::fs::File::create(&output).unwrap())
+            .spawn()
+            .unwrap();
+        let running = read(None);
+        assert_eq!(running.shells.len(), 1);
+        assert_eq!(running.shells[0].command, "npm run dev");
+        assert!(running.shells[0].background);
+        assert!(read(running.version.as_deref()).unchanged);
+
+        // A notification ends it, held open or not.
+        let note = "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"<task-notification>\\n<task-id>b1</task-id>\\n<tool-use-id>toolu_bg</tool-use-id>\\n<status>killed</status>\\n</task-notification>\"}\n";
+        std::fs::write(&main, lines(note)).unwrap();
+        assert!(read(None).shells.is_empty());
+
+        // The shell exits without one: an unchanged file is read again.
+        std::fs::write(&main, lines("")).unwrap();
+        let running = read(None);
+        assert_eq!(running.shells.len(), 1);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let gone = read(running.version.as_deref());
+        assert!(!gone.unchanged);
+        assert!(gone.shells.is_empty());
     }
 
     #[test]

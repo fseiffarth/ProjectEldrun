@@ -86,6 +86,7 @@ export function sameReaderLive(a: ReaderLive, b: ReaderLive): boolean {
     && (a.working === null) === (b.working === null)
     && a.working?.elapsed === b.working?.elapsed
     && a.working?.tokens === b.working?.tokens
+    && a.working?.effort === b.working?.effort
     && sameStatus(a.status, b.status);
 }
 

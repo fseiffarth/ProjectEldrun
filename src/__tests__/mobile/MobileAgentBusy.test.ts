@@ -32,6 +32,7 @@ describe("Eldrun Mobile agent busy reader", () => {
     expect(agentWork(rows("✻ Thinking… (9s · ↓ 1.2k tokens · esc to interrupt)", "> "))).toEqual({ elapsed: "9s", tokens: "1.2k" });
     expect(agentWork(rows("✶ Cascading… (36s · ↓ 2.1k tokens)", "❯ "))).toEqual({ elapsed: "36s", tokens: "2.1k" });
     expect(agentWork(rows("✢ Reticulating… (1m 4s · ↑ 310 tokens · thinking)", "❯ "))).toEqual({ elapsed: "1m 4s", tokens: "310" });
+    expect(agentWork(rows("✻ Pondering… (12s · ↓ 3.4k tokens · thinking with high effort)", "❯ "))).toEqual({ elapsed: "12s", tokens: "3.4k", effort: "high" });
     expect(agentWork(rows("› fix the tests", "• Working (0s • esc to interrupt)"))).toEqual({ elapsed: "0s", tokens: undefined });
     expect(agentWork(rows("⠏ Thinking about it (esc to cancel, 3s)", "> Type your message"))).toEqual({ elapsed: "3s", tokens: undefined });
   });

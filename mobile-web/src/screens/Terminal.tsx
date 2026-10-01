@@ -1,4 +1,5 @@
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
+import { AgentStatusMark } from "../components/AgentStatusPill";
 import { useMessageMenu, type HoldHandlers } from "../components/MessageMenu";
 import { OptionSheet, type SheetOption } from "../components/OptionSheet";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
@@ -96,7 +97,7 @@ import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { answerHtml } from "../terminal/answerMarkdown";
 import { chatDayLabel, chatMoment, chatTime, dayOpeners } from "../terminal/chatTimes";
 import { commandArgsInline, slashCommand, transcriptTurns, type SlashCommand, type TranscriptTurn } from "../terminal/transcriptTurns";
-import { openSubagent, siblingPosition, stepSibling, type SubagentStep } from "../terminal/subagents";
+import { openSubagent, openSubagentRunning, siblingPosition, stepSibling, workingModelName, type SubagentStep } from "../terminal/subagents";
 import { MAX_PENDING, arrivedPending, pendingPrompt, reworded, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
 import { outboxPosts, type OutboxPost as ChatPost } from "../terminal/outboxPosts";
 import { afterClear, clearMark, type ClearMark } from "../terminal/clearedSession";
@@ -404,13 +405,16 @@ const AnswerText = memo(function AnswerText({ text }: { text: string }) {
 });
 
 /** A subagent the agent spawned, in its place in the chat: what it was sent
- * to do under its kind, a tap away from its own conversation. Not a bubble —
- * the agent did not say it — but a card on the agent's side. One whose CLI
- * has not yet recorded where its conversation lives cannot be opened yet. */
-function SubagentCard({ turn, label, untested, onOpen }: {
+ * to do under its kind, when it started, a tap away from its own
+ * conversation. Not a bubble — the agent did not say it — but a card on the
+ * agent's side. One that has reported back wears the tab cards' ✓ (where its
+ * CLI records that). One whose CLI has not yet recorded where its
+ * conversation lives cannot be opened yet. */
+function SubagentCard({ turn, label, untested, time, onOpen }: {
   turn: TranscriptTurn;
   label: string;
   untested: string;
+  time?: ReactNode;
   onOpen?: (turn: TranscriptTurn) => void;
 }) {
   const openable = !!turn.subagent && !!onOpen;
@@ -419,7 +423,9 @@ function SubagentCard({ turn, label, untested, onOpen }: {
     <span className="transcript-agent-body">
       <small>{turn.role ?? label}{untested && <em> · {untested}</em>}</small>
       <span>{turn.text}{turn.cut && "…"}</span>
+      {time}
     </span>
+    {turn.finished && <AgentStatusMark status="done" />}
     {openable && <svg className="transcript-agent-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>}
   </button>;
 }
@@ -476,7 +482,7 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, part, cutLabel,
       <span>{chatDayLabel(moment, now, dayLabels)}{timesUntested && <em> · {t("mobile.focus.untested")}</em>}</span>
     </div>}
     {turn.kind === "agent"
-      ? <SubagentCard turn={turn} label={agentLabel} untested={agentUntested} onOpen={onOpenAgent} />
+      ? <SubagentCard turn={turn} label={agentLabel} untested={agentUntested} time={time} onOpen={onOpenAgent} />
       : turn.command
       ? <CommandDivider command={turn.command} label={promptLabel} press={hold(turn.key, () => turn.text)} />
       : turn.kind === "prompt"
@@ -3306,6 +3312,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   /** Where the open subagent stands among its siblings, and the conversation
    * the bar goes back up to. */
   const subagentPosition = openStep ? siblingPosition(openStep) : { index: -1, count: 0 };
+  /** The open subagent at work: the session is, and that subagent has not
+   * reported back. Its row names the subagent's own model, not the session's. */
+  const subagentWorking = sessionBusy && openSubagentRunning(subagentPath, sessionEntries);
+  const subagentModel = workingModelName(subTranscript?.model);
   const subagentParent = subagentPath.length > 1 ? subagentPath[subagentPath.length - 2].task : t("mobile.subagent.main");
   /** A subagent's conversation in the Reader: under a bar that goes back up
    * to the conversation it was opened from and steps through the subagents
@@ -3339,6 +3349,11 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       : <div className="readable-lines chat transcript" data-testid="subagent-transcript">
           {subTranscript.truncated && <button className="readable-earlier" onClick={() => setSubLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
           <TranscriptTurns entries={subTranscript.entries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.subagent.task")} planLabel={t("mobile.transcript.plan")} planUntested={planUntested} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} />
+          {subagentWorking && <div className="transcript-working" role="status" data-testid="subagent-working">
+            <span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span>
+            {subagentModel ? t("mobile.focus.workingModel", { model: subagentModel }) : t("mobile.focus.working")}
+            {isUntested("mobile.subagent.working") && <small className="transcript-working-facts"><em>{t("mobile.focus.untested")}</em></small>}
+          </div>}
         </div>}
   </>;
   return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{t(tab.kind === "agent" ? "mobile.focus.agentSession" : "mobile.focus.shellSession")}</small></div>{outbox.length > 0 && <button className="terminal-gallery" onClick={() => setGallery(true)} aria-label={t("mobile.outbox.galleryOpen", { count: outbox.length })} title={t("mobile.outbox.region")}><span aria-hidden="true">🖼</span><small>{outbox.length}</small></button>}<div className="terminal-view-switch" aria-label={t("mobile.focus.outputView")}><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} aria-haspopup={chat ? "menu" : undefined} aria-expanded={chat ? focusMenu : undefined} onClick={() => {

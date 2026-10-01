@@ -46,6 +46,22 @@ export function isProjectWorktreeCwd(cwd: string, projectDir: string): boolean {
   return name.length > 0 && !name.includes("/") && name !== "." && name !== "..";
 }
 
+/** A linked worktree's folder as the agents keep them: Eldrun's own
+ * (`.eldrun/worktrees/<name>`), Claude Code's `--worktree` ones
+ * (`.claude/worktrees/<name>`), or any other dot-folder's `worktrees`. */
+const WORKTREE_IN_PATH = /[/\\]\.[^/\\]+[/\\]worktrees[/\\]([^/\\]+)/u;
+
+/**
+ * The name of the linked worktree `path` lies in, or undefined for a path that
+ * is in none — read off the path alone, so it names what the agent's folder
+ * is without asking git. The Reader's facts row shows it beside the path.
+ */
+export function worktreeOfPath(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  const name = WORKTREE_IN_PATH.exec(path)?.[1];
+  return name && name !== "." && name !== ".." ? name : undefined;
+}
+
 /** Same directory, modulo a trailing separator and separator style. */
 function sameDir(a: string, b: string): boolean {
   const norm = (s: string) => stripTrailingSep(s).replace(/\\/g, "/");

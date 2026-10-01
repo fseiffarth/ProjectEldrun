@@ -4,12 +4,17 @@ import { readAgentUsage } from "../../lib/agents/agentUsage";
 import { OPENCODE_MODEL_KEYS, isOpenCodeTab } from "../../../mobile-web/src/terminal/openCodeMini";
 import { modelPickKeys, readModelPicker, type ReaderLive } from "../../lib/agents/readerLive";
 import { submitScheduledAgentCommand } from "../../lib/agents/scheduledAgentInput";
+import { shortPath } from "../../lib/agents/agentReader";
+import { worktreeOfPath } from "../../lib/agents/agentWorktrees";
 import { terminalFor } from "../../lib/terminal/terminalRegistry";
 import { UntestedTag } from "../common/UntestedTag";
 import type { TabEntry } from "../../stores/tabs";
 import type { SessionUsage } from "../../../mobile-web/src/api";
 import { resetCountdown, resetText } from "../../../mobile-web/src/terminal/limitResets";
 import { sameSelectStep, type SelectPrompt, type SelectStep } from "../../../mobile-web/src/terminal/selectPrompt";
+import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../../../mobile-web/src/terminal/agentModes";
+import { readableScreen } from "../../../mobile-web/src/terminal/readableScreen";
+import { sessionStatus } from "../../../mobile-web/src/terminal/statusLine";
 import { sessionLimits } from "../../../mobile-web/src/terminal/sessionUsage";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
 
@@ -23,17 +28,25 @@ const CLOCK_MS = 30_000;
 const PICKER_POLL_MS = 150;
 const PICKER_WAIT_MS = 6_000;
 const NEXT_STEP_WAIT_MS = 700;
+/** The phone's mode walk (`mobile-web` `Terminal.tsx` `applyMode`): how long a
+ * Shift+Tab is given to redraw the mode line, and how many presses a lap may
+ * take before the walk gives up. */
+const MODE_SETTLE_MS = 340;
+const MODE_CYCLE_LIMIT = 6;
 
 /**
  * The Reader's facts row — the phone's (`mobile-web` `Terminal.tsx`
  * `.session-facts`) on the desktop: the model the session prints (a button
  * that opens its own `/model` picker as a list here), the branch, the
- * context left and the account's 5-hour and weekly limits. The status facts
+ * context left and the account's 5-hour and weekly limits — plus, as the
+ * phone's chips, the permission mode (a list walked with Shift+Tab, or one
+ * press where the session's modes are unknown) and the reasoning effort, and
+ * the folder the agent works in with the worktree it is. The status facts
  * come off the pane's live screen (`ReaderLive.status`); the limits from the
  * CLI's usage panel (`agent_usage`, which spends no quota), or — Codex, which
  * has none — from the figures its rollout stores.
  */
-export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, usage, visible, typeKeys, onPicking }: {
+export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, usage, path, effort, visible, typeKeys, onPicking }: {
   tab: TabEntry;
   ptyId: string;
   agentLabel: string;
@@ -43,6 +56,10 @@ export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, us
   /** The stored session's own figures (Codex), for what the screen and the
    * usage panel leave out. */
   usage: SessionUsage | undefined;
+  /** The folder the agent works in, when the screen prints none. */
+  path: string | undefined;
+  /** The reasoning effort last seen on screen, when the status line has none. */
+  effort: string | undefined;
   visible: boolean;
   typeKeys: (keys: string[]) => Promise<void>;
   /** Whether the model list is up: the Reader then leaves the picker out of
@@ -145,6 +162,7 @@ export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, us
 
   const openPicker = () => {
     if (picking) return;
+    closeModes();
     sawPicker.current = false;
     setAnswered(null);
     setPicker(null);
@@ -169,6 +187,73 @@ export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, us
     finish();
   };
 
+  // --- The permission mode ---------------------------------------------------
+  const [modeOpen, setModeOpen] = useState(false);
+  const [switching, setSwitching] = useState("");
+  const [switchFailed, setSwitchFailed] = useState("");
+  /** The status line as the pane draws it right now — read straight off the
+   * screen, since the Reader's own reading may lag a settling redraw. */
+  const readStatus = () => {
+    const term = terminalFor(ptyId);
+    return term ? sessionStatus(readableScreen(term.buffer.active).lines, agentLabel) : status;
+  };
+  const modeWalk = useRef(0);
+  const modes = modeChoices(status?.mode, agentLabel);
+  const activeMode = currentMode(modes, status?.mode, status != null);
+  const fixedMode = modeFixed(agentLabel);
+  const shiftTab = shiftTabKey(agentLabel);
+  useEffect(() => () => { modeWalk.current += 1; }, []);
+  const closeModes = () => {
+    modeWalk.current += 1;
+    setSwitching("");
+    setModeOpen(false);
+  };
+  const openModes = () => {
+    if (modeOpen) {
+      closeModes();
+      return;
+    }
+    if (modes.length === 0 && !fixedMode) {
+      void typeKeys([shiftTab]).catch(() => {});
+      return;
+    }
+    setSwitchFailed("");
+    setModeOpen(true);
+  };
+  /** Walks the Shift+Tab cycle to `value`, reading the redrawn status line
+   * after every press — the phone's walk: no cycle order is assumed, and a
+   * full lap back to the start ends it as a failed switch. */
+  const applyMode = async (value: string) => {
+    if (switching || fixedMode) return;
+    const before = readStatus();
+    const start = before?.mode;
+    if (currentMode(modes, start, before != null) === value) {
+      setModeOpen(false);
+      return;
+    }
+    const walk = modeWalk.current + 1;
+    modeWalk.current = walk;
+    setSwitchFailed("");
+    setSwitching(value);
+    for (let step = 0; step < MODE_CYCLE_LIMIT; step += 1) {
+      const pressed = await typeKeys([shiftTab]).then(() => true, () => false);
+      if (!pressed) break;
+      await new Promise((resolve) => { setTimeout(resolve, MODE_SETTLE_MS); });
+      if (modeWalk.current !== walk) return;
+      const after = readStatus();
+      const now = after?.mode;
+      if (currentMode(modes, now, after != null) === value) {
+        setSwitching("");
+        setModeOpen(false);
+        return;
+      }
+      if (step > 0 && now !== undefined && now === start) break;
+    }
+    if (modeWalk.current !== walk) return;
+    setSwitching("");
+    setSwitchFailed(value);
+  };
+
   const contextLeft = status?.context ?? (usage?.contextLeft != null ? `${usage.contextLeft}%` : undefined);
   const clock = new Date(now);
   const fromPanel = !!(limits.session || limits.week);
@@ -187,7 +272,12 @@ export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, us
       </span>
     );
   };
-  const modelLabel = status?.model ? (status.effort ? `${status.model} · ${status.effort}` : status.model) : modelTag;
+  const modelLabel = status?.model ?? modelTag;
+  const effortLabel = status?.effort ?? effort;
+  const modeLabel = modes.find((choice) => choice.value === activeMode)?.label ?? status?.mode;
+  const shownPath = status?.path ?? path;
+  const worktree = worktreeOfPath(shownPath);
+  const failedMode = modes.find((choice) => choice.value === switchFailed);
   const shownStep = step ?? (answered && picker ? answered : null);
   const busy = !!answered || !step;
 
@@ -228,6 +318,36 @@ export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, us
           {step?.hidden ? <small className="terminal-reader-question-more">{t("terminal.reader.moreChoices")}</small> : null}
         </div>
       )}
+      {modeOpen && (
+        <div
+          className="terminal-reader-picker"
+          role="dialog"
+          aria-label={t("terminal.reader.modeTitle")}
+          onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeModes(); } }}
+        >
+          <div className="terminal-reader-picker-head">
+            <strong>{t("terminal.reader.modeTitle")}</strong>
+            <button type="button" className="terminal-reader-picker-close" onClick={closeModes} aria-label={t("terminal.reader.modeClose")} title={t("terminal.reader.modeClose")}>✕</button>
+          </div>
+          <div className="terminal-reader-options">
+            {modes.map((choice, index) => (
+              <button
+                key={choice.value}
+                type="button"
+                className={choice.value === activeMode ? "terminal-reader-option current" : "terminal-reader-option"}
+                disabled={fixedMode || !!switching}
+                aria-busy={choice.value === switching}
+                onClick={() => void applyMode(choice.value)}
+              >
+                <span className="terminal-reader-option-number">{choice.value === switching ? "…" : index + 1}</span>
+                <span className="terminal-reader-option-label"><span>{choice.label}</span></span>
+              </button>
+            ))}
+          </div>
+          {failedMode && <small className="terminal-reader-question-more" role="alert">{t("terminal.reader.modeFailed", { mode: failedMode.label })}</small>}
+          {fixedMode && <small className="terminal-reader-question-more">{t("terminal.reader.modeFixed")}</small>}
+        </div>
+      )}
       <div className="terminal-reader-facts">
         <button
           type="button"
@@ -240,7 +360,24 @@ export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, us
         >
           {modelLabel ?? t("terminal.reader.model")}
         </button>
+        {effortLabel && <span className="terminal-reader-fact" title={t("terminal.reader.effortHint")}>{t("terminal.reader.effort", { effort: effortLabel })}</span>}
+        {tab.kind === "agent" && (
+          <button
+            type="button"
+            className={status?.mode === "plan" ? "terminal-reader-fact-model plan" : "terminal-reader-fact-model"}
+            onClick={openModes}
+            disabled={!modeOpen && (!!live.question || picking)}
+            aria-haspopup={modes.length > 0 || fixedMode ? "dialog" : undefined}
+            aria-expanded={modes.length > 0 || fixedMode ? modeOpen : undefined}
+            title={t(modes.length > 0 || fixedMode ? "terminal.reader.modeHint" : "terminal.reader.modeCycle")}
+          >
+            {modeLabel ?? t("terminal.reader.mode")}
+          </button>
+        )}
         <UntestedTag id="terminal.reader.facts" />
+        <UntestedTag id="terminal.reader.factsMore" />
+        {shownPath && <span className="terminal-reader-fact" title={shownPath}>{shortPath(shownPath)}</span>}
+        {worktree && <span className="terminal-reader-fact worktree" title={t("terminal.reader.worktreeHint")}>{t("terminal.reader.worktree", { name: worktree })}</span>}
         {status?.branch && <span className="terminal-reader-fact">⎇ {status.branch}</span>}
         {contextLeft && <span className="terminal-reader-fact">{t("terminal.reader.contextLeft", { percent: contextLeft })}</span>}
         {limitFact(shown.session, "mobile.facts.session")}

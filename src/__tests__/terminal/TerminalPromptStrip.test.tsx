@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(()
 import { TerminalPromptStrip } from "../../components/terminal/TerminalPromptStrip";
 import { useAgentPromptsStore, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
 import { _resetPromptTrailForTest, notePromptTrailInput } from "../../stores/agents/promptTrail";
+import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 
 const tab: TabEntry = { key: "agent-1", label: "Claude", cmd: "claude", cwd: "/p", kind: "agent", sessionId: "launch-1" };
@@ -47,6 +48,21 @@ describe("the prompt strip over an agent pane", () => {
     expect(panel.querySelector(".prompt-strip-full")?.textContent).toBe("the first prompt");
     fireEvent.keyDown(panel, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("stamps the prompt on the app's clock, not the webview locale's", () => {
+    const at = new Date();
+    at.setHours(14, 5, 0, 0);
+    const stamp = at.toISOString();
+    useAgentPromptsStore.setState({ historyByProject: { p: [{ ...sent, created_at: stamp, sent_at: stamp }] } });
+    const before = useSettingsStore.getState().settings;
+    useSettingsStore.setState({ settings: { ...(before ?? {}), time_format_24h: true } as typeof before });
+    try {
+      const { container } = strip();
+      expect(container.querySelector(".prompt-strip-time")?.textContent).toBe("14:05");
+    } finally {
+      useSettingsStore.setState({ settings: before });
+    }
   });
 
   it("says so when the tab has no prompt yet", () => {

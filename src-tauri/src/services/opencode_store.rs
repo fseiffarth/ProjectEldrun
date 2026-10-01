@@ -133,6 +133,8 @@ pub fn session_transcript(
         entries,
         truncated,
         usage: None,
+        model: None,
+        shells: Vec::new(),
     })
 }
 

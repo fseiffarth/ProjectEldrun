@@ -2546,13 +2546,13 @@ async fn agent_transcript(
         .unwrap_or_else(|_| crate::services::agent_transcript::AgentTranscript::unavailable("read_failed"));
         return (
             StatusCode::OK,
-            Json(json!({ "transcript": transcript, "desktop_available": false })),
+            Json(json!({ "transcript": phone_transcript(transcript), "desktop_available": false })),
         );
     }
     match response {
         Ok(DesktopResponse::AgentTranscript { transcript }) => (
             StatusCode::OK,
-            Json(json!({ "transcript": transcript })),
+            Json(json!({ "transcript": phone_transcript(transcript) })),
         ),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             if code == "tab_not_found" {
@@ -2564,6 +2564,16 @@ async fn agent_transcript(
         ),
         _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
     }
+}
+
+/// A transcript as the phone may see it: the shell commands the desktop
+/// Reader shows beside its working row are command lines, which never cross
+/// the browser API.
+fn phone_transcript(
+    mut transcript: crate::services::agent_transcript::AgentTranscript,
+) -> crate::services::agent_transcript::AgentTranscript {
+    transcript.shells.clear();
+    transcript
 }
 
 async fn schedule_mutation(

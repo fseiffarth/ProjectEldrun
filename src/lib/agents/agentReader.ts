@@ -64,6 +64,33 @@ export function readerReasonKey(transcript: SessionTranscript | null): Translati
   }
 }
 
+/** The prompts ↑ walks in the Reader's composer, oldest first — what ↑ does
+ * in the CLI's own input box: the session's prompts as its transcript records
+ * them, then any still showing as sending. A prompt sent twice in a row is
+ * kept once, as a shell's history keeps it. */
+export function composerHistory(
+  entries: readonly { kind: string; text?: string }[],
+  sending: readonly string[] = [],
+): string[] {
+  const history: string[] = [];
+  const add = (text: string | undefined) => {
+    const prompt = text?.trim();
+    if (prompt && history[history.length - 1] !== prompt) history.push(prompt);
+  };
+  for (const entry of entries) if (entry.kind === "prompt") add(entry.text);
+  for (const text of sending) add(text);
+  return history;
+}
+
+/** Shortens `path` for the facts row: its last `keep` segments behind `…/`
+ * (the whole path stays in the fact's tooltip). */
+export function shortPath(path: string, keep = 2): string {
+  const trimmed = path.replace(/[/\\]+$/u, "") || path;
+  const parts = trimmed.split(/[/\\]/u).filter(Boolean);
+  if (parts.length <= keep) return trimmed;
+  return `…/${parts.slice(-keep).join("/")}`;
+}
+
 /** A fresh read merged over the last one: `unchanged` keeps what is shown. */
 export function mergeTranscript(previous: SessionTranscript | null, next: SessionTranscript): SessionTranscript {
   return next.unchanged && previous ? previous : next;
