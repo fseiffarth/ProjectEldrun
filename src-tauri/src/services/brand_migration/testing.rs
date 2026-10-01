@@ -17,6 +17,11 @@ pub const RENAMED: Pair = Pair {
     legacy: LEGACY,
 };
 
+/// A pair whose name did not change: what every build ran with before the
+/// rename. The no-op guarantees are held against it — nothing is looked up
+/// twice, nothing moves, nothing is written.
+pub const UNCHANGED: Pair = Pair { cur: crate::brand::CURRENT, legacy: crate::brand::CURRENT };
+
 /// Records what a step asked of the machine.
 #[derive(Default)]
 pub struct RecordingWorld {

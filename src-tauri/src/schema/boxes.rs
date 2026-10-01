@@ -54,7 +54,7 @@ pub struct ProjectBox {
     /// exactly like a project's `eldrun_mobile_access` — the sidecar reads this
     /// file directly, so the bit lives here and nowhere else.
     // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
-    #[serde(default, rename = "eldrun_mobile_access", skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, rename = "tabtivity_mobile_access", alias = "eldrun_mobile_access", skip_serializing_if = "std::ops::Not::not")]
     pub app_mobile_access: bool,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,

@@ -53,9 +53,9 @@ pub fn clear_legacy(pair: &Pair, name: Name, store: &dyn Store, account: &str) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::super::hits;
-    use super::super::testing::RENAMED;
+    use super::super::testing::{RENAMED, UNCHANGED};
     use super::*;
-    use crate::brand::{LEGACY, PAIR};
+    use crate::brand::LEGACY;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
@@ -107,7 +107,7 @@ pub(crate) mod tests {
         let store = MemoryStore::with(&[(&old_service, "ssh:host", "hunter2")]);
         let _ = hits::taken();
         assert_eq!(get(&RENAMED, NAME, &store, "ssh:host", "keyring-remote", true), Some("hunter2".into()));
-        assert_eq!(hits::taken(), ["keyring-remote"]);
+        assert_eq!(hits::taken_here(), ["keyring-remote"]);
         assert_eq!(store.has("newname-remote", "ssh:host"), Some("hunter2".into()));
         assert_eq!(store.has(&old_service, "ssh:host"), Some("hunter2".into()));
         // The second read finds it under the current service: no more hits.
@@ -144,13 +144,10 @@ pub(crate) mod tests {
 
     #[test]
     fn the_unchanged_pair_reads_one_service_once() {
-        if PAIR.renamed() {
-            return;
-        }
         let store = MemoryStore::default();
-        assert_eq!(get(&PAIR, NAME, &store, "a", "keyring-remote", true), None);
+        assert_eq!(get(&UNCHANGED, NAME, &store, "a", "keyring-remote", true), None);
         assert_eq!(*store.reads.borrow(), [crate::brand::KEYRING_REMOTE]);
-        clear_legacy(&PAIR, NAME, &store, "a");
+        clear_legacy(&UNCHANGED, NAME, &store, "a");
         assert!(store.entries.borrow().is_empty());
     }
 }

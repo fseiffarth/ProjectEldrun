@@ -56,6 +56,14 @@ if [ -n "$frozen_pids" ]; then
        "Close that window first, then start the hot-reload session."
 fi
 
+# A build made before the app was renamed runs under the old binary names,
+# which nothing above looks for — and it holds the same real state.
+old_pids="$(app_legacy_pids "$ROOT" | tr '\n' ' ')"
+if [ -n "${old_pids// /}" ]; then
+  bail "a build from before the rename is running (pid ${old_pids% }); only one $APP_DISPLAY runs at a time." \
+       "Close that window first, then start the hot-reload session."
+fi
+
 # No dev session of ours, but the port is taken: an orphaned vite whose
 # supervisor died. Starting now would silently attach to it.
 if (exec 3<>"/dev/tcp/127.0.0.1/$DEV_PORT") 2>/dev/null; then

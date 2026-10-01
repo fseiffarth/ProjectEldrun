@@ -30,7 +30,7 @@ struct ProjectRecord {
     #[serde(default)]
     vm: Option<Value>,
     // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
-    #[serde(default, rename = "eldrun_mobile_access")]
+    #[serde(default, rename = "tabtivity_mobile_access", alias = "eldrun_mobile_access")]
     app_mobile_access: bool,
 }
 
@@ -47,7 +47,7 @@ struct BoxRecord {
     #[serde(default)]
     folder: Option<String>,
     // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
-    #[serde(default, rename = "eldrun_mobile_access")]
+    #[serde(default, rename = "tabtivity_mobile_access", alias = "eldrun_mobile_access")]
     app_mobile_access: bool,
 }
 

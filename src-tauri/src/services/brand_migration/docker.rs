@@ -53,9 +53,9 @@ pub fn adopt_legacy_image(
 #[cfg(test)]
 mod tests {
     use super::super::hits;
-    use super::super::testing::RENAMED;
+    use super::super::testing::{RENAMED, UNCHANGED};
     use super::*;
-    use crate::brand::{LEGACY, PAIR};
+    use crate::brand::LEGACY;
     use std::cell::RefCell;
     use std::collections::BTreeSet;
 
@@ -99,9 +99,7 @@ mod tests {
         assert!(hits::taken().is_empty());
         swept_legacy(&RENAMED, &LEGACY.name(Name::DOCKER_OWNER_LABEL));
         assert_eq!(hits::taken(), ["docker-labels"]);
-        if !PAIR.renamed() {
-            assert_eq!(owner_labels(&PAIR), [crate::brand::DOCKER_OWNER_LABEL.to_string()]);
-        }
+        assert_eq!(owner_labels(&UNCHANGED), [crate::brand::DOCKER_OWNER_LABEL.to_string()]);
     }
 
     #[test]
@@ -111,7 +109,7 @@ mod tests {
         let docker = FakeDocker::with(&[&old]);
         let _ = hits::taken();
         assert!(docker.adopt(&RENAMED, &new));
-        assert_eq!(hits::taken(), ["docker-image"]);
+        assert_eq!(hits::taken_here(), ["docker-image"]);
         assert!(docker.images.borrow().contains(&new) && docker.images.borrow().contains(&old));
         assert!(docker.calls.borrow().contains(&format!("tag {old} {new}")));
         // Present now: no second tag.
@@ -133,11 +131,8 @@ mod tests {
 
     #[test]
     fn the_unchanged_pair_asks_docker_once() {
-        if PAIR.renamed() {
-            return;
-        }
         let docker = FakeDocker::with(&[]);
-        assert!(!docker.adopt(&PAIR, crate::brand::SANDBOX_IMAGE));
+        assert!(!docker.adopt(&UNCHANGED, crate::brand::SANDBOX_IMAGE));
         assert_eq!(*docker.calls.borrow(), [format!("exists {}", crate::brand::SANDBOX_IMAGE)]);
     }
 }

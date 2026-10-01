@@ -3,7 +3,7 @@
 
 use super::testing::*;
 use super::*;
-use crate::brand::{LEGACY, PAIR};
+use crate::brand::LEGACY;
 
 /// THE guarantee of this module while the name is unchanged: a launch of the
 /// production pair over a used install moves nothing and writes nothing —
@@ -11,17 +11,12 @@ use crate::brand::{LEGACY, PAIR};
 /// marked done now would be skipped on the launch after the rename.
 #[test]
 fn with_the_name_unchanged_a_launch_touches_nothing() {
-    if PAIR.renamed() {
-        // After the rename this build *is* the migrating one; the guarantee
-        // is then covered by `an_upgrade_runs_once`.
-        return;
-    }
     let machine = Machine::new();
-    machine.seed_install(&PAIR.cur);
+    machine.seed_install(&UNCHANGED.cur);
     let before = snapshot(&machine.home);
     let _ = hits::taken();
 
-    let env = machine.env(PAIR);
+    let env = machine.env(UNCHANGED);
     assert_eq!(env.legacy_state_dir, None);
     assert_eq!(env.webview_data, None);
     let report = run_startup(&env);
@@ -34,9 +29,9 @@ fn with_the_name_unchanged_a_launch_touches_nothing() {
     assert!(!env.state_dir.join(RECORD_FILE).exists());
     assert!(!hits::path_in(&env.state_dir).exists());
     // The lazy entry points write nothing either.
-    lazy_done(&PAIR, &env.state_dir, "mail-store", "");
-    lazy_ran(&PAIR, &env.state_dir, "project-folders", "");
-    lazy_pending(&PAIR, &env.state_dir, "keyring", "locked");
+    lazy_done(&UNCHANGED, &env.state_dir, "mail-store", "");
+    lazy_ran(&UNCHANGED, &env.state_dir, "project-folders", "");
+    lazy_pending(&UNCHANGED, &env.state_dir, "keyring", "locked");
     assert_eq!(snapshot(&machine.home), before);
 }
 
@@ -44,13 +39,10 @@ fn with_the_name_unchanged_a_launch_touches_nothing() {
 /// unchanged: there is no old spelling to try.
 #[test]
 fn with_the_name_unchanged_no_name_has_an_old_spelling() {
-    if PAIR.renamed() {
-        return;
-    }
     for (name, _, _) in crate::brand::Name::ALL {
-        assert_eq!(PAIR.legacy(*name), None, "{name:?}");
+        assert_eq!(UNCHANGED.legacy(*name), None, "{name:?}");
     }
-    assert_eq!(PAIR.legacy_env_name("TAB_UID"), None);
+    assert_eq!(UNCHANGED.legacy_env_name("TAB_UID"), None);
 }
 
 #[test]
@@ -387,9 +379,7 @@ fn the_status_lists_hits_and_unfinished_steps_and_is_empty_while_unchanged() {
     assert_eq!(ids, LAZY_STEPS.iter().map(|(id, _, _)| *id).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>());
     assert!(status.unfinished.iter().any(|step| step.id == "mail-store" && step.state == StepState::Pending));
 
-    if !PAIR.renamed() {
-        assert_eq!(status_in(&PAIR, &env.state_dir), Status::default());
-    }
+    assert_eq!(status_in(&UNCHANGED, &env.state_dir), Status::default());
 }
 
 #[test]

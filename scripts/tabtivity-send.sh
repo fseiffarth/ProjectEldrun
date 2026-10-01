@@ -1,9 +1,9 @@
 #!/bin/sh
-# Eldrun-owned, dependency-free project → phone transport.
+# Tabtivity-owned, dependency-free project → phone transport.
 set -eu
 export LC_ALL=C
-fail() { printf 'eldrun-send: %s\n' "$2" >&2; exit "$1"; }
-usage() { printf '%s\n' 'eldrun-send FILE...' 'command | eldrun-send -n NAME' 'eldrun-send --clear' 'eldrun-send --help'; }
+fail() { printf 'tabtivity-send: %s\n' "$2" >&2; exit "$1"; }
+usage() { printf '%s\n' 'tabtivity-send FILE...' 'command | tabtivity-send -n NAME' 'tabtivity-send --clear' 'tabtivity-send --help'; }
 [ "$#" -gt 0 ] || { usage; exit 2; }
 [ "$1" != --help ] || { usage; exit 0; }
 mode=files
@@ -13,15 +13,15 @@ case "$1" in
     --) shift; [ "$#" -gt 0 ] || fail 2 'Name at least one file.' ;;
     -*) fail 2 'Unknown option; use --help.' ;;
 esac
-root=${ELDRUN_PROJECT_DIR:-}
-[ -n "$root" ] || root=$(git rev-parse --show-toplevel 2>/dev/null) || fail 3 'Set ELDRUN_PROJECT_DIR or run inside a git project.'
+root=${TABTIVITY_PROJECT_DIR:-}
+[ -n "$root" ] || root=$(git rev-parse --show-toplevel 2>/dev/null) || fail 3 'Set TABTIVITY_PROJECT_DIR or run inside a git project.'
 root=$(cd "$root" 2>/dev/null && pwd -P) || fail 3 'The project directory is unavailable.'
 # Refuse redirected outboxes, especially before --clear.
-[ ! -L "$root/.eldrun" ] && [ ! -L "$root/.eldrun/outbox" ] || fail 3 'The outbox must not be a symlink.'
-outbox=$root/.eldrun/outbox
-# The agent tab sending (its `ELDRUN_TAB_UID`): that tab's phone chat shows
+[ ! -L "$root/.tabtivity" ] && [ ! -L "$root/.tabtivity/outbox" ] || fail 3 'The outbox must not be a symlink.'
+outbox=$root/.tabtivity/outbox
+# The agent tab sending (its `TABTIVITY_TAB_UID`): that tab's phone chat shows
 # the file; every gallery lists it. No tab (a plain shell): gallery only.
-tab=${ELDRUN_TAB_UID:-}
+tab=${TABTIVITY_TAB_UID:-}
 case "$tab" in *[!A-Za-z0-9-]*) tab= ;; esac
 [ "${#tab}" -le 64 ] || tab=
 mkdir -p "$outbox" || fail 3 'Cannot create the project outbox.'
@@ -39,11 +39,11 @@ if [ "$mode" = clear ]; then
         [ -f "$item" ] && [ ! -L "$item" ] || continue
         rm -f "$item"
     done
-    printf '%s\n' 'eldrun-send: outbox cleared.'
+    printf '%s\n' 'tabtivity-send: outbox cleared.'
     exit 0
 fi
-if ! git -C "$root" check-ignore -q .eldrun/ 2>/dev/null; then
-    printf '%s\n' 'eldrun-send: warning: .eldrun/ is not git-ignored; ignore it before committing.' >&2
+if ! git -C "$root" check-ignore -q .tabtivity/ 2>/dev/null; then
+    printf '%s\n' 'tabtivity-send: warning: .tabtivity/ is not git-ignored; ignore it before committing.' >&2
 fi
 # Stage a bounded copy in a private directory. Only complete files become
 # visible; hard-link publication never overwrites, including concurrent sends.

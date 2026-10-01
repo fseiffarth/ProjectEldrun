@@ -377,7 +377,7 @@ mod tests {
     use super::super::hits;
     use super::super::testing::*;
     use super::*;
-    use crate::brand::{LEGACY, PAIR};
+    use crate::brand::LEGACY;
 
     fn run(root: &Path, args: &[&str]) -> String {
         let out = crate::commands::git::hookless_git_command_in(root, args)
@@ -484,16 +484,13 @@ mod tests {
 
     #[test]
     fn the_unchanged_pair_leaves_a_project_alone() {
-        if PAIR.renamed() {
-            return;
-        }
         let machine = Machine::new();
         let root = machine.home.join("alpha");
-        seed_repo(&root, &PAIR.cur);
+        seed_repo(&root, &UNCHANGED.cur);
         let before = snapshot(&root);
-        assert_eq!(migrate_project(&PAIR, &root), ProjectReport::default());
+        assert_eq!(migrate_project(&UNCHANGED, &root), ProjectReport::default());
         assert_eq!(snapshot(&root), before);
-        assert_eq!(remote_script(&PAIR), None);
+        assert_eq!(remote_script(&UNCHANGED), None);
     }
 
     /// The launch sweep's fast path: once a project is done, nothing in it
@@ -548,7 +545,7 @@ mod tests {
         let report = migrate_project(&RENAMED, &root);
         assert!(!report.folder_renamed && report.left.len() == 1, "{report:?}");
         assert_eq!(snapshot(&root), before);
-        assert_eq!(hits::taken(), ["project-dir"]);
+        assert_eq!(hits::taken_here(), ["project-dir"]);
     }
 
     #[cfg(unix)]

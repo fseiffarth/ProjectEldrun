@@ -66,6 +66,11 @@ Categories=Utility;TerminalEmulator;Development;
 StartupWMClass=$APP_BIN_NAME
 EOF
 chmod 755 "$DESKTOP_HOTRELOAD_DEST"
+# The entries an install made under the app's old name: remove them, so the
+# menu shows each launcher once.
+if [ "$APP_LEGACY_DISPLAY" != "$APP_DISPLAY" ]; then
+  rm -f "$DESKTOP_DIR/$APP_LEGACY_DISPLAY.desktop" "$DESKTOP_DIR/${APP_LEGACY_DISPLAY}HotReload.desktop"
+fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true

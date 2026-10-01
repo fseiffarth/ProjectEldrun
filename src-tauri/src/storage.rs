@@ -647,7 +647,19 @@ mod tests {
     fn state_dir_ends_with_app() {
         let dir = state_dir();
         let last = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        assert_eq!(last, crate::app_slug!(), concat!("state_dir must end in '", crate::app_slug!(), "': {:?}"), dir);
+        // The current name — or the old one on a machine whose state dir has
+        // not been moved yet (a developer's, whose installed build predates
+        // the rename): the lookup falls back to it rather than start empty.
+        let base = state_dir_base();
+        let expected = if state_dir_override().is_none()
+            && !base.join(crate::brand::STATE_DIR_NAME).exists()
+            && base.join(crate::brand::LEGACY_STATE_DIR_NAME).exists()
+        {
+            crate::brand::LEGACY_STATE_DIR_NAME
+        } else {
+            crate::brand::STATE_DIR_NAME
+        };
+        assert_eq!(last, expected, "state_dir must end in '{expected}': {dir:?}");
     }
 
     // ── private state files ───────────────────────────────────────────────
@@ -717,7 +729,17 @@ mod tests {
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("");
-        assert_eq!(parent, crate::app_slug!());
+        // The home tree: the current name, or the old one where an install
+        // made before the rename keeps it.
+        let home = paths::home_dir();
+        let expected = if !home.join(crate::brand::HOME_DIR_NAME).exists()
+            && home.join(crate::brand::LEGACY_HOME_DIR_NAME).exists()
+        {
+            crate::brand::LEGACY_HOME_DIR_NAME
+        } else {
+            crate::brand::HOME_DIR_NAME
+        };
+        assert_eq!(parent, expected);
     }
 
     // ── write_json / read_json ─────────────────────────────────────────────

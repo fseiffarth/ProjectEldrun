@@ -77,6 +77,14 @@ if [ -z "$app_pid" ]; then
   fi
 fi
 
+# A build made before the app was renamed runs under the old binary names.
+if [ -z "$app_pid" ]; then
+  app_pid="$(app_legacy_pids "$ROOT" | head -n 1 || true)"
+  if [ -n "$app_pid" ]; then
+    app_kind="build from before the rename"
+  fi
+fi
+
 started=0
 if [ -n "$app_pid" ]; then
   # The proc entry's mtime is the process start time (Linux). Preferred over

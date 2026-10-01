@@ -1,6 +1,6 @@
 import { BUNDLE_VERSION } from "../buildInfo";
 import { AppMark } from "../AppMark";
-import { BRAND, PHONE_APP_NAME } from "../../../src/lib/brand";
+import { BRAND } from "../../../src/lib/brand";
 
 /**
  * Home's own header, drawn behind the lock sheet while the app is locked.
@@ -13,7 +13,7 @@ export function LockedHomeShell() {
     <header className="home-header">
       <div className="home-brand" aria-label={BRAND.display}>
         <span className="home-logo-frame" aria-hidden="true"><AppMark className="home-logo" /></span>
-        <span className="home-brand-copy"><strong>{PHONE_APP_NAME}</strong><small>{BUNDLE_VERSION}</small></span>
+        <span className="home-brand-copy"><strong>{BRAND.display}</strong><small>{BUNDLE_VERSION}</small></span>
       </div>
     </header>
     <div className="projects-row"><h1>Projects</h1></div>

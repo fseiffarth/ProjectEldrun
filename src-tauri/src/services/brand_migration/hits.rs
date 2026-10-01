@@ -174,6 +174,16 @@ pub fn taken() -> Vec<String> {
     TEST_HITS.with(|hits| std::mem::take(&mut *hits.borrow_mut()))
 }
 
+/// [`taken`] without the hits of finding the machine's own folders. Code under
+/// test that asks for the real state dir or home tree counts one on a
+/// developer's machine that still has them under the old name, and none on a
+/// clean one — a test of something else must not depend on which it runs on.
+#[cfg(test)]
+pub fn taken_here() -> Vec<String> {
+    const AMBIENT: [&str; 3] = ["state-dir", "share-dir", "home-tree"];
+    taken().into_iter().filter(|id| !AMBIENT.contains(&id.as_str())).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

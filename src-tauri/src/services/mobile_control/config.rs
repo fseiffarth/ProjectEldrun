@@ -58,7 +58,7 @@ impl Default for MobileHostSettings {
 #[derive(Deserialize, Default)]
 struct SettingsFile {
     // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_HOST_KEY
-    #[serde(default, rename = "eldrun_mobile_host")]
+    #[serde(default, rename = "tabtivity_mobile_host", alias = "eldrun_mobile_host")]
     app_mobile_host: Option<MobileHostSettings>,
 }
 

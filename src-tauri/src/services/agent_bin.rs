@@ -21,13 +21,13 @@ fn install_in(dir: &Path, exe: Option<&Path>, clis: &[&str]) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     // The POSIX script is needed even on Windows for Docker containers.
     // brand-check: allow — an include path is a literal; the script file is renamed at the flip
-    write_script(dir, crate::brand::SEND_CLI, include_bytes!("../../../scripts/eldrun-send.sh"))?;
+    write_script(dir, crate::brand::SEND_CLI, include_bytes!("../../../scripts/tabtivity-send.sh"))?;
     #[cfg(windows)]
     {
         // brand-check: allow — an include path is a literal; the script file is renamed at the flip
-        write_script(dir, concat!(crate::app_slug!(), "-send.cmd"), include_bytes!("../../../scripts/eldrun-send.cmd"))?;
+        write_script(dir, concat!(crate::app_slug!(), "-send.cmd"), include_bytes!("../../../scripts/tabtivity-send.cmd"))?;
         // brand-check: allow — an include path is a literal; the script file is renamed at the flip
-        write_script(dir, concat!(crate::app_slug!(), "-send.ps1"), include_bytes!("../../../scripts/eldrun-send.ps1"))?;
+        write_script(dir, concat!(crate::app_slug!(), "-send.ps1"), include_bytes!("../../../scripts/tabtivity-send.ps1"))?;
     }
     // After a rename the old name of the send command stays for one release,
     // as an alias that runs the current one and is counted — on an install
@@ -111,7 +111,7 @@ mod tests {
         fs::write(&script, "drift").unwrap();
         install_in(dir.path(), None, &[]).unwrap();
         // brand-check: allow — an include path is a literal; the script file is renamed at the flip
-        assert_eq!(fs::read(&script).unwrap(), include_bytes!("../../../scripts/eldrun-send.sh"));
+        assert_eq!(fs::read(&script).unwrap(), include_bytes!("../../../scripts/tabtivity-send.sh"));
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(fs::metadata(script).unwrap().permissions().mode() & 0o777, 0o755);

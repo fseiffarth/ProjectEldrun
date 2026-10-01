@@ -780,7 +780,7 @@ pub struct Settings {
     pub window_state: Option<WindowState>,
     /// Private, tailnet-published companion host. Absent means fully disabled.
     // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_HOST_KEY
-    #[serde(default, rename = "eldrun_mobile_host", skip_serializing_if = "Option::is_none")]
+    #[serde(default, rename = "tabtivity_mobile_host", alias = "eldrun_mobile_host", skip_serializing_if = "Option::is_none")]
     pub app_mobile_host: Option<AppMobileHostSettings>,
     /// Whether the Eldrun Mobile host-status control is visible in the desktop
     /// header. Unset means visible whenever the Mobile host is enabled.

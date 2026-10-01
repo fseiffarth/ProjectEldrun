@@ -106,9 +106,14 @@ declined() {
   # The window runs on the host and queues it from the dev-build chip's poll
   # (services::dev_build::queue_if_behind).
   [ -n "$(app_env AGENT_FENCE)" ] && { echo "inside an agent fence — the $APP_DISPLAY window queues it"; return 0; }
-  case "$(git -C "$ROOT" config --bool --get "$APP_SLUG.autoDevBuild" 2>/dev/null)" in
-    false) echo "disabled by git config $APP_SLUG.autoDevBuild"; return 0 ;;
-  esac
+  # Under the current name, and under the old one: a clone switched off
+  # before the app was renamed stays off.
+  local key
+  for key in "$APP_SLUG.autoDevBuild" "$APP_LEGACY_SLUG.autoDevBuild"; do
+    case "$(git -C "$ROOT" config --bool --get "$key" 2>/dev/null)" in
+      false) echo "disabled by git config $key"; return 0 ;;
+    esac
+  done
   # A linked worktree is somebody else's tree — an agent's, usually. Freezing
   # THAT over the user's dev binary is exactly the surprise this must not be.
   local git_dir common_dir

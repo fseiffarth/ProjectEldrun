@@ -294,7 +294,7 @@ pub fn migrate_agent_homes(env: &Env) -> StepResult {
 mod tests {
     use super::super::testing::*;
     use super::*;
-    use crate::brand::{LEGACY, PAIR};
+    use crate::brand::LEGACY;
 
     #[test]
     fn a_path_prefix_is_replaced_only_at_a_component_boundary() {
@@ -308,19 +308,16 @@ mod tests {
 
     #[test]
     fn the_unchanged_pair_rewrites_nothing() {
-        if PAIR.renamed() {
-            return;
-        }
-        let rewrites = Rewrites::new(&PAIR, None);
+        let rewrites = Rewrites::new(&UNCHANGED, None);
         assert!(rewrites.is_empty());
         let machine = Machine::new();
         let home = machine.home.join("h");
-        write(&home.join(PAIR.cur(Name::AGENT_HOME_MARKER)), "");
+        write(&home.join(UNCHANGED.cur(Name::AGENT_HOME_MARKER)), "");
         write(&home.join(".claude").join("settings.json"), "{\"hooks\":{}}");
         let before = snapshot(&home);
-        assert_eq!(migrate_home(&PAIR, &home, None), 0);
+        assert_eq!(migrate_home(&UNCHANGED, &home, None), 0);
         assert_eq!(snapshot(&home), before);
-        assert!(!has_legacy_marker(&PAIR, &home));
+        assert!(!has_legacy_marker(&UNCHANGED, &home));
     }
 
     /// The groups of `event` in a Claude-shaped settings file that run `cmd`.

@@ -142,17 +142,14 @@ pub fn rewrite_persisted_names(env: &Env) -> StepResult {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::RENAMED;
+    use super::super::testing::{RENAMED, UNCHANGED};
     use super::*;
-    use crate::brand::{LEGACY, PAIR};
+    use crate::brand::LEGACY;
     use serde_json::json;
 
     #[test]
     fn the_unchanged_pair_renames_nothing() {
-        if PAIR.renamed() {
-            return;
-        }
-        let renames = Renames::new(&PAIR);
+        let renames = Renames::new(&UNCHANGED);
         assert!(renames.is_empty());
         let mut value = json!({ crate::brand::MOBILE_HOST_KEY: { "enabled": true }, "cmd": crate::app_tab_command!("mail") });
         let before = value.clone();

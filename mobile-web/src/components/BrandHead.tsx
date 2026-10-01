@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { AppMark } from "../AppMark";
-import { PHONE_APP_NAME } from "../../../src/lib/brand";
+import { BRAND } from "../../../src/lib/brand";
 
 /**
  * The header of the screens met before the app opens — pairing and the local
@@ -15,7 +15,7 @@ export function BrandHead({ children }: { children: ReactNode }) {
       <span className="splash-orbit splash-orbit-two" />
       <AppMark />
     </div>
-    <div className="splash-name" aria-hidden="true">{PHONE_APP_NAME.toUpperCase()}</div>
+    <div className="splash-name" aria-hidden="true">{BRAND.display.toUpperCase()}</div>
     <h1>{children}</h1>
   </div>;
 }

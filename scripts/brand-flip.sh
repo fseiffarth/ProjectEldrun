@@ -202,8 +202,9 @@ for path in \
   "screenshots/$OLD_SLUG-functionality.svg"; do
   three_forms "$(renamed_path "$path")"
 done
-renamed_path "screenshots/$OLD_SLUG-current.png" >/dev/null
-sed -i -e "s|screenshots/$OLD_SLUG-current\.png|screenshots/$NEW_SLUG-current.png|g" scripts/privacy-reviewed-binaries.txt
+# screenshots/$OLD_SLUG-current.png is NOT renamed: a binary under a new path
+# has to be opened and reviewed again (scripts/privacy-reviewed-binaries.txt),
+# and a picture of the old window is retaken, not renamed.
 
 # ── 6. Ignore lists ─────────────────────────────────────────────────────────
 # They name the app's folders literally. The old-named lines stay: a checkout

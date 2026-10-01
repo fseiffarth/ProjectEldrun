@@ -316,6 +316,11 @@ Categories=Utility;TerminalEmulator;Development;
 StartupWMClass=$(basename "$BINARY_DEST")
 DESKTOP
 chmod 755 "$DESKTOP_DEST"
+# The entry a freeze made under the app's old name pointed at the same
+# launcher: remove it, so the menu shows one entry and not two.
+if [ "$APP_LEGACY_DISPLAY" != "$APP_DISPLAY" ]; then
+  rm -f "$DESKTOP_DIR/${APP_LEGACY_DISPLAY}Dev.desktop"
+fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true

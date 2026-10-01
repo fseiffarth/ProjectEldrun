@@ -4,8 +4,8 @@
 //! edits this file and its frontend twin `src/lib/brand.ts`, nothing else.
 //!
 //! Each such name comes as a pair: the current name, built from the current
-//! brand, and a `LEGACY_*` twin built from the old brand. Today both brands
-//! are the same, so the pairs are equal. Code that *writes* a name uses the
+//! brand, and a `LEGACY_*` twin built from the old brand (the name the app
+//! had before it was renamed). Code that *writes* a name uses the
 //! current constant; code that must still *find* something an older build
 //! wrote uses the `LEGACY_*` one.
 //!
@@ -21,7 +21,7 @@
 #[macro_export]
 macro_rules! app_name {
     () => {
-        "Eldrun"
+        "Tabtivity"
     };
 }
 
@@ -30,7 +30,7 @@ macro_rules! app_name {
 #[macro_export]
 macro_rules! app_slug {
     () => {
-        "eldrun"
+        "tabtivity"
     };
 }
 
@@ -39,7 +39,7 @@ macro_rules! app_slug {
 #[macro_export]
 macro_rules! app_upper {
     () => {
-        "ELDRUN"
+        "TABTIVITY"
     };
 }
 
@@ -274,11 +274,11 @@ pub fn env_os(name: &str) -> Option<std::ffi::OsString> {
 
 /// Count one lookup that found something only under its old name. `id` says
 /// which lookup (`"state-dir"`, `"tmux-prefix"`, `"env:TAB_UID"`); the counts
-/// land in `<state>/legacy-hits.json` and Settings → About shows them. The
+/// land in `<state>/legacy-hits.json` and Settings → Updates shows them. The
 /// old-name lookups can be deleted once that file stays empty.
 ///
 /// A lookup can only miss under the current name and hit under the old one
-/// when the two differ, so this is never reached while the brand is
+/// when the two differ, so this would never be reached were the brand
 /// unchanged; the log refuses to write then anyway.
 ///
 /// This file is also compiled into the build script, so it cannot name the
@@ -598,18 +598,47 @@ mod tests {
         assert_eq!(mail_label("field"), format!("{SLUG}/mail/v1/field").into_bytes());
     }
 
-    /// Until the name changes, every old name is the current one: nothing is
-    /// looked up twice and nothing moves.
+    /// A pair whose name did not change, as every build before the rename ran.
+    const UNCHANGED: Pair = Pair { cur: CURRENT, legacy: CURRENT };
+
+    /// The name changed, so every name moved with it: no dual read looks
+    /// twice in one place, and nothing this build writes still carries the
+    /// old spelling. (Were the brand unchanged, every pair would be equal.)
     #[test]
-    fn legacy_names_equal_current_names_while_the_brand_is_unchanged() {
-        if SLUG != LEGACY_SLUG {
+    fn every_name_moved_with_the_brand() {
+        if !PAIR.renamed() {
+            for (name, current, legacy) in Name::ALL {
+                assert_eq!(current, legacy, "{name:?}");
+            }
+            assert_eq!(ENV_PREFIX, LEGACY_ENV_PREFIX);
             return;
         }
-        assert_eq!(STATE_DIR_NAME, LEGACY_STATE_DIR_NAME);
-        assert_eq!(PROJECT_DIR, LEGACY_PROJECT_DIR);
-        assert_eq!(MAIL_LABEL_ROOT, LEGACY_MAIL_LABEL_ROOT);
-        assert_eq!(MOBILE_HOST_RUN_VALUE, LEGACY_MOBILE_HOST_RUN_VALUE);
-        assert_eq!(ENV_PREFIX, LEGACY_ENV_PREFIX);
+        for (name, current, legacy) in Name::ALL {
+            assert_ne!(current, legacy, "{name:?}");
+            assert!(!current.to_lowercase().contains(LEGACY_SLUG), "{name:?} still spells the old name: {current}");
+            assert_eq!(PAIR.legacy(*name).as_deref(), Some(*legacy), "{name:?}");
+        }
+        assert_ne!(ENV_PREFIX, LEGACY_ENV_PREFIX);
+        assert_eq!(PAIR.legacy_env_name("TAB_UID"), Some(LEGACY.env_name("TAB_UID")));
+    }
+
+    /// An unchanged pair has no old spelling for anything: a dual read
+    /// written `if let Some(old) = pair.legacy(..)` then looks once.
+    #[test]
+    fn an_unchanged_pair_has_no_old_spelling() {
+        assert!(!UNCHANGED.renamed());
+        for (name, _, _) in Name::ALL {
+            assert_eq!(UNCHANGED.legacy(*name), None, "{name:?}");
+        }
+        assert_eq!(UNCHANGED.legacy_env_name("TAB_UID"), None);
+    }
+
+    /// The pinned ids are inputs of ids that are stored or already handed
+    /// out. They follow no rename: these are the values, for good.
+    #[test]
+    fn the_pinned_ids_never_follow_the_name() {
+        assert_eq!(PINNED_GATEWAY_ID_CONTEXT, "eldrun-gateway:");
+        assert_eq!(PINNED_SUBAGENT_TOKEN_CONTEXT, "eldrun-subagent:");
     }
 
     /// The old names, spelled out. These are what existing installs have on
@@ -768,14 +797,24 @@ mod tests {
         // The unchanged pair looks once.
         let mut asked = Vec::new();
         assert_eq!(
+            UNCHANGED.env_in("MISSING", |key| {
+                asked.push(key.to_string());
+                None
+            }),
+            None
+        );
+        assert_eq!(asked, [env_name("MISSING")]);
+        // The running pair asks for the current name, then the old one.
+        let mut asked = Vec::new();
+        assert_eq!(
             PAIR.env_in("MISSING", |key| {
                 asked.push(key.to_string());
                 None
             }),
             None
         );
-        if !PAIR.renamed() {
-            assert_eq!(asked, [env_name("MISSING")]);
+        if PAIR.renamed() {
+            assert_eq!(asked, [env_name("MISSING"), LEGACY.env_name("MISSING")]);
         }
     }
 
@@ -795,13 +834,11 @@ mod tests {
         assert!(!RENAMED.adopt_legacy_env(&mut env));
 
         // Unchanged pair: the map is not touched.
-        if !PAIR.renamed() {
-            let mut env = env_map(&[(&env_name("TAB_UID"), "uid-1")]);
-            let before = env.clone();
-            assert!(!PAIR.adopt_legacy_env(&mut env));
-            PAIR.export_both(&mut env);
-            assert_eq!(env, before);
-        }
+        let mut env = env_map(&[(&env_name("TAB_UID"), "uid-1")]);
+        let before = env.clone();
+        assert!(!UNCHANGED.adopt_legacy_env(&mut env));
+        UNCHANGED.export_both(&mut env);
+        assert_eq!(env, before);
     }
 
     #[test]

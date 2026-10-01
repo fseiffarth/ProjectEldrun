@@ -7,26 +7,22 @@
  * too.
  *
  * Each such name comes as a pair: `NAMES.x`, built from the current brand,
- * and `LEGACY_NAMES.x`, built from the old one. Today both brands are the
- * same, so the pairs are equal. Code that *writes* a name uses `NAMES`; code
+ * and `LEGACY_NAMES.x`, built from the old one (the name the app had before
+ * it was renamed). Code that *writes* a name uses `NAMES`; code
  * that must still *find* something an older build wrote uses `LEGACY_NAMES`.
  * `BrandMirror.test.ts` holds the names shared with the backend to
  * `brand.rs`.
  */
 export const BRAND = {
   /** The name as shown to the user. */
-  display: "Eldrun",
+  display: "Tabtivity",
   /** Lowercase form for file names, storage keys and protocol names. */
-  slug: "eldrun",
+  slug: "tabtivity",
   /** Uppercase form, for markers and environment variables. */
-  upper: "ELDRUN",
+  upper: "TABTIVITY",
   /** Prefix of the app's environment variables. */
-  envPrefix: "ELDRUN_",
+  envPrefix: "TABTIVITY_",
 } as const;
-
-/** The name the phone app already shows on its home card, lock screen and
- *  splash, ahead of the rename. Once `BRAND.display` carries it, this goes. */
-export const PHONE_APP_NAME = "Tabtivity";
 
 /** The old brand: what builds before the rename wrote. */
 export const LEGACY_BRAND = {

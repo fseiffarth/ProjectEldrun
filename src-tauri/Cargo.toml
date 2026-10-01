@@ -1,16 +1,16 @@
 [package]
-name = "eldrun"
+name = "tabtivity"
 version = "0.1.99"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-default-run = "eldrun"
+default-run = "tabtivity"
 
 [lib]
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "eldrun"
+name = "tabtivity"
 path = "src/main.rs"
 
 # Switches the app from `devUrl` to the frontend embedded at compile time:

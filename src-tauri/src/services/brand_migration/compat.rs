@@ -111,11 +111,16 @@ pub fn send_alias_script(pair: &Pair) -> Option<String> {
     let outbox = pair.cur(Name::OUTBOX_DIR);
     let project_dir = pair.cur.env_name("PROJECT_DIR");
     let old_project_dir = pair.legacy_env_name("PROJECT_DIR").unwrap_or_else(|| project_dir.clone());
+    // A session an older build started has the project and the tab under
+    // the old variables only, and the current command reads the current ones.
+    let preamble = legacy_env_preamble_sh(pair, &["PROJECT_DIR", "TAB_UID"]);
+    let tab_uid = pair.cur.env_name("TAB_UID");
     Some(format!(
         "#!/bin/sh\n\
          # {display}: `{old}` is the old name of `{new}`, kept for one release.\n\
          # It leaves a note in the project's outbox so the use is counted, then\n\
          # runs the current command. Managed by {display}; do not edit.\n\
+         {preamble}export {project_dir} {tab_uid}\n\
          root=${{{project_dir}:-${{{old_project_dir}:-}}}}\n\
          if [ -n \"$root\" ] && [ -d \"$root/{outbox}\" ] && [ ! -L \"$root/{outbox}\" ]; then\n\
          \x20 : > \"$root/{outbox}/{marker}\" 2>/dev/null || true\n\
@@ -192,17 +197,14 @@ pub fn current_tab_command<'a>(pair: &Pair, command: &'a str) -> std::borrow::Co
 #[cfg(test)]
 mod tests {
     use super::super::hits;
-    use super::super::testing::RENAMED;
+    use super::super::testing::{RENAMED, UNCHANGED};
     use super::*;
-    use crate::brand::{LEGACY, PAIR};
+    use crate::brand::LEGACY;
 
     #[test]
     fn the_preambles_are_empty_while_the_name_is_unchanged() {
-        if PAIR.renamed() {
-            return;
-        }
-        assert_eq!(legacy_env_preamble_sh(&PAIR, &["TAB_UID", "PROJECT_DIR"]), "");
-        assert_eq!(legacy_env_preamble_ps1(&PAIR, &["TAB_UID"]), "");
+        assert_eq!(legacy_env_preamble_sh(&UNCHANGED, &["TAB_UID", "PROJECT_DIR"]), "");
+        assert_eq!(legacy_env_preamble_ps1(&UNCHANGED, &["TAB_UID"]), "");
     }
 
     #[test]
@@ -250,9 +252,7 @@ mod tests {
                 LEGACY.name(Name::OLLAMA_MODELS_DROPIN)
             )
         );
-        if !PAIR.renamed() {
-            assert_eq!(ollama_dropin_cleanup(&PAIR, Name::OLLAMA_IGPU_DROPIN), "");
-        }
+        assert_eq!(ollama_dropin_cleanup(&UNCHANGED, Name::OLLAMA_IGPU_DROPIN), "");
     }
 
     #[test]
@@ -265,7 +265,7 @@ mod tests {
         assert_eq!(export_manifest_name(&RENAMED, |_| true), "newname-export.json");
         // Neither inside: the current name, so the error names what is expected.
         assert_eq!(export_manifest_name(&RENAMED, |_| false), "newname-export.json");
-        assert_eq!(export_manifest_name(&PAIR, |_| false), crate::brand::EXPORT_MANIFEST);
+        assert_eq!(export_manifest_name(&UNCHANGED, |_| false), crate::brand::EXPORT_MANIFEST);
         assert!(hits::taken().is_empty());
     }
 
@@ -322,6 +322,13 @@ mod tests {
             String::from_utf8_lossy(&out.stdout).into_owned()
         };
         assert_eq!(run(&[(&LEGACY.env_name("PROJECT_DIR"), &project)]), "sent:x");
+        // …and the current command is handed both under their current names.
+        install("newname-send", "#!/bin/sh\nprintf '%s|%s' \"$NEWNAME_PROJECT_DIR\" \"$NEWNAME_TAB_UID\"\n");
+        assert_eq!(
+            run(&[(&LEGACY.env_name("PROJECT_DIR"), &project), (&LEGACY.env_name("TAB_UID"), std::path::Path::new("tab-1"))]),
+            format!("{}|tab-1", project.display())
+        );
+        install("newname-send", "#!/bin/sh\nprintf 'sent:%s' \"$*\"\n");
         assert!(outbox.join(SEND_ALIAS_MARKER).is_file());
         std::fs::remove_file(outbox.join(SEND_ALIAS_MARKER)).expect("remove");
         assert_eq!(run(&[]), "sent:x");
@@ -330,15 +337,12 @@ mod tests {
 
     #[test]
     fn no_send_alias_while_the_name_is_unchanged() {
-        if PAIR.renamed() {
-            return;
-        }
-        assert_eq!(send_alias_script(&PAIR), None);
-        assert_eq!(send_alias_cmd(&PAIR), None);
+        assert_eq!(send_alias_script(&UNCHANGED), None);
+        assert_eq!(send_alias_cmd(&UNCHANGED), None);
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join(SEND_ALIAS_MARKER), "").expect("write");
         let _ = hits::taken();
-        take_send_alias_marker(&PAIR, dir.path());
+        take_send_alias_marker(&UNCHANGED, dir.path());
         assert!(dir.path().join(SEND_ALIAS_MARKER).is_file());
         assert!(hits::taken().is_empty());
     }
@@ -352,7 +356,7 @@ mod tests {
         assert_eq!(tmux_session_rest(&RENAMED, "newname-p1--shell-1"), Some("p1--shell-1"));
         assert_eq!(tmux_session_rest(&RENAMED, "train"), None);
         assert_eq!(
-            tmux_session_rest(&PAIR, &format!("{}p1--x", crate::brand::TMUX_PREFIX)),
+            tmux_session_rest(&UNCHANGED, &format!("{}p1--x", crate::brand::TMUX_PREFIX)),
             Some("p1--x")
         );
         assert!(hits::taken().is_empty());
@@ -366,7 +370,7 @@ mod tests {
         assert_eq!(hits::taken(), ["mcp-tool"]);
         assert_eq!(current_tool_name(&RENAMED, "newname_help_read"), "newname_help_read");
         assert_eq!(current_tool_name(&RENAMED, "mail_search"), "mail_search");
-        assert_eq!(current_tool_name(&PAIR, crate::brand::HELP_TOOL_READ), crate::brand::HELP_TOOL_READ);
+        assert_eq!(current_tool_name(&UNCHANGED, crate::brand::HELP_TOOL_READ), crate::brand::HELP_TOOL_READ);
         assert!(hits::taken().is_empty());
     }
 
@@ -382,7 +386,7 @@ mod tests {
         assert_eq!(current_tab_command(&RENAMED, &lookalike), lookalike);
         assert_eq!(current_tab_command(&RENAMED, "bash"), "bash");
         assert_eq!(current_tab_command(&RENAMED, "__newname_mail__"), "__newname_mail__");
-        assert_eq!(current_tab_command(&PAIR, crate::app_tab_command!("mail")), crate::app_tab_command!("mail"));
+        assert_eq!(current_tab_command(&UNCHANGED, crate::app_tab_command!("mail")), crate::app_tab_command!("mail"));
         assert!(hits::taken().is_empty());
     }
 }

@@ -768,12 +768,13 @@ mod tests {
     fn without_session_env_support_a_command_tab_exports_inline() {
         // tmux < 3.2 has no `-e`; an agent tab still gets its key by exporting it
         // at the head of the command line tmux runs.
-        let env = env_of(&[(crate::app_env!("TAB_UID"), "tab-uid-1"), ("Q", "a'b c")]);
+        // `_Q` sorts after the app's variable whatever the app is called.
+        let env = env_of(&[(crate::app_env!("TAB_UID"), "tab-uid-1"), ("_Q", "a'b c")]);
         let args = local_tmux_args_with(concat!(crate::app_slug!(), "-x"), "claude", &[], &env, false);
         assert!(!args.iter().any(|a| a == "-e"));
         assert_eq!(
             args[9],
-            concat!("export ", crate::app_upper!(), "_TAB_UID='tab-uid-1'; export Q='a'\\''b c'; \
+            concat!("export ", crate::app_upper!(), "_TAB_UID='tab-uid-1'; export _Q='a'\\''b c'; \
              'claude'; exec \"${SHELL:-/bin/bash}\" -l")
         );
     }

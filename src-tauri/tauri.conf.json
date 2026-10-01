@@ -1,7 +1,7 @@
 {
-  "productName": "Eldrun",
+  "productName": "Tabtivity",
   "version": "0.1.99",
-  "identifier": "io.github.fseiffarth.eldrun",
+  "identifier": "io.github.fseiffarth.tabtivity",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "Eldrun",
+        "title": "Tabtivity",
         "width": 1400,
         "height": 900,
         "minWidth": 800,
@@ -53,6 +53,15 @@
           "bubblewrap",
           "tmux",
           "cups-client"
+        ],
+        "provides": [
+          "eldrun"
+        ],
+        "conflicts": [
+          "eldrun"
+        ],
+        "replaces": [
+          "eldrun"
         ]
       }
     },

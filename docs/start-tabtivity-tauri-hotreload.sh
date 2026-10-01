@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="$HOME/.local/share/eldrun"
+LOG_DIR="$HOME/.local/share/tabtivity"
 LOG_FILE="$LOG_DIR/hotreload.log"
 
 mkdir -p "$LOG_DIR"

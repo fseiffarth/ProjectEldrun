@@ -984,11 +984,47 @@ mod tests {
         assert_eq!(dir, PathBuf::from(concat!("/tmp/", crate::app_slug!(), "-sandbox")));
     }
 
+    /// The leaf this machine's home tree has: the current name, or the old
+    /// one where an install made before the rename still keeps its tree there.
+    fn home_tree_leaf() -> &'static str {
+        let home = home_dir();
+        if !home.join(crate::brand::HOME_DIR_NAME).exists() && home.join(crate::brand::LEGACY_HOME_DIR_NAME).exists() {
+            crate::brand::LEGACY_HOME_DIR_NAME
+        } else {
+            crate::brand::HOME_DIR_NAME
+        }
+    }
+
     #[test]
     fn app_home_for_ignores_empty_override() {
-        // An empty ELDRUN_HOME means unset, same as ELDRUN_STATE_DIR's rule.
+        // An empty override means unset, same as the state dir's rule.
         let dir = app_home_for(|key| (key == crate::app_env!("HOME")).then(String::new));
-        assert_eq!(dir, home_dir().join(crate::app_slug!()));
+        assert_eq!(dir, home_dir().join(home_tree_leaf()));
+    }
+
+    /// A fresh machine gets the tree under the current name; an install made
+    /// under the old name keeps its tree where it is (moving the user's
+    /// projects is a step only the user starts); once both exist the current
+    /// one wins; and the old variable still redirects it.
+    #[test]
+    fn the_home_tree_is_the_current_name_unless_only_the_old_one_exists() {
+        let pair = crate::brand::PAIR;
+        let home = tempfile::tempdir().unwrap();
+        let current = home.path().join(crate::brand::HOME_DIR_NAME);
+        assert_eq!(app_home_in(&pair, |_| None, home.path()), current);
+        if !pair.renamed() {
+            return;
+        }
+        let old = home.path().join(crate::brand::LEGACY_HOME_DIR_NAME);
+        std::fs::create_dir(&old).unwrap();
+        assert_eq!(app_home_in(&pair, |_| None, home.path()), old);
+        std::fs::create_dir(&current).unwrap();
+        assert_eq!(app_home_in(&pair, |_| None, home.path()), current);
+        let old_var = crate::brand::LEGACY.env_name("HOME");
+        assert_eq!(
+            app_home_in(&pair, |key| (key == old_var).then(|| "/elsewhere".to_string()), home.path()),
+            PathBuf::from("/elsewhere")
+        );
     }
 
     #[test]
@@ -1001,7 +1037,7 @@ mod tests {
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("");
-        assert_eq!(parent, crate::app_slug!(), concat!("boxes_root parent must be '", crate::app_slug!(), "'"));
+        assert_eq!(parent, home_tree_leaf(), "boxes_root sits in the home tree");
     }
 
     #[test]
@@ -1017,6 +1053,6 @@ mod tests {
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("");
-        assert_eq!(parent, crate::app_slug!(), concat!("archive_root parent must be '", crate::app_slug!(), "'"));
+        assert_eq!(parent, home_tree_leaf(), "archive_root sits in the home tree");
     }
 }

@@ -15,13 +15,20 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pub="$repo_root/src-tauri/release-signing.pub.pem"
-key_dir="${ELDRUN_RELEASE_KEY_DIR:-$HOME/.config/eldrun-release-signing}"
+# The app's names (scripts/lib/brand.sh): $APP_SLUG, $APP_LEGACY_SLUG, app_env.
+. "$repo_root/scripts/lib/brand.sh"
+key_dir="$(app_env RELEASE_KEY_DIR "$HOME/.config/$APP_SLUG-release-signing")"
 key="$key_dir/release-signing.key.pem"
+# A key made before the app was renamed sits in the folder named after the
+# old name; a second key would be one nobody's installed build can verify.
+old_key="$HOME/.config/$APP_LEGACY_SLUG-release-signing/release-signing.key.pem"
 
-if [ -e "$key" ]; then
-  echo "refusing: $key already exists" >&2
-  exit 1
-fi
+for existing in "$key" "$old_key"; do
+  if [ -e "$existing" ]; then
+    echo "refusing: $existing already exists" >&2
+    exit 1
+  fi
+done
 
 umask 077
 mkdir -p "$key_dir"

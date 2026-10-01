@@ -81,18 +81,67 @@ describe("brand mirror", () => {
     expect(tabCommand("mail")).toBe(`${rust.current.TAB_COMMAND_PREFIX}mail__`);
   });
 
-  it("keeps the old names equal to the current ones while the brand is unchanged", () => {
-    if (BRAND.slug !== LEGACY_BRAND.slug) return;
-    expect(NAMES).toEqual(LEGACY_NAMES);
+  it("has an old spelling for every name once the brand is renamed", () => {
+    // Renamed: every name moved, so every dual read has a second place to
+    // look. (Unchanged, the two tables are the same and nothing looks twice.)
+    const renamed: boolean = (BRAND.slug as string) !== (LEGACY_BRAND.slug as string);
+    if (!renamed) {
+      expect(NAMES).toEqual(LEGACY_NAMES);
+      return;
+    }
+    for (const key of Object.keys(NAMES) as (keyof typeof NAMES)[]) {
+      expect(NAMES[key], key).not.toBe(LEGACY_NAMES[key]);
+      expect(NAMES[key], key).toContain(BRAND.slug);
+      expect(LEGACY_NAMES[key], key).toContain(LEGACY_BRAND.slug);
+    }
+    expect(MOBILE_HOST_KEY).not.toBe(LEGACY_MOBILE_HOST_KEY);
+    expect(MOBILE_ACCESS_KEY).not.toBe(LEGACY_MOBILE_ACCESS_KEY);
   });
 
   it("index.html pre-paints from the storage keys the settings store writes", () => {
     // The pre-paint script runs before any module loads, so it spells the keys
     // itself; a rename has to edit it together with the brand module.
+    // It reads the current key and, while that is absent, the one an older
+    // build wrote: the keys are only moved by a module that runs after it.
     const html: string = readFileSync("index.html", "utf8");
+    expect(html).toContain(`var KEY = "${NAMES.storageDashPrefix}";`);
+    expect(html).toContain(`var OLD_KEY = "${LEGACY_NAMES.storageDashPrefix}";`);
+    expect(storageDashKey("theme")).toBe(`${NAMES.storageDashPrefix}theme`);
     for (const key of ["theme", "accent", "theme-vars", "corners"]) {
-      expect(html).toContain(`localStorage.getItem("${storageDashKey(key)}")`);
+      expect(html).toContain(`stored("${key}")`);
     }
+    expect(html).not.toContain("localStorage.getItem(\"");
+    // The script itself, run against a storage that holds only old keys,
+    // only current ones, or both.
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+    const paint = (entries: Record<string, string>) => {
+      const attrs: Record<string, string> = {};
+      const props: Record<string, string> = {};
+      const env = {
+        localStorage: { getItem: (key: string) => (key in entries ? entries[key] : null) },
+        document: {
+          documentElement: {
+            setAttribute: (name: string, value: string) => { attrs[name] = value; },
+            style: { setProperty: (name: string, value: string) => { props[name] = value; } },
+          },
+        },
+      };
+      new Function("localStorage", "document", script)(env.localStorage, env.document);
+      return { theme: attrs["data-theme"], accent: props["--accent"], radius: props["--radius"] };
+    };
+    const old = LEGACY_NAMES.storageDashPrefix;
+    const cur = NAMES.storageDashPrefix;
+    expect(paint({})).toEqual({ theme: "dark", accent: undefined, radius: undefined });
+    expect(paint({ [`${old}theme`]: "light", [`${old}accent`]: "#112233", [`${old}corners`]: "square" })).toEqual({
+      theme: "light",
+      accent: "#112233",
+      radius: "0px",
+    });
+    expect(paint({ [`${cur}theme`]: "fancy_dark", [`${old}theme`]: "light", [`${old}accent`]: "#112233" })).toEqual({
+      theme: "fancy_dark",
+      accent: "#112233",
+      radius: undefined,
+    });
     expect(html).toContain(`<title>${BRAND.display}</title>`);
   });
 

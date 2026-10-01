@@ -32,6 +32,7 @@ export default tseslint.config(
       'src-tauri/**',
       'target/**',
       '.eldrun/**',
+      '.tabtivity/**',
       // Agent worktrees: full checkouts, each linted from its own root.
       '.claude/**',
       'coverage/**',

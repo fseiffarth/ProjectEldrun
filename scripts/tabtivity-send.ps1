@@ -1,8 +1,8 @@
-# Windows twin of eldrun-send.sh. Binary stdin is read without text conversion.
+# Windows twin of tabtivity-send.sh. Binary stdin is read without text conversion.
 $ErrorActionPreference = 'Stop'
-function Fail($Code, $Message) { [Console]::Error.WriteLine("eldrun-send: $Message"); exit $Code }
+function Fail($Code, $Message) { [Console]::Error.WriteLine("tabtivity-send: $Message"); exit $Code }
 if ($args.Count -eq 0 -or $args[0] -eq '--help') {
-    Write-Output "eldrun-send FILE...`ncommand | eldrun-send -n NAME`neldrun-send --clear"
+    Write-Output "tabtivity-send FILE...`ncommand | tabtivity-send -n NAME`ntabtivity-send --clear"
     if ($args.Count -eq 0) { exit 2 }; exit 0
 }
 $fromStdin = $args[0] -eq '-n'
@@ -10,29 +10,29 @@ $clear = $args[0] -eq '--clear'
 if (($fromStdin -and $args.Count -ne 2) -or ($clear -and $args.Count -ne 1)) { Fail 2 'Invalid arguments; use --help.' }
 if ($args[0].StartsWith('-') -and -not $fromStdin -and -not $clear -and $args[0] -ne '--') { Fail 2 'Unknown option; use --help.' }
 if ($args[0] -eq '--') { $args = @($args | Select-Object -Skip 1) }
-$root = $env:ELDRUN_PROJECT_DIR
+$root = $env:TABTIVITY_PROJECT_DIR
 if (-not $root) {
     try { $root = & git rev-parse --show-toplevel 2>$null }
-    catch { Fail 3 'Set ELDRUN_PROJECT_DIR or run inside a git project.' }
+    catch { Fail 3 'Set TABTIVITY_PROJECT_DIR or run inside a git project.' }
 }
-if (-not $root -or -not [IO.Directory]::Exists($root)) { Fail 3 'Set ELDRUN_PROJECT_DIR or run inside a git project.' }
+if (-not $root -or -not [IO.Directory]::Exists($root)) { Fail 3 'Set TABTIVITY_PROJECT_DIR or run inside a git project.' }
 $root = [IO.Path]::GetFullPath($root)
-$outbox = Join-Path $root '.eldrun/outbox'
+$outbox = Join-Path $root '.tabtivity/outbox'
 # The agent tab sending: its phone chat shows the file; every gallery lists it.
-$tab = $env:ELDRUN_TAB_UID
+$tab = $env:TABTIVITY_TAB_UID
 if ($tab -notmatch '^[A-Za-z0-9-]{1,64}$') { $tab = $null }
-foreach ($dir in @((Join-Path $root '.eldrun'), $outbox)) {
+foreach ($dir in @((Join-Path $root '.tabtivity'), $outbox)) {
     if ((Test-Path -LiteralPath $dir) -and ((Get-Item -Force -LiteralPath $dir).Attributes -band [IO.FileAttributes]::ReparsePoint)) { Fail 3 'The outbox must not be a symlink.' }
 }
 try { [void][IO.Directory]::CreateDirectory($outbox) }
 catch { Fail 3 'Cannot create the project outbox.' }
 if ($clear) {
     Get-ChildItem -Force -LiteralPath $outbox -File | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | Remove-Item -Force
-    Write-Output 'eldrun-send: outbox cleared.'; exit 0
+    Write-Output 'tabtivity-send: outbox cleared.'; exit 0
 }
 $ignored = $false
-try { & git -C $root check-ignore -q .eldrun/ 2>$null; $ignored = $LASTEXITCODE -eq 0 } catch {}
-if (-not $ignored) { [Console]::Error.WriteLine('eldrun-send: warning: .eldrun/ is not git-ignored; ignore it before committing.') }
+try { & git -C $root check-ignore -q .tabtivity/ 2>$null; $ignored = $LASTEXITCODE -eq 0 } catch {}
+if (-not $ignored) { [Console]::Error.WriteLine('tabtivity-send: warning: .tabtivity/ is not git-ignored; ignore it before committing.') }
 $sources = if ($fromStdin) { @($args[1]) } else { @($args) }
 foreach ($source in $sources) {
     $inputStream = $null; $outputStream = $null

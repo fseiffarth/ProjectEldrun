@@ -81,13 +81,24 @@ describe("brand migration: localStorage keys", () => {
     expect(map.get(`${LEGACY_NAMES.storagePrefix}a`)).toBe("1");
   });
 
-  it("does not touch the storage while the name is unchanged", () => {
-    if (NAMES.storagePrefix !== LEGACY_NAMES.storagePrefix) return;
+  it("does not touch the storage when the two name sets are the same", () => {
     const { storage, map, calls } = storageOf({ [`${NAMES.storagePrefix}a`]: "1", [`${NAMES.storageDashPrefix}theme`]: "dark" });
     const before = Object.fromEntries(map);
-    expect(migrateStorageKeys(storage)).toBe(0);
+    expect(migrateStorageKeys(storage, NAMES, NAMES)).toBe(0);
     expect(Object.fromEntries(map)).toEqual(before);
     expect(calls).toEqual([]);
+  });
+
+  it("moves an older build's keys to this build's names by default", () => {
+    const { storage, map } = storageOf({
+      [`${LEGACY_NAMES.storagePrefix}todo.collapsed`]: "1",
+      [`${LEGACY_NAMES.storageDashPrefix}theme`]: "dark",
+    });
+    expect(migrateStorageKeys(storage)).toBe(2);
+    expect(Object.fromEntries(map)).toEqual({
+      [`${NAMES.storagePrefix}todo.collapsed`]: "1",
+      [`${NAMES.storageDashPrefix}theme`]: "dark",
+    });
   });
 });
 
@@ -112,9 +123,8 @@ describe("brand migration: saved names", () => {
 
   it("offers both export extensions once they differ, one before", () => {
     expect(exportExtensions(RENAMED, LEGACY_NAMES)).toEqual(["newnameproj", LEGACY_NAMES.exportExtension]);
-    if (NAMES.exportExtension === LEGACY_NAMES.exportExtension) {
-      expect(exportExtensions()).toEqual([NAMES.exportExtension]);
-    }
+    expect(exportExtensions(NAMES, NAMES)).toEqual([NAMES.exportExtension]);
+    expect(exportExtensions()).toEqual([NAMES.exportExtension, LEGACY_NAMES.exportExtension]);
   });
 });
 

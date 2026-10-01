@@ -2981,7 +2981,11 @@ pub fn project_generated_dir(project_dir: String, kind: String) -> Result<String
 // Eldrun wrote into before the rename, so dropping them would un-ignore a
 // folder of already-filed private data the moment a project's `.gitignore` was
 // regenerated — the exact leak these entries exist to prevent.
-pub const GITIGNORE_DEFAULT: &str = concat!("__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.", crate::app_slug!(), "/\n", crate::app_slug!(), "-screenshots/\n", crate::app_slug!(), "-emails/\nscreenshots/\nemails/\nproject.json\n");
+//
+// The same goes for the two folders under the app's old name: a project that
+// has one keeps saving into it (`generated_dir_name`), so its rule stays on
+// the list for good.
+pub const GITIGNORE_DEFAULT: &str = concat!("__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.", crate::app_slug!(), "/\n", crate::app_slug!(), "-screenshots/\n", crate::app_slug!(), "-emails/\n", crate::legacy_slug!(), "-screenshots/\n", crate::legacy_slug!(), "-emails/\nscreenshots/\nemails/\nproject.json\n");
 
 pub const CLAUDE_SETTINGS: &str = r#"{"permissions":{"allow":[],"deny":[]}}"#;
 
@@ -5095,10 +5099,29 @@ mod tests {
         }
     }
 
+    /// A project keeps an old-named screenshots or mail folder it already
+    /// has, so the default ignore list names both spellings: regenerating a
+    /// `.gitignore` must never un-ignore a folder of filed private data.
+    #[test]
+    fn the_default_gitignore_covers_the_generated_folders_under_both_names() {
+        let lines: Vec<&str> = GITIGNORE_DEFAULT.lines().collect();
+        for dir in [
+            crate::brand::SCREENSHOTS_DIR,
+            crate::brand::EMAILS_DIR,
+            crate::brand::LEGACY_SCREENSHOTS_DIR,
+            crate::brand::LEGACY_EMAILS_DIR,
+        ] {
+            assert!(lines.contains(&format!("{dir}/").as_str()), "{dir}/ is ignored");
+        }
+        assert!(lines.contains(&crate::brand::PROJECT_DIR_EXCLUDE_RULE));
+        assert!(lines.contains(&"screenshots/") && lines.contains(&"emails/"));
+    }
+
     #[test]
     fn the_retired_trash_workspace_entry_is_dropped_and_nothing_else() {
         let mut list = vec![
-            entry(concat!(crate::app_slug!(), "-trash"), "Trash", vec![(concat!(crate::app_slug!(), "_trash"), Value::Bool(true))]),
+            // The entry an old build wrote: its id and its marker carry the old name.
+            entry(paths::LEGACY_TRASH_PROJECT_ID, "Trash", vec![(concat!(crate::legacy_slug!(), "_trash"), Value::Bool(true))]),
             entry("p1", "Trash", vec![]),
         ];
         drop_legacy_trash_project(&mut list);

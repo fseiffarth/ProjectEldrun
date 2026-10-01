@@ -67,7 +67,8 @@ describe("Mobile bridge — launch options", () => {
       }
       if (command === "mobile_opaque_id") {
         const { domain, value } = args as { domain: string; value: string };
-        return Promise.resolve(`${domain}-${value.length}`);
+        // Counted without the app's folder name, so the id does not move with it.
+        return Promise.resolve(`${domain}-${value.replace(NAMES.worktreesDir, ".app/worktrees").length}`);
       }
       return Promise.resolve(undefined);
     });

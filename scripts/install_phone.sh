@@ -9,18 +9,24 @@ elif [[ $# -ne 0 ]]; then
   exit 2
 fi
 
-# Match storage::state_dir: XDG on Linux, Application Support on macOS.
-state_dir="${XDG_DATA_HOME:-$HOME/.local/share}/eldrun"
-if [[ ! -r "$state_dir/settings.json" && -r "$HOME/Library/Application Support/eldrun/settings.json" ]]; then
-  state_dir="$HOME/Library/Application Support/eldrun"
+# The app writes this script into <state dir>/mobile-control/ and runs it from
+# there, so the state dir is the folder above — whatever it is called and
+# wherever an override put it. Run from a checkout instead, fall back to
+# storage::state_dir's default: XDG on Linux, Application Support on macOS.
+state_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ ! -r "$state_dir/settings.json" ]]; then
+  state_dir="${XDG_DATA_HOME:-$HOME/.local/share}/tabtivity"
+  if [[ ! -r "$state_dir/settings.json" && -r "$HOME/Library/Application Support/tabtivity/settings.json" ]]; then
+    state_dir="$HOME/Library/Application Support/tabtivity"
+  fi
 fi
 settings="$state_dir/settings.json"
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 command -v tailscale >/dev/null || { echo "Tailscale is not installed" >&2; exit 1; }
-[[ -r "$settings" ]] || { echo "Eldrun settings are unavailable" >&2; exit 1; }
+[[ -r "$settings" ]] || { echo "Tabtivity settings are unavailable" >&2; exit 1; }
 
-port="$(jq -r '.eldrun_mobile_host.port // 8742' "$settings")"
-origin="$(jq -r '.eldrun_mobile_host.serve_origin // empty' "$settings")"
+port="$(jq -r '.tabtivity_mobile_host.port // 8742' "$settings")"
+origin="$(jq -r '.tabtivity_mobile_host.serve_origin // empty' "$settings")"
 [[ "$origin" =~ ^https://([^/:]+)(:([0-9]+))?$ ]] || {
   echo "No verified exact HTTPS Serve origin is configured" >&2
   exit 1
