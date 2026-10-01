@@ -20,6 +20,7 @@ import { withdrawnTabKinds } from "../lib/experimental";
 import { useSettingsStore } from "./settings";
 import { getDetachedWindowContext } from "./detachedContext";
 import { envName, tabCommand } from "../lib/brand";
+import { currentTabCommand } from "../lib/brandMigration";
 
 /** A shell tab, or a remote agent tab (Claude/Codex/…), gets a stable persisted
  *  tmux session name at creation (TODO #85), so a persistent remote run reattaches
@@ -4809,6 +4810,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 
   loadFromLayout: (layout, defaultCwd, targetScope, groups, opts) => {
     const agentRoots = opts?.agentRoots ?? [];
+    // A built-in tab an older build saved carries its command under the app's
+    // old name (the backend rewrites saved sessions at launch; this covers a
+    // layout that reaches the window any other way). The identity while the
+    // name is unchanged.
+    layout = layout.map((t) => {
+      const cmd = t.cmd ? currentTabCommand(t.cmd) : t.cmd;
+      return cmd === t.cmd ? t : { ...t, cmd };
+    });
     // A retired kind is dropped first and unconditionally. Unlike the withdrawal
     // below this waits for nothing: the kind does not exist any more, and the
     // fall-through for its unrecognized `cmd` is `"shell"` — so a mail tab saved

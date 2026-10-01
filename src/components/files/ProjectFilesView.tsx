@@ -82,7 +82,8 @@ import { RemarksPane } from "./RemarksPane";
 import { DevTodoView, useDevTodoAvailable } from "./DevTodoView";
 import { ArrowDownIcon, ArrowUpIcon, CheckIcon, CommentIcon, GearIcon, HexagonIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
 import { ErrorNote } from "../common/ErrorNote";
-import { MOBILE_ACCESS_KEY, MOBILE_HOST_KEY, NAMES } from "../../lib/brand";
+import { MOBILE_ACCESS_KEY, MOBILE_HOST_KEY } from "../../lib/brand";
+import { tmuxSessionRest } from "../../lib/brandMigration";
 
 /** How long the pointer must rest on a session row before its stats card opens
  *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
@@ -132,7 +133,7 @@ function sessionDisplayName(
   t: (key: TranslationKey, params?: Record<string, string | number>) => string,
   name: string,
 ): string {
-  return name.startsWith(NAMES.tmuxPrefix) ? t("projectFilesView.sessionLabel") : name;
+  return tmuxSessionRest(name) !== null ? t("projectFilesView.sessionLabel") : name;
 }
 
 /** The Sessions view's per-machine session-type sub-heading (TODO #85): one label
@@ -810,7 +811,7 @@ export function ProjectFilesView({
       return;
     }
     useTabsStore.getState().addTabToScope(projectId, {
-      label: name.startsWith(NAMES.tmuxPrefix) ? "session" : name,
+      label: tmuxSessionRest(name) !== null ? "session" : name,
       cmd: "",
       args: [],
       cwd: projectDir,

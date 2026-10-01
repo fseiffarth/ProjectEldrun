@@ -1,8 +1,11 @@
 import { ApiError, api, traceConnect } from "./api";
 import { classifyUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
-import { NAMES } from "../../src/lib/brand";
+import { LEGACY_NAMES, NAMES } from "../../src/lib/brand";
+import { adoptLegacyDatabase, databaseHost, databasePort } from "../../src/lib/brandMigration";
 
 const DB = NAMES.mobileAuthDb;
+/** The database an older build of the phone app kept the device key in. */
+const LEGACY_DB = LEGACY_NAMES.mobileAuthDb;
 const STORE = "keys";
 const DEVICE = "device";
 
@@ -13,7 +16,22 @@ function b64url(bytes: ArrayBuffer): string {
   return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+/** The device key an older build stored under the app's old name is copied
+ * over once, before the database is first used — so the phone stays paired
+ * across a rename. A failed copy keeps the old database for the next start. */
+let adopted: Promise<unknown> | null = null;
+
 export async function openAuthDatabase(): Promise<IDBDatabase> {
+  if (LEGACY_DB !== DB) {
+    adopted ??= adoptLegacyDatabase(databaseHost(indexedDB), LEGACY_DB, DB, async () =>
+      databasePort(await openCurrentAuthDatabase()),
+    ).catch(() => undefined);
+    await adopted;
+  }
+  return openCurrentAuthDatabase();
+}
+
+function openCurrentAuthDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB, 2);
     request.onupgradeneeded = () => {

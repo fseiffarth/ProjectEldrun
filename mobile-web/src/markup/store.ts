@@ -11,7 +11,8 @@
  */
 
 import { isLayer, LIMITS, markCount, type Layer } from "./layer";
-import { NAMES } from "../../../src/lib/brand";
+import { LEGACY_NAMES, NAMES } from "../../../src/lib/brand";
+import { adoptLegacyDatabase, databaseHost, databasePort } from "../../../src/lib/brandMigration";
 
 /** What a layer was drawn against: the file's size and modified time. A
  * different file under the same name is told apart by them. */
@@ -27,6 +28,8 @@ export interface LayerBackend {
 }
 
 const DB = NAMES.mobileMarkupDb;
+/** The database an older build of the phone app kept unsaved markup in. */
+const LEGACY_DB = LEGACY_NAMES.mobileMarkupDb;
 const STORE = "layers";
 
 function promised<T>(request: IDBRequest<T>): Promise<T> {
@@ -39,7 +42,23 @@ function promised<T>(request: IDBRequest<T>): Promise<T> {
 let database: Promise<IDBDatabase> | null = null;
 
 function open(): Promise<IDBDatabase> {
-  database ??= new Promise<IDBDatabase>((resolve, reject) => {
+  // Unsaved markup an older build stored under the app's old name is copied
+  // over once, before the database is first used.
+  database ??= (
+    LEGACY_DB === DB
+      ? openCurrent()
+      : adoptLegacyDatabase(databaseHost(indexedDB), LEGACY_DB, DB, async () => databasePort(await openCurrent()))
+          .catch(() => undefined)
+          .then(openCurrent)
+  ).catch((error: unknown) => {
+    database = null;
+    throw error;
+  });
+  return database;
+}
+
+function openCurrent(): Promise<IDBDatabase> {
+  return new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DB, 1);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE);
@@ -47,11 +66,7 @@ function open(): Promise<IDBDatabase> {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
     request.onblocked = () => reject(new Error("blocked"));
-  }).catch((error: unknown) => {
-    database = null;
-    throw error;
   });
-  return database;
 }
 
 /** The app's backend: one object store in its own database. */

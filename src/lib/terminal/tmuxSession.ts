@@ -11,6 +11,7 @@
 
 import type { RemoteSpec } from "../../types";
 import { NAMES } from "../brand";
+import { tmuxSessionRest } from "../brandMigration";
 
 /**
  * A project id can appear verbatim in a tmux session name (it's practice a uuid),
@@ -69,7 +70,8 @@ export type TmuxSessionKind = "agent" | "shell" | "other";
  */
 export function sessionKindFromName(name: string): TmuxSessionKind {
   const sep = name.indexOf("--");
-  if (!name.startsWith(NAMES.tmuxPrefix) || sep < 0) return "other";
+  // Under the current prefix or the one an older build minted.
+  if (tmuxSessionRest(name) === null || sep < 0) return "other";
   const rest = name.slice(sep + 2);
   if (rest.startsWith("agent-")) return "agent";
   if (rest.startsWith("shell-")) return "shell";

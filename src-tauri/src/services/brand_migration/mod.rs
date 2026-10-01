@@ -357,6 +357,59 @@ pub fn lazy_pending(pair: &Pair, state_dir: &Path, id: &str, reason: &str) {
     set_lazy(pair, state_dir, id, StepState::Pending, reason);
 }
 
+/// One lookup's tally, for the settings panel.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct HitRow {
+    pub id: String,
+    pub count: u64,
+    pub first: String,
+    pub last: String,
+}
+
+/// One step that has not finished, for the settings panel.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct StepRow {
+    pub id: String,
+    pub state: StepState,
+    pub note: String,
+}
+
+/// What Settings shows about the rename: which lookups still found something
+/// under the app's old name, and which steps are not done.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Status {
+    /// False while the app's name is unchanged; the lists are then empty and
+    /// the panel shows nothing.
+    pub renamed: bool,
+    pub hits: Vec<HitRow>,
+    pub unfinished: Vec<StepRow>,
+}
+
+/// The summary of the fallback log and the record under `state_dir`.
+pub fn status_in(pair: &Pair, state_dir: &Path) -> Status {
+    if !pair.renamed() {
+        return Status::default();
+    }
+    let hits = hits::read(&hits::path_in(state_dir))
+        .into_iter()
+        .map(|(id, hit)| HitRow { id, count: hit.count, first: hit.first, last: hit.last })
+        .collect();
+    let unfinished = record_in(state_dir)
+        .steps
+        .into_iter()
+        .filter(|(_, step)| step.state != StepState::Done)
+        .map(|(id, step)| StepRow { id, state: step.state, note: step.note })
+        .collect();
+    Status { renamed: true, hits, unfinished }
+}
+
+/// [`status_in`] for the running app, with the counts still in memory
+/// written first.
+pub fn status() -> Status {
+    hits::flush();
+    status_in(&crate::brand::PAIR, &crate::storage::state_dir())
+}
+
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]

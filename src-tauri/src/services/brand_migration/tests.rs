@@ -359,6 +359,35 @@ fn the_named_dir_resolution_prefers_the_current_name_and_counts_the_old_one() {
 }
 
 #[test]
+fn the_status_lists_hits_and_unfinished_steps_and_is_empty_while_unchanged() {
+    let machine = Machine::new();
+    machine.seed_install(&LEGACY);
+    let env = machine.env(RENAMED);
+    run_startup(&env);
+    hits::Buffer::new().note(&hits::path_in(&env.state_dir), "tmux-prefix", "2026-10-01T12:00:00+00:00");
+
+    let status = status_in(&RENAMED, &env.state_dir);
+    assert!(status.renamed);
+    assert_eq!(
+        status.hits,
+        [HitRow {
+            id: "tmux-prefix".into(),
+            count: 1,
+            first: "2026-10-01T12:00:00+00:00".into(),
+            last: "2026-10-01T12:00:00+00:00".into(),
+        }]
+    );
+    // The launch steps are done; what is listed are the lazy ones.
+    let ids: Vec<&str> = status.unfinished.iter().map(|step| step.id.as_str()).collect();
+    assert_eq!(ids, LAZY_STEPS.iter().map(|(id, _, _)| *id).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>());
+    assert!(status.unfinished.iter().any(|step| step.id == "mail-store" && step.state == StepState::Pending));
+
+    if !PAIR.renamed() {
+        assert_eq!(status_in(&PAIR, &env.state_dir), Status::default());
+    }
+}
+
+#[test]
 fn the_record_keeps_what_a_later_build_added() {
     let machine = Machine::new();
     let env = machine.env(RENAMED);

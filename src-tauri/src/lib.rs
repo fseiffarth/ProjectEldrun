@@ -1381,6 +1381,7 @@ pub fn run() {
             commands::agent_prompts::agent_prompt_history_clear,
             // Updates (Settings → Updates): check the GitHub releases page,
             // download this platform's artifact, hand it to its installer.
+            commands::brand_migration::legacy_name_status,
             commands::app_update::check_app_update,
             commands::app_update::download_app_update,
             commands::app_update::install_app_update,
@@ -2203,6 +2204,9 @@ pub fn run() {
             }
             if let tauri::RunEvent::Exit = event {
                 use tauri::Manager;
+                // Old-name lookups counted since the last write (nothing
+                // while the app's name is unchanged).
+                services::brand_migration::hits::flush();
                 // Stop the Eldrun Mobile host first: its lifetime is the app's
                 // (started again at the next launch, see `setup`), and once the
                 // desktop is gone it can neither create tabs nor reach the

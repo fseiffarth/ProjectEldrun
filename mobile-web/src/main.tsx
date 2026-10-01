@@ -1,3 +1,6 @@
+// First: storage keys an older build wrote move to their current names
+// before any module reads them (a no-op while the app's name is unchanged).
+import "../../src/lib/brandMigrationBoot";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";

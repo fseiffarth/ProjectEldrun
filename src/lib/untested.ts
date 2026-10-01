@@ -204,6 +204,7 @@ export const UNTESTED = {
   "mcpSecurity.audit": { area: "layout", what: "RootMcpSecurity · audit table with reason/target columns, unauthenticated rows, live refresh on session events, tab titles, revoke confirm" },
   "nav.scaffoldRepair.title": { area: "layout", what: "SettingsPanel · Repair Project Scaffold" },
   "nav.updates.title": { area: "layout", what: "UpdatesPanel · Updates" },
+  "updates.legacyNames": { area: "layout", what: "UpdatesPanel · Names from before the rename (fallback log and unfinished migration steps; only shown once the app's name has changed)" },
   "ollama.autostartTitle": { area: "layout", what: "SettingsSubPanels · Load on Eldrun start" },
   "ollama.modelLocationTitle": { area: "layout", what: "SettingsSubPanels · Model download location" },
   "projectSwitcher.addProjectsToBox": { area: "layout", what: "ProjectSwitcher · Add projects to Box" },

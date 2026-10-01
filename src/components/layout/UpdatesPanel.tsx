@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useT } from "../../lib/i18n";
 import { formatSize } from "../../lib/mail";
 import { UntestedTag } from "../common/UntestedTag";
+import { LegacyNamesSummary } from "./LegacyNamesSummary";
 import { SettingRow, SettingsHeader } from "./settingsUi";
 import type {
   InstallOutcome,
@@ -268,6 +269,7 @@ export function UpdatesPanel({
           </button>
         )}
       </div>
+      <LegacyNamesSummary />
       </div>
     </>
   );

@@ -4,6 +4,7 @@ pub mod agents;
 pub mod app_update;
 pub mod apps;
 pub mod boxes;
+pub mod brand_migration;
 pub mod browser;
 pub mod caldav;
 pub mod calendar;
