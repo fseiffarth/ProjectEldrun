@@ -105,6 +105,43 @@ describe("Eldrun Mobile session lifecycle", () => {
     expect(resumeAuth).not.toHaveBeenCalled();
   });
 
+  it("reloads once on a failed connect, carrying the unlock across, and shows the splash the second time", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("location", { ...window.location, reload });
+    vi.mocked(resumeAuth).mockResolvedValue({ kind: "unavailable", reason: "timeout" });
+    answers(ok);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Unlock now" }));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    // The new page signs straight back in: the unlock rides the reload grace.
+    expect(sessionStorage.getItem("eldrun.mobile.reloadGrace")).toMatch(/^\d+$/);
+    cleanup();
+
+    // The reloaded page fails too: no second reload, the splash says why.
+    vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ type: "reload" } as PerformanceNavigationTiming]);
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Unlock now" })).toBeNull();
+    expect(reload).toHaveBeenCalledOnce();
+
+    // A connect that works earns the next failure its reload back.
+    vi.mocked(resumeAuth).mockResolvedValue(paired);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByText("Alpha");
+    expect(sessionStorage.getItem("eldrun.mobile.connectReload")).toBeNull();
+  });
+
+  it("shows the splash without reloading when the desktop app is closed", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("location", { ...window.location, reload });
+    vi.mocked(resumeAuth).mockResolvedValue({ kind: "unavailable", reason: "desktop_down" });
+    answers(ok);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Unlock now" }));
+    await screen.findByRole("button", { name: "Retry" });
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   it("renews a lapsed session silently while the reader is active and sends the request again", async () => {
     let calls = 0;
     answers(() => (++calls === 1 ? lapsed() : ok()));

@@ -7,7 +7,7 @@ import { classifyUnavailable, describeUnavailable, suspectsTunnel, tailscaleAppL
 import { forgetLastPlace, parsePlace, rememberLastPlace, resolvePlace, restoreLastPlace, type LastPlace, type MobileSection, type RestoredPlace } from "./lastPlace";
 import { refreshPush } from "./push";
 import { hasLocalUnlock } from "./localLock";
-import { noteUnlockedLeave, takeReloadGrace } from "./reloadGrace";
+import { clearConnectReload, isConnectReload, noteUnlockedLeave, takeConnectReload, takeReloadGrace } from "./reloadGrace";
 import { isUntested, setUntestedTagsVisible } from "../../src/lib/untested";
 import { useT } from "../../src/lib/i18n";
 import { Pair } from "./screens/Pair";
@@ -252,6 +252,14 @@ export function App() {
     }
   }, [reset]);
   const fail = useCallback((reason: UnavailableReason, detail?: string) => {
+    // A path the phone wedged gets one fresh page before the splash
+    // (`takeConnectReload`). An unlock from moments ago rides across it on
+    // the reload grace, so the new page signs in without asking again.
+    if (suspectsTunnel(reason) && takeConnectReload()) {
+      if (Date.now() - unlockedAt.current < LOCK_AFTER_IDLE_MS) noteUnlockedLeave();
+      location.reload();
+      return;
+    }
     setUnavailable({ reason, detail });
     setAuth("unavailable");
   }, []);
@@ -260,6 +268,7 @@ export function App() {
     setAuth("loading");
     void resumeAuth().then(async (result) => {
       if (result.kind === "paired") {
+        clearConnectReload();
         const pending = pendingPlace.current;
         pendingPlace.current = null;
         const restored = pending ? await resolvePlace(pending) : await restoreLastPlace();
@@ -284,6 +293,7 @@ export function App() {
     // waited out the browser's ~10 s check that the connection is dead. Sent
     // now, that check runs while the reader is still at the lock.
     traceConnect("app started", true);
+    if (isConnectReload()) traceConnect("reloaded after a failed connect");
     primeConnection();
     void Promise.all([hasPairedDevice(), hasLocalUnlock()]).then(([paired, locked]) => {
       if (!paired) {
@@ -502,6 +512,7 @@ export function App() {
         <ConnectTrace />
         <button className="primary" onClick={retry}>Retry</button>
         {isUntested("mobile.link.unlockRetry") && <p className="splash-hint muted"><span className="untested">Untested</span></p>}
+        {suspectsTunnel(unavailable.reason) && isUntested("mobile.link.connectReload") && <p className="splash-hint muted"><span className="untested">Untested</span></p>}
       </Splash>
     );
   }

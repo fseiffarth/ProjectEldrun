@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { noteUnlockedLeave, RELOAD_GRACE_MS, takeReloadGrace } from "../../../mobile-web/src/reloadGrace";
+import { clearConnectReload, isConnectReload, noteUnlockedLeave, RELOAD_GRACE_MS, takeConnectReload, takeReloadGrace } from "../../../mobile-web/src/reloadGrace";
 
 const T = 1_000_000;
 
@@ -34,5 +34,26 @@ describe("Eldrun Mobile reload grace", () => {
     expect(takeReloadGrace(T, sessionStorage, "reload", false)).toBe(false);
     noteUnlockedLeave(T + 5_000, sessionStorage);
     expect(takeReloadGrace(T, sessionStorage, "reload", false)).toBe(false);
+  });
+});
+
+describe("Eldrun Mobile failed-connect reload", () => {
+  beforeEach(() => sessionStorage.clear());
+
+  it("hands out one reload per failure streak", () => {
+    expect(isConnectReload(sessionStorage)).toBe(false);
+    expect(takeConnectReload(sessionStorage)).toBe(true);
+    // The reloaded page knows it is one, and fails to the splash next time.
+    expect(isConnectReload(sessionStorage)).toBe(true);
+    expect(takeConnectReload(sessionStorage)).toBe(false);
+    // A connect that works earns the next streak its reload.
+    clearConnectReload(sessionStorage);
+    expect(takeConnectReload(sessionStorage)).toBe(true);
+  });
+
+  it("never reloads when the mark cannot be kept", () => {
+    expect(takeConnectReload(null)).toBe(false);
+    const blocked = { getItem: () => null, setItem: () => { throw new Error("blocked"); }, removeItem: () => undefined };
+    expect(takeConnectReload(blocked)).toBe(false);
   });
 });
