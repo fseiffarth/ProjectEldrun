@@ -239,9 +239,16 @@ small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-
 .project-screen .tab-card:has(.tab-card-grip) .tab-card-foot { padding-right:26px; }
 .tab-card.home-project-card:has(.tab-card-grip) .card { padding-right:28px; }
 /* The project screen's tab cards carry a hexagonal status mark on the left
-   border. Its inset face leaves a coloured edge around the glyph; a static
-   dark shadow separates it from the tab colour. Taps pass through the mark. */
-.tab-card > .tab-card-status { position:absolute; top:50%; left:-12px; z-index:2; display:grid; place-items:center; width:22px; height:22px; padding:0; border:0; border-radius:0; background:currentColor; clip-path:polygon(25% 6.7%,75% 6.7%,100% 50%,75% 93.3%,25% 93.3%,0 50%); filter:drop-shadow(0 0 2px #000); font-size:.72rem; line-height:1; transform:translateY(-50%); pointer-events:none; }
+   border. Its inset face leaves a coloured edge around the glyph. The card's
+   outline and face have a round hole punched where the mark sits (centre 1px
+   left of the card's edge, 2.5px wider than the 11px the turning hexagon
+   sweeps), so the page shows between mark and card, as the disc's dark ring
+   once did. Each layer places the hole from its own left edge. Taps pass
+   through the mark. */
+.tab-card:has(> .tab-card-status)::before,.tab-card:has(> .tab-card-status)::after { --hole:radial-gradient(circle at calc(-1px - var(--hole-left, 0px)) 50%, transparent 13.5px, #000 14px); -webkit-mask:var(--hole); mask:var(--hole); }
+.tab-card:has(> .tab-card-status)::after { --hole-left:1px; }
+.project-screen .tab-card.has-tab-color:has(> .tab-card-status)::after { --hole-left:3px; }
+.tab-card > .tab-card-status { position:absolute; top:50%; left:-12px; z-index:2; display:grid; place-items:center; width:22px; height:22px; padding:0; border:0; border-radius:0; background:currentColor; clip-path:polygon(25% 6.7%,75% 6.7%,100% 50%,75% 93.3%,25% 93.3%,0 50%); font-size:.72rem; line-height:1; transform:translateY(-50%); pointer-events:none; }
 .tab-card > .tab-card-status::before { content:""; position:absolute; inset:1.5px; background:var(--status-face); clip-path:polygon(25% 6.7%,75% 6.7%,100% 50%,75% 93.3%,25% 93.3%,0 50%); }
 .tab-card > .tab-card-status.working { --status-face:#173827; font-size:.56rem; }
 .tab-card > .tab-card-status.question { --status-face:#493b1d; }
