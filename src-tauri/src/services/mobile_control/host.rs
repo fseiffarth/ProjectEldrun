@@ -29,6 +29,7 @@ use super::{
     files,
     headless,
     inbox,
+    markup,
     outbox,
     limits,
     protocol::{
@@ -55,6 +56,13 @@ const MAX_TAB_PROMPTS: usize = 5;
 /// not recorded in its history.
 const MAX_SENT_PROMPT: usize = 16 * 1024;
 const MAX_TAB_PROMPT_CHARS: usize = 240;
+
+/// The one page another page may frame: the sealed pdf.js frame the markup
+/// view renders PDF pages in (`mobile-web/pdf-frame.html`). It is loaded as
+/// `<iframe sandbox="allow-scripts">` — an opaque origin with no cookie, no
+/// storage and no API — and its own policy lets it run its script and draw,
+/// and nothing else: no network, no forms, framed only by the PWA itself.
+const PDF_FRAME_PATH: &str = "/pdf-frame.html";
 
 const MOBILE_PERMISSIONS_POLICY: &str =
     "camera=(), microphone=(self), on-device-speech-recognition=(self), geolocation=(), payment=(), usb=()";
@@ -321,13 +329,19 @@ fn catalog_stale(state: &HostState) {
 
 async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
     let sensitive = request.uri().path().starts_with("/api/") || request.uri().path() == "/healthz";
+    let frame = request.uri().path() == PDF_FRAME_PATH;
     let mut response = next.run(request).await;
+    // The sealed frame answers its own framing rules (`pdf_frame`); a miss
+    // there falls back to everyone else's.
+    let framed = frame && response.status() == StatusCode::OK;
     let headers = response.headers_mut();
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    if !framed {
+        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    }
     headers.insert(
         header::STRICT_TRANSPORT_SECURITY,
         HeaderValue::from_static("max-age=31536000"),
@@ -339,8 +353,53 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> 
         "permissions-policy",
         HeaderValue::from_static(MOBILE_PERMISSIONS_POLICY),
     );
-    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"));
+    if !framed {
+        headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"));
+    }
     response
+}
+
+/// The sealed frame's policy. Inside a sandbox the document's origin is
+/// opaque, and whether `'self'` still matches the server it came from differs
+/// between engines — so the server is also named outright, from the `Host`
+/// the request came in on (a host name, nothing else, or it is left out).
+fn pdf_frame_policy(host: Option<&HeaderValue>) -> String {
+    let named = host
+        .and_then(|value| value.to_str().ok())
+        .filter(|host| {
+            !host.is_empty()
+                && host.len() <= 255
+                && host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':'))
+        })
+        .map(|host| format!(" https://{host}"))
+        .unwrap_or_default();
+    format!(
+        "default-src 'none'; script-src 'self'{named}; style-src 'unsafe-inline'; img-src blob: data:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'{named}"
+    )
+}
+
+/// `GET /pdf-frame.html` — the sealed frame (`PDF_FRAME_PATH`), with its own
+/// framing rules. Only the frame's own bytes: a bundle without it is a 404,
+/// never the app shell under a framable policy.
+async fn pdf_frame(headers: HeaderMap) -> Response<Body> {
+    let found = match live_pwa::current() {
+        Some(live) => live.get(PDF_FRAME_PATH),
+        None => MOBILE_ASSETS
+            .iter()
+            .find(|(asset, _, _)| *asset == PDF_FRAME_PATH)
+            .map(|(_, bytes, mime)| (bytes::Bytes::from_static(bytes), *mime)),
+    };
+    let Some((bytes, mime)) = found else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::X_FRAME_OPTIONS, "SAMEORIGIN")
+        .header(header::CONTENT_SECURITY_POLICY, pdf_frame_policy(headers.get(header::HOST)))
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn health() -> impl IntoResponse {
@@ -3450,6 +3509,70 @@ async fn outbox_bytes(root: PathBuf, name: String, download: bool) -> Response<B
     }
 }
 
+/// `POST /api/v1/tabs/{tab_id}/markup` — the markup view's **Submit**
+/// (`markup.rs`): the marks of a PDF or picture the phone marked up, whose
+/// layer PNGs already went through this tab's inbox. Bakes a PDF's marked copy
+/// into the same inbox and answers the prompt the phone sends into the chat.
+/// The source is named by a sealed file token of this tab's project or an
+/// outbox leaf, read only; the answer carries project-relative references and
+/// never the root.
+async fn markup_submit(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let Ok(request) = serde_json::from_slice::<markup::MarkupRequest>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, markup::MarkupError::Invalid.code());
+    };
+    if let Err(error) = markup::validate(&request) {
+        return api_error(StatusCode::BAD_REQUEST, error.code());
+    }
+    let (root, raw_id, kind, send_back) = {
+        let catalog = match catalog(&state) {
+            Ok(catalog) => catalog,
+            Err(error) => return error,
+        };
+        let Some((project, tab)) = catalog.tab(&tab_id) else {
+            return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+        };
+        // A tab with a session id is one `eldrun-send` can answer into.
+        (project.root.clone(), project.raw_id.clone(), project.public.kind, tab.session_id.is_some())
+    };
+    let source = match &request.source {
+        markup::MarkupSource::Files(token) => {
+            // The file browser's own gates: the host-wide switch, projects only.
+            if !files::files_open(&state.config.state_dir) {
+                return api_error(StatusCode::NOT_FOUND, "files_off");
+            }
+            if kind != ScopeKind::Project {
+                return api_error(StatusCode::NOT_FOUND, "files_unavailable");
+            }
+            match files_rel(&state, &raw_id, Some(token)) {
+                Ok(rel) => markup::ResolvedSource::Files(rel),
+                Err(error) => return error,
+            }
+        }
+        markup::MarkupSource::Outbox(name) => markup::ResolvedSource::Outbox(name.clone()),
+    };
+    // Reads, a bake bounded by its own deadline, and an inbox write.
+    let submitted = tokio::task::spawn_blocking(move || markup::submit(&root, &source, &request, send_back)).await;
+    match submitted {
+        Ok(Ok(done)) => (StatusCode::OK, Json(json!({ "prompt": done.prompt, "marked": done.marked }))),
+        Ok(Err(markup::MarkupError::Files(error))) => files_error(error),
+        Ok(Err(markup::MarkupError::Outbox(error))) => outbox_error(error),
+        Ok(Err(error @ markup::MarkupError::Unsupported)) => api_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, error.code()),
+        Ok(Err(error)) => api_error(StatusCode::BAD_REQUEST, error.code()),
+        Err(_) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "markup_failed"),
+    }
+}
+
 /// The root and raw id a file-browser request reads by (`files.rs`). Closed —
 /// `files_off` — unless the host-wide switch is on, read per request; a box
 /// or the root console is `files_unavailable`.
@@ -3745,6 +3868,11 @@ fn router(state: HostState) -> Router {
             "/api/v1/inbox",
             post(global_inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
         )
+        // Vectors only — the layer pictures went up through the inbox.
+        .route(
+            "/api/v1/tabs/{tab_id}/markup",
+            post(markup_submit).layer(DefaultBodyLimit::max(markup::MAX_MARKUP_BODY)),
+        )
         .route(
             "/api/v1/tabs/{tab_id}/desktop-images",
             get(desktop_images).post(attach_desktop_image),
@@ -3765,6 +3893,7 @@ fn router(state: HostState) -> Router {
             "/api/v1/projects/{project_id}/outbox/{name}",
             get(project_outbox_file).delete(project_outbox_delete),
         )
+        .route(PDF_FRAME_PATH, get(pdf_frame))
         .route("/", get(index))
         .route("/{*path}", get(static_asset))
         .layer(DefaultBodyLimit::max(MAX_CONTROL_MESSAGE))
@@ -5842,6 +5971,121 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         let (status, _, _) = host.send(get_as("/api/v1/projects/not-a-project/files", &cookie)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn only_the_pdf_frame_may_be_framed_and_only_by_the_pwa() {
+        let host = Fixture::bare();
+        let request = Request::builder()
+            .uri(PDF_FRAME_PATH)
+            .header(header::HOST, "phone.example.ts.net")
+            .body(Body::empty())
+            .unwrap();
+        let (status, headers, _) = host.send(request).await;
+        if status == StatusCode::OK {
+            assert_eq!(headers[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+            let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap().to_string();
+            assert!(policy.contains("default-src 'none'"), "{policy}");
+            assert!(policy.contains("connect-src 'none'"), "{policy}");
+            assert!(policy.contains("frame-ancestors 'self' https://phone.example.ts.net"), "{policy}");
+            assert!(!policy.contains("wasm-unsafe-eval") && !policy.contains("unsafe-eval"), "{policy}");
+        } else {
+            // A bundle built without the frame: a plain miss, never the shell
+            // under a framable policy.
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
+        }
+        for uri in ["/", "/index.html", "/pdf-frame.html/x", "/assets/pdf-frame.js", "/api/v1/status"] {
+            let (_, headers, _) = host.send(get_request(uri)).await;
+            assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{uri}");
+            assert!(headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap().contains("frame-ancestors 'none'"), "{uri}");
+        }
+        // A host header that is not a host name is left out of the policy.
+        let forged = HeaderValue::from_static("evil.example; script-src *");
+        assert!(!pdf_frame_policy(Some(&forged)).contains("evil"));
+        assert!(pdf_frame_policy(None).contains("script-src 'self';"));
+    }
+
+    #[tokio::test]
+    async fn a_markup_submit_bakes_a_copy_into_the_inbox_and_answers_a_prompt() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(63)).await.0;
+        let tab_id = fixture_tab_id(&host, &cookie).await;
+        let (_, _, body) = host.send(get_as("/api/v1/projects?view=search&q=aurora", &cookie)).await;
+        let project_id = json(&body)["projects"][0]["id"].as_str().unwrap().to_string();
+        std::fs::create_dir_all(host.root.join("docs")).unwrap();
+        let pdf = super::super::markup_pdf::tests::classic_pdf(&[0, 90], false);
+        std::fs::write(host.root.join("docs/draft.pdf"), &pdf).unwrap();
+        let before = std::fs::metadata(host.root.join("docs/draft.pdf")).unwrap().modified().unwrap();
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR-layer".to_vec();
+        let (status, _, body) = host.send(inbox_request(&tab_id, "draft-p2-layer.png", &cookie, png)).await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        let layer = json(&body)["attachment"]["reference"].as_str().unwrap().to_string();
+        let submit = |origin: &str, body: Vec<u8>| {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/tabs/{tab_id}/markup"))
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let marks = serde_json::json!([{ "kind": "ink", "color": "red", "width": 2, "points": [[10, 10, 0.5], [40, 30, 0.7]] },
+            { "kind": "text", "color": "blue", "at": [20, 50], "size": 14, "text": "smaller" }]);
+        let request_for = |source: Value| serde_json::to_vec(&serde_json::json!({
+            "source": source,
+            "pages": [{ "n": 2, "size": [800, 600], "layer": layer, "marks": marks }],
+        })).unwrap();
+
+        // The file browser's switch gates a file source, as it gates reading.
+        let (status, _, body) = host.send(submit(ORIGIN, request_for(serde_json::json!({ "files": "AAAA" })))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        assert_eq!(json(&body)["error"], "files_off");
+        std::fs::write(
+            host.state.config.state_dir.join("settings.json"),
+            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }).to_string(),
+        )
+        .unwrap();
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}/files"), &cookie)).await;
+        let docs = json(&body)["entries"].as_array().unwrap().iter()
+            .find(|entry| entry["name"] == "docs").unwrap()["token"].as_str().unwrap().to_string();
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}/files?dir={docs}"), &cookie)).await;
+        let token = json(&body)["entries"][0]["token"].as_str().unwrap().to_string();
+
+        let (status, _, body) = host.send(submit(ORIGIN, request_for(serde_json::json!({ "files": token })))).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let answer = json(&body);
+        let prompt = answer["prompt"].as_str().unwrap();
+        let marked = answer["marked"].as_str().unwrap();
+        assert!(prompt.starts_with("Apply the changes I marked by hand on `docs/draft.pdf`."), "{prompt}");
+        assert!(prompt.contains(&format!("Page 2: @{layer}")), "{prompt}");
+        assert!(prompt.contains("- p2: \"smaller\""), "{prompt}");
+        assert!(marked.starts_with(".eldrun/inbox/") && marked.ends_with("-draft-marked.pdf"), "{marked}");
+        assert!(!body.contains(&host.root.to_string_lossy().to_string()), "a filesystem path leaked: {body}");
+        let copy = std::fs::read(host.root.join(marked)).unwrap();
+        assert!(copy.starts_with(&pdf) && copy.len() > pdf.len());
+        assert_eq!(std::fs::read(host.root.join("docs/draft.pdf")).unwrap(), pdf, "the source is never written");
+        assert_eq!(std::fs::metadata(host.root.join("docs/draft.pdf")).unwrap().modified().unwrap(), before);
+
+        // A forged token, an outbox leaf with a separator, a bad origin and an
+        // oversized body are all refused before anything is written.
+        let (status, _, body) = host.send(submit(ORIGIN, request_for(serde_json::json!({ "files": "AAAA" })))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        assert_eq!(json(&body)["error"], "file_not_found");
+        for leaf in ["../draft.pdf", "a/b.pdf", ".hidden.pdf"] {
+            let (status, _, body) = host.send(submit(ORIGIN, request_for(serde_json::json!({ "outbox": leaf })))).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{leaf} answered: {body}");
+            assert_eq!(json(&body)["error"], "invalid_markup");
+        }
+        let (status, ..) = host.send(submit("https://elsewhere.example", request_for(serde_json::json!({ "files": token })))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, ..) = host.send(submit(ORIGIN, vec![b' '; markup::MAX_MARKUP_BODY + 1])).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        let (status, _, body) = host.send(submit(ORIGIN, b"{\"source\":1}".to_vec())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        let inbox: Vec<_> = std::fs::read_dir(host.root.join(inbox::INBOX_DIR)).unwrap().flatten().collect();
+        assert_eq!(inbox.len(), 2, "the layer and one marked copy");
     }
 
     /// The browser's own PDF viewer fetches without the strict session cookie;

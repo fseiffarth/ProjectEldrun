@@ -410,6 +410,23 @@ accepts only a typed shell or cataloged resumable-agent request; it does not
 accept paths, commands, argv, or tmux names. The protocol lives in
 `src-tauri/src/services/mobile_control/`.
 
+**Mark up a PDF or picture for the agent.** In an agent tab's viewer (the
+files drawer, the 🖼 gallery or a picture/PDF bubble in the chat) a PDF or a
+picture carries **Mark up**: write on the pages with a pen (an Apple Pencil
+always draws, fingers scroll and pinch; a phone without a pen gets a ✋ / ✎
+switch), drag highlighter boxes, tap to type notes, erase whole strokes, undo.
+The marks live only on the phone (its own storage) until **Submit**: each
+marked page's layer goes into the project's `.eldrun/inbox/`, the desktop bakes
+the marks into a copy, `<name>-marked.pdf`, as real PDF annotations (a picture
+comes back drawn on, `<name>-marked.png`), and a prompt naming the file, the
+copy, the layers and the typed notes goes into the chat — held like a typed
+message while the agent works. The original file is never changed; the agent
+is asked to apply the marks to the sources and send the rebuilt file back with
+`eldrun-send`. PDF pages are drawn on the phone by pdf.js inside a sealed
+frame with no access to the session or the network. Project files need
+**Settings → Mobile → Project files on the phone**; files the agent sent work
+without it.
+
 ### Workspace Apps
 
 Each of these replaced a global-app role, on the same reasoning: what sits

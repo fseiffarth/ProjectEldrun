@@ -3486,6 +3486,45 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31bt — Mark up a PDF or picture on the phone for the agent** (2026-10-01;
+  ✅ code-complete, automated tests passing — `markup.rs`/`markup_pdf.rs` units,
+  host tests `a_markup_submit_bakes_a_copy_…` and `only_the_pdf_frame_may_be_framed_…`,
+  `MobileMarkup.test.ts`, `MobileMarkupView.test.tsx`; ⚠️ never run on a phone
+  or an iPad). Plan `docs/mobile_pdf_markup_plan.md`; its §4.0 spike (the
+  sealed frame and the Pencil on the iPad) was not run first — the checks
+  below are that spike. The bake is Eldrun's own incremental-update writer,
+  not `lopdf` (no crate could be fetched in the fenced tab). Untested ids
+  `mobile.markup`, `mobile.markup.frame`, `mobile.markup.send`.
+  - Needs the sidecar rebuilt and the PWA rebuilt (`npm run backend:stale`).
+  - [ ] 🖐️ Manual QA, iPad (Home Screen PWA) and Android Chrome — the PWA pairs
+    and runs on the iPad at all. An agent tab on a LaTeX project → swipe right
+    from the left third → open the built PDF → **Mark up**: pages render (no
+    Mark up from the project screen's drawer). A dense page renders in well
+    under ~1 s (else fall back to desktop-rendered pages, plan §4.0); 100+
+    pages scroll without the tab reloading; a PDF with JPX images shows them
+    blank, nothing else broken. With the Pencil: strike a word and write its
+    replacement, circle a figure and write "smaller", highlight a sentence; the
+    page never scrolls or selects text while writing, a resting palm draws
+    nothing, fingers scroll and pinch (the page re-sharpens after the pinch).
+    On the phone without a pen: ✋/✎ switch, in ✎ one finger draws, two scroll.
+    Close and reopen — the ink is still there; the desktop's `.eldrun/inbox/`
+    has nothing new and the PDF's mtime is unchanged. **Submit** → the chat shows
+    the prompt naming the PDF; the inbox holds `…-marked.pdf` (ink, highlight
+    and note visible in the desktop viewer and another PDF reader) and one
+    layer PNG per marked page; reopening shows no layer. The agent edits the
+    `.tex`, rebuilds and sends the PDF back with `eldrun-send` into the same
+    chat. Same on a picture (`…-marked.png` + layer) and on a PDF the agent sent
+    (chat bubble → viewer → Mark up). Submit while the agent works → held and
+    delivered like a typed message.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member

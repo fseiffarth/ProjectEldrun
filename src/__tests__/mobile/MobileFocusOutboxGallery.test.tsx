@@ -319,6 +319,10 @@ describe("Eldrun Mobile shows the files the agent sent in the chat and in the ga
     expect(Array.from(gallery.querySelectorAll(".outbox-entry strong")).map((name) => name.textContent))
       .toEqual(["paper.pdf", "plot.png"]);
     fireEvent.click(within(gallery).getByRole("button", { name: "Open paper.pdf" }));
+    // An agent tab's PDF opens its viewer first — Open and Mark up there.
+    const viewer = await screen.findByRole("dialog", { name: "paper.pdf" });
+    expect(within(viewer).getByRole("button", { name: "Mark up paper.pdf" })).toBeTruthy();
+    fireEvent.click(within(viewer).getByRole("button", { name: "Open paper.pdf" }));
     // This host mints no ticket, so the plain URL opens.
     await waitFor(() => expect(open).toHaveBeenCalledWith("/api/v1/tabs/tab-7/outbox/paper.pdf", "_blank", "noopener"));
     fireEvent.click(within(gallery).getByRole("button", { name: "Close" }));

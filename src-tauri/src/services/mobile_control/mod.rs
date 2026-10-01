@@ -14,6 +14,8 @@ pub mod headless;
 pub mod host;
 pub mod inbox;
 pub mod live_pwa;
+pub mod markup;
+pub mod markup_pdf;
 pub mod outbox;
 pub mod limits;
 pub mod protocol;

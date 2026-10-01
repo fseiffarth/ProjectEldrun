@@ -4,6 +4,12 @@ import { openOutside, sentName, viewerFileUrl, type OutboxFile, type ViewerScope
 import { shareAs, useOutboxShare } from "../outboxShare";
 import { sizeLabel } from "../terminal/fileLabels";
 import { isUntested } from "../../../src/lib/untested";
+import { MarkupView } from "./MarkupView";
+
+/** What the viewer needs to offer **Mark up** (an agent tab's chat): the tab
+ * the prompt goes to, the project the phone-side layer is kept under, a
+ * project file's folder trail, and the send into the chat. */
+export type MarkupTarget = { tabId: string; projectId: string; place?: string; onSend: (text: string) => boolean };
 
 const INLINE_LIMIT = 1024 * 1024;
 
@@ -84,7 +90,7 @@ function shownSize(img: HTMLImageElement | null, stage: Size): Size {
  * zooms the whole page and then cannot pan it. A swipe steps only while the
  * picture is at its fitted size; zoomed in, a drag moves the picture.
  */
-export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
+export function OutboxViewer({ scope, file, pictures, onStep, onClose, markup }: {
   /** Where the bytes come from: the outbox, or the project's own tree (the
    * read-only file browser, `ProjectFiles`) — the same viewer for both. */
   scope: ViewerScope;
@@ -95,8 +101,11 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
   /** Shows another of `pictures` in place of this one. */
   onStep?: (file: OutboxFile) => void;
   onClose: () => void;
+  /** Given, a PDF or a picture carries **Mark up** (`MarkupView`). */
+  markup?: MarkupTarget;
 }) {
   const t = useT();
+  const [marking, setMarking] = useState(false);
   const url = viewerFileUrl(scope, file);
   const isImage = file.kind.startsWith("image/");
   const steps = isImage && onStep ? pictures ?? [] : [];
@@ -140,7 +149,8 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
   // after the radio — the button itself does not wait for them.
   useEffect(() => { prepare(file); }, [prepare, file]);
   useEffect(() => {
-    if (!onStep || (!previous && !next)) return;
+    // Marking up, the arrow keys belong to the note being typed.
+    if (!onStep || marking || (!previous && !next)) return;
     const onKey = (event: KeyboardEvent) => {
       const target = event.key === "ArrowLeft" ? previous : event.key === "ArrowRight" ? next : null;
       if (!target) return;
@@ -149,7 +159,7 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onStep, previous, next]);
+  }, [onStep, marking, previous, next]);
   useEffect(() => {
     // Warm the neighbours, so a step lands on a picture rather than a blank
     // while it loads over the phone's radio.
@@ -243,6 +253,11 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
   };
   const zoomed = view.scale > 1;
   const stepping = index >= 0 && steps.length > 1;
+  const markable = markup && (isImage || file.kind === "application/pdf") && file.kind !== "image/gif";
+  if (marking && markup) {
+    return <MarkupView tabId={markup.tabId} projectId={markup.projectId} scope={scope} file={file} place={markup.place}
+      onSend={markup.onSend} onClose={() => setMarking(false)} />;
+  }
   return <div className={`outbox-viewer${isText ? " outbox-text-sheet" : ""}`} role="dialog" aria-modal="true" aria-label={sentName(file)}>
     <div className="outbox-viewer-head">
       <button className="sheet-close" onClick={onClose} aria-label={t("mobile.outbox.close")}>✕</button>
@@ -254,6 +269,7 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
             && <span className="untested">{t("mobile.outbox.untested")}</span>}
         </small>
       </div>
+      {markable && <button className="outbox-markup" onClick={() => setMarking(true)} aria-label={t("mobile.markup.openFile", { name: sentName(file) })}>{t("mobile.markup.open")}</button>}
       <a href={viewerFileUrl(scope, file, true)} download={sentName(file)}>{t("mobile.outbox.save")}</a>
       {shareable && <button disabled={sharing.busy === file.name} onClick={() => void sharing.share(file)}>
         {t(sharing.ready === file.name ? "mobile.outbox.shareReady" : "mobile.outbox.share")}

@@ -107,6 +107,14 @@ describe("Eldrun Mobile service worker", () => {
     expect(untouched).toBe("untouched");
   });
 
+  it("leaves the sealed pdf.js frame to the network, even offline", async () => {
+    // Its framing policy rides on the answer, and the shell must never be
+    // handed to a sandboxed frame as its document.
+    const { dispatch } = boot({ "/": html }, () => Promise.reject(new TypeError("Failed to fetch")));
+    const untouched = await Promise.race([dispatch("/pdf-frame.html", "navigate"), Promise.resolve("untouched")]);
+    expect(untouched).toBe("untouched");
+  });
+
   it("precaches this build's entry script and stylesheet once stamped", async () => {
     const index = INDEX.replace("</head>", '<script type="module" crossorigin src="/assets/index-CYdYva-W.js"></script><link rel="stylesheet" crossorigin href="/assets/index-BazsAu1K.css"></head>');
     const assets = shellAssets(index);

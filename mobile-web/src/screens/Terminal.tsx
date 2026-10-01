@@ -2009,11 +2009,13 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [outboxOpen, gallery]);
-  /** A PDF opens in the browser's own viewer; a picture or text full-screen here. */
+  /** A picture or text opens full-screen here. A PDF in an agent tab does
+   * too — its viewer carries **Mark up** beside Open — and in a shell goes
+   * straight to the browser's own viewer. */
   const openOutbox = useCallback((file: OutboxFile) => {
-    if (file.kind === "application/pdf") void openOutside(outboxFileUrl({ tab: tab.id }, file.name));
+    if (file.kind === "application/pdf" && tab.kind !== "agent") void openOutside(outboxFileUrl({ tab: tab.id }, file.name));
     else setOutboxOpen(file);
-  }, [tab.id]);
+  }, [tab.id, tab.kind]);
   /** A lone picture takes its own shape once loaded; a chat following its
    * bottom follows the taller bubble (the resize observer watches the view's
    * box, not what grows inside it). */
@@ -2184,20 +2186,22 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   /** `fromComposer` false: words that are not the draft (the Commit chip's
    * prompts) — sent as a prompt like any other, the draft and an edit left
    * alone. */
-  const submitDraft = (text = draft, fromComposer = true) => {
+  /** Whether the words left the phone, or are held for the agent's next idle
+   * point — the markup view's Submit keeps its layer otherwise. */
+  const submitDraft = (text = draft, fromComposer = true): boolean => {
     if (editing && fromComposer) {
       submitEdit(editing, text);
-      return;
+      return true;
     }
-    if (!connected || !text.trim()) return;
+    if (!connected || !text.trim()) return false;
     // Only confirm what actually left the device. `readyState === OPEN` on a
     // half-open cellular link silently buffers, and "Sent" was shown regardless.
     if (tab.kind !== "agent") {
       // A shell has no soft newline: each line is its own command line.
-      if (!type(`${text.replace(/\r?\n/g, "\r")}\r`)) return;
+      if (!type(`${text.replace(/\r?\n/g, "\r")}\r`)) return false;
       setLastSent(text);
       setDraft("");
-      return;
+      return true;
     }
     // A slash command is the CLI's, not a turn: the session never records it,
     // so a bubble for it would wait forever. `/clear` also ends the chat the
@@ -2205,9 +2209,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     const id = /^\s*\//u.test(text) ? undefined : ++pendingId.current;
     if (id !== undefined && agentAtWork) {
       holdDraft(id, text, fromComposer);
-      return;
+      return true;
     }
-    if (!sendAgentText(text, id)) return;
+    if (!sendAgentText(text, id)) return false;
     setLastSent(text);
     setEditNote("");
     if (id === undefined) {
@@ -2225,14 +2229,30 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       // transcript is not read (OpenCode's cards list these).
       void reportSentPrompt(tab.id, text).catch(() => {});
     }
-    if (!fromComposer) return;
+    if (!fromComposer) return true;
     setDraft("");
     endDictation();
+    return true;
   };
   /** For dictation's spoken send: the session's handlers outlive the render
    * that started them. */
   const submitDraftRef = useRef(submitDraft);
   submitDraftRef.current = submitDraft;
+  /** The markup view's Submit: the desktop's prompt goes out like a typed
+   * one (held while the agent works), and the viewer and drawer it was
+   * opened from close onto the chat. */
+  const sendMarkup = useCallback((text: string) => {
+    if (!submitDraftRef.current(text, false)) return false;
+    setOutboxOpen(null);
+    setGallery(false);
+    setFilesOpen(false);
+    return true;
+  }, []);
+  /** An agent tab's viewers offer **Mark up**; a shell has no chat to send to. */
+  const markupTarget = useMemo(
+    () => (tab.kind === "agent" ? { tabId: tab.id, projectId: project ?? `tab:${tab.id}`, onSend: sendMarkup } : undefined),
+    [tab.kind, tab.id, project, sendMarkup],
+  );
   /** Send while the agent works: the desktop holds the prompt for the tab's
    * next idle point (`holdPrompt`) instead of it going into the CLI's own
    * queue, where nothing can reach it again — so until the agent takes it in,
@@ -3688,8 +3708,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     {/* The viewer covers the phone; the gallery stays chosen behind it, so
         closing the file lands back on the grid. */}
     {gallery && !outboxOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openOutbox} onDetails={setOutboxOpen} onDelete={removeOutbox} onClose={() => setGallery(false)} />}
-    {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} scope={outboxScope} file={outboxOpen} pictures={outboxPictures} onStep={setOutboxOpen} onClose={() => setOutboxOpen(null)} />}
-    {filesOpen && project && filesLabel !== null && <ProjectFiles key={project} projectId={project} label={filesLabel} onClose={closeFiles} />}
+    {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} scope={outboxScope} file={outboxOpen} pictures={outboxPictures} onStep={setOutboxOpen} onClose={() => setOutboxOpen(null)} markup={markupTarget} />}
+    {filesOpen && project && filesLabel !== null && <ProjectFiles key={project} projectId={project} label={filesLabel} onClose={closeFiles}
+      markup={markupTarget && { tabId: markupTarget.tabId, onSend: markupTarget.onSend }} />}
 
   </main>;
 }

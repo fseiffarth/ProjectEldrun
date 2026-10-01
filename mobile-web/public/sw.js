@@ -46,6 +46,10 @@ self.addEventListener("activate", (event) =>
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin || url.pathname.startsWith("/api/") || url.pathname === "/healthz") return;
+  /* The markup view's sealed pdf.js frame comes from the network only: its
+   * own framing policy rides on the answer, and the shell stand-in below must
+   * never land in a sandboxed frame. */
+  if (url.pathname === "/pdf-frame.html") return;
   if (event.request.method !== "GET") return;
   const isAsset = url.pathname.startsWith("/assets/");
   /* The index.html stand-in is for *navigations* only. It used to answer any

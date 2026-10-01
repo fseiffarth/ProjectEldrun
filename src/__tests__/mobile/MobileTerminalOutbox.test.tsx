@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@xterm/xterm", () => ({
@@ -147,8 +147,12 @@ describe("Eldrun Mobile reaches the files the agent sent through the gallery", (
     expect(dialog.querySelector("svg")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("button", { name: "Open paper.pdf" }));
+    // An agent tab's PDF opens its viewer first — Open and Mark up there.
+    const viewer = await screen.findByRole("dialog", { name: "paper.pdf" });
+    fireEvent.click(within(viewer).getByRole("button", { name: "Open paper.pdf" }));
     // This host mints no ticket, so the plain URL opens.
     await waitFor(() => expect(open).toHaveBeenCalledWith("/api/v1/tabs/tab-7/outbox/paper.pdf", "_blank", "noopener"));
+    fireEvent.click(within(viewer).getByRole("button", { name: "Close" }));
     const link = screen.getByRole("link", { name: "Open data.zip" });
     expect(link.getAttribute("href")).toBe("/api/v1/tabs/tab-7/outbox/data.zip?download=1");
     expect(link.getAttribute("download")).toBe("data.zip");

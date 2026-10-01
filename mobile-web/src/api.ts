@@ -1,4 +1,5 @@
 import { translate, useI18nStore } from "../../src/lib/i18n";
+import type { Mark } from "./markup/layer";
 
 /** One row of the phone's list. `kind` says whether it is a project or a box
  * (#31aa) — a box is a scope of its own on the desktop, always "active" here,
@@ -910,6 +911,31 @@ export async function uploadToProjectInbox(projectId: string, file: Blob, name: 
   );
   if (!body?.attachment?.reference) throw new ApiError(status, "malformed_response");
   return body.attachment;
+}
+
+/** Which file a markup submit is about, named the way the phone holds it: a
+ * project file's sealed token, or an outbox leaf. */
+export type MarkupSource = { files: string } | { outbox: string };
+/** One marked page: its displayed size, its marks in that size's units, and
+ * its layer PNG's inbox reference (`markup.rs`). */
+export interface MarkupPageBody { n: number; size: [number, number]; marks: Mark[]; layer: string }
+export interface MarkupBody { source: MarkupSource; pages: MarkupPageBody[]; picture?: string }
+/** The prompt to send into the chat, and the marked copy's reference when the
+ * desktop could bake one. */
+export interface MarkupAnswer { prompt: string; marked?: string | null }
+/** A bake of a long PDF takes a while on the desktop (its own deadline is 20 s). */
+const MARKUP_TIMEOUT = 60_000;
+
+/** `POST /api/v1/tabs/{id}/markup` — the markup view's **Submit**, after the
+ * layer PNGs went up through `uploadToInbox`. */
+export async function submitMarkup(tabId: string, body: MarkupBody): Promise<MarkupAnswer> {
+  const answer = await api<MarkupAnswer>(
+    `/api/v1/tabs/${encodeURIComponent(tabId)}/markup`,
+    { method: "POST", body: JSON.stringify(body) },
+    MARKUP_TIMEOUT,
+  );
+  if (typeof answer.prompt !== "string" || !answer.prompt.trim()) throw new ApiError(200, "malformed_response");
+  return answer;
 }
 
 /** A file the phone sent to the desktop's global inbox: its stored name and
