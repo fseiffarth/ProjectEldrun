@@ -14,12 +14,15 @@
 #   APP_UPPER         uppercase form
 #   APP_LEGACY_SLUG   lowercase form of the OLD name (the same until the rename)
 #   APP_ENV_PREFIX    prefix of the app's environment variables
+#   APP_LEGACY_ENV_PREFIX  the OLD prefix (the same until the rename)
 #   APP_BIN_NAME      the built main binary: target/<profile>/$APP_BIN_NAME
 #   APP_DEV_BIN_NAME  the frozen dev build's installed binary
 #   APP_SHARE_DIR     see app_share_dir
 # Functions:
 #   app_share_dir         print the per-user dir the dev tooling installs into
-#   app_env NAME [DFLT]   print the app's environment variable NAME, or DFLT
+#                         (the current name; the old one while only it exists)
+#   app_env NAME [DFLT]   print the app's environment variable NAME — under
+#                         the current prefix, else the old one — or DFLT
 #   app_export NAME VALUE export the app's environment variable NAME
 #
 # A name that cannot be read is an error, said out loud, and the `source`
@@ -64,9 +67,10 @@ APP_DISPLAY="$(_brand_sh_macro app_name)"
 APP_SLUG="$(_brand_sh_macro app_slug)"
 APP_UPPER="$(_brand_sh_macro app_upper)"
 APP_LEGACY_SLUG="$(_brand_sh_macro legacy_slug)"
+APP_LEGACY_UPPER="$(_brand_sh_macro legacy_upper)"
 APP_BIN_NAME="$(_brand_sh_bin_name)"
 
-if [ -z "$APP_DISPLAY" ] || [ -z "$APP_SLUG" ] || [ -z "$APP_UPPER" ] || [ -z "$APP_LEGACY_SLUG" ]; then
+if [ -z "$APP_DISPLAY" ] || [ -z "$APP_SLUG" ] || [ -z "$APP_UPPER" ] || [ -z "$APP_LEGACY_SLUG" ] || [ -z "$APP_LEGACY_UPPER" ]; then
   echo "scripts/lib/brand.sh: could not read the app's name from $_brand_sh_root/src-tauri/src/brand.rs" >&2
   return 1
 fi
@@ -76,6 +80,7 @@ if [ -z "$APP_BIN_NAME" ]; then
 fi
 
 APP_ENV_PREFIX="${APP_UPPER}_"
+APP_LEGACY_ENV_PREFIX="${APP_LEGACY_UPPER}_"
 APP_DEV_BIN_NAME="$APP_SLUG-dev"
 
 # The per-user directory the dev tooling installs into and logs to:
@@ -83,16 +88,32 @@ APP_DEV_BIN_NAME="$APP_SLUG-dev"
 # deliberately ignores the state-dir override — what is frozen or installed
 # here is per user, so a sandboxed session must not send it somewhere else
 # (the backend's `storage::home_share_dir()` is the same path).
+#
+# The same resolution as the backend's: the current name if it exists, else
+# the old name while only that exists (a machine the app has not been started
+# on since a rename), else the current name. One lookup until the rename.
 app_share_dir() {
-  printf '%s\n' "$HOME/.local/share/$APP_SLUG"
+  local current="$HOME/.local/share/$APP_SLUG" old="$HOME/.local/share/$APP_LEGACY_SLUG"
+  if [ "$APP_SLUG" != "$APP_LEGACY_SLUG" ] && [ ! -e "$current" ] && [ -e "$old" ]; then
+    printf '%s\n' "$old"
+  else
+    printf '%s\n' "$current"
+  fi
 }
 APP_SHARE_DIR="$(app_share_dir)"
 
 # The value of the app's environment variable NAME (`<PREFIX>NAME`), or DFLT
 # when it is unset or empty — `${<PREFIX>NAME:-DFLT}`.
+#
+# Read under the current prefix first, then under the old one (a shell that
+# still exports the old names), as the backend's `brand::env` does.
 app_env() {
-  local var="${APP_ENV_PREFIX}$1"
-  printf '%s' "${!var:-${2:-}}"
+  local var="${APP_ENV_PREFIX}$1" old="${APP_LEGACY_ENV_PREFIX}$1"
+  if [ -z "${!var:-}" ] && [ "$var" != "$old" ] && [ -n "${!old:-}" ]; then
+    printf '%s' "${!old}"
+  else
+    printf '%s' "${!var:-${2:-}}"
+  fi
 }
 
 # Export the app's environment variable NAME with VALUE.

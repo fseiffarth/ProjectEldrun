@@ -255,6 +255,8 @@ pub fn list_for(root: &Path, tab: Option<&str>) -> Result<Vec<OutboxFile>, Outbo
     let Some(dir) = outbox_dir(root)? else {
         return Ok(Vec::new());
     };
+    // The note the old-named send command leaves here (after a rename).
+    crate::services::brand_migration::compat::take_send_alias_marker(&crate::brand::PAIR, &dir);
     let mut images = Vec::new();
     for entry in fs::read_dir(&dir).map_err(|e| OutboxError::Io(e.to_string()))? {
         let entry = entry.map_err(|e| OutboxError::Io(e.to_string()))?;

@@ -29,6 +29,23 @@ fn install_in(dir: &Path, exe: Option<&Path>, clis: &[&str]) -> io::Result<()> {
         // brand-check: allow — an include path is a literal; the script file is renamed at the flip
         write_script(dir, concat!(crate::app_slug!(), "-send.ps1"), include_bytes!("../../../scripts/eldrun-send.ps1"))?;
     }
+    // After a rename the old name of the send command stays for one release,
+    // as an alias that runs the current one and is counted — on an install
+    // that was upgraded across the rename. Nothing is installed under a
+    // second name while the name is unchanged, or on a fresh install.
+    let pair = crate::brand::PAIR;
+    let upgraded = crate::services::brand_migration::upgraded_install(&pair, &crate::storage::state_dir());
+    if let (true, Some(old), Some(alias)) = (
+        upgraded,
+        pair.legacy(crate::brand::Name::SEND_CLI),
+        crate::services::brand_migration::compat::send_alias_script(&pair),
+    ) {
+        write_script(dir, &old, alias.as_bytes())?;
+        #[cfg(windows)]
+        if let Some(alias) = crate::services::brand_migration::compat::send_alias_cmd(&pair) {
+            write_script(dir, &format!("{old}.cmd"), alias.as_bytes())?;
+        }
+    }
     if let Some(exe) = exe {
         for cli in clis {
             write_script(dir, cli, shim_script(cli, exe, dir).as_bytes())?;
@@ -60,10 +77,7 @@ pub(crate) fn shim_script(cli: &str, exe: &Path, dir: &Path) -> String {
          fi\n\
          exec {exe} --agent-shim {cli_q} \"$@\"\n",
         cli = cli,
-        legacy_env = crate::services::brand_migration::compat::legacy_env_preamble_sh(
-            &crate::brand::PAIR,
-            &["AGENT_FENCE", "HOST_SESSION"],
-        ),
+        legacy_env = crate::services::brand_migration::compat::script_preamble_sh(&["AGENT_FENCE", "HOST_SESSION"]),
         cli_q = quote(cli),
         not_found = quote(&format!("{cli}: command not found")),
         dir = quote(&dir.to_string_lossy()),

@@ -21,8 +21,8 @@ pub const RENAMED: Pair = Pair {
 #[derive(Default)]
 pub struct RecordingWorld {
     pub calls: RefCell<Vec<String>>,
-    /// Whether an old phone host is installed.
-    pub legacy_host: bool,
+    /// Whether an old phone host is installed (set by `seed_install`).
+    pub legacy_host: std::cell::Cell<bool>,
 }
 
 impl World for RecordingWorld {
@@ -30,7 +30,7 @@ impl World for RecordingWorld {
         self.calls
             .borrow_mut()
             .push(format!("retire-mobile-host {}", legacy_state_dir.display()));
-        Ok(self.legacy_host)
+        Ok(self.legacy_host.get())
     }
 }
 
@@ -53,7 +53,7 @@ impl Machine {
         // temp dir is itself behind a link on macOS).
         let home = tmp.path().canonicalize().expect("canonicalize").join("home");
         fs::create_dir_all(&home).expect("home");
-        Self { _tmp: tmp, home, world: RecordingWorld { legacy_host: true, ..Default::default() } }
+        Self { _tmp: tmp, home, world: RecordingWorld::default() }
     }
 
     pub fn share(&self) -> PathBuf {
@@ -99,6 +99,7 @@ impl Machine {
     pub fn seed_install(&self, forms: &Forms) -> PathBuf {
         let state = self.state_dir(forms);
         let tree = self.home_tree(forms);
+        self.world.legacy_host.set(true);
         let project = tree.join("projects").join("alpha");
         write(&project.join("README.md"), "alpha\n");
 

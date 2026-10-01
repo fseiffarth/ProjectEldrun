@@ -245,6 +245,9 @@ pub fn rewrite_state_paths(env: &Env) -> StepResult {
             rewritten += 1;
         }
     }
+    if rewritten == 0 {
+        return Ok(Outcome::NothingToDo);
+    }
     Ok(Outcome::Done(format!("{rewritten} file(s) re-pointed")))
 }
 

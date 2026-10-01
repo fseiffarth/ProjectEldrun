@@ -173,7 +173,7 @@ fn posix_script_body() -> String {
          \x20 exit 0\n\
          fi\n\
          case \"$1\" in\n{cases}esac\n",
-        legacy_env = crate::services::brand_migration::compat::legacy_env_preamble_sh(&crate::brand::PAIR, HINT_ENV),
+        legacy_env = crate::services::brand_migration::compat::script_preamble_sh(HINT_ENV),
     )
 }
 
@@ -196,7 +196,7 @@ fn powershell_script_body() -> String {
          \x20 exit 0\r\n\
          }}\r\n\
          switch ($Shape) {{\r\n{cases}}}\r\n",
-        legacy_env = crate::services::brand_migration::compat::legacy_env_preamble_ps1(&crate::brand::PAIR, HINT_ENV),
+        legacy_env = crate::services::brand_migration::compat::script_preamble_ps1(HINT_ENV),
     )
 }
 

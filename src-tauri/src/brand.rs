@@ -853,7 +853,7 @@ mod tests {
         let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/lib/brand.sh");
         let script = r#"set -eu
 . "$1"
-printf '%s\n' "$APP_DISPLAY" "$APP_SLUG" "$APP_UPPER" "$APP_ENV_PREFIX" "$APP_BIN_NAME" "$APP_DEV_BIN_NAME" "$APP_SHARE_DIR" "$APP_LEGACY_SLUG"
+printf '%s\n' "$APP_DISPLAY" "$APP_SLUG" "$APP_UPPER" "$APP_ENV_PREFIX" "$APP_BIN_NAME" "$APP_DEV_BIN_NAME" "$APP_SHARE_DIR" "$APP_LEGACY_SLUG" "$APP_LEGACY_ENV_PREFIX"
 export "${APP_ENV_PREFIX}PROBE=set"
 app_env PROBE; echo
 app_env MISSING fallback; echo
@@ -885,6 +885,7 @@ app_env OTHER; echo
                 DEV_BIN_NAME,
                 share_dir.as_str(),
                 LEGACY_SLUG,
+                LEGACY_ENV_PREFIX,
                 "set",
                 "fallback",
                 "value",

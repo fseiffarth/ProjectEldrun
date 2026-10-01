@@ -2010,7 +2010,7 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          esac\n\
          exit 0\n",
         live_dir = live_dir,
-        legacy_env = crate::services::brand_migration::compat::legacy_env_preamble_sh(&crate::brand::PAIR, HOOK_ENV),
+        legacy_env = crate::services::brand_migration::compat::script_preamble_sh(HOOK_ENV),
     )
 }
 
@@ -2112,7 +2112,7 @@ fn hook_script_body(live_dir: &str) -> String {
          }}\r\n\
          exit 0\r\n",
         live_dir = live_dir,
-        legacy_env = crate::services::brand_migration::compat::legacy_env_preamble_ps1(&crate::brand::PAIR, HOOK_ENV),
+        legacy_env = crate::services::brand_migration::compat::script_preamble_ps1(HOOK_ENV),
     )
 }
 

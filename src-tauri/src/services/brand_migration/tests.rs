@@ -66,6 +66,10 @@ fn a_fresh_install_never_spells_the_old_name() {
 
     let tree = snapshot(&machine.home);
     assert_eq!(spellings(&tree, LEGACY.slug), Vec::<String>::new());
+    // Not an upgraded install: the old-name conveniences (the send alias,
+    // the old-variable preamble of generated scripts) are not installed.
+    assert!(!upgraded_install(&RENAMED, &env.state_dir));
+    assert!(!env.record().upgraded);
     assert!(!machine.state_dir(&LEGACY).exists());
     assert!(std::fs::symlink_metadata(machine.state_dir(&LEGACY)).is_err(), "no link under the old name");
 }
@@ -109,6 +113,7 @@ fn an_upgrade_moves_the_state_dir_and_leaves_a_link() {
         .exists());
 
     let record = env.record();
+    assert!(record.upgraded && upgraded_install(&RENAMED, &env.state_dir));
     for id in [
         "mobile-host",
         "state-dir",

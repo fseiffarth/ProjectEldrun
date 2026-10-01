@@ -22,6 +22,26 @@ pub fn legacy_env_preamble_sh(pair: &Pair, names: &[&str]) -> String {
     out
 }
 
+/// [`legacy_env_preamble_sh`] for the running app's scripts: only on an
+/// install that was upgraded across the rename. One created after it never
+/// ran a session under the old names, and gets no script that spells them.
+pub fn script_preamble_sh(names: &[&str]) -> String {
+    let pair = crate::brand::PAIR;
+    if !super::upgraded_install(&pair, &crate::storage::state_dir()) {
+        return String::new();
+    }
+    legacy_env_preamble_sh(&pair, names)
+}
+
+/// The PowerShell twin of [`script_preamble_sh`].
+pub fn script_preamble_ps1(names: &[&str]) -> String {
+    let pair = crate::brand::PAIR;
+    if !super::upgraded_install(&pair, &crate::storage::state_dir()) {
+        return String::new();
+    }
+    legacy_env_preamble_ps1(&pair, names)
+}
+
 /// The PowerShell twin of [`legacy_env_preamble_sh`], `\r\n`-terminated.
 pub fn legacy_env_preamble_ps1(pair: &Pair, names: &[&str]) -> String {
     let mut out = String::new();
@@ -73,6 +93,56 @@ pub fn export_manifest_name(pair: &Pair, has: impl Fn(&str) -> bool) -> String {
             old
         }
         _ => current,
+    }
+}
+
+/// The file the old-named send command leaves in a project's outbox to say
+/// it was used. An agent's fence cannot write the state dir, so the count is
+/// taken by whoever next lists that outbox ([`take_send_alias_marker`]).
+pub const SEND_ALIAS_MARKER: &str = ".old-name-used";
+
+/// The old name of the send command as a POSIX script that runs the current
+/// one: agents' instructions and users' habits name the old command for a
+/// while after a rename. `None` while the name is unchanged — no second
+/// command is installed then.
+pub fn send_alias_script(pair: &Pair) -> Option<String> {
+    let old = pair.legacy(Name::SEND_CLI)?;
+    let new = pair.cur(Name::SEND_CLI);
+    let outbox = pair.cur(Name::OUTBOX_DIR);
+    let project_dir = pair.cur.env_name("PROJECT_DIR");
+    let old_project_dir = pair.legacy_env_name("PROJECT_DIR").unwrap_or_else(|| project_dir.clone());
+    Some(format!(
+        "#!/bin/sh\n\
+         # {display}: `{old}` is the old name of `{new}`, kept for one release.\n\
+         # It leaves a note in the project's outbox so the use is counted, then\n\
+         # runs the current command. Managed by {display}; do not edit.\n\
+         root=${{{project_dir}:-${{{old_project_dir}:-}}}}\n\
+         if [ -n \"$root\" ] && [ -d \"$root/{outbox}\" ] && [ ! -L \"$root/{outbox}\" ]; then\n\
+         \x20 : > \"$root/{outbox}/{marker}\" 2>/dev/null || true\n\
+         fi\n\
+         exec \"$(dirname \"$0\")/{new}\" \"$@\"\n",
+        display = pair.cur.display,
+        marker = SEND_ALIAS_MARKER,
+    ))
+}
+
+/// The same alias for `cmd.exe`, beside the current `.cmd` shim.
+pub fn send_alias_cmd(pair: &Pair) -> Option<String> {
+    pair.legacy(Name::SEND_CLI)?;
+    let new = pair.cur(Name::SEND_CLI);
+    Some(format!("@echo off\r\n\"%~dp0{new}.cmd\" %*\r\nexit /b %errorlevel%\r\n"))
+}
+
+/// Count and remove the note the old-named send command left in `outbox`.
+/// Called where an outbox is listed; a no-op while the name is unchanged.
+pub fn take_send_alias_marker(pair: &Pair, outbox: &std::path::Path) {
+    if pair.legacy(Name::SEND_CLI).is_none() {
+        return;
+    }
+    let marker = outbox.join(SEND_ALIAS_MARKER);
+    // A plain file only: the outbox is the agent's to fill.
+    if std::fs::symlink_metadata(&marker).is_ok_and(|meta| meta.is_file()) && std::fs::remove_file(&marker).is_ok() {
+        crate::brand::legacy_hit("send-cli");
     }
 }
 
@@ -196,6 +266,80 @@ mod tests {
         // Neither inside: the current name, so the error names what is expected.
         assert_eq!(export_manifest_name(&RENAMED, |_| false), "newname-export.json");
         assert_eq!(export_manifest_name(&PAIR, |_| false), crate::brand::EXPORT_MANIFEST);
+        assert!(hits::taken().is_empty());
+    }
+
+    /// The alias in a real shell: the current command gets the arguments, and
+    /// the outbox gets the note that the next listing counts and removes.
+    #[cfg(unix)]
+    #[test]
+    fn the_old_send_command_runs_the_current_one_and_is_counted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bin = dir.path().join("bin");
+        let project = dir.path().join("project");
+        let outbox = project.join(RENAMED.cur(Name::OUTBOX_DIR));
+        std::fs::create_dir_all(&bin).expect("mkdir");
+        std::fs::create_dir_all(&outbox).expect("mkdir");
+        let install = |name: &str, body: &str| {
+            let path = bin.join(name);
+            std::fs::write(&path, body).expect("write");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            path
+        };
+        install("newname-send", "#!/bin/sh\nprintf 'sent:%s' \"$*\"\n");
+        let alias = install(
+            &LEGACY.name(Name::SEND_CLI),
+            &send_alias_script(&RENAMED).expect("an alias once renamed"),
+        );
+        let out = std::process::Command::new(&alias)
+            .args(["a.pdf", "b c.png"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("NEWNAME_PROJECT_DIR", &project)
+            .output()
+            .expect("the alias runs");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "sent:a.pdf b c.png");
+        assert!(outbox.join(SEND_ALIAS_MARKER).is_file());
+
+        let _ = hits::taken();
+        take_send_alias_marker(&RENAMED, &outbox);
+        assert_eq!(hits::taken(), ["send-cli"]);
+        assert!(!outbox.join(SEND_ALIAS_MARKER).exists());
+        take_send_alias_marker(&RENAMED, &outbox);
+        assert!(hits::taken().is_empty());
+
+        // A session an older build started has the project dir under the old
+        // variable only; outside a project nothing is noted and it still runs.
+        let run = |env: &[(&str, &std::path::Path)]| {
+            let out = std::process::Command::new(&alias)
+                .arg("x")
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .envs(env.iter().map(|(k, v)| (k.to_string(), v.to_path_buf())))
+                .output()
+                .expect("the alias runs");
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        assert_eq!(run(&[(&LEGACY.env_name("PROJECT_DIR"), &project)]), "sent:x");
+        assert!(outbox.join(SEND_ALIAS_MARKER).is_file());
+        std::fs::remove_file(outbox.join(SEND_ALIAS_MARKER)).expect("remove");
+        assert_eq!(run(&[]), "sent:x");
+        assert!(!outbox.join(SEND_ALIAS_MARKER).exists());
+    }
+
+    #[test]
+    fn no_send_alias_while_the_name_is_unchanged() {
+        if PAIR.renamed() {
+            return;
+        }
+        assert_eq!(send_alias_script(&PAIR), None);
+        assert_eq!(send_alias_cmd(&PAIR), None);
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join(SEND_ALIAS_MARKER), "").expect("write");
+        let _ = hits::taken();
+        take_send_alias_marker(&PAIR, dir.path());
+        assert!(dir.path().join(SEND_ALIAS_MARKER).is_file());
         assert!(hits::taken().is_empty());
     }
 

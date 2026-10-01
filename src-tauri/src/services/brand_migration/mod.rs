@@ -73,6 +73,13 @@ pub struct StepRecord {
 /// `<state>/migrations.json`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Record {
+    /// Whether a launch step ever found something an older build left: this
+    /// install was upgraded across a rename, not created after it. Decides
+    /// whether the old-name conveniences (the send alias, the old-variable
+    /// preamble in generated scripts) are installed at all — a fresh install
+    /// gets nothing that spells the old name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub upgraded: bool,
     #[serde(default)]
     pub steps: BTreeMap<String, StepRecord>,
     /// Whatever a later build added; written back untouched.
@@ -177,7 +184,13 @@ impl Env<'_> {
     }
 
     fn set(&self, id: &str, state: StepState, note: &str) {
+        self.set_with(id, state, note, false);
+    }
+
+    /// [`set`](Self::set), also marking the install as an upgraded one.
+    fn set_with(&self, id: &str, state: StepState, note: &str, found_old: bool) {
         let mut record = self.record();
+        record.upgraded |= found_old;
         record.steps.insert(
             id.to_string(),
             StepRecord { state, at: (self.now)(), note: note.to_string() },
@@ -263,8 +276,10 @@ pub fn run_startup(env: &Env) -> Report {
             continue;
         }
         match (step.run)(env) {
+            // `Done` (as opposed to `NothingToDo`) means the step met
+            // something under the old name.
             Ok(Outcome::Done(note)) => {
-                env.set(step.id, StepState::Done, &note);
+                env.set_with(step.id, StepState::Done, &note, true);
                 report.done.push(step.id);
             }
             Ok(Outcome::NothingToDo) => {
@@ -355,6 +370,13 @@ pub fn lazy_ran(pair: &Pair, state_dir: &Path, id: &str, note: &str) {
 /// A lazy step tried and has to wait (the reason).
 pub fn lazy_pending(pair: &Pair, state_dir: &Path, id: &str, reason: &str) {
     set_lazy(pair, state_dir, id, StepState::Pending, reason);
+}
+
+/// Whether the install under `state_dir` was upgraded across a rename (see
+/// [`Record::upgraded`]). False while the name is unchanged, and on an
+/// install created after the rename.
+pub fn upgraded_install(pair: &Pair, state_dir: &Path) -> bool {
+    pair.renamed() && record_in(state_dir).upgraded
 }
 
 /// One lookup's tally, for the settings panel.
