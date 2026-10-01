@@ -568,6 +568,73 @@ button.mobile-alert-row { cursor:pointer; }
 .mobile-calendar-agenda article span { color:#aeb2c2; font-size:.86rem; }
 .mobile-calendar-agenda article.cancelled { opacity:.58; }
 .mobile-calendar-agenda article.cancelled strong { text-decoration:line-through; }
+/* Mail's pickers: the account dropdown heads the overview, and inside a folder
+   the account and folder dropdowns share one row. */
+.mail-mobile-picker { gap:6px; font-size:.86rem; }
+.mail-mobile-switch { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); gap:8px; margin-bottom:12px; }
+.mail-mobile-folders button { align-items:center; }
+.mail-mobile-folders button i { flex:0 0 auto; font-style:normal; }
+.mail-mobile-folders button span { flex:1; min-width:0; }
+.mail-mobile-folders button.has-unread span { font-weight:700; color:#fff; }
+.mail-mobile-folders button.has-unread small { color:#d6d0ff; }
+/* Mail, To-do and Calendar are cut to the home screen's octagon as well, on the
+   same two rules: a bordered element is clipped and repaints its four cut
+   corners as gradient layers in `--oct-edge` (`--oct-lc`/`--oct-lw` for a
+   heavier left edge); a borderless one is only clipped. Unlike the home block
+   the layers are set as longhands, so each element keeps its own background
+   colour, and a dropdown's chevron rides along as a fifth layer (`--oct-extra`).
+   The defaults sit in `:where()` so any rule can retint or resize a piece. */
+:where(:is(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) > header > button:not(.back),:is(.todo-screen,.mobile-calendar-screen) .todo-editor,:is(.todo-screen,.mobile-calendar-screen) .todo-editor :is(button,select,textarea,fieldset,input:not([type="checkbox"],[type="range"],[type="color"])),.mail-mobile-screen :is(.mail-mobile-account,.mail-mobile-folders button,.mail-mobile-row,.mail-mobile-pager button,.mail-mobile-actions button,.mail-mobile-message pre,.mail-mobile-reply,.mail-mobile-reply textarea,.mail-mobile-reply button,.mail-mobile-switch select,.mail-mobile-picker select),.todo-screen :is(.todo-mobile-search,.todo-mobile-filters select,.todo-mobile-filters .todo-inline-check,.todo-mobile-column,.todo-mobile-card,.todo-check,.todo-mobile-actions button,.todo-mobile-actions select,.todo-mobile-column-head > div > button,.todo-add-column,.todo-fab,.todo-chip),.mobile-calendar-screen :is(.mobile-calendar-actions button,.mobile-calendar-nav button,.mobile-calendar-day,.mobile-calendar-event,.mobile-calendar-agenda > p,.calendar-new input:not([type="color"]))) { --oct:10px; --oct-edge:#383c4d; }
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) select { --oct-extra:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%239aa0b4' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.6 6 6.4 11 1.6'/%3E%3C/svg%3E"); --oct-extra-at:right 12px center; --oct-extra-size:12px 8px; }
+:is(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) > header > button:not(.back),:is(.todo-screen,.mobile-calendar-screen) .todo-editor,:is(.todo-screen,.mobile-calendar-screen) .todo-editor :is(button,select,textarea,fieldset,input:not([type="checkbox"],[type="range"],[type="color"])),.mail-mobile-screen :is(.mail-mobile-account,.mail-mobile-folders button,.mail-mobile-row,.mail-mobile-pager button,.mail-mobile-actions button,.mail-mobile-message pre,.mail-mobile-reply,.mail-mobile-reply textarea,.mail-mobile-reply button,.mail-mobile-switch select,.mail-mobile-picker select),.todo-screen :is(.todo-mobile-search,.todo-mobile-filters select,.todo-mobile-filters .todo-inline-check,.todo-mobile-column,.todo-mobile-card,.todo-check,.todo-mobile-actions button,.todo-mobile-actions select,.todo-mobile-column-head > div > button,.todo-add-column,.todo-fab,.todo-chip),.mobile-calendar-screen :is(.mobile-calendar-actions button,.mobile-calendar-nav button,.mobile-calendar-day,.mobile-calendar-event,.mobile-calendar-agenda > p,.calendar-new input:not([type="color"])) {
+  --oct-img:linear-gradient(to bottom right, var(--oct-lc, var(--oct-edge)) calc(50% + var(--oct-lw, 1px)), transparent 0),
+    linear-gradient(to bottom left, var(--oct-edge) calc(50% + 1px), transparent 0),
+    linear-gradient(to top left, var(--oct-edge) calc(50% + 1px), transparent 0),
+    linear-gradient(to top right, var(--oct-lc, var(--oct-edge)) calc(50% + var(--oct-lw, 1px)), transparent 0);
+  border-radius:0; box-shadow:none; border-color:var(--oct-edge); border-left-color:var(--oct-lc, var(--oct-edge));
+  background-image:var(--oct-img),var(--oct-extra, none);
+  background-position:top left,top right,bottom right,bottom left,var(--oct-extra-at, center);
+  background-size:var(--oct) var(--oct),var(--oct) var(--oct),var(--oct) var(--oct),var(--oct) var(--oct),var(--oct-extra-size, auto);
+  background-repeat:no-repeat; background-origin:border-box;
+  clip-path:polygon(var(--oct) 0,calc(100% - var(--oct)) 0,100% var(--oct),100% calc(100% - var(--oct)),calc(100% - var(--oct)) 100%,var(--oct) 100%,0 calc(100% - var(--oct)),0 var(--oct));
+}
+:where(:is(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(.notice:not(.todo-mobile-note),.error),.mail-mobile-screen :is(.mail-mobile-message-meta,.mail-mobile-warning,.mail-mobile-sent,.mail-mobile-reply-confirm,.mail-mobile-attachments div),.todo-screen .todo-column-count,.mobile-calendar-screen :is(.mobile-calendar-warning,.mobile-calendar-day.today > span,.mobile-calendar-event > i,.mobile-calendar-manage-row > i)) { --oct:10px; }
+:is(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(.notice:not(.todo-mobile-note),.error),.mail-mobile-screen :is(.mail-mobile-message-meta,.mail-mobile-warning,.mail-mobile-sent,.mail-mobile-reply-confirm,.mail-mobile-attachments div),.todo-screen .todo-column-count,.mobile-calendar-screen :is(.mobile-calendar-warning,.mobile-calendar-day.today > span,.mobile-calendar-event > i,.mobile-calendar-manage-row > i) {
+  border-radius:0;
+  clip-path:polygon(var(--oct) 0,calc(100% - var(--oct)) 0,100% var(--oct),100% calc(100% - var(--oct)),calc(100% - var(--oct)) 100%,var(--oct) 100%,0 calc(100% - var(--oct)),0 var(--oct));
+}
+/* Sizes and edges, per piece. Inputs, dropdowns and text areas keep the input
+   border; a primary button its brighter one. */
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(input,select,textarea) { --oct:8px; --oct-edge:#3a3e50; }
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) .primary { --oct-edge:#8c7df4; }
+/* The clip would cut a focus outline away entirely, so focus retints the edge. */
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(input,select,textarea):focus { --oct-edge:#7c6cff; outline:0; }
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(.mail-mobile-folders button,.mail-mobile-pager button,.mail-mobile-actions button,.mail-mobile-reply button,.mail-mobile-warning,.mail-mobile-sent,.mail-mobile-reply-confirm,.mail-mobile-attachments div,.todo-editor :is(button,fieldset),.todo-mobile-filters .todo-inline-check,.mobile-calendar-actions button,.mobile-calendar-nav button,.mobile-calendar-warning) { --oct:8px; }
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(.mail-mobile-account,.mail-mobile-message pre,.mail-mobile-reply,.todo-add-column) { --oct:12px; }
+.mail-mobile-row.unread { --oct-lc:#8c7df4; --oct-lw:4px; }
+.todo-screen .todo-mobile-search { --oct:10px; }
+.todo-mobile-column { --oct:14px; }
+.todo-mobile-card { --oct-edge:#272c3a; }
+.todo-check { --oct:6px; --oct-edge:#776db4; }
+.todo-mobile-actions button,.todo-mobile-actions select { --oct:7px; }
+.todo-mobile-actions button { --oct-edge:#2f3444; }
+.todo-mobile-actions select { --oct-extra-at:right 9px center; }
+.todo-mobile-column-head > div > button { --oct:6px; --oct-edge:transparent; }
+.todo-fab { --oct:17px; }
+.todo-chip,.todo-column-count,.todo-editor .todo-tag-list button { --oct:6px; }
+.todo-chip { --oct-edge:transparent; }
+.todo-chip.due.overdue { --oct-edge:#65323d; }
+.todo-chip.due.today { --oct-edge:#66522a; }
+.todo-chip.due.soon { --oct-edge:#2f4658; }
+.todo-tag-list button { --oct-edge:#3d3860; }
+.todo-editor { --oct:14px; --oct-edge:#524a78; }
+.mobile-calendar-day { --oct:6px; --oct-edge:#303545; }
+.mobile-calendar-day.today > span { --oct:6px; }
+.mobile-calendar-event > i,.mobile-calendar-manage-row > i { --oct:3px; }
+/* The shared `.selected` paints the picked day with `!important`, which would
+   wipe the corner layers; the day repaints them the same way, in its own
+   colours, and drops the outline the clip would only cut off. */
+.mobile-calendar-screen .mobile-calendar-day.selected { --oct-edge:#9c8cff; outline:0; border-color:var(--oct-edge) !important; background-color:#282248 !important; background-image:var(--oct-img) !important; background-position:top left,top right,bottom right,bottom left !important; background-size:var(--oct) var(--oct) !important; background-repeat:no-repeat !important; background-origin:border-box !important; }
 @media (max-width:480px) { .mail-mobile-row > div { display:grid; gap:3px; } .mail-mobile-pager button { padding-inline:9px; } }
 @media (max-width:360px) { .projects-row { margin-top:14px; } .mobile-calendar-day { min-height:48px; } .mobile-tab { font-size:.68rem; } }
 /* While the full-bleed terminal is up: no document scroll to lose the header

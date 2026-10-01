@@ -402,6 +402,7 @@ export const UNTESTED = {
   "mobile.headless.calendar": { area: "mobile", what: "Calendar · With the Eldrun window closed the month is expanded off calendar.json by the Mobile host (read-only notice); edits still need the window" },
   "mobile.headless.schedules": { area: "mobile", what: "Schedule sheet · With the Eldrun window closed a tab's schedules and next runs are listed off agent_tasks.json (read-only notice)" },
   "mobile.headless.prompts": { area: "mobile", what: "Prompts sheet · With the Eldrun window closed the collected prompts are listed off agent_prompts.json (read-only notice)" },
+  "mobile.mail.accountPicker": { area: "mobile", what: "Mail · With more than one account, a dropdown picks whose folders are listed (inbox first, unread inbox count per account), remembered on this phone; inside a folder, account and folder dropdowns switch without going back" },
   "mobile.mailActions": { area: "mobile", what: "MobileSettings · Mark read and star from the phone" },
   "mobile.mailRead": { area: "mobile", what: "MobileSettings · Read mail on the phone" },
   "mobile.mailReply": { area: "mobile", what: "MobileSettings · Reply from the phone" },
