@@ -27,6 +27,8 @@ pub mod agent_homes;
 pub mod compat;
 pub mod hits;
 pub mod host;
+pub mod keyring;
+pub mod project;
 pub mod state_dir;
 
 use std::collections::BTreeMap;
@@ -218,7 +220,11 @@ const STARTUP_STEPS: &[Step] = &[
 /// Steps that cannot run at launch, with what each waits for. A launch only
 /// lists them in the record; the module that owns the thing runs them (see
 /// [`lazy_done`] and [`lazy_ran`]).
-pub const LAZY_STEPS: &[(&str, StepState, &str)] = &[];
+pub const LAZY_STEPS: &[(&str, StepState, &str)] = &[
+    ("keyring", StepState::Lazy, "each saved secret, when it is next read"),
+    ("project-folders", StepState::Lazy, "each project, when it is opened"),
+    ("remote-projects", StepState::Lazy, "each remote project, when it connects"),
+];
 
 /// What a launch did, for the log line and the tests.
 #[derive(Debug, Default, PartialEq, Eq)]

@@ -283,7 +283,7 @@ pub fn event_touches_synced_bytes(mirror: &std::path::Path, paths: &[std::path::
         };
         !matches!(
             rel.components().next(),
-            Some(std::path::Component::Normal(first)) if first == ".git" || first == crate::brand::PROJECT_DIR
+            Some(std::path::Component::Normal(first)) if first == ".git" || first.to_str().is_some_and(crate::brand::is_project_dir)
         )
     })
 }

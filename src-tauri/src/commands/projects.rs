@@ -1262,6 +1262,19 @@ pub fn archived_mirror_unsynced(project_id: String) -> Result<UnsyncedReport, St
         &["for-each-ref", crate::brand::GIT_REF_INCOMING, crate::brand::GIT_REF_BACKUP],
     )
     .is_empty();
+    // Until the mirror's refs have moved to the current namespace
+    // (`brand_migration::project`, at the next open), they still count from
+    // the old one. Nothing is added while the name is unchanged.
+    let pair = crate::brand::PAIR;
+    for name in [crate::brand::Name::GIT_REF_INCOMING, crate::brand::Name::GIT_REF_BACKUP] {
+        if let Some(old) = pair.legacy(name) {
+            if !git_in(&mirror, &["for-each-ref", &old]).is_empty() {
+                crate::brand::legacy_hit("git-refs");
+                have_baseline = true;
+                negatives.push(format!("--glob={old}"));
+            }
+        }
+    }
     if let Ok(state) = storage::read_json::<crate::services::git_peer::GitPeerState>(
         &dest.join("state").join("git_peer.json"),
     ) {

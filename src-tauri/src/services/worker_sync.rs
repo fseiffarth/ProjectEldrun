@@ -167,8 +167,13 @@ fn worker_apply_script() -> String {
         "git init -q && \
          git fetch -q --no-tags {bundle} && \
          git -c advice.detachedHead=false reset -q --hard FETCH_HEAD && \
-         rm -f {bundle}",
-        bundle = WORKER_BUNDLE
+         rm -f {bundle}{legacy_bundle}",
+        bundle = WORKER_BUNDLE,
+        // A bundle an interrupted sync of an older build left behind.
+        legacy_bundle = crate::brand::PAIR
+            .legacy(crate::brand::Name::WORKER_BUNDLE)
+            .map(|old| format!(" {old}"))
+            .unwrap_or_default(),
     )
 }
 

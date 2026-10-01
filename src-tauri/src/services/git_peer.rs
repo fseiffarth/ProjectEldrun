@@ -2031,6 +2031,10 @@ fn cleanup_incoming(peer: &Peer) {
 
 async fn cleanup_bundles(pool: &RemotePoolState, project_id: &str, spec: &RemoteSpec) {
     let _ = std::fs::remove_file(local_bundle_path(project_id));
+    // What an interrupted transfer of an older build left under the old name.
+    if let Some(old) = crate::brand::PAIR.legacy(crate::brand::Name::LOCKSTEP_BUNDLE) {
+        let _ = std::fs::remove_file(mirror_dir(project_id).join(".git").join(old));
+    }
     if let Some(sftp) = crate::services::remote::pooled_sftp(pool, project_id).await {
         let _ = sftp::remove_file_on(&sftp, &remote_bundle_path(spec)).await;
     }

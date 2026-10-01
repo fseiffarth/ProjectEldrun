@@ -67,9 +67,14 @@ pub fn guard_paths(roots: &[PathBuf], cwd: Option<&Path>) -> GuardPaths {
             starts.push(dir.to_path_buf());
         }
     }
+    // A project not opened since a rename still keeps its worktrees in the
+    // app's folder under the old name; they are guarded the same.
+    let legacy_dir = crate::brand::PAIR.legacy(crate::brand::Name::PROJECT_DIR);
     for root in &roots {
-        if let Ok(entries) = std::fs::read_dir(root.join(WORKTREES_DIR[0]).join(WORKTREES_DIR[1])) {
-            starts.extend(entries.flatten().map(|e| e.path()));
+        for app_dir in std::iter::once(WORKTREES_DIR[0]).chain(legacy_dir.as_deref()) {
+            if let Ok(entries) = std::fs::read_dir(root.join(app_dir).join(WORKTREES_DIR[1])) {
+                starts.extend(entries.flatten().map(|e| e.path()));
+            }
         }
     }
 

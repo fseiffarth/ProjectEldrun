@@ -543,6 +543,14 @@ names! {
     NATIVE_PRINT_UNSUPPORTED / LEGACY_NATIVE_PRINT_UNSUPPORTED = [slug, "-native-print-unsupported"];
 }
 
+/// Whether `name` is the app's own folder in a project, under the current
+/// name or the one an older build used. For the code that hides or skips
+/// that folder (file listings, search, byte-sync): a project that has not
+/// been opened since a rename still has it under the old name.
+pub fn is_project_dir(name: &str) -> bool {
+    name == PROJECT_DIR || name == LEGACY_PROJECT_DIR
+}
+
 /// The app's environment variable `<ENV_PREFIX><name>`.
 pub fn env_name(name: &str) -> String {
     format!("{ENV_PREFIX}{name}")

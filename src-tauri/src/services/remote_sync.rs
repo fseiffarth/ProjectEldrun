@@ -632,7 +632,7 @@ async fn walk_inner(
         // `.git` is likewise never byte-mirrored: git state is kept in step
         // *semantically* by `services::git_peer` (lockstep), so copying its bytes
         // would fight that layer and risk corrupting a repo mid-write.
-        if entry.name == crate::brand::PROJECT_DIR || entry.name == ".git" {
+        if crate::brand::is_project_dir(&entry.name) || entry.name == ".git" {
             continue;
         }
         let child_rel = join_rel(rel, &entry.name);
@@ -1090,7 +1090,7 @@ fn walk_mirror_inner(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(
         }
         // `.git`/`.eldrun` are never byte-mirrored (git is kept in step semantically
         // by `services::git_peer`; `.eldrun` is Eldrun's own runtime dir).
-        if entry.file_name() == *".git" || entry.file_name() == *crate::brand::PROJECT_DIR {
+        if entry.file_name() == *".git" || entry.file_name().to_str().is_some_and(crate::brand::is_project_dir) {
             continue;
         }
         if ft.is_dir() {

@@ -103,7 +103,7 @@ pub struct Listing {
 /// courtesy against a glance over a shoulder, not the boundary — that is the
 /// switch, since a phone with a shell can read anything anyway.
 pub fn hidden(name: &str) -> bool {
-    name == ".git" || name == crate::brand::PROJECT_DIR || name.starts_with(".env")
+    name == ".git" || crate::brand::is_project_dir(name) || name.starts_with(".env")
 }
 
 /// A leaf the browser lists and resolves. The same test both ways, so nothing

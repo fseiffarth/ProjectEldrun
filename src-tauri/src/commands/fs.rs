@@ -122,7 +122,7 @@ pub fn list_dir_local(project_dir: &str, rel_path: &str) -> Result<Vec<FileEntry
         };
         let name = entry.file_name().to_string_lossy().to_string();
         // Always hide .eldrun/ — it is internal runtime storage, not user content.
-        if name == crate::brand::PROJECT_DIR {
+        if crate::brand::is_project_dir(&name) {
             continue;
         }
         result.push(file_entry_from(&path, &meta, name));
@@ -218,7 +218,7 @@ async fn list_dir_remote(
     Ok(entries
         .into_iter()
         // Always hide .eldrun/ — mirrors the local lister (internal runtime dir).
-        .filter(|e| e.name != crate::brand::PROJECT_DIR)
+        .filter(|e| !crate::brand::is_project_dir(&e.name))
         .map(|e| remote_file_entry(&remote_dir, e))
         .collect())
 }
@@ -2127,7 +2127,7 @@ fn collect_project_paths(
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == crate::brand::PROJECT_DIR {
+        if crate::brand::is_project_dir(&name) {
             continue;
         }
         let rel_path = if rel_dir.is_empty() {
@@ -2156,10 +2156,9 @@ fn collect_project_paths(
 const MAX_SCAN_DEPTH: usize = 64;
 
 fn should_skip_ending_scan_dir(name: &str) -> bool {
-    matches!(
+    crate::brand::is_project_dir(name) || matches!(
         name,
         ".git"
-            | crate::brand::PROJECT_DIR
             | "node_modules"
             | "target"
             | "dist"

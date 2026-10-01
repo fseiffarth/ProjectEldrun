@@ -188,15 +188,107 @@ pub fn openvpn_user_account(config: &str) -> String {
 fn entry(
     account: &str,
 ) -> Result<keyring::keyutils_persistent::KeyutilsPersistentCredential, String> {
+    entry_in(SERVICE, account)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn entry(account: &str) -> Result<keyring::Entry, String> {
+    entry_in(SERVICE, account)
+}
+
+/// [`entry`] under a given service: the current one, or the one an older
+/// build saved under (`brand_migration::keyring`).
+#[cfg(target_os = "linux")]
+fn entry_in(
+    service: &str,
+    account: &str,
+) -> Result<keyring::keyutils_persistent::KeyutilsPersistentCredential, String> {
     keyring::keyutils_persistent::KeyutilsPersistentCredential::new_with_target(
-        None, SERVICE, account,
+        None, service, account,
     )
     .map_err(|e| e.to_string())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn entry(account: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(SERVICE, account).map_err(|e| e.to_string())
+fn entry_in(service: &str, account: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(service, account).map_err(|e| e.to_string())
+}
+
+/// The credential store by service name, for the read that also looks under
+/// the service named after the app's old name.
+struct OsStore;
+
+impl crate::services::brand_migration::keyring::Store for OsStore {
+    fn get(&self, service: &str, account: &str) -> Option<String> {
+        entry_in(service, account)
+            .ok()?
+            .get_password()
+            .ok()
+            .filter(|secret| !secret.is_empty())
+    }
+    fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), String> {
+        entry_in(service, account)?.set_password(secret).map_err(|e| e.to_string())
+    }
+    fn clear(&self, service: &str, account: &str) -> Result<(), String> {
+        match entry_in(service, account)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// The kernel-keyring half alone, by service name: what a locked collection
+/// can still answer. It is never written through here.
+#[cfg(target_os = "linux")]
+struct CachedOnlyStore;
+
+#[cfg(target_os = "linux")]
+impl crate::services::brand_migration::keyring::Store for CachedOnlyStore {
+    fn get(&self, service: &str, account: &str) -> Option<String> {
+        use keyring::credential::CredentialApi;
+        keyring::keyutils::KeyutilsCredential::new_with_target(None, service, account)
+            .ok()?
+            .get_password()
+            .ok()
+            .filter(|secret| !secret.is_empty())
+    }
+    fn set(&self, _service: &str, _account: &str, _secret: &str) -> Result<(), String> {
+        Err("the kernel-keyring cache is read-only here".into())
+    }
+    fn clear(&self, _service: &str, _account: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// What an older build saved for `account` under the service named after the
+/// app's old name. `None` at once while the name is unchanged.
+///
+/// `unlocked` says the caller just read the collection itself: the secret is
+/// then also copied to the current service. Otherwise only the kernel
+/// keyring is asked and nothing is written — the same rule as [`get`], so
+/// this can never be what raises an unlock prompt.
+fn legacy_get(account: &str, unlocked: bool) -> Option<String> {
+    let pair = crate::brand::PAIR;
+    pair.legacy(crate::brand::Name::KEYRING_REMOTE)?;
+    #[cfg(target_os = "linux")]
+    if !unlocked {
+        return crate::services::brand_migration::keyring::get(
+            &pair,
+            crate::brand::Name::KEYRING_REMOTE,
+            &CachedOnlyStore,
+            account,
+            "keyring-remote",
+            false,
+        );
+    }
+    crate::services::brand_migration::keyring::get(
+        &pair,
+        crate::brand::Name::KEYRING_REMOTE,
+        &OsStore,
+        account,
+        "keyring-remote",
+        unlocked,
+    )
 }
 
 /// Read `account` from the **kernel keyring only**, never touching the Secret Service.
@@ -260,10 +352,10 @@ fn read_timed<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static, on_time
 pub fn get(account: &str) -> Option<String> {
     #[cfg(target_os = "linux")]
     if cached_keyring_state() != KeyringState::Unlocked {
-        return get_cached_only(account);
+        return get_cached_only(account).or_else(|| legacy_get(account, false));
     }
     let account = account.to_string();
-    read_timed(move || get_uncapped(&account), None)
+    read_timed(move || get_uncapped(&account).or_else(|| legacy_get(&account, true)), None)
 }
 
 /// The unbounded keychain read, run on the worker thread by [`get`].
@@ -299,10 +391,20 @@ pub fn set(account: &str, password: Option<&str>) -> Result<(), String> {
     let e = entry(account)?;
     let wrote = match password.filter(|p| !p.is_empty()) {
         Some(secret) => e.set_password(secret).map_err(|err| err.to_string()),
-        None => match e.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(err) => Err(err.to_string()),
-        },
+        None => {
+            // Cleared under the old service too, or the read would find it
+            // there again. Nothing to do while the name is unchanged.
+            crate::services::brand_migration::keyring::clear_legacy(
+                &crate::brand::PAIR,
+                crate::brand::Name::KEYRING_REMOTE,
+                &OsStore,
+                account,
+            );
+            match e.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
     };
     // A completed write is a first-hand observation that the collection was open —
     // fresher than anything the cache holds, and the cheapest place to notice a lock
