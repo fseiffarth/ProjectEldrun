@@ -33,7 +33,7 @@ pub const HOMES_DIR: &str = "agent-homes";
 pub const HOST_SCOPE_KEY: &str = "host";
 /// Written once a home has been seeded, so the one-time imports (an existing
 /// per-scope Codex store, the scope's Claude transcripts) never run twice.
-const SEEDED_MARKER: &str = ".eldrun-home";
+const SEEDED_MARKER: &str = crate::brand::AGENT_HOME_MARKER;
 
 /// `<state_dir>/agent-homes/`.
 pub fn homes_root_in(state_dir: &Path) -> PathBuf {
@@ -194,7 +194,7 @@ fn seed_home(state_dir: &Path, home: &Path, scope_id: &str, roots: &[PathBuf], s
 
 /// Where the old fence bound a scope's staged config copies (`--symlink`ed
 /// from the store); gone with the per-scope homes.
-const LEGACY_STAGE_MOUNT: &str = "/run/eldrun-agent-config";
+const LEGACY_STAGE_MOUNT: &str = concat!("/run/", crate::legacy_slug!(), "-agent-config");
 
 /// Drop what the old fence left in an adopted store. Until the per-scope
 /// homes, the fence bind-mounted the user's own `~/.codex/<file>`s over the

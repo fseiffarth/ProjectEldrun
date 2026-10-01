@@ -19,7 +19,7 @@
 //! headless Linux box with no Secret Service) yields `None` on read and an
 //! `Err(String)` on write, so callers fall back to prompting rather than failing.
 
-const SERVICE: &str = "eldrun-remote";
+const SERVICE: &str = crate::brand::KEYRING_REMOTE;
 
 /// The Linux credential handles are trait objects, not `keyring::Entry`, so their
 /// `get_password`/`set_password`/`delete_credential` come from this trait. Imported

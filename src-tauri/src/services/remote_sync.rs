@@ -21,6 +21,7 @@
 //!   [`SyncManifestState`] serializes every mutation (G7), and SFTP transfers run
 //!   with the lock released.
 
+use crate::brand::SLUG;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -631,7 +632,7 @@ async fn walk_inner(
         // `.git` is likewise never byte-mirrored: git state is kept in step
         // *semantically* by `services::git_peer` (lockstep), so copying its bytes
         // would fight that layer and risk corrupting a repo mid-write.
-        if entry.name == ".eldrun" || entry.name == ".git" {
+        if entry.name == crate::brand::PROJECT_DIR || entry.name == ".git" {
             continue;
         }
         let child_rel = join_rel(rel, &entry.name);
@@ -818,7 +819,7 @@ pub fn rsync_pull_args(
         "-c".to_string(),
         "--no-links".to_string(),
         "--exclude=/.git".to_string(),
-        "--exclude=.eldrun".to_string(),
+        format!("--exclude={}", crate::brand::PROJECT_DIR),
         "--exclude=.git".to_string(),
         "--from0".to_string(),
         format!("--files-from={}", files_from.to_string_lossy()),
@@ -870,9 +871,9 @@ pub fn rsync_available_local() -> bool {
 pub fn rsync_available_host(spec: &crate::schema::project::RemoteSpec) -> bool {
     match crate::services::ssh_exec::run_remote_shell(
         spec,
-        "command -v rsync >/dev/null 2>&1 && echo eldrun-rsync-yes",
+        concat!("command -v rsync >/dev/null 2>&1 && echo ", crate::app_slug!(), "-rsync-yes"),
     ) {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).contains("eldrun-rsync-yes"),
+        Ok(out) => String::from_utf8_lossy(&out.stdout).contains(concat!(crate::app_slug!(), "-rsync-yes")),
         Err(_) => false,
     }
 }
@@ -1004,7 +1005,7 @@ pub async fn push_file_atomic(
         static PUSH_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
         PUSH_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
     };
-    let tmp = format!("{host_abs}.eldrun-sync-tmp.{}.{seq}", std::process::id());
+    let tmp = format!("{host_abs}.{SLUG}-sync-tmp.{}.{seq}", std::process::id());
     sftp::write_file_on(sftp, &tmp, &bytes).await?;
     sftp::rename_on(sftp, &tmp, host_abs).await?;
     // Re-stat the host to capture the new base (mtime is the host's, post-write).
@@ -1089,7 +1090,7 @@ fn walk_mirror_inner(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(
         }
         // `.git`/`.eldrun` are never byte-mirrored (git is kept in step semantically
         // by `services::git_peer`; `.eldrun` is Eldrun's own runtime dir).
-        if entry.file_name() == *".git" || entry.file_name() == *".eldrun" {
+        if entry.file_name() == *".git" || entry.file_name() == *crate::brand::PROJECT_DIR {
             continue;
         }
         if ft.is_dir() {
@@ -1317,7 +1318,7 @@ mod tests {
 
     #[test]
     fn rsync_pull_args_build_target_and_flags() {
-        let files_from = Path::new("/tmp/eldrun-rsync-files");
+        let files_from = Path::new(concat!("/tmp/", crate::app_slug!(), "-rsync-files"));
         let args = rsync_pull_args(
             &Some("alice".to_string()),
             "host.example",
@@ -1331,11 +1332,11 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "--no-links"));
         assert!(args.iter().any(|arg| arg == "--exclude=/.git"));
         assert!(args.iter().any(|arg| arg == "--exclude=.git"));
-        assert!(args.iter().any(|arg| arg == "--exclude=.eldrun"));
+        assert!(args.iter().any(|arg| arg == concat!("--exclude=.", crate::app_slug!())));
         assert!(args.iter().any(|arg| arg == "--from0"));
         assert!(args
             .iter()
-            .any(|arg| arg == "--files-from=/tmp/eldrun-rsync-files"));
+            .any(|arg| arg == concat!("--files-from=/tmp/", crate::app_slug!(), "-rsync-files")));
         let transport = args.iter().position(|arg| arg == "-e").unwrap();
         assert!(args[transport + 1].contains("ControlPath="));
         assert_eq!(args[transport + 2], "alice@host.example:/srv/p/");

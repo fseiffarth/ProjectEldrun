@@ -1254,12 +1254,12 @@ pub fn archived_mirror_unsynced(project_id: String) -> Result<UnsyncedReport, St
     // `refs/eldrun/backup/*` are safety snapshots, and the recorded `remote_head`
     // is the last-observed host HEAD.
     let mut negatives: Vec<String> = vec![
-        "--glob=refs/eldrun/incoming".to_string(),
-        "--glob=refs/eldrun/backup".to_string(),
+        format!("--glob={}", crate::brand::GIT_REF_INCOMING),
+        format!("--glob={}", crate::brand::GIT_REF_BACKUP),
     ];
     let mut have_baseline = !git_in(
         &mirror,
-        &["for-each-ref", "refs/eldrun/incoming", "refs/eldrun/backup"],
+        &["for-each-ref", crate::brand::GIT_REF_INCOMING, crate::brand::GIT_REF_BACKUP],
     )
     .is_empty();
     if let Ok(state) = storage::read_json::<crate::services::git_peer::GitPeerState>(
@@ -2088,9 +2088,9 @@ pub fn set_project_mobile_access(project_id: String, enabled: bool) -> Result<bo
             }
             project
                 .extra
-                .insert("eldrun_mobile_access".into(), Value::Bool(true));
+                .insert(crate::brand::MOBILE_ACCESS_KEY.into(), Value::Bool(true));
         } else {
-            project.extra.remove("eldrun_mobile_access");
+            project.extra.remove(crate::brand::MOBILE_ACCESS_KEY);
         }
         Ok(())
     })?;
@@ -2911,11 +2911,11 @@ pub const SCAFFOLD_FILES: &[(&str, &str)] = &[
 /// captures into a tracked folder, and ignoring that folder would then hide the
 /// project's own files from git. The prefix makes the folder unmistakably
 /// Eldrun's, so ignoring it can never swallow something the user wrote.
-pub const SCREENSHOTS_DIR: &str = "eldrun-screenshots";
+pub const SCREENSHOTS_DIR: &str = crate::brand::SCREENSHOTS_DIR;
 
 /// The folder a saved mail attachment lands in (*Save to emails folder*), named
 /// on the same rule as [`SCREENSHOTS_DIR`].
-pub const EMAILS_DIR: &str = "eldrun-emails";
+pub const EMAILS_DIR: &str = crate::brand::EMAILS_DIR;
 
 // `eldrun-screenshots/` is ignored by default because a screen grab holds
 // whatever happened to be on the screen — mail, tokens, another project's
@@ -2928,7 +2928,7 @@ pub const EMAILS_DIR: &str = "eldrun-emails";
 // Eldrun wrote into before the rename, so dropping them would un-ignore a
 // folder of already-filed private data the moment a project's `.gitignore` was
 // regenerated — the exact leak these entries exist to prevent.
-pub const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\neldrun-screenshots/\neldrun-emails/\nscreenshots/\nemails/\nproject.json\n";
+pub const GITIGNORE_DEFAULT: &str = concat!("__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.", crate::app_slug!(), "/\n", crate::app_slug!(), "-screenshots/\n", crate::app_slug!(), "-emails/\nscreenshots/\nemails/\nproject.json\n");
 
 pub const CLAUDE_SETTINGS: &str = r#"{"permissions":{"allow":[],"deny":[]}}"#;
 
@@ -3037,7 +3037,7 @@ fn git_scaffold_commit(dir: &Path) {
                 "-c",
                 concat!("user.name=", crate::app_name!()),
                 "-c",
-                "user.email=eldrun@localhost",
+                concat!("user.email=", crate::app_slug!(), "@localhost"),
                 "commit",
                 "-m",
                 MSG,
@@ -4687,7 +4687,7 @@ pub async fn detach_project_from_remote(
     // survive; `remove_dir` succeeds only once the dir is genuinely empty, which is
     // exactly that distinction.
     let _ = std::fs::remove_file(&state_local_file);
-    let _ = std::fs::remove_dir_all(state_dir.join(".eldrun"));
+    let _ = std::fs::remove_dir_all(state_dir.join(crate::brand::PROJECT_DIR));
     let _ = std::fs::remove_dir(&state_dir);
 
     // Update the projects.json entry in place, preserving every other extra key
@@ -5037,7 +5037,7 @@ mod tests {
     #[test]
     fn the_retired_trash_workspace_entry_is_dropped_and_nothing_else() {
         let mut list = vec![
-            entry("eldrun-trash", "Trash", vec![("eldrun_trash", Value::Bool(true))]),
+            entry(concat!(crate::app_slug!(), "-trash"), "Trash", vec![(concat!(crate::app_slug!(), "_trash"), Value::Bool(true))]),
             entry("p1", "Trash", vec![]),
         ];
         drop_legacy_trash_project(&mut list);
@@ -5521,10 +5521,10 @@ mod tests {
         // no `directory`, no `git_type`.
         ProjectEntry {
             id: "legacy-id".to_string(),
-            name: "ProjectEldrun".to_string(),
+            name: concat!("Project", crate::app_name!()).to_string(),
             status: "active".to_string(),
             position: 10,
-            local_file: "/home/u/eldrun/projects/projecteldrun/project.json".to_string(),
+            local_file: concat!("/home/u/", crate::app_slug!(), "/projects/project", crate::app_slug!(), "/project.json").to_string(),
             extra: HashMap::new(),
         }
     }
@@ -5535,7 +5535,7 @@ mod tests {
         normalize_entry(&mut entry);
         assert_eq!(
             entry.extra.get("directory").and_then(Value::as_str),
-            Some("/home/u/eldrun/projects/projecteldrun"),
+            Some(concat!("/home/u/", crate::app_slug!(), "/projects/project", crate::app_slug!())),
         );
     }
 
@@ -5655,7 +5655,7 @@ mod tests {
         assert_eq!(
             details,
             vec![
-                "directory → /home/u/eldrun/projects/projecteldrun".to_string(),
+                concat!("directory → /home/u/", crate::app_slug!(), "/projects/project", crate::app_slug!()).to_string(),
                 "git_type: private → remote-private".to_string(),
             ],
         );
@@ -5689,7 +5689,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         scaffold_project(dir.path(), true).unwrap();
         let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert!(gitignore.lines().any(|line| line == "eldrun-screenshots/"));
+        assert!(gitignore.lines().any(|line| line == concat!(crate::app_slug!(), "-screenshots/")));
         // The pre-rename folder stays ignored: projects still hold one.
         assert!(gitignore.lines().any(|line| line == "screenshots/"));
     }
@@ -5702,7 +5702,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         scaffold_project(dir.path(), true).unwrap();
         let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert!(gitignore.lines().any(|line| line == "eldrun-emails/"));
+        assert!(gitignore.lines().any(|line| line == concat!(crate::app_slug!(), "-emails/")));
         assert!(gitignore.lines().any(|line| line == "emails/"));
     }
 
@@ -5710,7 +5710,7 @@ mod tests {
     /// a project whose `.gitignore` predates the folder gets the pattern before
     /// the first file lands in it.
     #[test]
-    fn ensure_generated_dir_ignored_appends_once_and_only_for_eldrun_folders() {
+    fn ensure_generated_dir_ignored_appends_once_and_only_for_app_folders() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
 
@@ -5723,7 +5723,7 @@ mod tests {
         assert_eq!(
             gitignore
                 .lines()
-                .filter(|l| *l == "eldrun-screenshots/")
+                .filter(|l| *l == concat!(crate::app_slug!(), "-screenshots/"))
                 .count(),
             1
         );
@@ -5760,7 +5760,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(ensure_generated_dir_ignored(dir.path(), EMAILS_DIR).unwrap());
         let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert_eq!(gitignore, "eldrun-emails/\n");
+        assert_eq!(gitignore, concat!(crate::app_slug!(), "-emails/\n"));
     }
 
     #[test]
@@ -6080,7 +6080,7 @@ mod tests {
         for link in &["(./README.md)", "(./TODO.md)", "(./AGENTS.md)"] {
             assert!(!agents.contains(link), "AGENTS.md repeats the map: {link}");
         }
-        assert!(!agents.contains("eldrun-send"), concat!(crate::app_name!(), "'s own hint is not the project's"));
+        assert!(!agents.contains(concat!(crate::app_slug!(), "-send")), concat!(crate::app_name!(), "'s own hint is not the project's"));
 
         // The agent-specific docs carry no instructions of their own: each
         // imports AGENTS.md and links the other agent files.

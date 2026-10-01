@@ -412,7 +412,7 @@ mod tests {
     fn roots_at_slash_home_or_state_are_refused() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
-        let state = home.join(".local/share/eldrun");
+        let state = home.join(concat!(".local/share/", crate::app_slug!()));
         std::fs::create_dir_all(&state).unwrap();
         assert!(root_refusal(Path::new("/"), &home, &state).is_some());
         assert!(root_refusal(&home, &home, &state).is_some());

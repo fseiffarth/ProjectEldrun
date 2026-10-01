@@ -141,6 +141,7 @@ pub fn ensure_default_branch(dir: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::brand::SLUG;
     use super::*;
 
     fn git_available() -> bool {
@@ -175,7 +176,7 @@ mod tests {
     /// A temp dir that cleans up after itself; no dev-dependency for one test.
     fn tmp(tag: &str) -> std::path::PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("eldrun-git-init-{tag}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("{SLUG}-git-init-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

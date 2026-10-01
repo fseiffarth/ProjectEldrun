@@ -180,7 +180,7 @@ fn cookie_token(headers: &HeaderMap) -> Option<&str> {
         .split(';')
         .find_map(|part| {
             let (name, value) = part.trim().split_once('=')?;
-            (name == "__Host-eldrun_session").then_some(value)
+            (name == crate::brand::SESSION_COOKIE).then_some(value)
         })
 }
 
@@ -459,7 +459,7 @@ async fn login(
         Ok((token, expires_at)) => {
             let mut response =
                 Json(json!({ "ok": true, "expires_at": expires_at })).into_response();
-            let cookie = format!("__Host-eldrun_session={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=43200");
+            let cookie = format!("{}={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=43200", crate::brand::SESSION_COOKIE);
             response
                 .headers_mut()
                 .insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
@@ -480,7 +480,7 @@ async fn logout(State(state): State<HostState>, headers: HeaderMap) -> Response<
     response.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_static(
-            "__Host-eldrun_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0",
+            concat!("__Host-", crate::app_slug!(), "_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"),
         ),
     );
     response
@@ -3993,6 +3993,7 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::brand::SLUG;
     use super::*;
 
     use axum::body::to_bytes;
@@ -4057,7 +4058,7 @@ mod tests {
                     "name": "Aurora",
                     "status": "active",
                     "directory": fixture.root.to_string_lossy(),
-                    "eldrun_mobile_access": true,
+                    concat!(crate::app_slug!(), "_mobile_access"): true,
                 }]))
                 .expect("projects fixture"),
             )
@@ -4073,7 +4074,7 @@ mod tests {
                         "cwd": fixture.root.to_string_lossy(),
                         "kind": "agent",
                         "sessionId": "9d0f-session",
-                        "tmuxSession": format!("eldrun-{RAW_PROJECT}--agent-abcdef123"),
+                        "tmuxSession": format!("{SLUG}-{RAW_PROJECT}--agent-abcdef123"),
                     }]
                 }))
                 .expect("session fixture"),
@@ -4105,7 +4106,7 @@ mod tests {
                 state_dir.join("boxes.json"),
                 serde_json::to_vec(&serde_json::json!([
                     { "id": RAW_BOX, "name": "Paper", "member_ids": [RAW_PROJECT],
-                      "folder": folder.to_string_lossy(), "eldrun_mobile_access": true },
+                      "folder": folder.to_string_lossy(), concat!(crate::app_slug!(), "_mobile_access"): true },
                     { "id": "b-off", "name": "Private", "member_ids": [RAW_PROJECT],
                       "folder": folder.to_string_lossy() },
                 ]))
@@ -4122,13 +4123,13 @@ mod tests {
                         "cmd": "bash",
                         "cwd": folder.to_string_lossy(),
                         "kind": "shell",
-                        "tmuxSession": format!("eldrun-box_{RAW_BOX}--shell-abcdef123"),
+                        "tmuxSession": format!("{SLUG}-box_{RAW_BOX}--shell-abcdef123"),
                     }, {
                         "label": "Aurora shell",
                         "cmd": "bash",
                         "cwd": fixture.root.to_string_lossy(),
                         "kind": "shell",
-                        "tmuxSession": format!("eldrun-box_{RAW_BOX}--shell-bcdef1234"),
+                        "tmuxSession": format!("{SLUG}-box_{RAW_BOX}--shell-bcdef1234"),
                     }]
                 }))
                 .expect("session fixture"),
@@ -4292,7 +4293,7 @@ mod tests {
     fn a_tab_publishes_the_newest_prompts_of_its_tail_and_no_more() {
         use crate::services::mobile_control::protocol::{AgentTabPrompt, AgentTabPrompts};
         let rows = prompt_rows(vec![AgentTabPrompts {
-            tmux_session: "eldrun-p_paper--agent-123456789".into(),
+            tmux_session: concat!(crate::app_slug!(), "-p_paper--agent-123456789").into(),
             prompts: (0..12)
                 .map(|n| AgentTabPrompt {
                     text: format!("prompt {n}"),
@@ -4300,7 +4301,7 @@ mod tests {
                 })
                 .collect(),
         }]);
-        let prompts = &rows["eldrun-p_paper--agent-123456789"];
+        let prompts = &rows[concat!(crate::app_slug!(), "-p_paper--agent-123456789")];
         assert_eq!(prompts.len(), MAX_TAB_PROMPTS);
         // Oldest first, ending on the newest the desktop sent.
         assert_eq!(prompts[0].text, "prompt 7");
@@ -4311,7 +4312,7 @@ mod tests {
     fn a_long_prompt_is_cut_before_it_reaches_the_phone() {
         use crate::services::mobile_control::protocol::{AgentTabPrompt, AgentTabPrompts};
         let rows = prompt_rows(vec![AgentTabPrompts {
-            tmux_session: "eldrun-p_paper--agent-123456789".into(),
+            tmux_session: concat!(crate::app_slug!(), "-p_paper--agent-123456789").into(),
             prompts: vec![AgentTabPrompt {
                 // Multi-byte on purpose: the cut counts characters, so a byte
                 // slice here would panic mid-character.
@@ -4319,7 +4320,7 @@ mod tests {
                 at: None,
             }],
         }]);
-        let prompts = &rows["eldrun-p_paper--agent-123456789"];
+        let prompts = &rows[concat!(crate::app_slug!(), "-p_paper--agent-123456789")];
         assert_eq!(prompts[0].text.chars().count(), MAX_TAB_PROMPT_CHARS);
         assert!(prompts[0].at.is_none());
     }
@@ -4488,7 +4489,7 @@ mod tests {
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains(&host.root.to_string_lossy().to_string()));
         assert!(!body.contains("scheduleTargetId"));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
 
         // Editing still needs the window: the sidecar never writes the file.
         let create = Request::builder()
@@ -4529,7 +4530,7 @@ mod tests {
                     "kind": "agent",
                     "sessionId": "9d0f-session",
                     "scheduleTargetId": "tgt-1",
-                    "tmuxSession": format!("eldrun-{RAW_PROJECT}--agent-abcdef123"),
+                    "tmuxSession": format!("{SLUG}-{RAW_PROJECT}--agent-abcdef123"),
                 }]
             }))
             .expect("session fixture"),
@@ -4589,7 +4590,7 @@ mod tests {
             assert!(!body.contains(&task.id), "raw task id leaked: {body}");
             assert!(!body.contains(&event.id), "raw event id leaked: {body}");
             assert!(!body.contains("tgt-1"), "schedule target leaked: {body}");
-            assert!(!body.contains("eldrun-"), "tmux name leaked: {body}");
+            assert!(!body.contains(concat!(crate::app_slug!(), "-")), "tmux name leaked: {body}");
             assert!(!body.contains(&host.root.to_string_lossy().to_string()), "path leaked: {body}");
         };
 
@@ -4737,7 +4738,7 @@ mod tests {
         assert_eq!(json(&body)["desktop_available"], false);
         assert_eq!(json(&body)["tabs"].as_array().expect("tabs").len(), 0);
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
     }
 
     #[test]
@@ -4896,7 +4897,7 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
         assert_eq!(json(&body)["error"], "desktop_unavailable");
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
 
         // The create route will not take the session name from the phone.
         let (status, _, body) = host
@@ -4906,7 +4907,7 @@ mod tests {
                 json!({
                     "project_id": project_id,
                     "kind": "agent",
-                    "like_tab": "eldrun-anything",
+                    "like_tab": concat!(crate::app_slug!(), "-anything"),
                     "sign_in": "default",
                     "idempotency_key": key,
                 }),
@@ -4999,7 +5000,7 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
         assert_eq!(json(&body)["error"], "desktop_unavailable");
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
     }
 
     #[tokio::test]
@@ -5046,7 +5047,7 @@ mod tests {
         assert_eq!(json(&body)["error"], "desktop_unavailable");
         assert!(!body.contains(RAW_BOX));
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
 
         // The agent-only routes are unchanged by that: the same shell tab is
         // still refused a schedule.
@@ -5141,7 +5142,7 @@ mod tests {
         assert_eq!(json(&body)["error"], "desktop_unavailable");
         assert!(!body.contains(RAW_BOX));
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
     }
 
     #[tokio::test]
@@ -5308,7 +5309,7 @@ mod tests {
         // `__Host-` guarantees and must not authenticate.
         let request = Request::builder()
             .uri("/api/v1/status")
-            .header(header::COOKIE, format!("eldrun_session={token}"))
+            .header(header::COOKIE, format!("{SLUG}_session={token}"))
             .body(Body::empty())
             .expect("request");
         let (status, _, body) = host.send(request).await;
@@ -5383,7 +5384,7 @@ mod tests {
         let host = Fixture::bare();
         let (cookie, _) = host.pair_device(&signing_key(13)).await;
         for attribute in [
-            "__Host-eldrun_session=",
+            concat!("__Host-", crate::app_slug!(), "_session="),
             "Path=/",
             "Secure",
             "HttpOnly",
@@ -5651,7 +5652,7 @@ mod tests {
             tab["available"], false,
             "a tab with no tmux session must not be attachable: {body}"
         );
-        assert!(!body.contains("eldrun-raw-project"), "a tmux name leaked: {body}");
+        assert!(!body.contains(concat!(crate::app_slug!(), "-raw-project")), "a tmux name leaked: {body}");
     }
 
     #[tokio::test]
@@ -5946,7 +5947,7 @@ mod tests {
 
         std::fs::write(
             host.state.config.state_dir.join("settings.json"),
-            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }).to_string(),
+            serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true, "project_files": true } }).to_string(),
         )
         .unwrap();
         let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
@@ -6064,7 +6065,7 @@ mod tests {
         assert_eq!(json(&body)["error"], "files_off");
         std::fs::write(
             host.state.config.state_dir.join("settings.json"),
-            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }).to_string(),
+            serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true, "project_files": true } }).to_string(),
         )
         .unwrap();
         let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}/files"), &cookie)).await;
@@ -6081,7 +6082,7 @@ mod tests {
         assert!(prompt.starts_with("Apply the changes I marked by hand on `docs/draft.pdf`."), "{prompt}");
         assert!(prompt.contains(&format!("Page 2: @{layer}")), "{prompt}");
         assert!(prompt.contains("- p2: \"smaller\""), "{prompt}");
-        assert!(marked.starts_with(".eldrun/inbox/") && marked.ends_with("-draft-marked.pdf"), "{marked}");
+        assert!(marked.starts_with(concat!(".", crate::app_slug!(), "/inbox/")) && marked.ends_with("-draft-marked.pdf"), "{marked}");
         assert!(!body.contains(&host.root.to_string_lossy().to_string()), "a filesystem path leaked: {body}");
         let copy = std::fs::read(host.root.join(marked)).unwrap();
         assert!(copy.starts_with(&pdf) && copy.len() > pdf.len());
@@ -6123,7 +6124,7 @@ mod tests {
         std::fs::write(host.root.join("other.pdf"), "%PDF-1.7\n%%EOF\n").unwrap();
         std::fs::write(
             host.state.config.state_dir.join("settings.json"),
-            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }).to_string(),
+            serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true, "project_files": true } }).to_string(),
         )
         .unwrap();
         let (_, _, body) = host.send(get_as(&base, &cookie)).await;
@@ -6183,7 +6184,7 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "answered: {body}");
         let attachment = &json(&body)["attachment"];
         let reference = attachment["reference"].as_str().expect("reference");
-        assert!(reference.starts_with(".eldrun/inbox/"), "{reference}");
+        assert!(reference.starts_with(concat!(".", crate::app_slug!(), "/inbox/")), "{reference}");
         assert!(reference.ends_with("-IMG_0042.jpg"), "{reference}");
         assert_eq!(attachment["size"], bytes.len());
         assert!(
@@ -6265,7 +6266,7 @@ mod tests {
             .as_str()
             .expect("reference")
             .to_string();
-        assert!(reference.starts_with(".eldrun/inbox/"), "{reference}");
+        assert!(reference.starts_with(concat!(".", crate::app_slug!(), "/inbox/")), "{reference}");
         assert!(reference.ends_with("-notes.pdf"), "{reference}");
         assert!(
             !body.contains(&host.root.to_string_lossy().to_string()),

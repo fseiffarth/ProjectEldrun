@@ -55,7 +55,7 @@ const AGENT_COOLDOWN_SECONDS: u64 = 30;
 const TTL_SECONDS: u32 = 60 * 60;
 /// The contact RFC 8292 asks for. The project, not the user: this reaches the
 /// push vendor in every request, so it must say nothing about who sent it.
-const VAPID_SUBJECT: &str = "https://github.com/fseiffarth/ProjectEldrun";
+const VAPID_SUBJECT: &str = concat!("https://github.com/", crate::app_repo!());
 
 fn now() -> u64 {
     SystemTime::now()
@@ -812,7 +812,7 @@ mod tests {
         }
         let paired: Vec<String> = (0..3).map(|i| format!("d{i}")).collect();
 
-        let question = agent_tab().notice("eldrun-raw-tmux", AgentTurn::Question, None);
+        let question = agent_tab().notice(concat!(crate::app_slug!(), "-raw-tmux"), AgentTurn::Question, None);
         let out = push.deliveries(&question, "k1", &paired).unwrap();
         assert_eq!(out.iter().map(|d| d.endpoint.as_str()).collect::<Vec<_>>(), [
             "https://fcm.googleapis.com/1",
@@ -827,7 +827,7 @@ mod tests {
         assert_eq!(full["body"], "Needs your answer");
 
         // Within the cooldown the same tab stays quiet, even for a new edge.
-        let done = agent_tab().notice("eldrun-raw-tmux", AgentTurn::Done, Some("fix the\n  tests"));
+        let done = agent_tab().notice(concat!(crate::app_slug!(), "-raw-tmux"), AgentTurn::Done, Some("fix the\n  tests"));
         assert!(push.deliveries(&done, "k1", &paired).unwrap().is_empty());
         // Another tab is not held back, and a finished turn reaches only "All",
         // quoting the prompt it answered on one line.

@@ -26,14 +26,14 @@ pub fn plan(cli: &str, env: &HashMap<String, String>) -> Result<(Option<String>,
     if cli.is_empty() || cli.contains('/') || cli.contains('\\') {
         return Err("agent shim: a registry CLI name, not a path".into());
     }
-    if env.contains_key("ELDRUN_AGENT_FENCE") {
+    if env.contains_key(crate::app_env!("AGENT_FENCE")) {
         return Err("agent shim: already inside the agent sandbox".into());
     }
     let scope = env
-        .get("ELDRUN_SCOPE")
+        .get(crate::app_env!("SCOPE"))
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            concat!("agent shim: not an ", crate::app_name!(), " tab (no ELDRUN_SCOPE); open the CLI from an ", crate::app_name!(), " tab").to_string()
+            concat!("agent shim: not an ", crate::app_name!(), " tab (no ", crate::app_upper!(), "_SCOPE); open the CLI from an ", crate::app_name!(), " tab").to_string()
         })?;
     let project_id = (scope != crate::storage::ROOT_SCOPE).then(|| scope.clone());
     let cwd = std::env::current_dir().map_err(|e| format!("agent shim: cwd: {e}"))?;
@@ -177,13 +177,13 @@ mod tests {
     fn the_shim_refuses_outside_a_tab_inside_a_fence_and_for_paths() {
         let mut env = HashMap::new();
         assert!(plan("claude", &env).is_err());
-        env.insert("ELDRUN_SCOPE".into(), "root".into());
+        env.insert(crate::app_env!("SCOPE").into(), "root".into());
         let (project, _) = plan("claude", &env).unwrap();
         assert_eq!(project, None);
-        env.insert("ELDRUN_SCOPE".into(), "p1".into());
+        env.insert(crate::app_env!("SCOPE").into(), "p1".into());
         assert_eq!(plan("claude", &env).unwrap().0.as_deref(), Some("p1"));
         assert!(plan("/usr/bin/claude", &env).is_err());
-        env.insert("ELDRUN_AGENT_FENCE".into(), "1".into());
+        env.insert(crate::app_env!("AGENT_FENCE").into(), "1".into());
         assert!(plan("claude", &env).is_err());
     }
 }

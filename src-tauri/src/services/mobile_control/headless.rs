@@ -511,7 +511,7 @@ mod tests {
                 color: None,
                 sign_in: false,
             },
-            tmux_name: "eldrun-x".into(),
+            tmux_name: concat!(crate::app_slug!(), "-x").into(),
             session_id: session_id.map(str::to_string),
             schedule_target_id: None,
             cmd: cmd.into(),

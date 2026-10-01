@@ -920,7 +920,7 @@ fn boundary() -> String {
     let mut bytes = [0u8; 18];
     getrandom::fill(&mut bytes).expect("the OS RNG must be available to send mail");
     format!(
-        "=_eldrun_{}",
+        concat!("=_", crate::app_slug!(), "_{}"),
         B64.encode(bytes).replace(['+', '/', '='], "x")
     )
 }

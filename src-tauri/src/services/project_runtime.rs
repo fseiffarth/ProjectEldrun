@@ -1,3 +1,4 @@
+use crate::brand::SLUG;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
@@ -5,7 +6,7 @@ use crate::commands::apps::WindowRegistryState;
 use crate::commands::workspace::WorkspaceStateArc;
 use crate::schema::project::TabEntry;
 use crate::schema::session::{FileTabSession, LayoutSession, ProjectState};
-use crate::services::terminal_service::eldrun_sessions_dir;
+use crate::services::terminal_service::app_sessions_dir;
 use crate::services::{restore_service, terminal_service, window_service};
 use crate::storage;
 
@@ -241,7 +242,7 @@ fn save_previous_sessions(
     project_id: Option<&str>,
     snapshot: &PreviousProjectSnapshot,
 ) {
-    let Some(sessions_dir) = eldrun_sessions_dir(local_file) else {
+    let Some(sessions_dir) = app_sessions_dir(local_file) else {
         return;
     };
 
@@ -263,7 +264,7 @@ fn save_previous_sessions(
     }
 
     // Write .eldrun/state.json one level up from sessions/.
-    if let Some(eldrun_dir) = sessions_dir.parent() {
+    if let Some(app_dir) = sessions_dir.parent() {
         if let Some(project_dir) = std::path::Path::new(local_file).parent() {
             let state = ProjectState {
                 project_id: project_id.unwrap_or("").to_string(),
@@ -271,8 +272,8 @@ fn save_previous_sessions(
                 saved_at: Some(storage::iso_now()),
                 extra: Default::default(),
             };
-            if let Err(e) = storage::write_json(&eldrun_dir.join("state.json"), &state) {
-                eprintln!("ProjectRuntime: write .eldrun/state.json: {e}");
+            if let Err(e) = storage::write_json(&app_dir.join("state.json"), &state) {
+                eprintln!("ProjectRuntime: write .{SLUG}/state.json: {e}");
             }
         }
     }
@@ -288,7 +289,7 @@ pub fn load_side_panel_folder(local_file: &str) -> Option<String> {
 /// fields already stored in `.eldrun/sessions/filetabs.json`. Lets the active
 /// project's panel view survive a restart even without a project switch.
 pub fn save_side_panel_folder(local_file: &str, folder: Option<String>) -> Result<(), String> {
-    let Some(sessions_dir) = eldrun_sessions_dir(local_file) else {
+    let Some(sessions_dir) = app_sessions_dir(local_file) else {
         return Err("cannot resolve project sessions directory".into());
     };
     let path = sessions_dir.join("filetabs.json");
@@ -304,7 +305,7 @@ pub fn save_side_panel_folder(local_file: &str, folder: Option<String>) -> Resul
 /// Load file tabs and side-panel folder from `.eldrun/sessions/filetabs.json`.
 /// Returns (file_tabs, side_panel_folder).
 fn load_file_tab_session(local_file: &str) -> (Vec<serde_json::Value>, Option<String>) {
-    if let Some(sessions_dir) = eldrun_sessions_dir(local_file) {
+    if let Some(sessions_dir) = app_sessions_dir(local_file) {
         let path = sessions_dir.join("filetabs.json");
         if path.exists() {
             if let Ok(session) = storage::read_json::<FileTabSession>(&path) {
@@ -335,7 +336,7 @@ mod tests {
     }
 
     fn filetabs_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
-        dir.path().join(".eldrun").join("sessions").join("filetabs.json")
+        dir.path().join(concat!(".", crate::app_slug!())).join("sessions").join("filetabs.json")
     }
 
     /// The frontend's switch payload can be as small as `{}` — every field has
@@ -450,14 +451,14 @@ mod tests {
         };
         save_previous_sessions(&local, Some("p-42"), &snapshot);
 
-        let sessions = dir.path().join(".eldrun").join("sessions");
+        let sessions = dir.path().join(concat!(".", crate::app_slug!())).join("sessions");
         let tabs: FileTabSession = storage::read_json(&sessions.join("filetabs.json")).unwrap();
         assert_eq!(tabs.file_tabs[0]["path"], "a.rs");
         assert_eq!(tabs.side_panel_folder.as_deref(), Some("src"));
         let layout: LayoutSession = storage::read_json(&sessions.join("layout.json")).unwrap();
         assert_eq!(layout.active_layout_metadata.unwrap()["name"], "wide");
         let state: ProjectState =
-            storage::read_json(&dir.path().join(".eldrun").join("state.json")).unwrap();
+            storage::read_json(&dir.path().join(concat!(".", crate::app_slug!())).join("state.json")).unwrap();
         assert_eq!(state.project_id, "p-42");
         assert_eq!(std::path::Path::new(&state.project_dir), dir.path());
         assert!(state.saved_at.is_some());

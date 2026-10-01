@@ -88,12 +88,12 @@ pub const BUNDLE_FORMAT: u32 = 1;
 
 /// The manifest entry name inside the zip. Its presence is what makes a zip an
 /// Eldrun project bundle.
-pub const BUNDLE_MANIFEST: &str = "eldrun-export.json";
+pub const BUNDLE_MANIFEST: &str = crate::brand::EXPORT_MANIFEST;
 
 /// The extension the save dialog suggests. A plain `.zip` would also import
 /// (the manifest is what is checked), but a distinct one keeps a bundle from
 /// being double-clicked into `extract_archive` when it lands in a project tree.
-pub const BUNDLE_EXTENSION: &str = "eldrunproj";
+pub const BUNDLE_EXTENSION: &str = crate::brand::EXPORT_EXTENSION;
 
 const SECTION_DIR: &str = "dir";
 const SECTION_STATE: &str = "state";
@@ -975,7 +975,7 @@ fn open_bundle(path: &str) -> Result<(Bundle, ExportManifest), String> {
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("read {path}: {e}"))?;
     let manifest: ExportManifest = {
         let entry = zip.by_name(BUNDLE_MANIFEST).map_err(|_| {
-            concat!("That file is not an ", crate::app_name!(), " project export (no eldrun-export.json inside)").to_string()
+            concat!("That file is not an ", crate::app_name!(), " project export (no ", crate::app_slug!(), "-export.json inside)").to_string()
         })?;
         serde_json::from_reader(entry).map_err(|e| format!("read {BUNDLE_MANIFEST}: {e}"))?
     };
@@ -1616,7 +1616,7 @@ mod tests {
     #[test]
     fn extraction_ignores_entries_that_would_escape_the_destination() {
         let tmp = tempfile::tempdir().unwrap();
-        let bundle = tmp.path().join("evil.eldrunproj");
+        let bundle = tmp.path().join(concat!("evil.", crate::app_slug!(), "proj"));
         {
             let file = fs::File::create(&bundle).unwrap();
             let mut zip = zip::ZipWriter::new(file);
@@ -1668,7 +1668,7 @@ mod tests {
     fn the_suggested_file_name_is_a_safe_leaf() {
         let name = suggested_bundle_name("My Project / v2");
         assert!(name.starts_with("my-project-v2-"), "{name}");
-        assert!(name.ends_with(".eldrunproj"), "{name}");
+        assert!(name.ends_with(concat!(".", crate::app_slug!(), "proj")), "{name}");
         assert!(!name.contains('/'));
     }
 }

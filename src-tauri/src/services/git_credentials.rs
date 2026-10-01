@@ -14,7 +14,7 @@
 //! `Err(String)` on write, so callers can fall back to the global token or
 //! surface a friendly message rather than panicking.
 
-const SERVICE: &str = "eldrun-git-hosting";
+const SERVICE: &str = crate::brand::KEYRING_GIT_HOSTING;
 
 /// The keyring "username" under which a scope's token is stored. Kept distinct
 /// from any real account name so the entry is unambiguous in the OS store.

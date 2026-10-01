@@ -1,3 +1,4 @@
+use crate::brand::UPPER;
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, State};
@@ -126,7 +127,7 @@ fn vm_spawn_refusal(
     }
     if !vm_running {
         return Some(format!(
-            "ELDRUN_VM_DOWN: the VM for this project is not running; tab '{tab_id}' was not spawned. Boot the VM (activate the project or click its lamp) and retry."
+            "{UPPER}_VM_DOWN: the VM for this project is not running; tab '{tab_id}' was not spawned. Boot the VM (activate the project or click its lamp) and retry."
         ));
     }
     None
@@ -166,7 +167,7 @@ mod tests {
     #[test]
     fn vm_down_refuses_with_the_boot_sentinel() {
         let msg = vm_spawn_refusal(true, false, false, "t1").unwrap();
-        assert!(msg.starts_with("ELDRUN_VM_DOWN:"), "{msg}");
+        assert!(msg.starts_with(concat!(crate::app_upper!(), "_VM_DOWN:")), "{msg}");
     }
 
     #[test]
@@ -178,7 +179,7 @@ mod tests {
     fn cwd_within_accepts_project_dir_and_subdirs() {
         assert!(cwd_within("/home/u/proj", Path::new("/home/u/proj")));
         assert!(cwd_within(
-            "/home/u/proj/.eldrun/worktrees/feature-x",
+            concat!("/home/u/proj/.", crate::app_slug!(), "/worktrees/feature-x"),
             Path::new("/home/u/proj")
         ));
     }
@@ -368,7 +369,7 @@ pub async fn pty_spawn(
     // The tab's scope, for the agent shims a shell tab may run
     // (`services::agent_shim`): its project or box, else the root console.
     opts.env
-        .entry("ELDRUN_SCOPE".into())
+        .entry(crate::app_env!("SCOPE").into())
         .or_insert_with(|| crate::services::agent_home::scope_of(opts.project_id.as_deref()));
     if let Some(pid) = opts.project_id.as_deref() {
         let box_folder = crate::commands::boxes::box_id_of_scope(pid).and_then(|id|
@@ -378,7 +379,7 @@ pub async fn pty_spawn(
         let mirror = crate::services::remote_sync::mirror_dir(pid).to_string_lossy().into_owned();
         let root = scope_root_for(&local, remote.as_ref().map(|r| r.spec.remote_path.as_str()), &mirror, box_folder.as_deref(), opts.local_only);
         if !root.is_empty() {
-            opts.env.entry("ELDRUN_PROJECT_DIR".into()).or_insert_with(|| root.into());
+            opts.env.entry(crate::app_env!("PROJECT_DIR").into()).or_insert_with(|| root.into());
         }
     }
 
@@ -505,7 +506,7 @@ pub async fn pty_spawn(
     // The agent's hooks report its turn state under its tab uid; bind that uid
     // to this PTY so the report reaches the tab's own marks, and drop any
     // record a previous run of the same tab left behind (see agent_turn).
-    let interrupted = match opts.env.get("ELDRUN_TAB_UID").cloned() {
+    let interrupted = match opts.env.get(crate::app_env!("TAB_UID")).cloned() {
         Some(uid) => crate::services::agent_turn::bind_tab(&uid, &opts.id, opts.project_id.as_deref()),
         None => false,
     };
@@ -530,7 +531,7 @@ pub async fn pty_spawn(
                 .is_some_and(|id| crate::services::remote::remote_target_for(id).is_some());
         if let Some(uid) = opts
             .env
-            .get("ELDRUN_TAB_UID")
+            .get(crate::app_env!("TAB_UID"))
             .filter(|_| !is_remote)
             .cloned()
         {
@@ -735,7 +736,7 @@ pub async fn pty_spawn(
                     opts.env.entry(k).or_insert(v);
                 }
                 crate::services::agent_auth::apply_fence_env(&opts.cmd, &mut opts.env);
-                opts.env.insert("ELDRUN_HOST_SESSION".into(), "1".into());
+                opts.env.insert(crate::app_env!("HOST_SESSION").into(), "1".into());
             }
             // No fence on this platform (Windows): the same Eldrun-owned home
             // and shared logins, by environment; the rights are the user's.
@@ -912,16 +913,16 @@ pub async fn local_tmux_kill(session: String) -> Result<(), String> {
 
 /// End every tmux session Eldrun created on the local machine during a clean
 /// application quit — the frontend close handler's half of
-/// `services::tmux_local::kill_eldrun_sessions`, which owns the rule (every
+/// `services::tmux_local::kill_app_sessions`, which owns the rule (every
 /// `eldrun-` session, no foreign one) and is also run by `RunEvent::Exit` as
 /// the net for exits that never reach frontend code. A renderer or process
 /// crash reaches neither, leaving the sessions alive for restore.
 #[tauri::command]
-pub async fn local_tmux_kill_eldrun_sessions() -> Result<(), String> {
+pub async fn local_tmux_kill_app_sessions() -> Result<(), String> {
     if !crate::services::tmux_local::tmux_available() {
         return Ok(());
     }
-    tauri::async_runtime::spawn_blocking(crate::services::tmux_local::kill_eldrun_sessions)
+    tauri::async_runtime::spawn_blocking(crate::services::tmux_local::kill_app_sessions)
         .await
         .map_err(|e| e.to_string())?
 }

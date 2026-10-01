@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn local_discovery_finds_an_in_tree_venv_as_a_relative_path() {
-        let tmp = std::env::temp_dir().join(format!("eldrun-py-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-py-{}"), std::process::id()));
         let bin = tmp
             .join(".venv")
             .join(if WINDOWS { "Scripts" } else { "bin" });
@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     fn local_discovery_finds_every_venv_in_the_tree_not_only_the_root() {
-        let tmp = std::env::temp_dir().join(format!("eldrun-py-multi-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-py-multi-{}"), std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         make_fake_venv(&tmp, ".venv");
         make_fake_venv(&tmp, "services/api/.venv");
@@ -702,7 +702,7 @@ mod tests {
     fn venv_scan_prunes_heavy_dirs() {
         // A venv buried inside node_modules is not the project's — don't offer it,
         // and don't pay to walk that subtree.
-        let tmp = std::env::temp_dir().join(format!("eldrun-py-prune-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-py-prune-{}"), std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         make_fake_venv(&tmp, "node_modules/pkg/.venv");
         let found = find_venvs(&tmp);
@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn local_discovery_with_no_venv_still_offers_the_system_interpreter() {
-        let tmp = std::env::temp_dir().join(format!("eldrun-py-none-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-py-none-{}"), std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let found = discover_local(&tmp);
         assert!(found.iter().any(|i| i.kind == "system"));

@@ -341,7 +341,7 @@ mod tests {
     /// A store with OpenCode's own table shapes (the columns this reads, plus
     /// the account table whose presence is why only three tables are read).
     fn store() -> (PathBuf, Connection) {
-        let dir = unique_tmp("eldrun-opencode-store");
+        let dir = unique_tmp(concat!(crate::app_slug!(), "-opencode-store"));
         let db = dir.join("opencode.db");
         let conn = Connection::open(&db).unwrap();
         conn.execute_batch(

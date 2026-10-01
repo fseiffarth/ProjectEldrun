@@ -30,7 +30,7 @@ use std::collections::HashSet;
 /// shielded by owning-process identity (self pid) in the FFI layer, so
 /// `eldrun` here only guards same-named helper processes.
 pub const PROTECTED_OWNERS: &[&str] = &[
-    "eldrun",
+    crate::brand::BIN_NAME,
     "dock",
     "finder",
     "windowserver",
@@ -78,7 +78,7 @@ impl MacParkState {
         if self.main_window_id == Some(id) {
             // STRUCTURAL GUARD: the main window must never be parkable, even if
             // a caller mistakenly asks. Refuse silently (debug-assert in tests).
-            debug_assert!(false, "attempted to mark the MAIN Eldrun window parkable");
+            debug_assert!(false, concat!("attempted to mark the MAIN ", crate::app_name!(), " window parkable"));
             return false;
         }
         self.override_ids.insert(id)
@@ -164,20 +164,20 @@ mod tests {
     // ── is_protected_owner_name ─────────────────────────────────────────────
 
     #[test]
-    fn eldrun_owner_is_always_protected() {
+    fn app_owner_is_always_protected() {
         // The most critical invariant: Eldrun-named apps must NEVER be hidden.
         // (The main window is doubly protected via the self-pid check.)
-        assert!(is_protected_owner_name("Eldrun"));
-        assert!(is_protected_owner_name("eldrun"));
-        assert!(is_protected_owner_name("ELDRUN"));
-        assert!(is_protected_owner_name("Eldrun.app"));
+        assert!(is_protected_owner_name(crate::app_name!()));
+        assert!(is_protected_owner_name(crate::app_slug!()));
+        assert!(is_protected_owner_name(crate::app_upper!()));
+        assert!(is_protected_owner_name(concat!(crate::app_name!(), ".app")));
     }
 
     #[test]
-    fn protected_owners_constant_includes_eldrun() {
+    fn protected_owners_constant_includes_app() {
         assert!(
-            PROTECTED_OWNERS.contains(&"eldrun"),
-            "PROTECTED_OWNERS must contain \"eldrun\" or Eldrun helpers could be hidden"
+            PROTECTED_OWNERS.contains(&crate::app_slug!()),
+            concat!("PROTECTED_OWNERS must contain \"", crate::app_slug!(), "\" or ", crate::app_name!(), " helpers could be hidden")
         );
     }
 
@@ -203,7 +203,7 @@ mod tests {
     fn owner_merely_containing_protected_token_is_parkable() {
         // Segment matching, not substring matching — the macOS analog of the
         // x11 `kwinter`/`eldrunner` regression tests.
-        assert!(!is_protected_owner_name("eldrunner"));
+        assert!(!is_protected_owner_name(concat!(crate::app_slug!(), "ner")));
         assert!(!is_protected_owner_name("Docker")); // contains "dock" as substring only
         assert!(!is_protected_owner_name("Pathfinder")); // contains "finder" as substring only
     }

@@ -57,8 +57,9 @@ impl Default for MobileHostSettings {
 
 #[derive(Deserialize, Default)]
 struct SettingsFile {
-    #[serde(default)]
-    eldrun_mobile_host: Option<MobileHostSettings>,
+    // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_HOST_KEY
+    #[serde(default, rename = "eldrun_mobile_host")]
+    app_mobile_host: Option<MobileHostSettings>,
 }
 
 #[derive(Debug, Clone)]
@@ -313,7 +314,7 @@ impl HostConfig {
             }
             Err(error) => return Err(format!("{SETTINGS_UNREADABLE_ERROR}: {error}")),
         };
-        let host = settings.eldrun_mobile_host.unwrap_or_default();
+        let host = settings.app_mobile_host.unwrap_or_default();
         if !host.enabled {
             return Err(DISABLED_ERROR.into());
         }
@@ -338,6 +339,15 @@ impl HostConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The serde key is a literal in the attribute; this ties it to the brand
+    /// module so the two cannot drift.
+    #[test]
+    fn the_mobile_host_key_is_the_brand_constant() {
+        let json = format!(r#"{{"{}":{{"enabled":true}}}}"#, crate::brand::MOBILE_HOST_KEY);
+        let file: SettingsFile = serde_json::from_str(&json).unwrap();
+        assert!(file.app_mobile_host.is_some());
+    }
     use crate::paths::OsKind;
 
     #[test]
@@ -379,12 +389,12 @@ mod tests {
         dir
     }
 
-    const ENABLED: &str = r#"{"eldrun_mobile_host":{"enabled":true,"port":8742,
-        "serve_origin":"https://desk.example.ts.net"}}"#;
+    const ENABLED: &str = concat!(r#"{""#, crate::app_slug!(), r#"_mobile_host":{"enabled":true,"port":8742,
+        "serve_origin":"https://desk.example.ts.net"}}"#);
 
     #[test]
     fn only_an_explicit_off_is_the_clean_disabled_exit() {
-        let dir = state_dir_with(r#"{"eldrun_mobile_host":{"enabled":false}}"#);
+        let dir = state_dir_with(concat!(r#"{""#, crate::app_slug!(), r#"_mobile_host":{"enabled":false}}"#));
         assert_eq!(
             HostConfig::load(dir.path()).unwrap_err(),
             DISABLED_ERROR,
@@ -410,7 +420,7 @@ mod tests {
             "",
             // Present, enabled, but one field serde cannot take: the whole
             // parse fails, which is exactly the case that read as "off".
-            r#"{"eldrun_mobile_host":{"enabled":true,"port":"8742"}}"#,
+            concat!(r#"{""#, crate::app_slug!(), r#"_mobile_host":{"enabled":true,"port":"8742"}}"#),
         ] {
             let dir = state_dir_with(broken);
             let error = HostConfig::load(dir.path()).unwrap_err();
@@ -435,7 +445,7 @@ mod tests {
     fn a_misconfigured_but_enabled_host_is_a_failure_not_a_disable() {
         // An enabled host with no verified origin cannot serve, but it is also
         // not "off" — reporting it as DISABLED would exit 0 and hide it.
-        let dir = state_dir_with(r#"{"eldrun_mobile_host":{"enabled":true}}"#);
+        let dir = state_dir_with(concat!(r#"{""#, crate::app_slug!(), r#"_mobile_host":{"enabled":true}}"#));
         assert_ne!(HostConfig::load(dir.path()).unwrap_err(), DISABLED_ERROR);
     }
 

@@ -34,7 +34,7 @@ use sha2::{Digest, Sha256};
 use crate::storage;
 
 /// Prefix of the error string a gated command returns; JSON follows.
-pub const TRUST_REQUIRED_PREFIX: &str = "eldrun-trust-required:";
+pub const TRUST_REQUIRED_PREFIX: &str = crate::brand::TRUST_REQUIRED_PREFIX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrustKind {

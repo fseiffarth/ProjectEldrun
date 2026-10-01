@@ -207,7 +207,7 @@ fn fetch_local(dir: &Path, token: Option<&str>, project_id: Option<&str>) -> Res
     args.push("fetch".to_string());
     let mut cmd = hardened_git_command_in(dir, &args);
     if let Some(tok) = token {
-        cmd.env("ELDRUN_GIT_TOKEN", tok);
+        cmd.env(crate::app_env!("GIT_TOKEN"), tok);
         cmd.env("GIT_TERMINAL_PROMPT", "0");
     }
     cmd.output().map_err(|e| e.to_string())

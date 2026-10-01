@@ -371,11 +371,11 @@ impl MailKeys {
     pub fn derive(master: Key) -> Self {
         let hk = Hkdf::<Sha256>::new(None, master.as_bytes());
         MailKeys {
-            field: subkey(&hk, b"eldrun/mail/v1/field"),
-            blob: subkey(&hk, b"eldrun/mail/v1/blob"),
-            addr: subkey(&hk, b"eldrun/mail/v1/addr"),
-            name: subkey(&hk, b"eldrun/mail/v1/name"),
-            wrap: subkey(&hk, b"eldrun/mail/v1/wrap"),
+            field: subkey(&hk, &crate::brand::mail_label("field")),
+            blob: subkey(&hk, &crate::brand::mail_label("blob")),
+            addr: subkey(&hk, &crate::brand::mail_label("addr")),
+            name: subkey(&hk, &crate::brand::mail_label("name")),
+            wrap: subkey(&hk, &crate::brand::mail_label("wrap")),
             master,
         }
     }
@@ -438,7 +438,7 @@ pub struct MailKeyFile {
 }
 
 const KEY_FILE_VERSION: u32 = 1;
-const WRAP_AAD: &[u8] = b"eldrun/mail/v1/master";
+const WRAP_AAD: &[u8] = crate::brand::MAIL_WRAP_AAD.as_bytes();
 
 pub fn key_file_path(dir: &Path) -> PathBuf {
     dir.join("key.json")

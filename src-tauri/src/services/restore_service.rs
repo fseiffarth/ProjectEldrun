@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn exec_inside_the_project_is_refused_even_if_it_matches_a_registered_app() {
-        let base = std::env::temp_dir().join(format!("eldrun-restore-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-restore-{}"), std::process::id()));
         let proj = base.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
         // A payload named exactly like a registered app, living in the project.
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn traversal_out_of_the_project_does_not_escape_the_root_check() {
-        let base = std::env::temp_dir().join(format!("eldrun-restore-t-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-restore-t-{}"), std::process::id()));
         let proj = base.join("proj");
         std::fs::create_dir_all(proj.join("sub")).unwrap();
         let payload = proj.join("sub").join("pwn.sh");

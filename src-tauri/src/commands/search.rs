@@ -45,7 +45,7 @@ fn should_skip_dir(name: &str) -> bool {
     matches!(
         name,
         ".git"
-            | ".eldrun"
+            | crate::brand::PROJECT_DIR
             | "node_modules"
             | "target"
             | "dist"

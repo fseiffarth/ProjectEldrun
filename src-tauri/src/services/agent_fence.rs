@@ -138,7 +138,7 @@ pub fn platform_accepted() -> bool {
 /// The marker `pty_spawn`'s refusal carries when a fence-less platform has not
 /// been accepted yet. The frontend (`lib/agents/agentFence.ts`) matches it,
 /// asks, and retries; no other refusal starts with it.
-pub const PLATFORM_UNACCEPTED_SENTINEL: &str = "ELDRUN_FENCE_PLATFORM_UNACCEPTED";
+pub const PLATFORM_UNACCEPTED_SENTINEL: &str = crate::app_env!("FENCE_PLATFORM_UNACCEPTED");
 
 /// The spawn refusal on a fence-less platform nobody has accepted yet.
 pub fn platform_unaccepted_message() -> String {
@@ -1258,7 +1258,7 @@ pub fn wrap_pty_options_bwrap(
     let scope = crate::services::fence_scope::helper_for(&bwrap);
     (opts.cmd, opts.args) = seccomp_launcher(&bwrap.to_string_lossy(), scope.as_deref(), &filter, args);
     opts.env
-        .insert("ELDRUN_AGENT_FENCE".to_string(), "1".to_string());
+        .insert(crate::app_env!("AGENT_FENCE").to_string(), "1".to_string());
     // Keep the CLI's login in its file: the keyring is not reachable here.
     crate::services::agent_auth::apply_fence_env(&agent_cmd, &mut opts.env);
     crate::services::agent_install::apply_fence_env(&agent_cmd, &mut opts.env);
@@ -1504,7 +1504,7 @@ pub fn wrap_pty_options_sandbox_exec(
     opts.cmd = "/usr/bin/sandbox-exec".to_string();
     opts.args = args;
     opts.env
-        .insert("ELDRUN_AGENT_FENCE".to_string(), "1".to_string());
+        .insert(crate::app_env!("AGENT_FENCE").to_string(), "1".to_string());
     // Seatbelt cannot redirect a path: the agent's home is the scope home by
     // environment, with the user's git config and toolchains passed through.
     for (k, v) in home_env(scope_home, &paths::home_dir()) {
@@ -1693,7 +1693,7 @@ pub fn one_shot_command(scope_id: &str, cmd: &str, args: &[String], cwd: &Path) 
     let (cmd, argv) = seccomp_launcher(&bwrap.to_string_lossy(), scope.as_deref(), &filter, argv);
     let mut command = crate::paths::command_no_window(cmd);
     command.args(argv);
-    command.env("ELDRUN_AGENT_FENCE", "1");
+    command.env(crate::app_env!("AGENT_FENCE"), "1");
     Ok(command)
 }
 
@@ -2077,8 +2077,8 @@ mod tests {
 
     #[test]
     fn tmux_pane_pids_parse_and_keep_the_first_pane() {
-        let panes = parse_tmux_pane_pids("eldrun-a--agent-1\t100\neldrun-a--agent-1\t200\nbad line\nx\tnope\n");
-        assert_eq!(panes.get("eldrun-a--agent-1"), Some(&100));
+        let panes = parse_tmux_pane_pids(concat!(crate::app_slug!(), "-a--agent-1\t100\n", crate::app_slug!(), "-a--agent-1\t200\nbad line\nx\tnope\n"));
+        assert_eq!(panes.get(concat!(crate::app_slug!(), "-a--agent-1")), Some(&100));
         assert_eq!(panes.len(), 1);
     }
 
@@ -2118,12 +2118,12 @@ mod tests {
             ["/w/alpha", "/w/beta-mirror", "/state/remote-projects/p3/mirror", "/w/box"],
             "a remote project's mirror, never its remote directory string"
         );
-        let args = bwrap_args("/home/u", None, "/home/u/eldrun/root", "claude", &[], &[PathBuf::from("/home/u/eldrun/root")], &paths, &[]);
+        let args = bwrap_args("/home/u", None, concat!("/home/u/", crate::app_slug!(), "/root"), "claude", &[], &[PathBuf::from(concat!("/home/u/", crate::app_slug!(), "/root"))], &paths, &[]);
         for p in &paths {
             assert!(args.windows(3).any(|w| w[0] == "--ro-bind-try" && w[1] == *p && w[2] == *p), "{p} not read-only: {args:?}");
             assert!(!args.windows(2).any(|w| (w[0] == "--bind" || w[0] == "--bind-try") && w[1] == *p), "{p} bound read-write");
         }
-        let plain = bwrap_args("/home/u", None, "/home/u/eldrun/root", "claude", &[], &[PathBuf::from("/home/u/eldrun/root")], &[], &[]);
+        let plain = bwrap_args("/home/u", None, concat!("/home/u/", crate::app_slug!(), "/root"), "claude", &[], &[PathBuf::from(concat!("/home/u/", crate::app_slug!(), "/root"))], &[], &[]);
         assert!(!plain.iter().any(|a| a == "/w/alpha"));
         // A project scope: the flag changes nothing about its roots.
         assert_eq!(compute_fence_roots(&boxes, &projects, "p1", true), Some(vec![PathBuf::from("/w/alpha"), PathBuf::from("/w/box")]));
@@ -2286,12 +2286,12 @@ mod tests {
     fn seatbelt_profile_denies_writes_then_restores_roots_and_protects_hooks() {
         let inputs = SeatbeltInputs {
             home: "/Users/a".into(),
-            roots: vec!["/Users/a/eldrun/projects/p".into()],
+            roots: vec![concat!("/Users/a/", crate::app_slug!(), "/projects/p").into()],
             writable: vec!["/Users/a/.claude".into(), "/private/tmp".into()],
             readable: vec!["/Users/a/.gitconfig".into()],
             protected: vec![
                 "/Users/a/.claude/settings.json".into(),
-                "/Users/a/.local/share/eldrun/hooks".into(),
+                concat!("/Users/a/.local/share/", crate::app_slug!(), "/hooks").into(),
             ],
             hidden: Vec::new(),
             own_home: None,
@@ -2310,7 +2310,7 @@ mod tests {
         assert!(pos("(deny file-read* (subpath \"/Users/a\"))") < pos("(allow file-read* (subpath \"/Users/a/.gitconfig\"))"));
         assert!(profile.contains("(allow file-read-metadata (literal \"/Users/a\"))"));
         // Writes are denied globally, then the root and the agent state come back.
-        assert!(pos("(deny file-write*)") < pos("(allow file-write* (subpath \"/Users/a/eldrun/projects/p\"))"));
+        assert!(pos("(deny file-write*)") < pos(concat!("(allow file-write* (subpath \"/Users/a/", crate::app_slug!(), "/projects/p\"))")));
         assert!(pos("(deny file-write*)") < pos("(allow file-write* (subpath \"/Users/a/.claude\"))"));
         // The device allowlist comes right after the global deny, before any
         // protected deny, and never opens other terminals' ttys.
@@ -2325,7 +2325,7 @@ mod tests {
         // The protected paths are denied LAST so they win over the .claude allow.
         let hook_deny = pos("(deny file-write* (subpath \"/Users/a/.claude/settings.json\"))");
         assert!(hook_deny > pos("(allow file-write* (subpath \"/Users/a/.claude\"))"));
-        assert_eq!(lines.last().unwrap(), &"(deny file-write* (subpath \"/Users/a/.local/share/eldrun/hooks\"))");
+        assert_eq!(lines.last().unwrap(), &concat!("(deny file-write* (subpath \"/Users/a/.local/share/", crate::app_slug!(), "/hooks\"))"));
         // Quoting: a path with a quote or backslash stays one Scheme string.
         assert_eq!(sbpl_string("/a/b\"c\\d"), "\"/a/b\\\"c\\\\d\"");
     }
@@ -2521,7 +2521,7 @@ mod tests {
     #[test]
     fn command_bind_paths_follow_installer_symlinks_under_home() {
         let tmp = std::env::temp_dir().join(format!(
-            "eldrun-fence-bind-{}-{}",
+            concat!(crate::app_slug!(), "-fence-bind-{}-{}"),
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

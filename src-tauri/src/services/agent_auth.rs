@@ -965,7 +965,7 @@ mod tests {
     /// store directly.
     #[test]
     #[cfg(unix)]
-    fn a_hard_link_from_an_older_eldrun_is_replaced_by_a_copy() {
+    fn a_hard_link_from_an_older_app_is_replaced_by_a_copy() {
         let tmp = tempfile::tempdir().unwrap();
         let state = tmp.path();
         let a = crate::services::agent_home::scope_home_in(state, "a");

@@ -77,9 +77,9 @@ fn no_source_writes_foreign_browser_config() {
 
     assert!(
         violations.is_empty(),
-        "Eldrun must never write another app's config (browser download dir).\n\
+        concat!(app_lib::app_name!(), " must never write another app's config (browser download dir).\n\
          This is the removed commands/downloads.rs behavior — do not reintroduce it.\n\
-         Offending source:\n{}",
+         Offending source:\n{}"),
         violations.join("\n")
     );
 }

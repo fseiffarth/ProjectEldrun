@@ -36,7 +36,7 @@ pub async fn debug_app_resource_usage(gpu: Option<bool>) -> Result<AppResourceUs
     use crate::sysstat;
 
     let (pids, t0) = tauri::async_runtime::spawn_blocking(|| {
-        let root = eldrun_process_root(std::process::id());
+        let root = app_process_root(std::process::id());
         let pids = sysstat::descendant_pids(&[root]);
         let t0 = sysstat::sum_jiffies(&pids);
         (pids, t0)
@@ -68,7 +68,7 @@ pub async fn debug_app_resource_usage(gpu: Option<bool>) -> Result<AppResourceUs
 /// beside the version in the side panel; `None` outside a git checkout.
 #[tauri::command]
 pub fn app_build_commit() -> Option<&'static str> {
-    option_env!("ELDRUN_BUILD_COMMIT")
+    option_env!(crate::app_env!("BUILD_COMMIT"))
 }
 
 /// The background "Eldrun (dev)" freeze, for the header's dev-build chip; `None`
@@ -183,7 +183,7 @@ pub async fn webview_rss_kib() -> u64 {
 }
 
 fn largest_renderer_rss_kib() -> u64 {
-    let root = eldrun_process_root(std::process::id());
+    let root = app_process_root(std::process::id());
     crate::sysstat::descendant_pids(&[root])
         .into_iter()
         .filter(|&pid| is_webview_renderer(pid))
@@ -245,7 +245,7 @@ pub async fn webview_renderer_memory(pid: u32) -> Option<RendererMemory> {
 }
 
 fn renderer_memory(pid: u32) -> Option<RendererMemory> {
-    let root = eldrun_process_root(std::process::id());
+    let root = app_process_root(std::process::id());
     let ours = crate::sysstat::descendant_pids(&[root]).contains(&pid) && is_webview_renderer(pid);
     if !ours {
         return None;
@@ -291,7 +291,7 @@ pub async fn webview_renderer_rss(app: tauri::AppHandle) -> Vec<RendererRss> {
 fn renderer_rss(app: &tauri::AppHandle) -> Vec<RendererRss> {
     use tauri::Manager;
 
-    let root = eldrun_process_root(std::process::id());
+    let root = app_process_root(std::process::id());
     let mut pids: Vec<u32> = crate::sysstat::descendant_pids(&[root])
         .into_iter()
         .filter(|&pid| is_webview_renderer(pid))
@@ -342,7 +342,7 @@ pub async fn webview_renderer_claim(window: tauri::WebviewWindow, pid: u32) -> R
 }
 
 fn claim_renderer(label: String, pid: u32) -> Result<(), String> {
-    let root = eldrun_process_root(std::process::id());
+    let root = app_process_root(std::process::id());
     let live = crate::sysstat::descendant_pids(&[root])
         .into_iter()
         .any(|p| p == pid && is_webview_renderer(p));
@@ -453,7 +453,7 @@ fn is_webview_renderer(pid: u32) -> bool {
 /// command line names the dev runner. Where the backend can't read command lines
 /// (Windows, and packaged builds), no ancestor matches and this returns `pid`
 /// itself — which is exactly the app process in a packaged build.
-fn eldrun_process_root(pid: u32) -> u32 {
+fn app_process_root(pid: u32) -> u32 {
     let mut current = pid;
     let mut best = pid;
 
@@ -481,6 +481,6 @@ mod tests {
 
     #[test]
     fn process_root_includes_current_process() {
-        assert!(eldrun_process_root(std::process::id()) > 0);
+        assert!(app_process_root(std::process::id()) > 0);
     }
 }

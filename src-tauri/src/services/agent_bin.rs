@@ -7,6 +7,7 @@
 //! logins as an agent tab. Inside a fence the shim steps aside and execs the
 //! real CLI from the rest of PATH. Written at every startup, so they always
 //! name the running Eldrun.
+use crate::brand::{DISPLAY, UPPER};
 use std::{fs, io, path::{Path, PathBuf}};
 
 pub fn bin_dir() -> PathBuf { crate::storage::state_dir().join("bin") }
@@ -19,11 +20,11 @@ pub fn install() -> io::Result<()> {
 fn install_in(dir: &Path, exe: Option<&Path>, clis: &[&str]) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     // The POSIX script is needed even on Windows for Docker containers.
-    write_script(dir, "eldrun-send", include_bytes!("../../../scripts/eldrun-send.sh"))?;
+    write_script(dir, crate::brand::SEND_CLI, include_bytes!("../../../scripts/eldrun-send.sh"))?;
     #[cfg(windows)]
     {
-        write_script(dir, "eldrun-send.cmd", include_bytes!("../../../scripts/eldrun-send.cmd"))?;
-        write_script(dir, "eldrun-send.ps1", include_bytes!("../../../scripts/eldrun-send.ps1"))?;
+        write_script(dir, concat!(crate::app_slug!(), "-send.cmd"), include_bytes!("../../../scripts/eldrun-send.cmd"))?;
+        write_script(dir, concat!(crate::app_slug!(), "-send.ps1"), include_bytes!("../../../scripts/eldrun-send.ps1"))?;
     }
     if let Some(exe) = exe {
         for cli in clis {
@@ -46,8 +47,8 @@ pub(crate) fn shim_script(cli: &str, exe: &Path, dir: &Path) -> String {
     let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     format!(
         "#!/bin/sh\n\
-         # Eldrun agent shim: runs {cli} fenced in this tab's scope (services::agent_shim).\n\
-         if [ -n \"${{ELDRUN_AGENT_FENCE:-}}\" ] || [ -n \"${{ELDRUN_HOST_SESSION:-}}\" ]; then\n\
+         # {DISPLAY} agent shim: runs {cli} fenced in this tab's scope (services::agent_shim).\n\
+         if [ -n \"${{{UPPER}_AGENT_FENCE:-}}\" ] || [ -n \"${{{UPPER}_HOST_SESSION:-}}\" ]; then\n\
          \x20   real=$(PATH=$(printf '%s' \"$PATH\" | tr ':' '\\n' | grep -vx -- {dir} | paste -sd: -); command -v {cli_q}) || {{\n\
          \x20       echo {not_found} >&2\n\
          \x20       exit 127\n\
@@ -76,12 +77,13 @@ fn write_script(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::brand::SLUG;
     use super::*;
     #[test]
     fn install_preserves_matching_bytes_and_repairs_drift() {
         let dir = tempfile::tempdir().unwrap();
         install_in(dir.path(), None, &[]).unwrap();
-        let script = dir.path().join("eldrun-send");
+        let script = dir.path().join(concat!(crate::app_slug!(), "-send"));
         let modified = fs::metadata(&script).unwrap().modified().unwrap();
         install_in(dir.path(), None, &[]).unwrap();
         assert_eq!(fs::metadata(&script).unwrap().modified().unwrap(), modified);
@@ -95,14 +97,14 @@ mod tests {
     }
 
     #[test]
-    fn a_shim_execs_eldrun_outside_a_fence_and_the_real_cli_inside_one() {
+    fn a_shim_execs_app_outside_a_fence_and_the_real_cli_inside_one() {
         let dir = tempfile::tempdir().unwrap();
-        install_in(dir.path(), Some(Path::new("/opt/eldrun's bin/eldrun")), &["claude", "cursor-agent"]).unwrap();
+        install_in(dir.path(), Some(Path::new(concat!("/opt/", crate::app_slug!(), "'s bin/", crate::app_slug!()))), &["claude", "cursor-agent"]).unwrap();
         let shim = fs::read_to_string(dir.path().join("cursor-agent")).unwrap();
         assert!(shim.starts_with("#!/bin/sh\n"));
-        assert!(shim.contains("exec '/opt/eldrun'\\''s bin/eldrun' --agent-shim 'cursor-agent' \"$@\""));
-        assert!(shim.contains("ELDRUN_AGENT_FENCE"));
-        assert!(shim.contains("ELDRUN_HOST_SESSION"));
+        assert!(shim.contains(concat!("exec '/opt/", crate::app_slug!(), "'\\''s bin/", crate::app_slug!(), "' --agent-shim 'cursor-agent' \"$@\"")));
+        assert!(shim.contains(crate::app_env!("AGENT_FENCE")));
+        assert!(shim.contains(crate::app_env!("HOST_SESSION")));
         assert!(shim.contains(&format!("grep -vx -- '{}'", dir.path().to_string_lossy())));
         assert!(!shim.contains("--unfenced"));
         assert!(dir.path().join("claude").is_file());
@@ -112,34 +114,34 @@ mod tests {
     /// directory on PATH — `eldrun-send` must stay reachable from the agent.
     #[cfg(unix)]
     #[test]
-    fn a_fenced_shim_runs_the_real_cli_with_eldrun_send_still_on_path() {
+    fn a_fenced_shim_runs_the_real_cli_with_app_send_still_on_path() {
         use std::os::unix::fs::PermissionsExt;
         let shims = tempfile::tempdir().unwrap();
         let real = tempfile::tempdir().unwrap();
-        install_in(shims.path(), Some(Path::new("/nonexistent/eldrun")), &["fakecli"]).unwrap();
+        install_in(shims.path(), Some(Path::new(concat!("/nonexistent/", crate::app_slug!()))), &["fakecli"]).unwrap();
         let cli = real.path().join("fakecli");
-        fs::write(&cli, "#!/bin/sh\necho \"args=$*\"\ncommand -v eldrun-send\n").unwrap();
+        fs::write(&cli, concat!("#!/bin/sh\necho \"args=$*\"\ncommand -v ", crate::app_slug!(), "-send\n")).unwrap();
         fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
         let path = std::env::join_paths([shims.path(), real.path(), Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
         let out = std::process::Command::new(shims.path().join("fakecli"))
             .arg("hi")
             .env("PATH", &path)
-            .env("ELDRUN_AGENT_FENCE", "1")
+            .env(crate::app_env!("AGENT_FENCE"), "1")
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(out.status.success(), "{stdout} {}", String::from_utf8_lossy(&out.stderr));
         assert!(stdout.contains("args=hi"), "the real CLI ran, not the shim again: {stdout}");
         assert!(
-            stdout.contains(&shims.path().join("eldrun-send").to_string_lossy().into_owned()),
-            "eldrun-send is on the CLI's PATH: {stdout}"
+            stdout.contains(&shims.path().join(concat!(crate::app_slug!(), "-send")).to_string_lossy().into_owned()),
+            "{SLUG}-send is on the CLI's PATH: {stdout}"
         );
 
         // No real CLI anywhere but the shim: a clear error, never a loop.
         let path = std::env::join_paths([shims.path(), Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
         let out = std::process::Command::new(shims.path().join("fakecli"))
             .env("PATH", &path)
-            .env("ELDRUN_AGENT_FENCE", "1")
+            .env(crate::app_env!("AGENT_FENCE"), "1")
             .output()
             .unwrap();
         assert_eq!(out.status.code(), Some(127));

@@ -33,14 +33,14 @@ use std::sync::Mutex;
 
 /// The repository releases are published from. Any change here must also change
 /// [`LATEST_API`] and [`RELEASES_PAGE`].
-pub const REPO: &str = "fseiffarth/ProjectEldrun";
+pub const REPO: &str = crate::brand::REPO;
 
 /// The one API endpoint. `/releases/latest` skips drafts and pre-releases,
 /// which is exactly the "latest" the README's link points at.
-const LATEST_API: &str = "https://api.github.com/repos/fseiffarth/ProjectEldrun/releases/latest";
+const LATEST_API: &str = concat!("https://api.github.com/repos/", crate::app_repo!(), "/releases/latest");
 
 /// Where a human goes when the in-app path can't finish the job.
-pub const RELEASES_PAGE: &str = "https://github.com/fseiffarth/ProjectEldrun/releases/latest";
+pub const RELEASES_PAGE: &str = concat!("https://github.com/", crate::app_repo!(), "/releases/latest");
 
 /// Where GitHub serves release assets from: `<owner>/<repo>/releases/download/…`
 /// under this host.
@@ -566,7 +566,7 @@ fn safe_file_name(name: &str) -> String {
         .collect();
     let cleaned = cleaned.trim_matches('.').to_string();
     if cleaned.is_empty() {
-        "eldrun-update".to_string()
+        concat!(crate::app_slug!(), "-update").to_string()
     } else {
         cleaned
     }
@@ -1071,8 +1071,8 @@ zWKrqHHacn3R/vU4reeTtE+MP1CZrcNAOYOmswDjH92r/YoK3ZxNK3NjBg==
     fn an_untrusted_asset_name_cannot_choose_where_the_file_lands() {
         assert_eq!(safe_file_name("../../.bashrc"), "bashrc");
         assert_eq!(safe_file_name("a/b/c.AppImage"), "abc.AppImage");
-        assert_eq!(safe_file_name(""), "eldrun-update");
-        assert_eq!(safe_file_name("..."), "eldrun-update");
+        assert_eq!(safe_file_name(""), concat!(crate::app_slug!(), "-update"));
+        assert_eq!(safe_file_name("..."), concat!(crate::app_slug!(), "-update"));
         assert_eq!(
             safe_file_name("Eldrun_0.1.53_amd64.AppImage"),
             "Eldrun_0.1.53_amd64.AppImage"

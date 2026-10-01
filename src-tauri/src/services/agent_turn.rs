@@ -422,7 +422,7 @@ fn is_background_job(cmdline: &str, state: TurnState) -> bool {
 fn environ_uid(environ: &[u8]) -> Option<String> {
     environ
         .split(|b| *b == 0)
-        .find_map(|kv| kv.strip_prefix(&b"ELDRUN_TAB_UID="[..]))
+        .find_map(|kv| kv.strip_prefix(concat!(crate::app_env!("TAB_UID"), "=").as_bytes()))
         .and_then(|v| std::str::from_utf8(v).ok())
         .map(str::to_string)
 }
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn binding_maps_a_record_to_its_pty_and_a_gone_pty_unbinds() {
-        let dir = std::env::temp_dir().join(format!("eldrun-turn-{}-{}", std::process::id(), line!()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-turn-{}-{}"), std::process::id(), line!()));
         std::fs::create_dir_all(&dir).unwrap();
         let uid = "turn-test-uid-1";
         let pty = "proj-a:agent-turn-1";
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn a_leftover_record_mid_turn_reads_as_cut_off() {
-        let dir = std::env::temp_dir().join(format!("eldrun-turn-{}-{}", std::process::id(), line!()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-turn-{}-{}"), std::process::id(), line!()));
         std::fs::create_dir_all(&dir).unwrap();
         let root = dir.join("a.turn");
         let slice = dir.join("b.turn");
@@ -678,9 +678,9 @@ mod tests {
 
     #[test]
     fn environ_match_is_exact_on_the_uid() {
-        let env = b"HOME=/h\0ELDRUN_TAB_UID=aaaa-1\0PATH=/bin\0";
+        let env = concat!("HOME=/h\0", crate::app_env!("TAB_UID"), "=aaaa-1\0PATH=/bin\0").as_bytes();
         assert_eq!(environ_uid(env).as_deref(), Some("aaaa-1"));
-        assert_eq!(environ_uid(b"X_ELDRUN_TAB_UID=aaaa-1\0"), None);
+        assert_eq!(environ_uid(concat!("X_", crate::app_env!("TAB_UID"), "=aaaa-1\0").as_bytes()), None);
         assert_eq!(environ_uid(b"HOME=/h\0"), None);
     }
 
@@ -722,7 +722,7 @@ mod tests {
         let fg_uid = format!("job-fg-{}", std::process::id());
         let bg_pty = "proj-j:agent-bg";
         let fg_pty = "proj-j:agent-fg";
-        let tmp = std::env::temp_dir().join(format!("eldrun-job-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-job-{}"), std::process::id()));
         let snap = tmp.join("shell-snapshots");
         std::fs::create_dir_all(&snap).unwrap();
         let snapshot = snap.join("snapshot-bash-test.sh");
@@ -744,7 +744,7 @@ mod tests {
                     snapshot.display(),
                     cwd_file.display(),
                 ))
-                .env("ELDRUN_TAB_UID", uid)
+                .env(crate::app_env!("TAB_UID"), uid)
                 .spawn()
                 .unwrap()
         };

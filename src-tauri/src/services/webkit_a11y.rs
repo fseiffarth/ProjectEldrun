@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// WebKitGTK's own override for the accessibility bus address.
 pub const BUS_ADDRESS_VAR: &str = "WEBKIT_A11Y_BUS_ADDRESS";
 /// Eldrun's opt-in: set it to put the bridge back.
-pub const OPT_IN_VAR: &str = "ELDRUN_ENABLE_A11Y";
+pub const OPT_IN_VAR: &str = crate::app_env!("ENABLE_A11Y");
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 

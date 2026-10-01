@@ -18,6 +18,7 @@
 //! Marks come in the page's displayed units, origin top left (`MarkupPage`);
 //! everything here is AppHandle-free and checked before anything is read.
 
+use crate::brand::SLUG;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -387,7 +388,7 @@ pub fn prompt(parts: &Prompt) -> String {
         "If the {what} is built from sources in this project (LaTeX, Markdown, a script, …), make the changes there and rebuild it; do not edit the {what} itself. List any mark you could not read or apply."
     ));
     if parts.send_back {
-        lines.push(format!("When done, send the rebuilt {what} to me with `eldrun-send <file>`."));
+        lines.push(format!("When done, send the rebuilt {what} to me with `{SLUG}-send <file>`."));
     }
     lines.join("\n")
 }
@@ -425,10 +426,10 @@ mod tests {
 
     #[test]
     fn the_wire_shape_parses() {
-        let body = r#"{"source":{"files":"tok"},"pages":[{"n":3,"size":[612,792],"layer":".eldrun/inbox/a-p3-layer.png","marks":[
+        let body = concat!(r#"{"source":{"files":"tok"},"pages":[{"n":3,"size":[612,792],"layer":"."#, crate::app_slug!(), r#"/inbox/a-p3-layer.png","marks":[
             {"kind":"ink","color":"red","width":2,"points":[[1,2,0.5]]},
             {"kind":"box","color":"yellow","rect":[1,2,30,4]},
-            {"kind":"text","color":"blue","at":[5,6],"size":12,"text":"hi"}]}]}"#;
+            {"kind":"text","color":"blue","at":[5,6],"size":12,"text":"hi"}]}]}"#);
         let parsed: MarkupRequest = serde_json::from_str(body).unwrap();
         assert_eq!(parsed.source, MarkupSource::Files("tok".into()));
         assert_eq!(parsed.pages[0].marks.len(), 3);
@@ -446,17 +447,17 @@ mod tests {
 
     #[test]
     fn validation_refuses_bad_refs_and_out_of_page_marks() {
-        let good_layer = ".eldrun/inbox/20261001-120000-draft-p1-layer.png";
+        let good_layer = concat!(".", crate::app_slug!(), "/inbox/20261001-120000-draft-p1-layer.png");
         let ok = request(MarkupSource::Files("tok".into()), vec![page(1, good_layer)]);
         assert_eq!(validate(&ok), Ok(()));
         for layer in [
             "../../etc/passwd",
-            ".eldrun/inbox/../secret.png",
-            ".eldrun/inbox/sub/a.png",
-            ".eldrun/inbox/.hidden.png",
-            ".eldrun/inbox/a.jpg",
-            "/abs/.eldrun/inbox/a.png",
-            ".eldrun/outbox/a.png",
+            concat!(".", crate::app_slug!(), "/inbox/../secret.png"),
+            concat!(".", crate::app_slug!(), "/inbox/sub/a.png"),
+            concat!(".", crate::app_slug!(), "/inbox/.hidden.png"),
+            concat!(".", crate::app_slug!(), "/inbox/a.jpg"),
+            concat!("/abs/.", crate::app_slug!(), "/inbox/a.png"),
+            concat!(".", crate::app_slug!(), "/outbox/a.png"),
         ] {
             assert_eq!(validate(&request(MarkupSource::Files("t".into()), vec![page(1, layer)])), Err(MarkupError::Invalid), "{layer}");
         }
@@ -496,7 +497,7 @@ mod tests {
         assert_eq!(validate(&req), Ok(()));
         let done = submit(root, &ResolvedSource::Files("docs/draft.pdf".into()), &req, true).unwrap();
         let marked = done.marked.clone().expect("a marked copy");
-        assert!(marked.starts_with(".eldrun/inbox/") && marked.ends_with("-draft-marked.pdf"), "{marked}");
+        assert!(marked.starts_with(concat!(".", crate::app_slug!(), "/inbox/")) && marked.ends_with("-draft-marked.pdf"), "{marked}");
         let copy = fs::read(root.join(&marked)).unwrap();
         assert!(copy.starts_with(&source) && copy.len() > source.len());
         assert_eq!(fs::read(root.join("docs/draft.pdf")).unwrap(), source);
@@ -505,7 +506,7 @@ mod tests {
         assert!(done.prompt.contains(&format!("@{marked}")));
         assert!(done.prompt.contains(&format!("Page 3: @{p3}")));
         assert!(done.prompt.contains("- p3: \"use the 2024 numbers here\""));
-        assert!(done.prompt.contains("eldrun-send"));
+        assert!(done.prompt.contains(concat!(crate::app_slug!(), "-send")));
         assert!(!done.prompt.contains(&root.to_string_lossy().to_string()), "no absolute path in the prompt");
     }
 
@@ -521,8 +522,8 @@ mod tests {
         assert_eq!(done.marked, None);
         assert!(done.prompt.contains("(No marked copy: the PDF could not be read.)"));
         assert!(done.prompt.contains(&format!("Page 1: @{p1}")));
-        assert!(done.prompt.contains("`.eldrun/outbox/20261001-090000-paper.pdf`"));
-        assert!(!done.prompt.contains("eldrun-send"));
+        assert!(done.prompt.contains(concat!("`.", crate::app_slug!(), "/outbox/20261001-090000-paper.pdf`")));
+        assert!(!done.prompt.contains(concat!(crate::app_slug!(), "-send")));
         let inbox: Vec<_> = fs::read_dir(root.join(inbox::INBOX_DIR)).unwrap().flatten().collect();
         assert_eq!(inbox.len(), 1, "only the layer — no marked copy");
     }
@@ -533,17 +534,17 @@ mod tests {
         let root = dir.path();
         fs::write(root.join("docs/draft.pdf"), markup_pdf::tests::classic_pdf(&[0], false)).unwrap();
         let source = ResolvedSource::Files("docs/draft.pdf".into());
-        let missing = request(MarkupSource::Files("t".into()), vec![page(1, ".eldrun/inbox/gone.png")]);
+        let missing = request(MarkupSource::Files("t".into()), vec![page(1, concat!(".", crate::app_slug!(), "/inbox/gone.png"))]);
         assert_eq!(submit(root, &source, &missing, true), Err(MarkupError::LayerMissing));
         fs::write(root.join(inbox::INBOX_DIR).join("fake.png"), b"GIF89a not a png").unwrap();
-        let fake = request(MarkupSource::Files("t".into()), vec![page(1, ".eldrun/inbox/fake.png")]);
+        let fake = request(MarkupSource::Files("t".into()), vec![page(1, concat!(".", crate::app_slug!(), "/inbox/fake.png"))]);
         assert_eq!(submit(root, &source, &fake, true), Err(MarkupError::LayerMissing));
         #[cfg(unix)]
         {
             let outside = tempfile::tempdir().unwrap();
             fs::write(outside.path().join("x.png"), PNG).unwrap();
             std::os::unix::fs::symlink(outside.path().join("x.png"), root.join(inbox::INBOX_DIR).join("link.png")).unwrap();
-            let linked = request(MarkupSource::Files("t".into()), vec![page(1, ".eldrun/inbox/link.png")]);
+            let linked = request(MarkupSource::Files("t".into()), vec![page(1, concat!(".", crate::app_slug!(), "/inbox/link.png"))]);
             assert_eq!(submit(root, &source, &linked, true), Err(MarkupError::LayerMissing));
         }
     }
@@ -581,21 +582,21 @@ mod tests {
 
     #[test]
     fn the_prompt_is_deterministic_and_ordered() {
-        let pages = vec![page(7, ".eldrun/inbox/b.png"), page(3, ".eldrun/inbox/a.png")];
-        let parts = Prompt { source: "docs/paper/draft.pdf", picture: false, marked: Some(".eldrun/inbox/m.pdf"), failure: None, pages: &pages, send_back: true };
+        let pages = vec![page(7, concat!(".", crate::app_slug!(), "/inbox/b.png")), page(3, concat!(".", crate::app_slug!(), "/inbox/a.png"))];
+        let parts = Prompt { source: "docs/paper/draft.pdf", picture: false, marked: Some(concat!(".", crate::app_slug!(), "/inbox/m.pdf")), failure: None, pages: &pages, send_back: true };
         let text = prompt(&parts);
         assert_eq!(text, prompt(&parts));
         assert_eq!(
             text,
-            "Apply the changes I marked by hand on `docs/paper/draft.pdf`.\n\
+            concat!("Apply the changes I marked by hand on `docs/paper/draft.pdf`.\n\
              Marked copy with my handwriting and marks as annotations:\n\
-             @.eldrun/inbox/m.pdf\n\
+             @.", crate::app_slug!(), "/inbox/m.pdf\n\
              My markup layers, one per page, each the size of that page:\n\
-             Page 3: @.eldrun/inbox/a.png\n\
-             Page 7: @.eldrun/inbox/b.png\n\
+             Page 3: @.", crate::app_slug!(), "/inbox/a.png\n\
+             Page 7: @.", crate::app_slug!(), "/inbox/b.png\n\
              Read every mark (strike-throughs, insertions, circled parts, margin notes).\n\
              If the PDF is built from sources in this project (LaTeX, Markdown, a script, …), make the changes there and rebuild it; do not edit the PDF itself. List any mark you could not read or apply.\n\
-             When done, send the rebuilt PDF to me with `eldrun-send <file>`."
+             When done, send the rebuilt PDF to me with `", crate::app_slug!(), "-send <file>`.")
         );
     }
 

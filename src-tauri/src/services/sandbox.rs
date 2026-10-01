@@ -90,6 +90,7 @@
 //! All paths are built from Rust path helpers as absolute strings — never
 //! relying on `$HOME` shell-expansion, because `docker` is exec'd directly.
 
+use crate::brand::SLUG;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -105,7 +106,7 @@ use crate::terminal::PtyOptions;
 /// Default image used when a project does not override it. Building/providing
 /// this image is the user's responsibility; the toggle-time preflight offers a
 /// one-click build (see `preflight_report` / `docker/agent-sandbox/`).
-pub const DEFAULT_IMAGE: &str = "eldrun-agent-sandbox:latest";
+pub const DEFAULT_IMAGE: &str = crate::brand::SANDBOX_IMAGE;
 
 /// Default `--pids-limit` when a project does not override it. Generous enough
 /// for node + git + ripgrep + child processes, tight enough to blunt a fork bomb.
@@ -113,7 +114,7 @@ pub const DEFAULT_PIDS_LIMIT: u32 = 1024;
 
 /// `--label` marking every container Eldrun starts, so anything we own is
 /// enumerable (`docker ps --filter label=…`) and sweepable at startup/exit.
-pub const OWNER_LABEL: &str = "eldrun.owner=eldrun";
+pub const OWNER_LABEL: &str = crate::brand::DOCKER_OWNER_LABEL;
 
 /// The reference sandbox image's Dockerfile, embedded so an installed app (no
 /// repo checkout) can still materialize it for the one-click build flow.
@@ -158,14 +159,14 @@ fn sanitize_key(id: &str) -> String {
 
 /// Name of the session container for a project: `eldrun-<sanitized-id>`.
 pub fn container_name_for(project_id: &str) -> String {
-    format!("eldrun-{}", sanitize_key(project_id))
+    format!("{}{}", crate::brand::CONTAINER_PREFIX, sanitize_key(project_id))
 }
 
 /// Image tag to run for a project: a `dockerfile` spec builds a per-project tag,
 /// otherwise the spec's `image` override, otherwise the built-in default.
 pub fn image_for(project_id: &str, spec: Option<&SandboxSpec>) -> String {
     if spec.is_some_and(|s| s.dockerfile.is_some()) {
-        return format!("eldrun-{}:latest", sanitize_key(project_id));
+        return format!("{}{}:latest", crate::brand::CONTAINER_PREFIX, sanitize_key(project_id));
     }
     spec.and_then(|s| s.image.clone())
         .unwrap_or_else(|| DEFAULT_IMAGE.to_string())
@@ -257,13 +258,13 @@ pub fn docker_create_args(
         "--label".to_string(),
         OWNER_LABEL.to_string(),
         "--label".to_string(),
-        format!("eldrun.project={project_id}"),
+        format!("{}={project_id}", crate::brand::DOCKER_PROJECT_LABEL),
     ];
     if let Some(fp) = fingerprint {
         // Keep the label out of its own hash input: it is appended only on the
         // second, real build of this argv.
         a.push("--label".to_string());
-        a.push(format!("eldrun.spec={fp}"));
+        a.push(format!("{}={fp}", crate::brand::DOCKER_SPEC_LABEL));
     }
     // `--user` carries the host identity in so files the container writes are
     // the user's. On Windows there is no host uid to carry (`host_uid_gid` is
@@ -394,7 +395,7 @@ pub fn docker_exec_args(
             a.push(k.clone());
             continue;
         }
-        let value = if k == "ELDRUN_PROJECT_DIR" { container_path(v) } else { v.clone() };
+        let value = if k == crate::app_env!("PROJECT_DIR") { container_path(v) } else { v.clone() };
         a.push(format!("{k}={value}"));
     }
     for k in auth_env.keys() {
@@ -446,7 +447,7 @@ pub struct SpawnAuthority {
 /// local-agent tabs down by model, and *any* future surface that set it for a
 /// display reason would silently have handed out container escapes. The authority
 /// now comes from [`host_bound_marker_exists`].
-pub const LOCAL_MODEL_ENV: &str = "ELDRUN_LOCAL_MODEL";
+pub const LOCAL_MODEL_ENV: &str = crate::app_env!("LOCAL_MODEL");
 
 /// Directory of host-bound markers for a project:
 /// `<state_dir>/sessions/<project key>/host_bound/`.
@@ -1061,7 +1062,7 @@ fn probe_container(name: &str) -> ContainerProbe {
     let out = match docker(&[
         "inspect",
         "--format",
-        "{{.State.Running}}\t{{index .Config.Labels \"eldrun.spec\"}}",
+        &format!("{{{{.State.Running}}}}\t{{{{index .Config.Labels \"{}\"}}}}", crate::brand::DOCKER_SPEC_LABEL),
         name,
     ]) {
         Ok(o) if o.status.success() => o,
@@ -1269,7 +1270,7 @@ pub fn preflight_report(project_id: &str) -> PreflightReport {
 /// embedded copy of the reference Dockerfile materialized under the state dir
 /// (an installed app has no repo checkout). Anything else is a registry pull.
 fn build_command(project_id: &str, image: &str) -> Option<String> {
-    if image != DEFAULT_IMAGE && !image.starts_with("eldrun-") {
+    if image != DEFAULT_IMAGE && !image.starts_with(crate::brand::CONTAINER_PREFIX) {
         return Some(format!("docker pull {image}"));
     }
     let windows = cfg!(target_os = "windows");
@@ -1328,7 +1329,7 @@ fn exec_tabs() -> &'static Mutex<HashMap<String, ExecTab>> {
 fn register_exec_tab(tab_id: &str, container: &str) -> String {
     static NONCE: AtomicU64 = AtomicU64::new(0);
     let n = NONCE.fetch_add(1, Ordering::Relaxed);
-    let pidfile = format!("/tmp/eldrun-tab-{}-{n}.pid", sanitize_key(tab_id));
+    let pidfile = format!("/tmp/{SLUG}-tab-{}-{n}.pid", sanitize_key(tab_id));
     let tab = ExecTab {
         container: container.to_string(),
         pidfile: pidfile.clone(),
@@ -1767,8 +1768,8 @@ mod tests {
     #[test]
     fn install_shell_quote_powershell_flavor() {
         assert_eq!(
-            install_shell_quote(r"C:\Users\a\AppData\Local\eldrun\agent-sandbox", true),
-            r"'C:\Users\a\AppData\Local\eldrun\agent-sandbox'"
+            install_shell_quote(concat!(r"C:\Users\a\AppData\Local\", crate::app_slug!(), r"\agent-sandbox"), true),
+            concat!(r"'C:\Users\a\AppData\Local\", crate::app_slug!(), r"\agent-sandbox'")
         );
         assert_eq!(
             install_shell_quote(r"C:\Users\Jane Doe\p", true),
@@ -1814,13 +1815,13 @@ mod tests {
 
     fn create(fingerprint: Option<&str>) -> Vec<String> {
         docker_create_args(
-            "eldrun-p1",
+            concat!(crate::app_slug!(), "-p1"),
             "p1",
             "img:latest",
             "/home/alice",
             1000,
             1000,
-            "/home/alice/eldrun/projects/p1",
+            concat!("/home/alice/", crate::app_slug!(), "/projects/p1"),
             &rw("/home/alice"),
             &ro(),
             &HardenOpts::default(),
@@ -1863,13 +1864,13 @@ mod tests {
     #[test]
     fn create_argv_without_a_host_identity_omits_user() {
         let out = docker_create_args(
-            "eldrun-p1",
+            concat!(crate::app_slug!(), "-p1"),
             "p1",
             "img:latest",
             "/home/alice",
             0,
             0,
-            "/home/alice/eldrun/projects/p1",
+            concat!("/home/alice/", crate::app_slug!(), "/projects/p1"),
             &rw("/home/alice"),
             &ro(),
             &HardenOpts::default(),
@@ -1883,9 +1884,9 @@ mod tests {
 
     #[test]
     fn container_name_is_sanitized_and_prefixed() {
-        assert_eq!(container_name_for("p1"), "eldrun-p1");
-        assert_eq!(container_name_for("my proj/α"), "eldrun-my_proj__");
-        assert_eq!(container_name_for(""), "eldrun-x");
+        assert_eq!(container_name_for("p1"), concat!(crate::app_slug!(), "-p1"));
+        assert_eq!(container_name_for("my proj/α"), concat!(crate::app_slug!(), "-my_proj__"));
+        assert_eq!(container_name_for(""), concat!(crate::app_slug!(), "-x"));
     }
 
     #[test]
@@ -1957,17 +1958,17 @@ mod tests {
         assert_eq!(out[0], "run");
         assert!(out.contains(&"-d".to_string()));
         assert!(out.contains(&"--init".to_string()));
-        assert!(has_flag_value(&out, "--name", "eldrun-p1"));
+        assert!(has_flag_value(&out, "--name", concat!(crate::app_slug!(), "-p1")));
         assert!(has_flag_value(&out, "--label", OWNER_LABEL));
-        assert!(has_flag_value(&out, "--label", "eldrun.project=p1"));
+        assert!(has_flag_value(&out, "--label", concat!(crate::app_slug!(), ".project=p1")));
         assert!(has_flag_value(
             &out,
             "--label",
-            "eldrun.spec=deadbeef00000000"
+            concat!(crate::app_slug!(), ".spec=deadbeef00000000")
         ));
         assert!(has_flag_value(&out, "--user", "1000:1000"));
         assert!(has_flag_value(&out, "-e", "HOME=/home/alice"));
-        assert!(has_flag_value(&out, "-w", "/home/alice/eldrun/projects/p1"));
+        assert!(has_flag_value(&out, "-w", concat!("/home/alice/", crate::app_slug!(), "/projects/p1")));
         // Hardening always on.
         assert!(has_flag_value(&out, "--security-opt", "no-new-privileges"));
         assert!(has_flag_value(&out, "--cap-drop", "ALL"));
@@ -1980,7 +1981,7 @@ mod tests {
         assert!(has_flag_value(
             &out,
             "-v",
-            "/home/alice/eldrun/projects/p1:/home/alice/eldrun/projects/p1"
+            concat!("/home/alice/", crate::app_slug!(), "/projects/p1:/home/alice/", crate::app_slug!(), "/projects/p1")
         ));
         // rw auth mounts.
         assert!(has_flag_value(
@@ -2019,7 +2020,7 @@ mod tests {
     fn create_argv_without_fingerprint_omits_spec_label_only() {
         let bare = create(None);
         let labeled = create(Some("feedface00000000"));
-        assert!(!bare.iter().any(|s| s.starts_with("eldrun.spec=")));
+        assert!(!bare.iter().any(|s| s.starts_with(concat!(crate::app_slug!(), ".spec="))));
         assert_eq!(
             labeled.len(),
             bare.len() + 2,
@@ -2028,7 +2029,7 @@ mod tests {
         assert!(has_flag_value(
             &labeled,
             "--label",
-            "eldrun.spec=feedface00000000"
+            concat!(crate::app_slug!(), ".spec=feedface00000000")
         ));
     }
 
@@ -2048,7 +2049,7 @@ mod tests {
             readonly_rootfs: true,
         };
         let out = docker_create_args(
-            "eldrun-p1",
+            concat!(crate::app_slug!(), "-p1"),
             "p1",
             "img",
             "/h",
@@ -2072,14 +2073,14 @@ mod tests {
 
     #[test]
     fn exec_argv_has_cwd_env_killwrapper_and_preserves_resume_args() {
-        let envs = env(&[("ELDRUN_TAB_UID", "tab-1")]);
+        let envs = env(&[(crate::app_env!("TAB_UID"), "tab-1")]);
         let auth = env(&[("ANTHROPIC_API_KEY", "sk-test")]);
         let out = docker_exec_args(
-            "eldrun-p1",
-            "/home/alice/eldrun/projects/p1/sub",
+            concat!(crate::app_slug!(), "-p1"),
+            concat!("/home/alice/", crate::app_slug!(), "/projects/p1/sub"),
             &envs,
             &auth,
-            "/tmp/eldrun-tab-t1-0.pid",
+            concat!("/tmp/", crate::app_slug!(), "-tab-t1-0.pid"),
             "claude",
             &args(&["--resume", "uuid-1"]),
         );
@@ -2091,10 +2092,10 @@ mod tests {
         assert!(has_flag_value(
             &out,
             "-w",
-            "/home/alice/eldrun/projects/p1/sub"
+            concat!("/home/alice/", crate::app_slug!(), "/projects/p1/sub")
         ));
         assert!(has_flag_value(&out, "-e", "TERM=xterm-256color"));
-        assert!(has_flag_value(&out, "-e", "ELDRUN_TAB_UID=tab-1"));
+        assert!(has_flag_value(&out, "-e", concat!(crate::app_upper!(), "_TAB_UID=tab-1")));
         // Auth env rides at exec (rotated tokens per spawn), before the name —
         // by NAME only; the value is in the docker client's env (#864).
         assert!(has_flag_value(&out, "-e", "ANTHROPIC_API_KEY"));
@@ -2102,14 +2103,14 @@ mod tests {
             .iter()
             .position(|s| s == "ANTHROPIC_API_KEY")
             .unwrap();
-        let name = pos(&out, "eldrun-p1").unwrap();
+        let name = pos(&out, concat!(crate::app_slug!(), "-p1")).unwrap();
         assert!(key < name, "env must precede the container name");
         // Kill-wrapper shape: name, sh -c '<pidfile script>' sh <cmd> <args…>.
         assert_eq!(out[name + 1], "sh");
         assert_eq!(out[name + 2], "-c");
         assert!(out[name + 3].starts_with("export PATH='"));
         assert!(out[name + 3].contains("/bin"));
-        assert!(out[name + 3].ends_with("echo $$ > /tmp/eldrun-tab-t1-0.pid; exec \"$@\""));
+        assert!(out[name + 3].ends_with(concat!("echo $$ > /tmp/", crate::app_slug!(), "-tab-t1-0.pid; exec \"$@\"")));
         assert_eq!(out[name + 4], "sh");
         // Original command + resume args preserved in order after the wrapper.
         assert_eq!(&out[name + 5..], &["claude", "--resume", "uuid-1"]);
@@ -2120,34 +2121,34 @@ mod tests {
         // #864: `/proc/<pid>/cmdline` is world-readable and the docker client
         // lives as long as the tab — a key or token VALUE must be on no argv item.
         let envs = env(&[
-            ("ELDRUN_TAB_UID", "tab-1"),
+            (crate::app_env!("TAB_UID"), "tab-1"),
             (crate::services::root_mcp::TOKEN_ENV, "root-s3cret"),
             ("OPENAI_API_KEY", "tab-s3cret"),
         ]);
         let auth = env(&[("ANTHROPIC_API_KEY", "auth-s3cret"), ("OPENAI_API_KEY", "auth-wins-s3cret")]);
-        let out = docker_exec_args("eldrun-p1", "/p", &envs, &auth, "/tmp/x.pid", "claude", &[]);
+        let out = docker_exec_args(concat!(crate::app_slug!(), "-p1"), "/p", &envs, &auth, "/tmp/x.pid", "claude", &[]);
         assert!(!out.iter().any(|a| a.contains("s3cret")), "{out:?}");
         for name in [crate::services::root_mcp::TOKEN_ENV, "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] {
             assert_eq!(out.iter().filter(|a| *a == name).count(), 1, "{name} named once: {out:?}");
             assert!(has_flag_value(&out, "-e", name));
         }
-        assert!(has_flag_value(&out, "-e", "ELDRUN_TAB_UID=tab-1"));
+        assert!(has_flag_value(&out, "-e", concat!(crate::app_upper!(), "_TAB_UID=tab-1")));
         // …and the values reach the docker client's own environment instead.
         let client = docker_exec_client_env(&envs, &auth);
         assert_eq!(client.get(crate::services::root_mcp::TOKEN_ENV).map(String::as_str), Some("root-s3cret"));
         assert_eq!(client.get("ANTHROPIC_API_KEY").map(String::as_str), Some("auth-s3cret"));
         assert_eq!(client.get("OPENAI_API_KEY").map(String::as_str), Some("auth-wins-s3cret"));
-        assert!(!client.contains_key("ELDRUN_TAB_UID"));
+        assert!(!client.contains_key(crate::app_env!("TAB_UID")));
     }
 
     #[test]
     fn exec_argv_codex_resume_order_preserved() {
         let out = docker_exec_args(
-            "eldrun-p1",
+            concat!(crate::app_slug!(), "-p1"),
             "/p",
             &BTreeMap::new(),
             &BTreeMap::new(),
-            "/tmp/eldrun-tab-t2-1.pid",
+            concat!("/tmp/", crate::app_slug!(), "-tab-t2-1.pid"),
             "codex",
             &args(&["resume", "live-id"]),
         );
@@ -2163,7 +2164,7 @@ mod tests {
 
     #[test]
     fn detect_spec_sources_prefers_dockerfile_then_devcontainer_image() {
-        let base = std::env::temp_dir().join(format!("eldrun-det-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-det-{}"), std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
 
         // Nothing present → spec untouched.
@@ -2208,7 +2209,7 @@ mod tests {
             dockerfile: Some("Dockerfile".to_string()),
             ..Default::default()
         };
-        assert_eq!(image_for("p1", Some(&with_df)), "eldrun-p1:latest");
+        assert_eq!(image_for("p1", Some(&with_df)), concat!(crate::app_slug!(), "-p1:latest"));
     }
 
     // ── wrap ──────────────────────────────────────────────────────────────
@@ -2248,7 +2249,7 @@ mod tests {
             cmd: "claude".to_string(),
             args: vec![],
             env: Default::default(),
-            cwd: "/home/u/eldrun/boxes/b".to_string(),
+            cwd: concat!("/home/u/", crate::app_slug!(), "/boxes/b").to_string(),
             cols: 80,
             rows: 24,
             local_only: false,
@@ -2575,7 +2576,7 @@ mod tests {
 
     #[test]
     fn spec_dockerfile_must_stay_inside_the_project() {
-        let base = std::env::temp_dir().join(format!("eldrun-df-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-df-{}"), std::process::id()));
         let proj = base.join("proj");
         std::fs::create_dir_all(proj.join("docker")).unwrap();
         std::fs::write(proj.join("Dockerfile"), b"FROM debian:stable").unwrap();
@@ -2626,10 +2627,10 @@ mod tests {
 
     #[test]
     fn register_exec_tab_mints_unique_pidfiles_per_respawn() {
-        let a = register_exec_tab("tab/α:1", "eldrun-p1");
-        let b = register_exec_tab("tab/α:1", "eldrun-p1");
+        let a = register_exec_tab("tab/α:1", concat!(crate::app_slug!(), "-p1"));
+        let b = register_exec_tab("tab/α:1", concat!(crate::app_slug!(), "-p1"));
         assert_ne!(a, b, "a respawn must never reuse its predecessor's pidfile");
-        assert!(a.starts_with("/tmp/eldrun-tab-tab___1-"));
+        assert!(a.starts_with(concat!("/tmp/", crate::app_slug!(), "-tab-tab___1-")));
         assert!(a.ends_with(".pid"));
         // Cleanup so other tests never see this entry.
         exec_tabs().lock().unwrap().remove("tab/α:1");

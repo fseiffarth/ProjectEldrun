@@ -388,7 +388,7 @@ impl WorkspaceBackend for MacBackend {
         Ok(())
     }
 
-    fn make_sticky(&self, _eldrun_pid: u32) -> Result<(), String> {
+    fn make_sticky(&self, _app_pid: u32) -> Result<(), String> {
         // No public Spaces API to pin an app to every Space. Leave Eldrun on
         // the user-selected Space.
         Ok(())

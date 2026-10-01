@@ -4719,13 +4719,13 @@ mod tests {
     fn the_emails_folder_must_be_a_real_folder_inside_the_project() {
         let project = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), project.path().join("eldrun-emails")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), project.path().join(concat!(crate::app_slug!(), "-emails"))).unwrap();
         assert!(emails_dir_in(project.path()).is_err(), "a linked folder is refused");
 
         let project = tempfile::tempdir().unwrap();
         let made = emails_dir_in(project.path()).unwrap();
         assert!(made.is_dir());
-        assert_eq!(made, std::fs::canonicalize(project.path()).unwrap().join("eldrun-emails"));
+        assert_eq!(made, std::fs::canonicalize(project.path()).unwrap().join(concat!(crate::app_slug!(), "-emails")));
     }
 
     #[cfg(unix)]

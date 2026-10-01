@@ -196,7 +196,7 @@ pub mod pipe {
             use std::fmt::Write;
             let _ = write!(hex, "{byte:02x}");
         }
-        format!(r"\\.\pipe\eldrun-control-{hex}")
+        format!(r"\\.\pipe\{}{hex}", crate::brand::CONTROL_PIPE_PREFIX)
     }
 
     pub fn token_path(socket: &Path) -> PathBuf {
@@ -552,7 +552,7 @@ mod frame_tests {
             shutdown,
             agent_tab: Some(Arc::new(move |tmux: &str| {
                 seen.lock().unwrap().push(tmux.to_string());
-                (tmux == "eldrun-watched").then(|| AgentTabRef {
+                (tmux == concat!(crate::app_slug!(), "-watched")).then(|| AgentTabRef {
                     project_id: "p".into(),
                     project_label: "Aurora".into(),
                     tab_id: "t".into(),
@@ -603,7 +603,7 @@ mod frame_tests {
         ));
         // Agent turns go through the sidecar's own lookup: an unknown session
         // and a tab a phone is attached to both send nothing, quietly.
-        for tmux in ["eldrun-unknown", "eldrun-watched"] {
+        for tmux in [concat!(crate::app_slug!(), "-unknown"), concat!(crate::app_slug!(), "-watched")] {
             assert!(matches!(
                 respond(Ok(AdminRequest::AgentTurn {
                     tmux_session: tmux.into(),
@@ -613,7 +613,7 @@ mod frame_tests {
                 AdminResponse::Ok
             ));
         }
-        assert_eq!(*looked_up.lock().unwrap(), ["eldrun-unknown", "eldrun-watched"]);
+        assert_eq!(*looked_up.lock().unwrap(), [concat!(crate::app_slug!(), "-unknown"), concat!(crate::app_slug!(), "-watched")]);
         assert!(matches!(respond(Ok(AdminRequest::ForgetAll)), AdminResponse::Ok));
         assert!(matches!(
             respond(Err("control message timed out".into())),

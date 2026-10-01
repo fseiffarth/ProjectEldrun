@@ -18,7 +18,7 @@ use std::{
 };
 
 /// Project-relative directory an agent puts files for the phone in.
-pub const OUTBOX_DIR: &str = ".eldrun/outbox";
+pub const OUTBOX_DIR: &str = crate::brand::OUTBOX_DIR;
 /// One file the phone will load. The inbox's ceiling, for the same reason:
 /// a screenshot or a plot is a few MiB; a raw camera dump is not a message.
 pub const MAX_OUTBOX_FILE: u64 = 24 * 1024 * 1024;
@@ -485,13 +485,13 @@ mod tests {
         // Resolving to the root itself is not below it: it must not turn
         // the outbox route into a listing of every file in the project.
         let root = dir.path().join("root-alias");
-        fs::create_dir_all(root.join(".eldrun")).unwrap();
+        fs::create_dir_all(root.join(concat!(".", crate::app_slug!()))).unwrap();
         std::os::unix::fs::symlink(&root, root.join(OUTBOX_DIR)).unwrap();
         assert_eq!(list(&root), Err(OutboxError::Unavailable));
 
         // The outbox itself as a link out of the project.
         let root = dir.path().join("linked-dir");
-        fs::create_dir_all(root.join(".eldrun")).unwrap();
+        fs::create_dir_all(root.join(concat!(".", crate::app_slug!()))).unwrap();
         std::os::unix::fs::symlink(outside.path(), root.join(OUTBOX_DIR)).unwrap();
         assert_eq!(list(&root), Err(OutboxError::Unavailable));
         assert_eq!(read(&root, "private.png"), Err(OutboxError::Unavailable));

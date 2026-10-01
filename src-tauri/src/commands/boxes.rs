@@ -34,8 +34,8 @@ const BOX_AGENT_DOCS: &[&str] = &["CLAUDE.md", "GEMINI.md", "AGENTS.md"];
 /// Markers delimiting the Eldrun-managed link block inside a box agent doc. Only
 /// the text between (and including) these lines is rewritten on regeneration, so
 /// anything a user adds outside the block survives.
-const BOX_LINKS_START: &str = "<!-- eldrun:box-links:start -->";
-const BOX_LINKS_END: &str = "<!-- eldrun:box-links:end -->";
+const BOX_LINKS_START: &str = crate::brand::BOX_LINKS_START;
+const BOX_LINKS_END: &str = crate::brand::BOX_LINKS_END;
 
 fn boxes_path() -> std::path::PathBuf {
     storage::state_dir().join("boxes.json")
@@ -233,7 +233,7 @@ so it is reachable by relative path from this folder.\n",
 /// symlinks on disk) are ever removed on regeneration — a user file or folder
 /// that happens to share a member's name is never touched (the member's link
 /// gets a `-1`/`-2` suffixed name instead).
-const BOX_LINKS_MANIFEST: &str = ".eldrun-box-links.json";
+const BOX_LINKS_MANIFEST: &str = crate::brand::BOX_LINKS_MANIFEST;
 
 type BoxLinksManifest = std::collections::BTreeMap<String, String>;
 
@@ -490,7 +490,7 @@ pub fn create_box(name: String) -> Result<ProjectBox, String> {
         position,
         folder: None,
         relations: vec![],
-        eldrun_mobile_access: false,
+        app_mobile_access: false,
         extra: Default::default(),
     };
     boxes.push(new_box.clone());
@@ -616,7 +616,7 @@ pub fn set_box_mobile_access(box_id: String, enabled: bool) -> Result<ProjectBox
         .iter_mut()
         .find(|b| b.id == box_id)
         .ok_or_else(|| format!("box '{box_id}' not found"))?;
-    target.eldrun_mobile_access = enabled;
+    target.app_mobile_access = enabled;
     let updated = target.clone();
     write_boxes(&boxes)?;
     Ok(updated)
@@ -831,7 +831,7 @@ mod tests {
             "relations should be skipped: {back}"
         );
         assert!(
-            !back.contains("eldrun_mobile_access"),
+            !back.contains(concat!(crate::app_slug!(), "_mobile_access")),
             "an off Mobile bit should be skipped: {back}"
         );
 
@@ -867,11 +867,11 @@ mod tests {
         let members = vec![
             (
                 "Alpha".to_string(),
-                PathBuf::from("/home/u/eldrun/projects/alpha"),
+                PathBuf::from(concat!("/home/u/", crate::app_slug!(), "/projects/alpha")),
             ),
             (
                 "Beta".to_string(),
-                PathBuf::from("/home/u/eldrun/projects/beta"),
+                PathBuf::from(concat!("/home/u/", crate::app_slug!(), "/projects/beta")),
             ),
         ];
         let block = box_links_block("CLAUDE.md", "My Box", &members);
@@ -879,12 +879,12 @@ mod tests {
         assert!(block.trim_end().ends_with(BOX_LINKS_END));
         assert!(block.contains("My Box"));
         // Each member: root path + a link to its same-named (CLAUDE.md) doc.
-        assert!(block.contains("root: `/home/u/eldrun/projects/alpha`"));
-        assert!(block.contains("[`CLAUDE.md`](/home/u/eldrun/projects/alpha/CLAUDE.md)"));
-        assert!(block.contains("[`CLAUDE.md`](/home/u/eldrun/projects/beta/CLAUDE.md)"));
+        assert!(block.contains(concat!("root: `/home/u/", crate::app_slug!(), "/projects/alpha`")));
+        assert!(block.contains(concat!("[`CLAUDE.md`](/home/u/", crate::app_slug!(), "/projects/alpha/CLAUDE.md)")));
+        assert!(block.contains(concat!("[`CLAUDE.md`](/home/u/", crate::app_slug!(), "/projects/beta/CLAUDE.md)")));
         // The agent file name flows through, so GEMINI links point at GEMINI.md.
         let gem = box_links_block("GEMINI.md", "My Box", &members);
-        assert!(gem.contains("[`GEMINI.md`](/home/u/eldrun/projects/alpha/GEMINI.md)"));
+        assert!(gem.contains(concat!("[`GEMINI.md`](/home/u/", crate::app_slug!(), "/projects/alpha/GEMINI.md)")));
     }
 
     #[test]
@@ -950,18 +950,18 @@ mod tests {
     #[test]
     fn box_allowed_roots_covers_folder_members_and_mirror() {
         let mut b = mk_box("b1", &["p1", "p2"]);
-        b.folder = Some("/home/u/eldrun/boxes/b1".to_string());
+        b.folder = Some(concat!("/home/u/", crate::app_slug!(), "/boxes/b1").to_string());
         let mut p2 = project_entry("p2", "/home/u/code/p2");
         p2.extra.insert(
             "mirror".to_string(),
-            Value::String("/home/u/eldrun/projects-ssh/p2".to_string()),
+            Value::String(concat!("/home/u/", crate::app_slug!(), "/projects-ssh/p2").to_string()),
         );
         let projects = vec![project_entry("p1", "/home/u/code/p1"), p2];
         let roots = compute_box_allowed_roots(&vec![b], &projects, "b1").unwrap();
-        assert!(roots.contains(&PathBuf::from("/home/u/eldrun/boxes/b1")));
+        assert!(roots.contains(&PathBuf::from(concat!("/home/u/", crate::app_slug!(), "/boxes/b1"))));
         assert!(roots.contains(&PathBuf::from("/home/u/code/p1")));
         assert!(roots.contains(&PathBuf::from("/home/u/code/p2")));
-        assert!(roots.contains(&PathBuf::from("/home/u/eldrun/projects-ssh/p2")));
+        assert!(roots.contains(&PathBuf::from(concat!("/home/u/", crate::app_slug!(), "/projects-ssh/p2"))));
     }
 
     #[test]

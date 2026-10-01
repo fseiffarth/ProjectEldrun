@@ -154,7 +154,7 @@ pub fn is_hpc_spec(spec: &RemoteSpec) -> bool {
 /// know in advance that its target might be a cluster. The alternative — asking
 /// before every scan — would put the question in front of the 99% of users who
 /// have no cluster at all.
-pub const HPC_GUARD: &str = "ELDRUN_HPC_GUARD";
+pub const HPC_GUARD: &str = crate::app_env!("HPC_GUARD");
 
 /// Build the refusal a gated command returns: `ELDRUN_HPC_GUARD <what> <target>`.
 /// `what` is a stable slug the dialog switches its wording on (`du-scan`,
@@ -246,7 +246,7 @@ mod tests {
         };
         assert_eq!(
             guard_error("du-scan", &spec),
-            "ELDRUN_HPC_GUARD du-scan alice@login.example:22"
+            concat!(crate::app_upper!(), "_HPC_GUARD du-scan alice@login.example:22")
         );
         assert_eq!(guard_error("du-scan", &spec).split_whitespace().count(), 3);
     }

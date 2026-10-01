@@ -935,7 +935,7 @@ mod tests {
 
     #[test]
     fn snapshot_ids_opens_no_files() {
-        let root = unique_tmp("eldrun-bind-snap");
+        let root = unique_tmp(concat!(crate::app_slug!(), "-bind-snap"));
         let day = root.join("2026").join("07").join("11");
         std::fs::create_dir_all(&day).unwrap();
         for id in [A, B] {
@@ -957,7 +957,7 @@ mod tests {
 
     #[test]
     fn read_rollout_meta_handles_a_fat_header_and_rejects_non_meta() {
-        let root = unique_tmp("eldrun-bind-head");
+        let root = unique_tmp(concat!(crate::app_slug!(), "-bind-head"));
         std::fs::create_dir_all(&root).unwrap();
 
         // Real headers inline ~20 KB of base instructions ahead of nothing in

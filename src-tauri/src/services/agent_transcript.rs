@@ -267,7 +267,7 @@ pub fn agent_session_transcript(
 /// asked about, never followed as a name.
 pub fn subagent_token(id: &str) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(format!("eldrun-subagent:{id}").as_bytes());
+    let digest = Sha256::digest(format!("{}{id}", crate::brand::SUBAGENT_TOKEN_CONTEXT).as_bytes());
     digest[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 

@@ -29,6 +29,7 @@
 //! through directory handles (`home_io`), as `agent_session` registers its
 //! hooks. AppHandle-free.
 
+use crate::brand::{DISPLAY, UPPER};
 use std::io;
 use std::path::PathBuf;
 
@@ -39,12 +40,12 @@ use crate::storage;
 
 /// What every CLI is told.
 pub const HINT: &str =
-    "To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).";
+    concat!("To put a file in front of the user on their phone, run `", crate::app_slug!(), "-send <file>` (local and container tabs).");
 
 #[cfg(not(windows))]
-const SCRIPT_NAME: &str = "eldrun_agent_hint.sh";
+const SCRIPT_NAME: &str = crate::brand::AGENT_HINT_SH;
 #[cfg(windows)]
-const SCRIPT_NAME: &str = "eldrun_agent_hint.ps1";
+const SCRIPT_NAME: &str = crate::brand::AGENT_HINT_PS1;
 
 /// How the script prints the hint — each CLI parses its hook's stdout its own way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,17 +110,17 @@ const DROID_HOOKS: &str = ".factory/hooks.json";
 const CURSOR_HOOKS: &str = ".cursor/hooks.json";
 /// Copilot loads every `*.json` in its user hooks directory, so this file is
 /// Eldrun's alone and simply rewritten.
-const COPILOT_HOOKS: &str = ".copilot/hooks/eldrun-hint.json";
+const COPILOT_HOOKS: &str = crate::brand::COPILOT_HINT_HOOKS;
 /// Vibe's user-level instructions, loaded beside the project's `AGENTS.md`.
 const VIBE_INSTRUCTIONS: &str = ".vibe/AGENTS.md";
 /// OpenCode's global config; its `instructions` files add to `AGENTS.md`.
 const OPENCODE_CONFIG: &str = ".config/opencode/opencode.json";
 /// The hint as an instructions file, beside the script: the hooks dir is
 /// mounted read-only at its own path in the fence.
-const INSTRUCTIONS_NAME: &str = "eldrun_agent_hint.md";
+const INSTRUCTIONS_NAME: &str = crate::brand::AGENT_HINT_MD;
 
-const BLOCK_START: &str = "<!-- eldrun:agent-hint:start -->";
-const BLOCK_END: &str = "<!-- eldrun:agent-hint:end -->";
+const BLOCK_START: &str = crate::brand::AGENT_HINT_START;
+const BLOCK_END: &str = crate::brand::AGENT_HINT_END;
 
 fn script_path() -> PathBuf {
     storage::state_dir().join("hooks").join(SCRIPT_NAME)
@@ -161,10 +162,10 @@ fn posix_script_body() -> String {
     }
     format!(
         "#!/bin/sh\n\
-         # Eldrun agent hint (SessionStart): tells an agent in an Eldrun project tab\n\
+         # {DISPLAY} agent hint (SessionStart): tells an agent in an {DISPLAY} project tab\n\
          # how to put a file on the user's phone, in the output shape its CLI reads\n\
-         # ($1). Silent anywhere else. Managed by Eldrun; do not edit.\n\
-         if [ -z \"$ELDRUN_TAB_UID\" ] || [ -z \"$ELDRUN_PROJECT_DIR\" ]; then\n\
+         # ($1). Silent anywhere else. Managed by {DISPLAY}; do not edit.\n\
+         if [ -z \"${UPPER}_TAB_UID\" ] || [ -z \"${UPPER}_PROJECT_DIR\" ]; then\n\
          \x20 case \"$1\" in\n{quiet}  esac\n\
          \x20 exit 0\n\
          fi\n\
@@ -185,8 +186,8 @@ fn powershell_script_body() -> String {
     }
     format!(
         "param([string]$Shape = 'plain')\r\n\
-         # Eldrun agent hint (SessionStart) - see the POSIX twin. Managed by Eldrun; do not edit.\r\n\
-         if (-not $env:ELDRUN_TAB_UID -or -not $env:ELDRUN_PROJECT_DIR) {{\r\n\
+         # {DISPLAY} agent hint (SessionStart) - see the POSIX twin. Managed by {DISPLAY}; do not edit.\r\n\
+         if (-not $env:{UPPER}_TAB_UID -or -not $env:{UPPER}_PROJECT_DIR) {{\r\n\
          \x20 switch ($Shape) {{\r\n{quiet}  }}\r\n\
          \x20 exit 0\r\n\
          }}\r\n\
@@ -383,7 +384,7 @@ mod tests {
     fn json_shapes_print_valid_json_naming_the_command() {
         for shape in [Shape::Context, Shape::Copilot, Shape::Cursor] {
             let v: Value = serde_json::from_str(&shape.output()).unwrap();
-            assert!(v.to_string().contains("eldrun-send <file>"), "{shape:?}");
+            assert!(v.to_string().contains(concat!(crate::app_slug!(), "-send <file>")), "{shape:?}");
             let _: Value = serde_json::from_str(shape.silent()).unwrap();
         }
         let v: Value = serde_json::from_str(&Shape::Context.output()).unwrap();
@@ -393,7 +394,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn script_prints_each_shape_only_in_an_eldrun_project_tab() {
+    fn script_prints_each_shape_only_in_an_app_project_tab() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("hint.sh");
         std::fs::write(&script, posix_script_body()).unwrap();
@@ -401,8 +402,8 @@ mod tests {
             let mut cmd = std::process::Command::new("sh");
             cmd.arg(&script).arg(shape.arg()).env_clear()
                 .env("PATH", std::env::var_os("PATH").unwrap_or_default());
-            if tab { cmd.env("ELDRUN_TAB_UID", "aaaa"); }
-            if project { cmd.env("ELDRUN_PROJECT_DIR", dir.path()); }
+            if tab { cmd.env(crate::app_env!("TAB_UID"), "aaaa"); }
+            if project { cmd.env(crate::app_env!("PROJECT_DIR"), dir.path()); }
             let out = cmd.output().unwrap();
             assert!(out.status.success());
             String::from_utf8(out.stdout).unwrap()
@@ -520,11 +521,11 @@ mod tests {
     }
 
     #[test]
-    fn the_global_layer_import_recognises_the_hint_as_eldrun_s() {
+    fn the_global_layer_import_recognises_the_hint_as_app_s() {
         let hooks_dir = storage::state_dir().join("hooks").to_string_lossy().into_owned();
         let mut settings = json!({});
         add_session_start_group(&mut settings, true, &command(Shape::Context));
-        crate::services::agent_global::strip_eldrun_json_hooks(&mut settings, &hooks_dir);
+        crate::services::agent_global::strip_app_json_hooks(&mut settings, &hooks_dir);
         assert_eq!(settings, json!({}));
     }
 }

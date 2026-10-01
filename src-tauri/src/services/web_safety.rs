@@ -1047,7 +1047,7 @@ mod tests {
             "view-source:https://example.com/",
             "jar:https://example.com/a.jar!/b",
             "intent://x#Intent;end",
-            "eldrun-nonsense://x",
+            concat!(crate::app_slug!(), "-nonsense://x"),
             "about:config",
             "about:cache",
         ] {

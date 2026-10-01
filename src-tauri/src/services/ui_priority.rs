@@ -32,7 +32,7 @@ use zbus::blocking::Connection;
 pub const UI_NICE: i32 = -10;
 
 /// The opt-out.
-pub const OPT_OUT_VAR: &str = "ELDRUN_UI_PRIORITY";
+pub const OPT_OUT_VAR: &str = crate::app_env!("UI_PRIORITY");
 
 /// How often the renderer set is looked at again: a crash reload or the memory
 /// watchdog's renderer replacement brings a new process, and a popout its own.

@@ -175,9 +175,9 @@ fn no_executable_intent_is_read_from_the_project_tree() {
 #[test]
 fn the_session_dir_is_in_the_state_dir_and_is_one_component_deep() {
     let tmp = tempfile::TempDir::new().unwrap();
-    std::env::set_var("ELDRUN_STATE_DIR", tmp.path());
+    std::env::set_var(app_lib::app_env!("STATE_DIR"), tmp.path());
 
-    let state = eldrun_lib::storage::state_dir();
+    let state = app_lib::storage::state_dir();
     for id in [
         "plain-id",
         "../../etc",
@@ -187,7 +187,7 @@ fn the_session_dir_is_in_the_state_dir_and_is_one_component_deep() {
         "",
         "unicode-é",
     ] {
-        let dir = eldrun_lib::storage::project_session_dir(id);
+        let dir = app_lib::storage::project_session_dir(id);
         assert!(
             dir.starts_with(&state),
             "session dir for {id:?} escaped the state dir: {dir:?}"

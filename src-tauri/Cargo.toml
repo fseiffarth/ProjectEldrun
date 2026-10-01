@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 default-run = "eldrun"
 
 [lib]
-name = "eldrun_lib"
+name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]

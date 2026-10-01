@@ -110,7 +110,7 @@ fn helper_path(exe: Option<PathBuf>, pid: u32) -> String {
 pub fn run(args: &[std::ffi::OsString]) -> i32 {
     use std::os::unix::process::CommandExt;
     let Some((prog, rest)) = args.split_first() else {
-        eprintln!("Agent sandbox: usage: eldrun --fence-scope <program> [args…]");
+        eprintln!(concat!("Agent sandbox: usage: ", crate::app_slug!(), " --fence-scope <program> [args…]"));
         return 2;
     };
     if let Err(e) = restrict_self() {
@@ -148,8 +148,8 @@ mod tests {
             eprintln!("skipped: Landlock ABI {} has no scopes", abi());
             return;
         }
-        let outside = format!("eldrun-fence-scope-out-{}", std::process::id());
-        let inside = format!("eldrun-fence-scope-in-{}", std::process::id());
+        let outside = format!(concat!(crate::app_slug!(), "-fence-scope-out-{}"), std::process::id());
+        let inside = format!(concat!(crate::app_slug!(), "-fence-scope-in-{}"), std::process::id());
         let _listener = UnixListener::bind_addr(&SocketAddr::from_abstract_name(&outside).unwrap()).unwrap();
         let (out_addr, out_len) = abstract_addr(outside.as_bytes());
         let (in_addr, in_len) = abstract_addr(inside.as_bytes());
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn the_helper_is_the_running_binary_even_once_replaced() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("eldrun");
+        let exe = dir.path().join(crate::app_slug!());
         std::fs::write(&exe, b"").unwrap();
         assert_eq!(helper_path(Some(exe.clone()), 42), exe.to_string_lossy());
         let gone = PathBuf::from(format!("{} (deleted)", exe.display()));

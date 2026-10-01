@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 /// Where Eldrun puts agent worktrees inside a project (`commands::git`'s
 /// `worktrees_root`). Each holds a `.git` pointer file the occupant could
 /// otherwise rewrite.
-const WORKTREES_DIR: [&str; 2] = [".eldrun", "worktrees"];
+const WORKTREES_DIR: [&str; 2] = [crate::brand::PROJECT_DIR, "worktrees"];
 
 /// Files in a git dir that name programs git runs, or redirect where git reads
 /// them from.
@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn an_eldrun_worktree_guards_its_pointer_and_its_git_dir() {
+    fn an_app_worktree_guards_its_pointer_and_its_git_dir() {
         let (_tmp, root) = repo();
         let wt = root.join(WORKTREES_DIR[0]).join(WORKTREES_DIR[1]).join("feat");
         // Relative: git can't parse the `\\?\` verbatim root Windows canonicalizes to.

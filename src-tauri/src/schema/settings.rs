@@ -32,7 +32,7 @@ pub struct GlobalAppEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct EldrunMobileHostSettings {
+pub struct AppMobileHostSettings {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -779,8 +779,9 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_state: Option<WindowState>,
     /// Private, tailnet-published companion host. Absent means fully disabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub eldrun_mobile_host: Option<EldrunMobileHostSettings>,
+    // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_HOST_KEY
+    #[serde(default, rename = "eldrun_mobile_host", skip_serializing_if = "Option::is_none")]
+    pub app_mobile_host: Option<AppMobileHostSettings>,
     /// Whether the Eldrun Mobile host-status control is visible in the desktop
     /// header. Unset means visible whenever the Mobile host is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1063,6 +1064,17 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    /// The serde key is a literal in the attribute; this ties it to the brand
+    /// module so the two cannot drift.
+    #[test]
+    fn the_mobile_host_key_is_the_brand_constant() {
+        let json = format!(r#"{{"{}":{{"enabled":true}}}}"#, crate::brand::MOBILE_HOST_KEY);
+        let s: super::Settings = serde_json::from_str(&json).unwrap();
+        assert!(s.app_mobile_host.is_some());
+        let back = serde_json::to_value(&s).unwrap();
+        assert!(back.get(crate::brand::MOBILE_HOST_KEY).is_some());
+    }
+
     use super::Settings;
 
     /// The experimental rule, backend side (the frontend twin lives in
@@ -1353,7 +1365,7 @@ mod default_rule_tests {
     /// its mail gates only when they have been set.
     #[test]
     fn mobile_host_settings_default_off_and_omit_unset_gates() {
-        let m: EldrunMobileHostSettings = serde_json::from_str("{}").unwrap();
+        let m: AppMobileHostSettings = serde_json::from_str("{}").unwrap();
         assert!(!m.enabled);
         assert!(m.mail_actions.is_none() && m.mail_reply.is_none());
         assert_eq!(
@@ -1361,10 +1373,10 @@ mod default_rule_tests {
             serde_json::json!({"enabled": false})
         );
         let s: Settings = serde_json::from_str(
-            r#"{"eldrun_mobile_host":{"enabled":true,"port":8443,"mail_reply":true}}"#,
+            concat!(r#"{""#, crate::app_slug!(), r#"_mobile_host":{"enabled":true,"port":8443,"mail_reply":true}}"#),
         )
         .unwrap();
-        let host = s.eldrun_mobile_host.unwrap();
+        let host = s.app_mobile_host.unwrap();
         assert_eq!(host.port, Some(8443));
         assert_eq!(host.mail_reply, Some(true));
         assert!(host.mail_actions.is_none(), "reply and actions are independent");

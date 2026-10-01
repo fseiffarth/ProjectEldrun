@@ -29,7 +29,7 @@ use std::{
 };
 
 /// Project-relative directory the phone's files land in.
-pub const INBOX_DIR: &str = ".eldrun/inbox";
+pub const INBOX_DIR: &str = crate::brand::INBOX_DIR;
 /// State-dir-relative directory of the global inbox (no project).
 pub const GLOBAL_INBOX_DIR: &str = "inbox";
 /// One file the phone may send. A phone photo is a few MiB; a short video
@@ -346,7 +346,7 @@ mod tests {
         let root = dir.path();
         let first = store_at(root, INBOX_DIR, "IMG_1.jpg", b"one", at(T0)).unwrap();
         assert_eq!(first.name, "20260831-120000-IMG_1.jpg");
-        assert_eq!(first.reference, ".eldrun/inbox/20260831-120000-IMG_1.jpg");
+        assert_eq!(first.reference, concat!(".", crate::app_slug!(), "/inbox/20260831-120000-IMG_1.jpg"));
         assert_eq!(first.size, 3);
         assert_eq!(fs::read(root.join(&first.reference)).unwrap(), b"one");
 
@@ -383,8 +383,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
-        fs::create_dir_all(root.join(".eldrun")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), root.join(".eldrun").join("inbox")).unwrap();
+        fs::create_dir_all(root.join(concat!(".", crate::app_slug!()))).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join(concat!(".", crate::app_slug!())).join("inbox")).unwrap();
         assert_eq!(
             store_at(&root, INBOX_DIR, "leak.txt", b"x", at(T0)),
             Err(InboxError::Unavailable)

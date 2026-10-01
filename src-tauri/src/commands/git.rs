@@ -1,3 +1,4 @@
+use crate::brand::UPPER;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -1409,7 +1410,7 @@ fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, Str
 /// git won't call an http helper. Shared by push, publish and clone.
 pub(crate) fn scoped_token_config(origins: &[String], username: &str) -> Vec<String> {
     let helper = format!(
-        "!f() {{ test \"$1\" = get && echo username={username} && echo \"password=$ELDRUN_GIT_TOKEN\"; }}; f" // privacy-check: ok — an env-var NAME; the token is read at runtime, never written here
+        "!f() {{ test \"$1\" = get && echo username={username} && echo \"password=${UPPER}_GIT_TOKEN\"; }}; f" // privacy-check: ok — an env-var NAME; the token is read at runtime, never written here
     );
     let mut args = vec!["-c".to_string(), "credential.helper=".to_string()];
     for origin in origins {
@@ -1510,7 +1511,7 @@ fn push_local(
     args.extend(PUSH_ARGS.map(str::to_string));
     let mut cmd = hooked_git_command_in(dir, &args);
     if let Some(tok) = token {
-        cmd.env("ELDRUN_GIT_TOKEN", tok);
+        cmd.env(crate::app_env!("GIT_TOKEN"), tok);
         cmd.env("GIT_TERMINAL_PROMPT", "0");
     }
     cmd.output().map_err(|e| e.to_string())
@@ -1540,7 +1541,7 @@ pub(crate) fn push_transport_command(
     args.extend(["push", "--no-verify", "--porcelain", "--", url, refspec].map(str::to_string));
     let mut cmd = hardened_git_command_in(dir, &args);
     if let Some(tok) = token {
-        cmd.env("ELDRUN_GIT_TOKEN", tok);
+        cmd.env(crate::app_env!("GIT_TOKEN"), tok);
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd
@@ -1780,7 +1781,7 @@ pub(crate) fn git_clone_blocking(url: String, dest: String) -> Result<String, St
         if let Some(tok) = token.as_deref() {
             let origins = crate::commands::git_hosting::token_origins(None, None);
             cmd.args(scoped_token_config(&origins, "x-access-token"));
-            cmd.env("ELDRUN_GIT_TOKEN", tok);
+            cmd.env(crate::app_env!("GIT_TOKEN"), tok);
         }
     }
     // `--` so a URL can never be read as an option.
@@ -2576,7 +2577,7 @@ pub(crate) struct WorktreeCtx {
 impl WorktreeCtx {
     /// The one sanctioned home for this side's worktrees (I3).
     fn worktrees_root(&self) -> String {
-        self.join(&self.root, ".eldrun/worktrees")
+        self.join(&self.root, crate::brand::WORKTREES_DIR)
     }
 
     fn sep(&self) -> char {
@@ -2839,7 +2840,7 @@ fn git_worktree_add_blocking(
     // bogus gitlink (mode 160000, verified). Repo-local `info/exclude` fixes that
     // without touching a tracked file. Best-effort: a failure here costs a noisy
     // `git status`, never the worktree.
-    exclude_eldrun_dir(&ctx);
+    exclude_app_dir(&ctx);
 
     let mut args: Vec<&str> = vec!["worktree", "add"];
     if new_branch {
@@ -2862,8 +2863,8 @@ fn git_worktree_add_blocking(
 
 /// Add `.eldrun/` to the repo's own `info/exclude` if it is not already ignored.
 /// Untracked and repo-local, so it changes nothing the user has committed.
-fn exclude_eldrun_dir(ctx: &WorktreeCtx) {
-    const RULE: &str = ".eldrun/";
+fn exclude_app_dir(ctx: &WorktreeCtx) {
+    const RULE: &str = crate::brand::PROJECT_DIR_EXCLUDE_RULE;
     match ctx.target.as_ref() {
         None => {
             let Ok(out) = run_git(None, &ctx.cwd, &["rev-parse", "--git-common-dir"]) else {
@@ -2900,11 +2901,13 @@ fn exclude_eldrun_dir(ctx: &WorktreeCtx) {
         Some(t) => {
             // One round trip, nothing interpolated: `run_remote_script` supplies the
             // `cd <remote_path> &&` itself, already shell-quoted.
-            let script = "d=$(git rev-parse --git-common-dir 2>/dev/null) && \
+            let script = format!(
+                "d=$(git rev-parse --git-common-dir 2>/dev/null) && \
                  mkdir -p \"$d/info\" && \
-                 { grep -qxF '.eldrun/' \"$d/info/exclude\" 2>/dev/null || \
-                   printf '.eldrun/\\n' >> \"$d/info/exclude\"; }";
-            let _ = crate::services::ssh_exec::run_remote_script(&t.spec, script);
+                 {{ grep -qxF '{RULE}' \"$d/info/exclude\" 2>/dev/null || \
+                   printf '{RULE}\\n' >> \"$d/info/exclude\"; }}"
+            );
+            let _ = crate::services::ssh_exec::run_remote_script(&t.spec, &script);
         }
     }
 }
@@ -4083,7 +4086,7 @@ filename note.txt
         let p = resolve_worktree_path(&ctx, "feature-x").unwrap();
         assert_eq!(
             path_components(&p),
-            path_components("/home/u/proj/.eldrun/worktrees/feature-x")
+            path_components(concat!("/home/u/proj/.", crate::app_slug!(), "/worktrees/feature-x"))
         );
     }
 
@@ -4103,10 +4106,10 @@ filename note.txt
         for bad in [
             "/etc/cron.d/x",
             "/home/u/proj/wt", // inside the project, outside the root
-            "/home/u/proj/.eldrun/sessions/x", // Eldrun reads this dir as intent
+            concat!("/home/u/proj/.", crate::app_slug!(), "/sessions/x"), // Eldrun reads this dir as intent
             "../../elsewhere",
-            "/home/u/proj/.eldrun/worktrees/../../x",
-            "/home/u/proj/.eldrun/worktrees-evil/x", // prefix-match near miss
+            concat!("/home/u/proj/.", crate::app_slug!(), "/worktrees/../../x"),
+            concat!("/home/u/proj/.", crate::app_slug!(), "/worktrees-evil/x"), // prefix-match near miss
         ] {
             assert!(
                 resolve_worktree_path(&ctx, bad).is_err(),
@@ -4172,13 +4175,13 @@ filename note.txt
         // argv-order regression on the remote path was caught only by the LOCAL
         // roundtrip — which cannot run it.
         use crate::services::ssh_exec::remote_git_command;
-        let args = hardened_git_args(&["worktree", "add", "/s/p/.eldrun/worktrees/a b", "feat"]);
+        let args = hardened_git_args(&["worktree", "add", concat!("/s/p/.", crate::app_slug!(), "/worktrees/a b"), "feat"]);
         let cmd = remote_git_command("/scratch/proj", &args);
         assert_eq!(
             cmd,
-            "cd '/scratch/proj' && git '-c' 'core.fsmonitor=false' '-c' 'protocol.ext.allow=never' \
+            concat!("cd '/scratch/proj' && git '-c' 'core.fsmonitor=false' '-c' 'protocol.ext.allow=never' \
              '-c' 'safe.bareRepository=explicit' '-c' 'core.hooksPath=' 'worktree' 'add' \
-             '/s/p/.eldrun/worktrees/a b' 'feat'"
+             '/s/p/.", crate::app_slug!(), "/worktrees/a b' 'feat'")
         );
     }
 
@@ -4192,10 +4195,10 @@ filename note.txt
             root: "/scratch/proj".into(),
             posix: true,
         };
-        assert_eq!(ctx.worktrees_root(), "/scratch/proj/.eldrun/worktrees");
+        assert_eq!(ctx.worktrees_root(), concat!("/scratch/proj/.", crate::app_slug!(), "/worktrees"));
         assert_eq!(
             resolve_worktree_path(&ctx, "feat").unwrap(),
-            "/scratch/proj/.eldrun/worktrees/feat"
+            concat!("/scratch/proj/.", crate::app_slug!(), "/worktrees/feat")
         );
         assert!(resolve_worktree_path(&ctx, "/scratch/other/feat").is_err());
     }
@@ -4657,9 +4660,9 @@ filename note.txt
     /// *real* hooks, never the planted ones.
     #[cfg(unix)]
     #[test]
-    fn a_commondir_redirected_hook_never_runs_through_eldrun_git() {
+    fn a_commondir_redirected_hook_never_runs_through_app_git() {
         if !git_available() {
-            eprintln!("git not on PATH — skipping a_commondir_redirected_hook_never_runs_through_eldrun_git");
+            eprintln!(concat!("git not on PATH — skipping a_commondir_redirected_hook_never_runs_through_", crate::app_slug!(), "_git"));
             return;
         }
         use std::os::unix::fs::{symlink, PermissionsExt};

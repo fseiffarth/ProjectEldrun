@@ -1580,7 +1580,7 @@ fn preview_snippet_blocking(
         .ok_or_else(|| "no TeX engine found on PATH".to_string())?;
 
     let scratch = make_preview_scratch()?;
-    let stem = "eldrun-preview";
+    let stem = concat!(crate::app_slug!(), "-preview");
     let tex = scratch.join(format!("{stem}.tex"));
     let pdf = scratch.join(format!("{stem}.pdf"));
     let out_arg = scratch.to_string_lossy().into_owned();
@@ -2537,7 +2537,7 @@ Count:2
         // Same invariant as the full compile, asserted separately because the
         // preview builds its own argument list rather than going through
         // `compile_tex` (see `compile_args_never_enable_shell_escape`).
-        let args = engine_args("/scratch/eldrun-preview.tex", Some("/scratch"), &[]);
+        let args = engine_args(concat!("/scratch/", crate::app_slug!(), "-preview.tex"), Some("/scratch"), &[]);
         assert!(!args.iter().any(|a| flag_enables_shell_escape(a)));
         // …and turns it off outright, whatever the distribution's default (#867).
         assert!(args.iter().any(|a| a == NO_SHELL_ESCAPE), "{args:?}");
@@ -2619,7 +2619,7 @@ Count:2
 
     #[test]
     fn stale_scratch_dirs_are_swept_and_fresh_ones_kept() {
-        let root = std::env::temp_dir().join(format!("eldrun-prevsweep-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-prevsweep-{}"), std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("run-1")).unwrap();
         fs::write(root.join("stray.txt"), b"x").unwrap();
@@ -2641,7 +2641,7 @@ Count:2
 
     #[test]
     fn the_scratch_sweep_spares_the_format_cache() {
-        let root = std::env::temp_dir().join(format!("eldrun-fmtspare-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-fmtspare-{}"), std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("fmt")).unwrap();
         fs::write(root.join("fmt").join("k.fmt"), b"x").unwrap();
@@ -2689,7 +2689,7 @@ Count:2
 
     #[test]
     fn old_and_surplus_formats_are_swept_oldest_first() {
-        let root = std::env::temp_dir().join(format!("eldrun-fmtsweep-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-fmtsweep-{}"), std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let now = std::time::SystemTime::now();
@@ -2733,7 +2733,7 @@ Count:2
     fn only_embeddable_font_formats_are_offered() {
         // A format fontkit cannot embed must not reach the picker: offering it
         // and failing at export is the worst of both.
-        let dir = std::env::temp_dir().join(format!("eldrun-fonts-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-fonts-{}"), std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("nested")).unwrap();
         for name in ["Good.ttf", "Also.OTF", "Bitmap.pcf", "Notes.txt"] {
@@ -3002,7 +3002,7 @@ Count:2
 
     #[test]
     fn aux_needs_bibtex_detects_citations() {
-        let dir = std::env::temp_dir().join(format!("eldrun-tex-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-tex-{}"), std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let aux = dir.join("doc.aux");
 
@@ -3050,7 +3050,7 @@ Count:2
 
     #[test]
     fn compile_tex_rejects_non_tex() {
-        let dir = std::env::temp_dir().join(format!("eldrun-tex-nt-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-tex-nt-{}"), std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let txt = dir.join("notes.txt");
         fs::write(&txt, "hi").unwrap();
@@ -3169,7 +3169,7 @@ Count:2
 
     #[test]
     fn scan_tex_includes_recurses() {
-        let dir = std::env::temp_dir().join(format!("eldrun-tex-scan-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-tex-scan-{}"), std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("chapters")).unwrap();
         let root = dir.join("main.tex");
@@ -3204,7 +3204,7 @@ Count:2
 
     #[test]
     fn resolve_tex_root_prefers_magic_comment() {
-        let dir = std::env::temp_dir().join(format!("eldrun-tex-root-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-tex-root-{}"), std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let main = dir.join("main.tex");
@@ -3263,7 +3263,7 @@ Count:2
 
     #[test]
     fn a_doc_format_key_tracks_the_preamble_and_its_local_files() {
-        let dir = std::env::temp_dir().join(format!("eldrun-docfmt-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-docfmt-{}"), std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("macros.tex"), "\\newcommand{\\R}{\\mathbb{R}}\n").unwrap();

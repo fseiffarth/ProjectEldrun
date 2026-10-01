@@ -1172,7 +1172,7 @@ mod tests {
     /// calls the file, the bytes land under the directory **we** chose.
     #[test]
     fn a_staged_download_can_never_escape_the_quarantine_root() {
-        let root = Path::new("/var/state/eldrun/browser/quarantine");
+        let root = Path::new(concat!("/var/state/", crate::app_slug!(), "/browser/quarantine"));
         let hostile = [
             "../../etc/passwd",
             "..\\..\\windows\\system32\\cmd.exe",

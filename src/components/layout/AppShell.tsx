@@ -751,7 +751,7 @@ export function AppShell() {
       // durable tab/session pairing to restore, but before `destroy()` causes the
       // backend's general PTY teardown. A crash never reaches this path: its tmux
       // sessions remain alive and the saved tabs reattach on the next launch.
-      await invoke<void>("local_tmux_kill_eldrun_sessions").catch(() => {});
+      await invoke<void>("local_tmux_kill_app_sessions").catch(() => {});
       // Close any popped-out subwindows so they don't strand on screen; they
       // persist + re-open at their saved bounds next launch (see the helper).
       await shutdownDetachedWindows().catch(() => {});

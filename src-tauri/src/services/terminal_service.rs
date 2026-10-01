@@ -1,3 +1,4 @@
+use crate::brand::SLUG;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -161,7 +162,7 @@ fn write_terminal_session(
 /// the entire bug class. Keeping the write and dropping the automatic read costs
 /// nothing and keeps the portability property.
 fn write_export_copy(local_file: &str, session: &TerminalSession) {
-    let Some(sessions_dir) = eldrun_sessions_dir(local_file) else {
+    let Some(sessions_dir) = app_sessions_dir(local_file) else {
         return;
     };
     // A schedule binding is local control-plane state: exporting it would make a
@@ -173,7 +174,7 @@ fn write_export_copy(local_file: &str, session: &TerminalSession) {
         tab.extra.remove(SCHEDULE_TARGET_KEY);
     }
     if let Err(e) = storage::write_json_atomic(&sessions_dir.join(TERMINALS_FILE), &exported) {
-        eprintln!("terminal_service: write .eldrun export copy: {e}");
+        eprintln!("terminal_service: write .{SLUG} export copy: {e}");
     }
 }
 
@@ -231,18 +232,18 @@ fn read_state_session(project_id: &str) -> Option<TerminalSession> {
 /// all (the frontend renders a pane for them), and are listed so a marker tab is
 /// not needlessly downgraded to a shell.
 const PANE_MARKER_CMDS: &[&str] = &[
-    "__eldrun_files__",
-    "__eldrun_project_files__",
-    "__eldrun_blob__",
-    "__eldrun_network__",
-    "__eldrun_monitor__",
-    "__eldrun_diskusage__",
-    "__eldrun_calendar__",
-    "__eldrun_mail__",
-    "__eldrun_browser__",
-    "__eldrun_printing__",
-    "__eldrun_skillslibrary__",
-    "__eldrun_promptchart__",
+    crate::app_tab_command!("files"),
+    crate::app_tab_command!("project_files"),
+    crate::app_tab_command!("blob"),
+    crate::app_tab_command!("network"),
+    crate::app_tab_command!("monitor"),
+    crate::app_tab_command!("diskusage"),
+    crate::app_tab_command!("calendar"),
+    crate::app_tab_command!("mail"),
+    crate::app_tab_command!("browser"),
+    crate::app_tab_command!("printing"),
+    crate::app_tab_command!("skillslibrary"),
+    crate::app_tab_command!("promptchart"),
 ];
 
 /// Agent CLIs a persisted tab may relaunch. Mirrors the frontend's `AGENT_CMDS`
@@ -492,7 +493,7 @@ pub fn load_open_apps(project_id: &str) -> Vec<OpenApp> {
 ///
 /// **Untrusted.** Every caller must sanitize.
 fn read_project_tree_session(local_file: &str) -> Option<TerminalSession> {
-    if let Some(dir) = eldrun_sessions_dir(local_file) {
+    if let Some(dir) = app_sessions_dir(local_file) {
         let path = dir.join(TERMINALS_FILE);
         if path.exists() {
             if let Ok(session) = storage::read_json::<TerminalSession>(&path) {
@@ -648,10 +649,10 @@ const LOCAL_LAUNCH_KEY: &str = "localLaunch";
 /// `<project>/.eldrun/sessions/` — where the **export** copies of the session
 /// files live (and where `filetabs.json` / `layout.json` / `windows.json` still
 /// live outright; none of those is executable intent).
-pub fn eldrun_sessions_dir(local_file: &str) -> Option<PathBuf> {
+pub fn app_sessions_dir(local_file: &str) -> Option<PathBuf> {
     Path::new(local_file)
         .parent()
-        .map(|p| p.join(".eldrun").join("sessions"))
+        .map(|p| p.join(crate::brand::PROJECT_DIR).join("sessions"))
 }
 
 #[cfg(test)]
@@ -745,8 +746,8 @@ mod tests {
             "claude",
             "codex",
             "vibe",
-            "__eldrun_files__",
-            "__eldrun_mail__",
+            crate::app_tab_command!("files"),
+            crate::app_tab_command!("mail"),
             "zsh",
         ] {
             let mut tabs = vec![entry(cmd)];
@@ -765,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn a_local_launch_survives_only_as_a_line_eldrun_builds() {
+    fn a_local_launch_survives_only_as_a_line_app_builds() {
         let launch = |cmd: &str, args: Value| {
             let mut tab = entry(cmd);
             tab.extra.insert(
@@ -886,7 +887,7 @@ mod tests {
         write_export_copy(&local_file.to_string_lossy(), &session);
 
         let exported: TerminalSession = storage::read_json(
-            &dir.path().join(".eldrun/sessions").join(TERMINALS_FILE),
+            &dir.path().join(concat!(".", crate::app_slug!(), "/sessions")).join(TERMINALS_FILE),
         )
         .expect("read export");
         assert!(!exported.tab_layout[0]

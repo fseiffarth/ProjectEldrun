@@ -382,7 +382,7 @@ pub async fn detach_subwindow(
     let scope = project_id.clone();
     let win = TrackedWindow {
         id: label.clone(),
-        exec: "eldrun-detached".to_string(),
+        exec: concat!(crate::app_slug!(), "-detached").to_string(),
         file: None,
         pid: std::process::id(),
         project_id: Some(project_id),
@@ -1562,7 +1562,7 @@ mod tests {
     fn tracked(label: &str, window_id: Option<u64>) -> TrackedWindow {
         TrackedWindow {
             id: label.to_string(),
-            exec: "eldrun-detached".to_string(),
+            exec: concat!(crate::app_slug!(), "-detached").to_string(),
             file: None,
             pid: 1,
             project_id: Some("p1".to_string()),

@@ -46,6 +46,7 @@
 //! `RemoteSpec` (`projects.json` + `project.json`) before connecting — nothing
 //! may assume they are stable across boots.
 
+use crate::brand::SLUG;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -59,10 +60,10 @@ use crate::schema::projects::ProjectsList;
 use crate::storage;
 
 /// The guest account every VM project runs as; its home holds the tree.
-pub const VM_USER: &str = "eldrun";
+pub const VM_USER: &str = crate::brand::VM_USER;
 /// The project root inside the guest — the `RemoteSpec.remote_path` a VM
 /// project is created with.
-pub const VM_PROJECT_DIR: &str = "/home/eldrun/project";
+pub const VM_PROJECT_DIR: &str = crate::brand::VM_PROJECT_DIR;
 
 /// Baked-base-image version: bump when the bake recipe changes so an outdated
 /// base is rebuilt on demand (never automatically).
@@ -112,8 +113,8 @@ impl GuestArch {
     /// dirs), and carries the arch elsewhere.
     fn baked_image_name(self) -> String {
         match self {
-            GuestArch::X86_64 => format!("eldrun-base-{BASE_VERSION}.qcow2"),
-            GuestArch::Aarch64 => format!("eldrun-base-{BASE_VERSION}-arm64.qcow2"),
+            GuestArch::X86_64 => format!("{}{BASE_VERSION}.qcow2", crate::brand::VM_BASE_IMAGE_PREFIX),
+            GuestArch::Aarch64 => format!("{}{BASE_VERSION}-arm64.qcow2", crate::brand::VM_BASE_IMAGE_PREFIX),
         }
     }
 
@@ -878,7 +879,7 @@ pub fn bake_user_data() -> String {
     // node via NodeSource keeps the npm-installed agent CLIs current enough;
     // the stock 24.04 nodejs is fine for all three CLIs today, so stay with
     // the distro package — fewer moving parts inside the trust boundary.
-    r#"#cloud-config
+    concat!(r#"#cloud-config
 package_update: true
 packages:
   - git
@@ -890,11 +891,11 @@ packages:
   - python3-venv
 runcmd:
   - [sh, -c, "npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli || true"]
-  - [sh, -c, "echo ELDRUN_BAKE_DONE"]
+  - [sh, -c, "echo "#, crate::app_upper!(), r#"_BAKE_DONE"]
 power_state:
   mode: poweroff
   timeout: 60
-"#
+"#)
     .to_string()
 }
 
@@ -910,7 +911,7 @@ pub fn build_base_command() -> Result<String, String> {
     std::fs::write(bake.join("user-data"), bake_user_data()).map_err(|e| e.to_string())?;
     std::fs::write(
         bake.join("meta-data"),
-        cloud_init_meta_data("eldrun-bake", "eldrun-bake"),
+        cloud_init_meta_data(concat!(crate::app_slug!(), "-bake"), concat!(crate::app_slug!(), "-bake")),
     )
     .map_err(|e| e.to_string())?;
     let tool = seed_tool();
@@ -1012,7 +1013,7 @@ pub fn vm_hostname(project_name: &str) -> String {
     }
     let trimmed = out.trim_matches('-');
     if trimmed.is_empty() {
-        "eldrun-vm".to_string()
+        crate::brand::VM_NAME.to_string()
     } else {
         let mut name = String::from("vm-");
         name.push_str(&trimmed.chars().take(24).collect::<String>());
@@ -1045,7 +1046,7 @@ ssh_pwauth: false
         let addr = crate::services::vm_proxy::GUEST_PROXY_ADDR;
         doc.push_str(&format!(
             r#"write_files:
-  - path: /etc/profile.d/eldrun-proxy.sh
+  - path: /etc/profile.d/{SLUG}-proxy.sh
     permissions: '0644'
     content: |
       export http_proxy=http://{addr}
@@ -1054,7 +1055,7 @@ ssh_pwauth: false
       export HTTPS_PROXY=http://{addr}
       export no_proxy=localhost,127.0.0.1,::1
       export NO_PROXY=localhost,127.0.0.1,::1
-  - path: /etc/apt/apt.conf.d/95eldrun-proxy
+  - path: /etc/apt/apt.conf.d/95{SLUG}-proxy
     permissions: '0644'
     content: |
       Acquire::http::Proxy "http://{addr}";
@@ -1094,7 +1095,7 @@ pub fn seed_instance_id(project_id: &str, user_data: &str) -> String {
     let digest = hasher.finalize();
     let hash_hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
     let id8: String = project_id.chars().take(8).collect();
-    format!("eldrun-{id8}-{hash_hex}")
+    format!("{}{id8}-{hash_hex}", crate::brand::VM_INSTANCE_ID_PREFIX)
 }
 
 // ── QEMU argv (pure builders) ──────────────────────────────────────────────
@@ -1205,7 +1206,7 @@ fn ensure_keypair(dir: &Path) -> Result<String, String> {
     let key = dir.join("id_ed25519");
     if !key.exists() {
         let out = crate::paths::command_no_window("ssh-keygen")
-            .args(["-q", "-t", "ed25519", "-N", "", "-C", "eldrun-vm", "-f"])
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", crate::brand::VM_NAME, "-f"])
             .arg(&key)
             .output()
             .map_err(|e| format!("ssh-keygen: {e}"))?;
@@ -1902,7 +1903,7 @@ mod tests {
         assert!(machine_args_for(HostOs::Windows, GuestArch::Aarch64, None).is_none());
         assert_eq!(GuestArch::Aarch64.qemu_binary(), "qemu-system-aarch64");
         assert!(GuestArch::Aarch64.stock_image_name().contains("arm64"));
-        assert_eq!(GuestArch::X86_64.baked_image_name(), format!("eldrun-base-{BASE_VERSION}.qcow2"));
+        assert_eq!(GuestArch::X86_64.baked_image_name(), format!("{}{BASE_VERSION}.qcow2", crate::brand::VM_BASE_IMAGE_PREFIX));
     }
 
     #[test]
@@ -2014,9 +2015,9 @@ mod tests {
     fn user_data_carries_user_key_and_project_dir() {
         let doc = cloud_init_user_data("vm-proj", "ssh-ed25519 AAAA test", false);
         assert!(doc.starts_with("#cloud-config\n"));
-        assert!(doc.contains("name: eldrun"));
+        assert!(doc.contains(concat!("name: ", crate::app_slug!())));
         assert!(doc.contains("ssh-ed25519 AAAA test"));
-        assert!(doc.contains("mkdir -p /home/eldrun/project"));
+        assert!(doc.contains(concat!("mkdir -p /home/", crate::app_slug!(), "/project")));
         assert!(doc.contains("ssh_pwauth: false"));
         assert!(!doc.contains("http_proxy"));
     }
@@ -2025,7 +2026,7 @@ mod tests {
     fn user_data_proxy_mode_sets_the_guest_proxy_env() {
         let doc = cloud_init_user_data("vm-proj", "ssh-ed25519 AAAA test", true);
         assert!(doc.contains("export https_proxy=http://10.0.2.100:3128")); // privacy-check: ok — QEMU slirp, not a real host
-        assert!(doc.contains("/etc/apt/apt.conf.d/95eldrun-proxy"));
+        assert!(doc.contains(concat!("/etc/apt/apt.conf.d/95", crate::app_slug!(), "-proxy")));
         assert!(doc.contains("/etc/environment"));
     }
 
@@ -2034,7 +2035,7 @@ mod tests {
         let a = seed_instance_id("project-1234", "#cloud-config\na");
         let b = seed_instance_id("project-1234", "#cloud-config\nb");
         assert_ne!(a, b);
-        assert!(a.starts_with("eldrun-project-"));
+        assert!(a.starts_with(concat!(crate::app_slug!(), "-project-")));
         // …and is stable for a stable config:
         assert_eq!(a, seed_instance_id("project-1234", "#cloud-config\na"));
     }
@@ -2042,7 +2043,7 @@ mod tests {
     #[test]
     fn hostname_is_guest_safe() {
         assert_eq!(vm_hostname("My Project!"), "vm-my-project");
-        assert_eq!(vm_hostname("---"), "eldrun-vm");
+        assert_eq!(vm_hostname("---"), concat!(crate::app_slug!(), "-vm"));
         assert!(vm_hostname(&"x".repeat(100)).len() <= 27);
     }
 

@@ -4,8 +4,8 @@
 //! covering degenerate inputs, default values, and Python-rollback invariants
 //! that can be constructed inline without fixture files.
 
-use eldrun_lib::schema::project::TabEntry;
-use eldrun_lib::schema::{
+use app_lib::schema::project::TabEntry;
+use app_lib::schema::{
     DefaultApps, Project, ProjectEntry, Settings, TerminalSession, TimeLogEntry, WindowSession,
 };
 

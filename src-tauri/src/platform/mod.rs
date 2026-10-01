@@ -85,7 +85,7 @@ pub trait WorkspaceBackend: Send + Sync {
         true
     }
     /// Called at startup to make Eldrun visible on all desktops (sticky).
-    fn make_sticky(&self, eldrun_pid: u32) -> Result<(), String>;
+    fn make_sticky(&self, app_pid: u32) -> Result<(), String>;
     /// Called when the app exits — restore original desktop configuration.
     fn cleanup(&self) -> Result<(), String>;
 

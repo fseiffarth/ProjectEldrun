@@ -559,7 +559,7 @@ pub(crate) fn parse_proc_default_gateway(text: &str) -> Option<String> {
 /// The opaque id [`NetworkIdentity::gateway_id`] carries for a MAC.
 pub(crate) fn gateway_id_of(mac: &str) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(format!("eldrun-gateway:{}", mac.to_ascii_lowercase()));
+    let digest = Sha256::digest(format!("{}{}", crate::brand::GATEWAY_ID_CONTEXT, mac.to_ascii_lowercase()));
     digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 

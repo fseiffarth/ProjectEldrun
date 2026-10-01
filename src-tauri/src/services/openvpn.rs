@@ -2339,8 +2339,9 @@ pub fn connect_streaming(
         Err(e) => {
             remove_credfiles();
             return Err(format!(
-                concat!("failed to launch openvpn.exe: {e} — the OpenVPN Interactive Service is not \
-                 running, and a direct spawn needs ", crate::app_name!(), " itself to run as Administrator")
+                "failed to launch openvpn.exe: {e} — the OpenVPN Interactive Service is not \
+                 running, and a direct spawn needs {app} itself to run as Administrator",
+                app = crate::brand::DISPLAY
             ));
         }
     };
@@ -2364,10 +2365,11 @@ pub fn connect_streaming(
             // adapter/Administrator hint to "wrong password" would just mislead.
             Err(explain_openvpn_error(&msg).unwrap_or_else(|| {
                 format!(
-                    concat!("{msg} — if this is a permissions/adapter error, start the OpenVPN \
-                     Interactive Service (OpenVPNServiceInteractive) so ", crate::app_name!(), " can connect \
-                     unelevated, run ", crate::app_name!(), " as Administrator, or (re)install the OpenVPN \
-                     TAP/Wintun driver")
+                    "{msg} — if this is a permissions/adapter error, start the OpenVPN \
+                     Interactive Service (OpenVPNServiceInteractive) so {app} can connect \
+                     unelevated, run {app} as Administrator, or (re)install the OpenVPN \
+                     TAP/Wintun driver",
+                    app = crate::brand::DISPLAY
                 )
             }))
         }
@@ -3028,7 +3030,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn config_declaring_management_is_detected() {
-        let dir = std::env::temp_dir().join("eldrun-mgmt-detect");
+        let dir = std::env::temp_dir().join(concat!(crate::app_slug!(), "-mgmt-detect"));
         std::fs::create_dir_all(&dir).unwrap();
 
         let own = dir.join("own.ovpn");
@@ -3058,14 +3060,14 @@ mod tests {
     /// here, so a reordering would be silently accepted and mean something else.
     #[test]
     fn management_args_shape() {
-        let args = management_args(7505, Path::new("/run/eldrun/openvpn/x.mgmt.pw"));
+        let args = management_args(7505, Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.mgmt.pw")));
         assert_eq!(
             args,
             vec![
                 "--management".to_string(),
                 "127.0.0.1".to_string(),
                 "7505".to_string(),
-                "/run/eldrun/openvpn/x.mgmt.pw".to_string(),
+                concat!("/run/", crate::app_slug!(), "/openvpn/x.mgmt.pw").to_string(),
             ]
         );
     }
@@ -3250,8 +3252,8 @@ mod tests {
         let args = openvpn_args(
             "/home/u/work.ovpn",
             None,
-            Some(Path::new("/run/eldrun/openvpn/x.pass")),
-            Path::new("/run/eldrun/openvpn/x.pid"),
+            Some(Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.pass"))),
+            Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.pid")),
         )
         .unwrap();
         // --config then the path as a single item.
@@ -3259,10 +3261,10 @@ mod tests {
         assert_eq!(args[ci + 1], "/home/u/work.ovpn");
         // Passphrase-only configs feed the secret via --askpass.
         let ai = args.iter().position(|a| a == "--askpass").unwrap();
-        assert_eq!(args[ai + 1], "/run/eldrun/openvpn/x.pass");
+        assert_eq!(args[ai + 1], concat!("/run/", crate::app_slug!(), "/openvpn/x.pass"));
         assert!(!args.iter().any(|a| a == "--auth-user-pass"));
         let pi = args.iter().position(|a| a == "--writepid").unwrap();
-        assert_eq!(args[pi + 1], "/run/eldrun/openvpn/x.pid");
+        assert_eq!(args[pi + 1], concat!("/run/", crate::app_slug!(), "/openvpn/x.pid"));
         assert!(args.iter().any(|a| a == "--auth-nocache"));
     }
 
@@ -3271,8 +3273,8 @@ mod tests {
     /// directives apply at that position; a later option wins).
     #[test]
     fn openvpn_args_always_forbid_config_scripts() {
-        let pid = Path::new("/run/eldrun/openvpn/x.pid");
-        let f = Path::new("/run/eldrun/openvpn/x.f");
+        let pid = Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.pid"));
+        let f = Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.f"));
         for (userpass, askpass) in [(None, None), (Some(f), None), (None, Some(f)), (Some(f), Some(f))] {
             let args = openvpn_args("/home/u/work.ovpn", userpass, askpass, pid).unwrap();
             let ci = args.iter().position(|a| a == "--config").unwrap();
@@ -3324,8 +3326,8 @@ mod tests {
         let args = openvpn_args(
             "/home/u/work.ovpn",
             None,
-            Some(Path::new("/run/eldrun/openvpn/x.pass")),
-            Path::new("/run/eldrun/openvpn/x.pid"),
+            Some(Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.pass"))),
+            Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.pid")),
         )
         .unwrap();
         assert!(
@@ -3351,8 +3353,8 @@ mod tests {
         let args = openvpn_args(
             "/home/u/work.ovpn",
             None,
-            Some(Path::new("/run/eldrun/openvpn/x.pass")),
-            Path::new("/run/eldrun/openvpn/x.pid"),
+            Some(Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.pass"))),
+            Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.pid")),
         )
         .unwrap();
         let vi = args.iter().position(|a| a == "--verb").unwrap();
@@ -3368,13 +3370,13 @@ mod tests {
     fn openvpn_args_userpass_uses_auth_user_pass() {
         let args = openvpn_args(
             "/home/u/work.ovpn",
-            Some(Path::new("/run/eldrun/openvpn/x.auth")),
+            Some(Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.auth"))),
             None,
-            Path::new("/run/eldrun/openvpn/x.pid"),
+            Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.pid")),
         )
         .unwrap();
         let ai = args.iter().position(|a| a == "--auth-user-pass").unwrap();
-        assert_eq!(args[ai + 1], "/run/eldrun/openvpn/x.auth");
+        assert_eq!(args[ai + 1], concat!("/run/", crate::app_slug!(), "/openvpn/x.auth"));
         assert!(!args.iter().any(|a| a == "--askpass"));
     }
 
@@ -3386,18 +3388,18 @@ mod tests {
         // hangs until it times out.
         let args = openvpn_args(
             "/home/u/work.ovpn",
-            Some(Path::new("/run/eldrun/openvpn/x.auth")),
-            Some(Path::new("/run/eldrun/openvpn/x.pass")),
-            Path::new("/run/eldrun/openvpn/x.pid"),
+            Some(Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.auth"))),
+            Some(Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.pass"))),
+            Path::new(concat!("/run/", crate::app_slug!(), "/openvpn/x.pid")),
         )
         .unwrap();
         let ui = args.iter().position(|a| a == "--auth-user-pass").unwrap();
-        assert_eq!(args[ui + 1], "/run/eldrun/openvpn/x.auth");
+        assert_eq!(args[ui + 1], concat!("/run/", crate::app_slug!(), "/openvpn/x.auth"));
         let ai = args.iter().position(|a| a == "--askpass").unwrap();
-        assert_eq!(args[ai + 1], "/run/eldrun/openvpn/x.pass");
+        assert_eq!(args[ai + 1], concat!("/run/", crate::app_slug!(), "/openvpn/x.pass"));
         // …and the tail options survive both being present.
         let pi = args.iter().position(|a| a == "--writepid").unwrap();
-        assert_eq!(args[pi + 1], "/run/eldrun/openvpn/x.pid");
+        assert_eq!(args[pi + 1], concat!("/run/", crate::app_slug!(), "/openvpn/x.pid"));
         assert!(args.iter().any(|a| a == "--auth-nocache"));
     }
 
@@ -3419,7 +3421,7 @@ mod tests {
     #[test]
     fn config_requires_userpass_detects_bare_directive() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("eldrun-ovpn-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-ovpn-test-{}"), std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         // Bare `auth-user-pass` → needs a username.
@@ -3553,7 +3555,7 @@ mod tests {
     #[test]
     fn config_requires_key_passphrase_detects_encrypted_keys() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("eldrun-ovpn-key-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-ovpn-key-{}"), std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let write = |name: &str, body: &str| {
             let p = dir.join(name);
@@ -3752,7 +3754,7 @@ mod tests {
 
     #[test]
     fn pidfile_pid_accepts_digits_only() {
-        let dir = std::env::temp_dir().join(format!("eldrun-pidfile-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-pidfile-test-{}"), std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let write = |name: &str, body: &str| {
             let p = dir.join(name);
@@ -3771,7 +3773,7 @@ mod tests {
 
     #[test]
     fn wait_for_ready_logfile_finds_marker() {
-        let dir = std::env::temp_dir().join(format!("eldrun-ovpnlog-a-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-ovpnlog-a-{}"), std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("t.log");
         std::fs::write(&log, "line one\nInitialization Sequence Completed\nafter\n").unwrap();
@@ -3794,7 +3796,7 @@ mod tests {
 
     #[test]
     fn wait_for_ready_logfile_reports_death_with_tail() {
-        let dir = std::env::temp_dir().join(format!("eldrun-ovpnlog-b-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-ovpnlog-b-{}"), std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("t.log");
         std::fs::write(&log, "AUTH: Received control message: AUTH_FAILED\n").unwrap();
@@ -3813,7 +3815,7 @@ mod tests {
 
     #[test]
     fn wait_for_ready_logfile_times_out_and_holds_partial_lines() {
-        let dir = std::env::temp_dir().join(format!("eldrun-ovpnlog-c-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-ovpnlog-c-{}"), std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("t.log");
         // No trailing newline: the partial line must NOT be emitted.

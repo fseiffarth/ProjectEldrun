@@ -25,7 +25,7 @@ use std::collections::HashSet;
 /// Eldrun's own windows are additionally shielded by owning-process identity in
 /// the FFI layer, so `eldrun` here only guards same-named helper processes.
 pub const PROTECTED_PROCESSES: &[&str] = &[
-    "eldrun",
+    crate::brand::BIN_NAME,
     "explorer",
     "dwm",
     "shellexperiencehost",
@@ -72,7 +72,7 @@ impl WindowsParkState {
         if self.main_window_id == Some(id) {
             // STRUCTURAL GUARD: the main window must never be parkable, even if a
             // caller mistakenly asks. Refuse silently (debug-assert in tests).
-            debug_assert!(false, "attempted to mark the MAIN Eldrun window parkable");
+            debug_assert!(false, concat!("attempted to mark the MAIN ", crate::app_name!(), " window parkable"));
             return false;
         }
         self.override_ids.insert(id)
@@ -124,22 +124,22 @@ mod tests {
     // ── is_protected_process_name ──────────────────────────────────────────
 
     #[test]
-    fn eldrun_process_is_always_protected() {
+    fn app_process_is_always_protected() {
         // The most critical invariant: Eldrun's own helper processes must NEVER
         // be SW_HIDE-parked. (The main window is doubly protected via self_pid.)
-        assert!(is_protected_process_name("eldrun.exe"));
-        assert!(is_protected_process_name("eldrun"));
-        assert!(is_protected_process_name("ELDRUN")); // case-insensitive
-        assert!(is_protected_process_name("Eldrun.EXE"));
+        assert!(is_protected_process_name(concat!(crate::app_slug!(), ".exe")));
+        assert!(is_protected_process_name(crate::app_slug!()));
+        assert!(is_protected_process_name(crate::app_upper!())); // case-insensitive
+        assert!(is_protected_process_name(concat!(crate::app_name!(), ".EXE")));
     }
 
     #[test]
-    fn protected_processes_constant_includes_eldrun() {
+    fn protected_processes_constant_includes_app() {
         // Regression guard: if someone removes "eldrun" from PROTECTED_PROCESSES
         // by accident, this test fails immediately.
         assert!(
-            PROTECTED_PROCESSES.contains(&"eldrun"),
-            "PROTECTED_PROCESSES must contain \"eldrun\" or Eldrun helpers could be hidden"
+            PROTECTED_PROCESSES.contains(&crate::app_slug!()),
+            concat!("PROTECTED_PROCESSES must contain \"", crate::app_slug!(), "\" or ", crate::app_name!(), " helpers could be hidden")
         );
     }
 
@@ -165,7 +165,7 @@ mod tests {
         // Segment matching, not substring matching: an unrelated process whose
         // name happens to contain "eldrun"/"explorer" must remain parkable — the
         // direct analog of x11's `kwinter`/`eldrunner` test.
-        assert!(!is_protected_process_name("eldrunner.exe"));
+        assert!(!is_protected_process_name(concat!(crate::app_slug!(), "ner.exe")));
         assert!(!is_protected_process_name("explorerplus.exe"));
     }
 

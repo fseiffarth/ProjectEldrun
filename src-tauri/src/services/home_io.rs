@@ -383,7 +383,7 @@ impl HomeFile {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.subsec_nanos())
                     .unwrap_or(0);
-                let tmp = OsString::from(format!(".{name}.eldrun-{pid}-{n}-{nanos:x}.tmp"));
+                let tmp = OsString::from(format!(".{name}.{}-{pid}-{n}-{nanos:x}.tmp", crate::brand::SLUG));
                 let mut file = match self.open_at(
                     &tmp,
                     libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
@@ -547,12 +547,12 @@ mod tests {
         std::fs::rename(home.join(".claude"), home.join(".claude.moved")).unwrap();
         std::os::unix::fs::symlink(&outside, home.join(".claude")).unwrap();
 
-        file.write(b"eldrun").unwrap();
+        file.write(crate::app_slug!().as_bytes()).unwrap();
         file.set_exec_bits(0o111).unwrap();
 
         assert_eq!(std::fs::read_to_string(outside.join("settings.json")).unwrap(), "host");
-        assert_eq!(std::fs::read_to_string(home.join(".claude.moved/settings.json")).unwrap(), "eldrun");
-        assert_eq!(file.read().unwrap(), b"eldrun");
+        assert_eq!(std::fs::read_to_string(home.join(".claude.moved/settings.json")).unwrap(), crate::app_slug!());
+        assert_eq!(file.read().unwrap(), crate::app_slug!().as_bytes());
         file.remove().unwrap();
         assert!(outside.join("settings.json").exists());
         assert!(!home.join(".claude.moved/settings.json").exists());

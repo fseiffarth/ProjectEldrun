@@ -160,7 +160,7 @@ impl WorkspaceBackend for WindowsBackend {
         Ok(())
     }
 
-    fn make_sticky(&self, _eldrun_pid: u32) -> Result<(), String> {
+    fn make_sticky(&self, _app_pid: u32) -> Result<(), String> {
         // Documented Windows APIs do not expose "show on all desktops" for an
         // app-owned window. Leave Eldrun on the user-selected desktop.
         Ok(())

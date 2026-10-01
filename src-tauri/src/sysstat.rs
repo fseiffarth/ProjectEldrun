@@ -17,6 +17,7 @@
 //! `busy_secs = ticks / clk_tck()` formula is correct on every backend (Linux
 //! jiffies + USER_HZ; Windows 100-ns units + 10_000_000).
 
+use crate::brand::UPPER;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -824,8 +825,8 @@ fn pick_cpu_temp(channels: &[(Option<String>, f64)]) -> Option<f64> {
 /// as well as an explicit `1`: without it, a machine the user owns and told
 /// Eldrun to read fully would still be redacted the moment it happened to have a
 /// scheduler installed.
-pub const REMOTE_SNAPSHOT_SCRIPT: &str = r#"
-_careful="${ELDRUN_CAREFUL:-}"
+pub const REMOTE_SNAPSHOT_SCRIPT: &str = concat!(r#"
+_careful="${"#, crate::app_upper!(), r#"_CAREFUL:-}"
 if [ -z "$_careful" ]; then
   if command -v sbatch >/dev/null 2>&1 || command -v sinfo >/dev/null 2>&1 \
      || command -v squeue >/dev/null 2>&1; then _careful=1; else _careful=0; fi
@@ -969,7 +970,7 @@ BEGIN {
 if [ -n "$_uids" ]; then getent passwd $_uids 2>/dev/null; fi
 fi
 :
-"#;
+"#);
 
 /// [`REMOTE_SNAPSHOT_SCRIPT`] with careful mode pinned by the caller, or left to
 /// the host to decide.
@@ -988,8 +989,8 @@ fi
 /// host's own SLURM check is still the best available signal.
 pub fn remote_snapshot_script(careful: Option<bool>) -> String {
     match careful {
-        Some(true) => format!("ELDRUN_CAREFUL=1\n{REMOTE_SNAPSHOT_SCRIPT}"),
-        Some(false) => format!("ELDRUN_CAREFUL=0\n{REMOTE_SNAPSHOT_SCRIPT}"),
+        Some(true) => format!("{UPPER}_CAREFUL=1\n{REMOTE_SNAPSHOT_SCRIPT}"),
+        Some(false) => format!("{UPPER}_CAREFUL=0\n{REMOTE_SNAPSHOT_SCRIPT}"),
         None => REMOTE_SNAPSHOT_SCRIPT.to_string(),
     }
 }
@@ -3307,9 +3308,9 @@ R\t78\t4096\n\
         // A caller with an answer pins it in either direction; `None` leaves the
         // script's own SLURM probe to decide.
         let forced = remote_snapshot_script(Some(true));
-        assert!(forced.starts_with("ELDRUN_CAREFUL=1\n"));
+        assert!(forced.starts_with(concat!(crate::app_upper!(), "_CAREFUL=1\n")));
         assert!(forced.ends_with(REMOTE_SNAPSHOT_SCRIPT));
-        assert!(remote_snapshot_script(Some(false)).starts_with("ELDRUN_CAREFUL=0\n"));
+        assert!(remote_snapshot_script(Some(false)).starts_with(concat!(crate::app_upper!(), "_CAREFUL=0\n")));
         assert_eq!(remote_snapshot_script(None), REMOTE_SNAPSHOT_SCRIPT);
         // The host-side detection and every collection branch it gates.
         assert!(REMOTE_SNAPSHOT_SCRIPT.contains("command -v sbatch"));

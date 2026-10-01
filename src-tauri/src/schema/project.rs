@@ -808,8 +808,8 @@ mod tests {
     fn hpc_info_writes_only_what_it_knows() {
         assert_eq!(json(&HpcInfo::default()), serde_json::json!({}));
         let partial = HpcInfo {
-            anchor_dir: Some("/home/u/eldrun-anchors/p".into()),
-            anchor_rel: Some("eldrun-anchors/p".into()),
+            anchor_dir: Some(concat!("/home/u/", crate::app_slug!(), "-anchors/p").into()),
+            anchor_rel: Some(concat!(crate::app_slug!(), "-anchors/p").into()),
             ..Default::default()
         };
         let out = json(&partial);

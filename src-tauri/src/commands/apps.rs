@@ -1021,7 +1021,7 @@ thread_local! {
 /// handoff, so it needs to hear the end from the OS: once GTK owns the pointer,
 /// the webview never sees the `pointerup` that would otherwise end it.
 #[cfg(target_os = "linux")]
-pub const FILE_DRAG_ENDED: &str = "eldrun:file-drag-ended";
+pub const FILE_DRAG_ENDED: &str = crate::brand::FILE_DRAG_ENDED_EVENT;
 
 /// Start a native OS drag-out of `paths` from the calling window (Linux/GTK).
 ///
@@ -2107,7 +2107,7 @@ pub fn close_tracked_window(
         return Err("unknown window".into());
     };
     if entry.origin == ORIGIN_DETACHED_SUBWINDOW || entry.pid == std::process::id() {
-        return Err("not closeable: eldrun-owned window".into());
+        return Err("not closeable: app-owned window".into());
     }
     if entry.pid == 0 {
         return Err("not closeable: no tracked pid".into());
@@ -2602,7 +2602,7 @@ mod tests {
     fn base64_roundtrip_via_reference_crate() {
         use base64::Engine;
 
-        let input = b"Eldrun workspace manager";
+        let input = b"A workspace manager";
         let encoded = base64_encode(input);
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(encoded)
@@ -2839,7 +2839,7 @@ mod tests {
     #[test]
     fn split_exec_command_keeps_existing_path_with_spaces_whole() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("eldrun test app {}.txt", std::process::id()));
+        let path = dir.join(format!(concat!(crate::app_slug!(), " test app {}.txt"), std::process::id()));
         fs::write(&path, b"").unwrap();
         let exec = path.to_string_lossy().into_owned();
         assert_eq!(split_exec_command(&exec), (exec.as_str(), vec![]));
@@ -2855,7 +2855,7 @@ mod tests {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "eldrun-test-{}-{}.desktop",
+            concat!(crate::app_slug!(), "-test-{}-{}.desktop"),
             std::process::id(),
             SEQ.fetch_add(1, Ordering::Relaxed)
         ));
@@ -3053,7 +3053,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn unix_script_command_passes_args_through_to_the_script() {
-        let dir = std::env::temp_dir().join(format!("eldrun-args-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-args-{}"), std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("echo args.sh");
         std::fs::write(&script, "printf '%s|' \"$@\"\n").unwrap();

@@ -463,7 +463,7 @@ mod tests {
         let path = dir.path().join("config.json");
         let victim = dir.path().join("victim");
         std::fs::write(&victim, "keep").unwrap();
-        let planted = path.with_extension(format!("eldrun-{}.tmp", std::process::id()));
+        let planted = path.with_extension(format!(concat!(crate::app_slug!(), "-{}.tmp"), std::process::id()));
         std::os::unix::fs::symlink(&victim, planted).unwrap();
         let file = HomeFile::open(dir.path(), "config.json").unwrap();
         write_private(&file, "", &serde_json::json!({"model": "x"})).unwrap();

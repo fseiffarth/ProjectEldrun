@@ -955,12 +955,12 @@ impl Askpass {
         vec![
             ("SSH_ASKPASS", self.path.clone().into_os_string()),
             ("SSH_ASKPASS_REQUIRE", std::ffi::OsString::from("force")),
-            ("ELDRUN_ASKPASS", std::ffi::OsString::from(&self.password)),
+            (crate::app_env!("ASKPASS"), std::ffi::OsString::from(&self.password)),
             (
-                "ELDRUN_ASKPASS_REJECT",
+                crate::app_env!("ASKPASS_REJECT"),
                 self.reject.clone().into_os_string(),
             ),
-            ("ELDRUN_ASKPASS_TALLY", self.tally.clone().into_os_string()),
+            (crate::app_env!("ASKPASS_TALLY"), self.tally.clone().into_os_string()),
         ]
     }
 
@@ -1155,22 +1155,22 @@ static ASKPASS_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// nothing, so ssh fails auth instead of the secret going somewhere unvetted.
 /// Exposed cfg-free so the refusal is unit-tested on any platform.
 pub fn unix_askpass_shim_body() -> &'static str {
-    r#"#!/bin/sh
+    concat!(r#"#!/bin/sh
 # $1 is the prompt OpenSSH wants answered. Release the secret only for OpenSSH's
 # own password request; record and refuse everything else.
 case "$1" in
   *"'s password:"*)
     # One byte per answer, so the caller can tell a re-ask (i.e. the previous
     # answer was rejected) from a first ask. See `Askpass::answer_count`.
-    printf 'x' >> "$ELDRUN_ASKPASS_TALLY" 2>/dev/null
-    printf '%s\n' "$ELDRUN_ASKPASS"
+    printf 'x' >> "$"#, crate::app_upper!(), r#"_ASKPASS_TALLY" 2>/dev/null
+    printf '%s\n' "$"#, crate::app_upper!(), r#"_ASKPASS"
     ;;
   *)
-    printf '%s' "$1" > "$ELDRUN_ASKPASS_REJECT" 2>/dev/null
+    printf '%s' "$1" > "$"#, crate::app_upper!(), r#"_ASKPASS_REJECT" 2>/dev/null
     exit 1
     ;;
 esac
-"#
+"#)
 }
 
 /// [`unix_askpass_shim_body`] for the key-passphrase path: the same shim with the
@@ -1180,7 +1180,7 @@ esac
 /// would land unquoted in `case`, which is precisely the kind of indirection this
 /// shim exists to avoid.
 pub fn unix_passphrase_askpass_shim_body() -> &'static str {
-    r#"#!/bin/sh
+    concat!(r#"#!/bin/sh
 # $1 is the prompt OpenSSH wants answered. Release the secret only for OpenSSH's
 # local key-passphrase request; record and refuse everything else — in particular
 # any prompt whose answer would travel to the server.
@@ -1189,15 +1189,15 @@ case "$1" in
     # One byte per answer. OpenSSH re-asks only when the key failed to decrypt,
     # so a tally above one IS the wrong-passphrase signal — see
     # `Askpass::answer_count`.
-    printf 'x' >> "$ELDRUN_ASKPASS_TALLY" 2>/dev/null
-    printf '%s\n' "$ELDRUN_ASKPASS"
+    printf 'x' >> "$"#, crate::app_upper!(), r#"_ASKPASS_TALLY" 2>/dev/null
+    printf '%s\n' "$"#, crate::app_upper!(), r#"_ASKPASS"
     ;;
   *)
-    printf '%s' "$1" > "$ELDRUN_ASKPASS_REJECT" 2>/dev/null
+    printf '%s' "$1" > "$"#, crate::app_upper!(), r#"_ASKPASS_REJECT" 2>/dev/null
     exit 1
     ;;
 esac
-"#
+"#)
 }
 
 /// The shim body for `kind` — [`unix_askpass_shim_body`] or
@@ -1287,9 +1287,9 @@ pub fn make_askpass_for(
 /// avoid, and a state-dir path carries the Windows account name. PowerShell reads
 /// it from the environment block instead, so no shell ever re-parses it.
 pub fn windows_askpass_shim_body() -> &'static str {
-    "@powershell.exe -NoProfile -NonInteractive -Command \
-     \"Add-Content -LiteralPath $env:ELDRUN_ASKPASS_TALLY -Value 'x' -NoNewline \
-     -ErrorAction SilentlyContinue; [Console]::Out.WriteLine($env:ELDRUN_ASKPASS)\"\r\n"
+    concat!("@powershell.exe -NoProfile -NonInteractive -Command \
+     \"Add-Content -LiteralPath $env:", crate::app_upper!(), "_ASKPASS_TALLY -Value 'x' -NoNewline \
+     -ErrorAction SilentlyContinue; [Console]::Out.WriteLine($env:", crate::app_upper!(), "_ASKPASS)\"\r\n")
 }
 
 /// Windows counterpart of the Unix [`make_askpass`]: writes an `ap-{pid}-{seq}.cmd`
@@ -1604,7 +1604,7 @@ pub fn locked_key_hint(user: &Option<String>, host: &str, port: Option<u16>) -> 
 /// has never been seen. The frontend keys on this exact string to raise the
 /// fingerprint-confirmation dialog instead of showing a dead end; keep them in
 /// step (`src/lib/remote/hostKey.ts`).
-pub const UNKNOWN_HOST_KEY: &str = "ELDRUN_UNKNOWN_HOST_KEY";
+pub const UNKNOWN_HOST_KEY: &str = crate::app_env!("UNKNOWN_HOST_KEY");
 
 /// How OpenSSH itself resolves `[user@]host[:port]` after `~/.ssh/config` is
 /// applied — `ssh -G` prints the effective settings without connecting. Needed
@@ -1960,7 +1960,7 @@ mod tests {
         assert!(dial_refusal(false, DialIntent::UserInitiated, key).is_none());
         assert!(dial_refusal(true, DialIntent::UserInitiated, key).is_none());
         let err = dial_refusal(true, DialIntent::Background, key).unwrap();
-        assert_eq!(err, "ELDRUN_HPC_GUARD connect alice@login.example:22");
+        assert_eq!(err, concat!(crate::app_upper!(), "_HPC_GUARD connect alice@login.example:22"));
         assert_eq!(err.split_whitespace().count(), 3);
     }
 
@@ -2336,7 +2336,7 @@ mod tests {
     fn windows_askpass_shim_echoes_env_without_cmd_interpolation() {
         let body = windows_askpass_shim_body();
         // The secret must travel via the environment…
-        assert!(body.contains("ELDRUN_ASKPASS"));
+        assert!(body.contains(crate::app_env!("ASKPASS")));
         // …and never through cmd's %VAR% expansion, which re-parses the value
         // (`& | < > ^` in a password would execute/mangle). PowerShell writes
         // the variable verbatim instead.
@@ -2363,10 +2363,10 @@ mod tests {
         // The password is passed only via ELDRUN_ASKPASS, never written to disk.
         let body = std::fs::read_to_string(&shim).unwrap();
         assert!(!body.contains("hunter2"), "shim must not embed the secret");
-        assert!(body.contains("ELDRUN_ASKPASS"));
+        assert!(body.contains(crate::app_env!("ASKPASS")));
         assert!(env
             .iter()
-            .any(|(k, v)| *k == "ELDRUN_ASKPASS" && v == "hunter2"));
+            .any(|(k, v)| *k == crate::app_env!("ASKPASS") && v == "hunter2"));
         assert!(env
             .iter()
             .any(|(k, v)| *k == "SSH_ASKPASS_REQUIRE" && v == "force"));
@@ -2479,7 +2479,7 @@ mod tests {
         );
 
         // The record is part of the shim's temp files and goes with them.
-        let reject = shim_file(&ap, "ELDRUN_ASKPASS_REJECT");
+        let reject = shim_file(&ap, crate::app_env!("ASKPASS_REJECT"));
         drop(ap);
         assert!(
             !reject.exists(),
@@ -2658,7 +2658,7 @@ mod tests {
             "me@host.example: Permission denied (publickey)."
         ));
 
-        let tally = shim_file(&ap, "ELDRUN_ASKPASS_TALLY");
+        let tally = shim_file(&ap, crate::app_env!("ASKPASS_TALLY"));
         drop(ap);
         assert!(!tally.exists(), "the tally must be deleted on drop");
     }
@@ -2735,7 +2735,7 @@ mod tests {
         // The frontend keys on this exact prefix to raise the fingerprint dialog
         // (`src/lib/remote/hostKey.ts`); a rename here silently turns that dialog into a
         // dead-end error message.
-        assert_eq!(UNKNOWN_HOST_KEY, "ELDRUN_UNKNOWN_HOST_KEY");
+        assert_eq!(UNKNOWN_HOST_KEY, crate::app_env!("UNKNOWN_HOST_KEY"));
     }
 
     #[cfg(any(unix, windows))]

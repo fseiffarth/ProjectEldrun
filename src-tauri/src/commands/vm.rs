@@ -393,12 +393,12 @@ mod tests {
     #[test]
     fn remote_rel_stays_inside_the_root() {
         assert_eq!(
-            resolve_remote_rel("/home/eldrun/project/", "src/main.rs").unwrap(),
-            "/home/eldrun/project/src/main.rs"
+            resolve_remote_rel(concat!("/home/", crate::app_slug!(), "/project/"), "src/main.rs").unwrap(),
+            concat!("/home/", crate::app_slug!(), "/project/src/main.rs")
         );
         assert_eq!(
-            resolve_remote_rel("/home/eldrun/project", "").unwrap(),
-            "/home/eldrun/project"
+            resolve_remote_rel(concat!("/home/", crate::app_slug!(), "/project"), "").unwrap(),
+            concat!("/home/", crate::app_slug!(), "/project")
         );
         assert!(resolve_remote_rel("/root", "../etc/passwd").is_err());
         assert!(resolve_remote_rel("/root", "a//b").is_err());

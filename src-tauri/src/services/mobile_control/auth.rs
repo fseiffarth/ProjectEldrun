@@ -333,7 +333,8 @@ impl AuthStore {
         let nonce = random_id::<24>()?;
         let expires_at = now() + CHALLENGE_TTL;
         let payload = format!(
-            "eldrun-mobile-auth-v1\n{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}",
+            crate::brand::MOBILE_AUTH_CONTEXT,
             self.origin, device_id, nonce, expires_at
         );
         self.challenges.insert(

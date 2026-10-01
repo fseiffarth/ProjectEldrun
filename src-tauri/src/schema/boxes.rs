@@ -53,8 +53,9 @@ pub struct ProjectBox {
     /// listed on a paired phone. Off by default and absent from disk while off,
     /// exactly like a project's `eldrun_mobile_access` — the sidecar reads this
     /// file directly, so the bit lives here and nowhere else.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub eldrun_mobile_access: bool,
+    // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
+    #[serde(default, rename = "eldrun_mobile_access", skip_serializing_if = "std::ops::Not::not")]
+    pub app_mobile_access: bool,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -66,6 +67,17 @@ pub type BoxesList = Vec<ProjectBox>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The serde key is a literal in the attribute; this ties it to the brand
+    /// module so the two cannot drift.
+    #[test]
+    fn the_mobile_access_key_is_the_brand_constant() {
+        let json = format!(r#"{{"id":"b","name":"B","{}":true}}"#, crate::brand::MOBILE_ACCESS_KEY);
+        let b: ProjectBox = serde_json::from_str(&json).unwrap();
+        assert!(b.app_mobile_access);
+        let back = serde_json::to_value(&b).unwrap();
+        assert_eq!(back[crate::brand::MOBILE_ACCESS_KEY], true);
+    }
 
     fn json<T: Serialize>(value: &T) -> Value {
         serde_json::to_value(value).expect("serialize")
@@ -80,7 +92,7 @@ mod tests {
         assert_eq!(b.position, 0);
         assert!(b.folder.is_none());
         assert!(b.relations.is_empty());
-        assert!(!b.eldrun_mobile_access);
+        assert!(!b.app_mobile_access);
         assert!(b.extra.is_empty());
     }
 
@@ -94,19 +106,19 @@ mod tests {
             ..Default::default()
         };
         let out = json(&off);
-        assert!(out.get("eldrun_mobile_access").is_none(), "{out}");
+        assert!(out.get(concat!(crate::app_slug!(), "_mobile_access")).is_none(), "{out}");
         assert!(out.get("relations").is_none(), "empty relations are omitted");
         assert!(out.get("folder").is_none());
         assert_eq!(out["member_ids"], serde_json::json!([]));
         assert_eq!(out["position"], 0);
 
         let on = ProjectBox {
-            eldrun_mobile_access: true,
+            app_mobile_access: true,
             ..off
         };
-        assert_eq!(json(&on)["eldrun_mobile_access"], true);
+        assert_eq!(json(&on)[concat!(crate::app_slug!(), "_mobile_access")], true);
         let back: ProjectBox = serde_json::from_value(json(&on)).unwrap();
-        assert!(back.eldrun_mobile_access);
+        assert!(back.app_mobile_access);
     }
 
     /// Relations keep their optional labels only when set, and unknown keys on

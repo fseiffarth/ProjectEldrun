@@ -45,7 +45,7 @@ pub fn files_open(state_dir: &Path) -> bool {
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .and_then(|settings| {
             settings
-                .get("eldrun_mobile_host")?
+                .get(crate::brand::MOBILE_HOST_KEY)?
                 .get("project_files")?
                 .as_bool()
         })
@@ -103,7 +103,7 @@ pub struct Listing {
 /// courtesy against a glance over a shoulder, not the boundary — that is the
 /// switch, since a phone with a shell can read anything anyway.
 pub fn hidden(name: &str) -> bool {
-    name == ".git" || name == ".eldrun" || name.starts_with(".env")
+    name == ".git" || name == crate::brand::PROJECT_DIR || name.starts_with(".env")
 }
 
 /// A leaf the browser lists and resolves. The same test both ways, so nothing
@@ -128,7 +128,7 @@ fn token_key(host_key: &[u8]) -> [u8; 32] {
     // Not `[0u8; 32]`: CodeQL reads that literal as the key itself, since it
     // doesn't see `expand` overwrite the buffer.
     let mut key: [u8; 32] = std::array::from_fn(|_| 0);
-    Hkdf::<Sha256>::new(Some(b"eldrun-mobile-files"), host_key)
+    Hkdf::<Sha256>::new(Some(crate::brand::MOBILE_FILES_SALT.as_bytes()), host_key)
         .expand(b"path-token v1", &mut key)
         .expect("32 bytes is a valid HKDF-SHA256 length");
     key
@@ -428,7 +428,7 @@ mod tests {
         let root = dir.path();
         fs::create_dir_all(root.join("src/deep")).unwrap();
         fs::create_dir_all(root.join(".git")).unwrap();
-        fs::create_dir_all(root.join(".eldrun/outbox")).unwrap();
+        fs::create_dir_all(root.join(concat!(".", crate::app_slug!(), "/outbox"))).unwrap();
         fs::write(root.join("README.md"), "# Hello\n").unwrap();
         fs::write(root.join("b.txt"), "b").unwrap();
         fs::write(root.join("plot.png"), PNG).unwrap();
@@ -492,7 +492,7 @@ mod tests {
         let dir = tree();
         assert_eq!(read(dir.path(), "src/main.rs").unwrap(), (b"fn main() {}\n".to_vec(), "text/plain; charset=utf-8"));
         assert_eq!(read(dir.path(), "plot.png").unwrap().1, "image/png");
-        for refused in ["", "src", "missing.txt", ".env.local", ".git", ".eldrun/outbox", "../x", "src/../b.txt"] {
+        for refused in ["", "src", "missing.txt", ".env.local", ".git", concat!(".", crate::app_slug!(), "/outbox"), "../x", "src/../b.txt"] {
             assert!(read(dir.path(), refused).is_err(), "{refused}");
         }
         assert_eq!(list(dir.path(), "README.md", KEY, "p1"), Err(FilesError::NotFound));
@@ -586,9 +586,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(!files_open(dir.path()));
         let write = |value: Value| fs::write(dir.path().join("settings.json"), value.to_string()).unwrap();
-        write(serde_json::json!({ "eldrun_mobile_host": { "enabled": true } }));
+        write(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true } }));
         assert!(!files_open(dir.path()));
-        write(serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }));
+        write(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true, "project_files": true } }));
         assert!(files_open(dir.path()));
         fs::write(dir.path().join("settings.json"), "{ not json").unwrap();
         assert!(!files_open(dir.path()));

@@ -403,8 +403,8 @@ fn is_empty_bundle_error(stderr: &str) -> bool {
 /// `refs/eldrun/incoming/*` namespace — never touching real `refs/heads`/`refs/tags`.
 pub fn incoming_fetch_refspecs() -> [String; 2] {
     [
-        "refs/heads/*:refs/eldrun/incoming/heads/*".to_string(),
-        "refs/tags/*:refs/eldrun/incoming/tags/*".to_string(),
+        format!("refs/heads/*:{}/heads/*", crate::brand::GIT_REF_INCOMING),
+        format!("refs/tags/*:{}/tags/*", crate::brand::GIT_REF_INCOMING),
     ]
 }
 
@@ -466,7 +466,7 @@ fn files_changed_by_moves(dest: &Peer, moves: &[(Option<String>, String)]) -> us
 /// A timestamped safety-ref name for a to-be-overwritten branch (Phase 2 uses it to
 /// back up the losing side before a reset; Phase 1 only names it).
 pub fn backup_ref_name(branch_short: &str, now_secs: u64) -> String {
-    format!("refs/eldrun/backup/{now_secs}/{branch_short}")
+    format!("{}/{now_secs}/{branch_short}", crate::brand::GIT_REF_BACKUP)
 }
 
 /// The ref a diverged branch's *peer* tip is parked at on this side (#28p D8), so the
@@ -474,7 +474,7 @@ pub fn backup_ref_name(branch_short: &str, now_secs: u64) -> String {
 /// pick-a-winner. The objects are already local (the bundle brought them), so keeping
 /// the ref is free.
 pub fn peer_ref_name(branch_short: &str) -> String {
-    format!("refs/eldrun/peer/{branch_short}")
+    format!("{}/{branch_short}", crate::brand::GIT_REF_PEER)
 }
 
 /// What to do with a branch's `refs/eldrun/peer/*` ref after classifying it (#28p D8):
@@ -973,7 +973,7 @@ pub struct BackupRef {
 
 /// Inverse of [`backup_ref_name`]. Pure.
 pub fn parse_backup_ref_name(refname: &str) -> Option<(u64, String)> {
-    let rest = refname.strip_prefix("refs/eldrun/backup/")?;
+    let rest = refname.strip_prefix(crate::brand::GIT_REF_BACKUP)?.strip_prefix('/')?;
     let (ts, branch) = rest.split_once('/')?;
     if branch.is_empty() {
         return None;
@@ -1241,10 +1241,10 @@ pub fn non_ignored_paths(project_id: &str) -> Option<HashSet<String>> {
 fn local_bundle_path(project_id: &str) -> PathBuf {
     mirror_dir(project_id)
         .join(".git")
-        .join("eldrun-lockstep.bundle")
+        .join(crate::brand::LOCKSTEP_BUNDLE)
 }
 fn remote_bundle_path(spec: &RemoteSpec) -> String {
-    remote_sync::join_remote(&spec.remote_path, ".git/eldrun-lockstep.bundle")
+    remote_sync::join_remote(&spec.remote_path, &format!(".git/{}", crate::brand::LOCKSTEP_BUNDLE))
 }
 
 fn sha_of<'a>(snap: &'a PeerSnapshot, kind: RefKind, name: &str) -> Option<&'a str> {
@@ -2018,7 +2018,7 @@ fn cleanup_incoming(peer: &Peer) {
     if let Ok(out) = peer.run(&[
         "for-each-ref",
         "--format=%(refname)",
-        "refs/eldrun/incoming",
+        crate::brand::GIT_REF_INCOMING,
     ]) {
         for line in String::from_utf8_lossy(&out.stdout).lines() {
             let r = line.trim();
@@ -3045,7 +3045,7 @@ fn backups_on(peer: &Peer, label: &str) -> Vec<BackupRef> {
     peer.run(&[
         "for-each-ref",
         "--format=%(objectname)%09%(refname)%09%(contents:subject)",
-        "refs/eldrun/backup",
+        crate::brand::GIT_REF_BACKUP,
     ])
     .ok()
     .filter(|o| o.status.success())
@@ -3581,6 +3581,7 @@ pub async fn detect_and_sync(
 
 #[cfg(test)]
 mod tests {
+    use crate::brand::SLUG;
     use super::*;
 
     #[tokio::test]
@@ -3617,7 +3618,7 @@ mod tests {
     fn probe_missing_local_dir_is_clean_empty_not_error() {
         // A local dir that does not exist is a legitimately-empty side (nothing to
         // destroy) — it must NOT flag `probe_error`, so pairing can still create it.
-        let missing = std::path::PathBuf::from("/definitely/not/a/real/eldrun/dir/xyz");
+        let missing = std::path::PathBuf::from(concat!("/definitely/not/a/real/", crate::app_slug!(), "/dir/xyz"));
         let snap = probe(&Peer::Local(missing));
         assert!(!snap.is_repo);
         assert!(!snap.probe_error, "missing dir must read as clean-empty");
@@ -3778,12 +3779,12 @@ mod tests {
     #[test]
     fn incoming_refspecs_are_namespaced() {
         let specs = incoming_fetch_refspecs();
-        assert!(specs[0].ends_with(":refs/eldrun/incoming/heads/*"));
-        assert!(specs[1].ends_with(":refs/eldrun/incoming/tags/*"));
+        assert!(specs[0].ends_with(concat!(":refs/", crate::app_slug!(), "/incoming/heads/*")));
+        assert!(specs[1].ends_with(concat!(":refs/", crate::app_slug!(), "/incoming/tags/*")));
         // Never target real refs/heads or refs/remotes on the receiver.
         assert!(specs.iter().all(|s| {
             let dst = s.split(':').nth(1).unwrap();
-            dst.starts_with("refs/eldrun/incoming/") && !dst.contains("refs/remotes")
+            dst.starts_with(concat!("refs/", crate::app_slug!(), "/incoming/")) && !dst.contains("refs/remotes")
         }));
     }
 
@@ -3820,13 +3821,13 @@ mod tests {
     fn backup_ref_name_format() {
         assert_eq!(
             backup_ref_name("feature/x", 1735689600),
-            "refs/eldrun/backup/1735689600/feature/x"
+            concat!("refs/", crate::app_slug!(), "/backup/1735689600/feature/x")
         );
         // Tag conflicts back up under a `tags/` prefix so a branch and a same-named tag
         // never collide in the safety-ref namespace.
         assert_eq!(
             backup_ref_name("tags/v1", 1735689600),
-            "refs/eldrun/backup/1735689600/tags/v1"
+            concat!("refs/", crate::app_slug!(), "/backup/1735689600/tags/v1")
         );
     }
 
@@ -4853,16 +4854,16 @@ mod tests {
         }
         assert_eq!(parse_backup_ref_name("refs/heads/main"), None);
         assert_eq!(
-            parse_backup_ref_name("refs/eldrun/backup/notanumber/x"),
+            parse_backup_ref_name(concat!("refs/", crate::app_slug!(), "/backup/notanumber/x")),
             None
         );
     }
 
     #[test]
     fn parse_backup_refs_reads_for_each_ref_output() {
-        let out = "aaa\trefs/eldrun/backup/100/main\tOld tip\n\
-                   bbb\trefs/eldrun/backup/200/feature/x\tNewer tip\n\
-                   ccc\trefs/heads/main\tnot a backup\n";
+        let out = concat!("aaa\trefs/", crate::app_slug!(), "/backup/100/main\tOld tip\n\
+                   bbb\trefs/", crate::app_slug!(), "/backup/200/feature/x\tNewer tip\n\
+                   ccc\trefs/heads/main\tnot a backup\n");
         let refs = parse_backup_refs("local", out);
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].ts, 200, "newest first");
@@ -4877,7 +4878,7 @@ mod tests {
         let day = 24 * 60 * 60;
         let mk = |ts: u64| BackupRef {
             peer: "local".into(),
-            refname: format!("refs/eldrun/backup/{ts}/main"),
+            refname: format!("refs/{SLUG}/backup/{ts}/main"),
             ts,
             branch: "main".into(),
             sha: "a".into(),
@@ -4948,7 +4949,7 @@ mod tests {
         assert_eq!(peer_ref_op(RefAction::DestAhead, false), PeerRefOp::Delete);
         // A forced pass RESOLVES the divergence, so it clears rather than parks.
         assert_eq!(peer_ref_op(RefAction::Diverged, true), PeerRefOp::Delete);
-        assert_eq!(peer_ref_name("feature/x"), "refs/eldrun/peer/feature/x");
+        assert_eq!(peer_ref_name("feature/x"), concat!("refs/", crate::app_slug!(), "/peer/feature/x"));
     }
 
     // ── #28p D9: force-reset collisions ──────────────────────────────────────

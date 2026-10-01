@@ -20,6 +20,7 @@
 //! its trailing argv and hands it to the remote `$SHELL -c` — so each token is
 //! single-quoted via `shell_quote` before it is embedded.
 
+use crate::brand::SLUG;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -123,7 +124,7 @@ pub fn control_master_alive(path: &std::path::Path) -> bool {
         .arg(format!("ControlPath={}", path.to_string_lossy()))
         .arg("-O")
         .arg("check")
-        .arg("eldrun-control-probe")
+        .arg(concat!(crate::app_slug!(), "-control-probe"))
         .output()
         .map(|o| o.status.success())
         .unwrap_or(true)
@@ -392,13 +393,13 @@ fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap, env_prefix: &str) -> String 
             // would be directly, only now inside the persistent session, with the
             // tab's exports ahead of it so the pane has the same environment.
             let target = shell_quote(&format!("{env_prefix}{exec_line}"));
-            let credential = if env_prefix.contains("LC_ELDRUN_ROOT_MCP_TOKEN") {
-                " -e \"LC_ELDRUN_ROOT_MCP_TOKEN=${LC_ELDRUN_ROOT_MCP_TOKEN:?}\""
+            let credential = if env_prefix.contains(concat!("LC_", crate::app_upper!(), "_ROOT_MCP_TOKEN")) {
+                concat!(" -e \"LC_", crate::app_upper!(), "_ROOT_MCP_TOKEN=${LC_", crate::app_upper!(), "_ROOT_MCP_TOKEN:?}\"")
             } else { "" };
             format!(
                 "if command -v tmux >/dev/null 2>&1; then \
                  exec tmux {history} new-session -A -D -s {q}{credential} {target} {opts} {prefix}; \
-                 else printf 'eldrun: tmux not found on the remote host; session persistence is OFF (install tmux to enable it)\\n' >&2; {exec_line}; fi"
+                 else printf '{SLUG}: tmux not found on the remote host; session persistence is OFF (install tmux to enable it)\\n' >&2; {exec_line}; fi"
             )
         }
         TmuxWrap::Attach(name) => {
@@ -406,7 +407,7 @@ fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap, env_prefix: &str) -> String 
             format!(
                 "if command -v tmux >/dev/null 2>&1; then \
                  exec tmux {history} new-session -A -D -s {q} {opts}; \
-                 else printf 'eldrun: tmux not found on the remote host; cannot attach session %s\\n' {q} >&2; exec \"${{SHELL:-/bin/bash}}\" -l; fi"
+                 else printf '{SLUG}: tmux not found on the remote host; cannot attach session %s\\n' {q} >&2; exec \"${{SHELL:-/bin/bash}}\" -l; fi"
             )
         }
     }
@@ -462,7 +463,7 @@ pub fn remote_command(
         .map(|k| if k == crate::services::root_mcp::TOKEN_ENV {
             // SSH sends this through its encrypted environment channel. The
             // stock VM sshd accepts LC_*; refusal fails before launching a CLI.
-            "export ELDRUN_ROOT_MCP_TOKEN=\"${LC_ELDRUN_ROOT_MCP_TOKEN:?MCP credential channel unavailable}\"".to_string()
+            concat!("export ", crate::app_upper!(), "_ROOT_MCP_TOKEN=\"${LC_", crate::app_upper!(), "_ROOT_MCP_TOKEN:?MCP credential channel unavailable}\"").to_string()
         } else { format!("export {}={}", k, shell_quote(&env[k])) })
         .collect();
     parts.extend(exports.iter().cloned());
@@ -725,7 +726,7 @@ fn sanitize_tmux_key(id: &str) -> String {
 /// either half (a project id and a uuid are each single-hyphenated), so it
 /// unambiguously separates the project id from the trailing uuid.
 fn tmux_session_prefix_for(project_id: &str) -> String {
-    format!("eldrun-{}--", sanitize_tmux_key(project_id))
+    format!("{}{}--", crate::brand::TMUX_PREFIX, sanitize_tmux_key(project_id))
 }
 
 /// Whether host path `path` is inside (or is) `root`. Both are normalized by
@@ -769,7 +770,7 @@ pub fn session_visible_for_project(
         return true;
     }
     // Another project's scoped name — the one case the name alone settles.
-    if name.starts_with("eldrun-") && name.contains("--") {
+    if name.starts_with(crate::brand::TMUX_PREFIX) && name.contains("--") {
         return false;
     }
     if current_path.is_empty() {
@@ -1226,7 +1227,7 @@ pub fn wrap_pty_options(opts: &mut PtyOptions) -> Result<(), String> {
     let mut args = ssh_pty_args(&target.spec, &cmd_string)?;
     let mcp_token = opts.env.get(crate::services::root_mcp::TOKEN_ENV).cloned();
     if mcp_token.is_some() {
-        args.splice(0..0, ["-o".into(), "SendEnv=LC_ELDRUN_ROOT_MCP_TOKEN".into()]);
+        args.splice(0..0, ["-o".into(), concat!("SendEnv=LC_", crate::app_upper!(), "_ROOT_MCP_TOKEN").into()]);
     }
 
     opts.cmd = "ssh".to_string();
@@ -1236,7 +1237,7 @@ pub fn wrap_pty_options(opts: &mut PtyOptions) -> Result<(), String> {
     // local env into the ssh client process.
     opts.env.retain(|k, _| k == "TERM" || k == "COLORTERM");
     if let Some(token) = mcp_token {
-        opts.env.insert("LC_ELDRUN_ROOT_MCP_TOKEN".into(), token.clone());
+        opts.env.insert(concat!("LC_", crate::app_upper!(), "_ROOT_MCP_TOKEN").into(), token.clone());
         // Kept for PTY teardown's generation-safe revocation, never in argv.
         opts.env.insert(crate::services::root_mcp::TOKEN_ENV.into(), token);
     }
@@ -1273,7 +1274,7 @@ mod tests {
         for tmux in [None, Some(TmuxWrap::Session("reader".into()))] {
             let command = remote_command("claude", &[], &env, "/work", tmux.as_ref());
             assert!(!command.contains("secret-token-fixture"));
-            assert!(command.contains("LC_ELDRUN_ROOT_MCP_TOKEN"));
+            assert!(command.contains(concat!("LC_", crate::app_upper!(), "_ROOT_MCP_TOKEN")));
             assert!(command.contains("MCP credential channel unavailable"));
         }
     }
@@ -1377,12 +1378,12 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn mux_row_predicate_claims_only_our_own_masters() {
-        let dir = std::path::Path::new("/home/u/.local/share/eldrun/ssh-control");
-        let ours = "ssh: /home/u/.local/share/eldrun/ssh-control/cm-a1b2c3 [mux]";
+        let dir = std::path::Path::new(concat!("/home/u/.local/share/", crate::app_slug!(), "/ssh-control"));
+        let ours = concat!("ssh: /home/u/.local/share/", crate::app_slug!(), "/ssh-control/cm-a1b2c3 [mux]");
         assert_eq!(
             mux_socket_in_row(ours, dir).as_deref(),
             Some(std::path::Path::new(
-                "/home/u/.local/share/eldrun/ssh-control/cm-a1b2c3"
+                concat!("/home/u/.local/share/", crate::app_slug!(), "/ssh-control/cm-a1b2c3")
             ))
         );
 
@@ -1391,7 +1392,7 @@ mod tests {
         // Our directory, but not a mux master — an ordinary session that merely
         // names the socket on its command line must never be signalled.
         assert!(mux_socket_in_row(
-            "ssh -o ControlPath=/home/u/.local/share/eldrun/ssh-control/cm-a1b2c3 host",
+            concat!("ssh -o ControlPath=/home/u/.local/share/", crate::app_slug!(), "/ssh-control/cm-a1b2c3 host"),
             dir
         )
         .is_none());
@@ -1407,12 +1408,12 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn mux_row_predicate_survives_a_space_in_the_state_dir() {
-        let dir = std::path::Path::new("/home/My User/.local/share/eldrun/ssh-control");
-        let row = "ssh: /home/My User/.local/share/eldrun/ssh-control/cm-ff00 [mux]";
+        let dir = std::path::Path::new(concat!("/home/My User/.local/share/", crate::app_slug!(), "/ssh-control"));
+        let row = concat!("ssh: /home/My User/.local/share/", crate::app_slug!(), "/ssh-control/cm-ff00 [mux]");
         assert_eq!(
             mux_socket_in_row(row, dir).as_deref(),
             Some(std::path::Path::new(
-                "/home/My User/.local/share/eldrun/ssh-control/cm-ff00"
+                concat!("/home/My User/.local/share/", crate::app_slug!(), "/ssh-control/cm-ff00")
             ))
         );
     }
@@ -1514,7 +1515,7 @@ mod tests {
 
     #[test]
     fn remote_command_tmux_wraps_shell_tab() {
-        let wrap = TmuxWrap::Session("eldrun-p1_shell-1".to_string());
+        let wrap = TmuxWrap::Session(concat!(crate::app_slug!(), "-p1_shell-1").to_string());
         let cmd = remote_command("", &[], &HashMap::new(), "/srv/p", Some(&wrap));
         // cd prefix is preserved verbatim…
         assert!(cmd.starts_with("cd '/srv/p' && "));
@@ -1524,12 +1525,12 @@ mod tests {
         // history-limit precedes new-session — a pane copies it at creation, so
         // chaining it after (like status/mouse) would leave the default 2000.
         assert!(cmd.contains(
-            "exec tmux set -g history-limit 10000 ';' new-session -A -D -s 'eldrun-p1_shell-1' "
+            concat!("exec tmux set -g history-limit 10000 ';' new-session -A -D -s '", crate::app_slug!(), "-p1_shell-1' ")
         ));
         assert!(cmd.contains("'exec \"${SHELL:-/bin/bash}\" -l'"));
         // status/mouse options are chained as separate tmux commands; the
         // prefix is switched off for this session alone, never globally.
-        assert!(cmd.contains("';' set -g status off ';' set -g mouse on ';' set -t 'eldrun-p1_shell-1' prefix None;"));
+        assert!(cmd.contains(concat!("';' set -g status off ';' set -g mouse on ';' set -t '", crate::app_slug!(), "-p1_shell-1' prefix None;")));
         // Fallback: a host without tmux still runs the plain exec.
         assert!(cmd.contains("session persistence is OFF"));
         assert!(cmd.contains("; exec \"${SHELL:-/bin/bash}\" -l; fi"));
@@ -1575,24 +1576,24 @@ mod tests {
         // repeat inside the target, the pane would get whichever tab started the
         // server (which is what stopped agents recording their session id).
         let mut env = HashMap::new();
-        env.insert("ELDRUN_TAB_UID".to_string(), "tab-1".to_string());
-        let wrap = TmuxWrap::Session("eldrun-p1_a1".to_string());
+        env.insert(crate::app_env!("TAB_UID").to_string(), "tab-1".to_string());
+        let wrap = TmuxWrap::Session(concat!(crate::app_slug!(), "-p1_a1").to_string());
         let cmd = remote_command("claude", &[], &env, "/srv/p", Some(&wrap));
-        assert!(cmd.starts_with("cd '/srv/p' && export ELDRUN_TAB_UID='tab-1' && "));
+        assert!(cmd.starts_with(concat!("cd '/srv/p' && export ", crate::app_upper!(), "_TAB_UID='tab-1' && ")));
         // Inside tmux's (quoted) command argument, the same export leads the line.
-        assert!(cmd.contains("'export ELDRUN_TAB_UID='\\''tab-1'\\''; exec "));
+        assert!(cmd.contains(concat!("'export ", crate::app_upper!(), "_TAB_UID='\\''tab-1'\\''; exec ")));
     }
 
     #[test]
     fn remote_command_tmux_wraps_command_tab_preserving_prelude() {
-        let wrap = TmuxWrap::Session("eldrun-p1_a1".to_string());
+        let wrap = TmuxWrap::Session(concat!(crate::app_slug!(), "-p1_a1").to_string());
         let cmd = remote_command("claude", &[], &HashMap::new(), "/srv/p", Some(&wrap));
         // The agent bootstrap prelude is nested INSIDE the tmux target unchanged…
         assert!(cmd.contains("command -v claude >/dev/null 2>&1"));
         assert!(cmd.contains("curl -fsSL https://claude.ai/install.sh | bash"));
         // …and the whole `$SHELL -lc '<prelude; exec claude>'` line is tmux's
         // (quoted) command argument on the persistent session.
-        assert!(cmd.contains("';' new-session -A -D -s 'eldrun-p1_a1' "));
+        assert!(cmd.contains(concat!("';' new-session -A -D -s '", crate::app_slug!(), "-p1_a1' ")));
     }
 
     #[test]
@@ -1602,7 +1603,7 @@ mod tests {
         // frontend-minted per-tab name. `-A` reattaches the live agent on relaunch
         // (ignoring this target) or, if the session is gone, runs it — resuming the
         // conversation as before.
-        let wrap = TmuxWrap::Session("eldrun-p1--agent-uuid".to_string());
+        let wrap = TmuxWrap::Session(concat!(crate::app_slug!(), "-p1--agent-uuid").to_string());
         let cmd = remote_command(
             "claude",
             &["--resume".to_string(), "sess-abc".to_string()],
@@ -1619,7 +1620,7 @@ mod tests {
         assert!(cmd.contains("--resume"));
         assert!(cmd.contains("sess-abc"));
         // …and the whole thing is tmux's command argument on the persistent session.
-        assert!(cmd.contains("';' new-session -A -D -s 'eldrun-p1--agent-uuid' "));
+        assert!(cmd.contains(concat!("';' new-session -A -D -s '", crate::app_slug!(), "-p1--agent-uuid' ")));
         // tmux-absent still runs the plain exec fallback.
         assert!(cmd.contains("session persistence is OFF"));
     }
@@ -1644,8 +1645,8 @@ mod tests {
     #[test]
     fn tmux_kill_session_script_quotes_name() {
         assert_eq!(
-            tmux_kill_session_script("eldrun-p1_shell-1"),
-            "tmux kill-session -t 'eldrun-p1_shell-1' 2>/dev/null || true"
+            tmux_kill_session_script(concat!(crate::app_slug!(), "-p1_shell-1")),
+            concat!("tmux kill-session -t '", crate::app_slug!(), "-p1_shell-1' 2>/dev/null || true")
         );
         // An arbitrary/foreign name is single-quoted so it can't break out.
         assert!(tmux_kill_session_script("a'b").contains("'a'\\''b'"));
@@ -1661,13 +1662,13 @@ mod tests {
 
     #[test]
     fn parse_tmux_ls_reads_rows_and_tolerates_empty() {
-        let out = "eldrun-p1_shell-1\t2\t1700000000\t1\t1700003600\t-bash\t/code/p1\ntrain\t1\t1700000500\t0\t1700009000\tpython\t/code/p1/run\n";
+        let out = concat!(crate::app_slug!(), "-p1_shell-1\t2\t1700000000\t1\t1700003600\t-bash\t/code/p1\ntrain\t1\t1700000500\t0\t1700009000\tpython\t/code/p1/run\n");
         let v = parse_tmux_ls(out);
         assert_eq!(v.len(), 2);
         assert_eq!(
             v[0],
             TmuxSession {
-                name: "eldrun-p1_shell-1".into(),
+                name: concat!(crate::app_slug!(), "-p1_shell-1").into(),
                 windows: 2,
                 created: 1_700_000_000,
                 attached: true,
@@ -1727,13 +1728,13 @@ mod tests {
         let root = "/code/p1";
         // 1. The name settles it when it carries a project id, whatever the path.
         assert!(session_visible_for_project(
-            "eldrun-p1--abcd",
+            concat!(crate::app_slug!(), "-p1--abcd"),
             "/somewhere/else",
             "p1",
             root
         ));
         assert!(!session_visible_for_project(
-            "eldrun-p2--abcd",
+            concat!(crate::app_slug!(), "-p2--abcd"),
             "/code/p1",
             "p1",
             root
@@ -1741,14 +1742,14 @@ mod tests {
         // 2. Otherwise the working directory does. A legacy (pre-scoping) session
         //    running in this project's tree is this project's.
         assert!(session_visible_for_project(
-            "eldrun-legacyuuid",
+            concat!(crate::app_slug!(), "-legacyuuid"),
             "/code/p1/src",
             "p1",
             root
         ));
         // …and one running in ANOTHER project's tree is not.
         assert!(!session_visible_for_project(
-            "eldrun-legacyuuid",
+            concat!(crate::app_slug!(), "-legacyuuid"),
             "/code/p2",
             "p1",
             root
@@ -1763,7 +1764,7 @@ mod tests {
         assert!(session_visible_for_project("train", "", "p1", root));
         // An id needing sanitizing is matched consistently on both sides.
         assert!(session_visible_for_project(
-            "eldrun-we_rd--abcd",
+            concat!(crate::app_slug!(), "-we_rd--abcd"),
             "/elsewhere",
             "we:rd",
             root
@@ -1783,16 +1784,16 @@ mod tests {
             current_path: path.into(),
         };
         let sessions = vec![
-            s("eldrun-p1--a", "/code/p1"),
-            s("eldrun-p2--b", "/code/p2"),
+            s(concat!(crate::app_slug!(), "-p1--a"), "/code/p1"),
+            s(concat!(crate::app_slug!(), "-p2--b"), "/code/p2"),
             s("train", "/code/p1"), // hand-started inside this project
             s("other", "/home/me"), // hand-started elsewhere
-            s("eldrun-legacyuuid", "/code/p1/run"), // pre-scoping, this project's tree
-            s("eldrun-legacyother", "/code/p2/run"), // pre-scoping, another's tree
+            s(concat!(crate::app_slug!(), "-legacyuuid"), "/code/p1/run"), // pre-scoping, this project's tree
+            s(concat!(crate::app_slug!(), "-legacyother"), "/code/p2/run"), // pre-scoping, another's tree
         ];
         let kept = filter_sessions_for_project(sessions.clone(), "p1", "/code/p1", false);
         let names: Vec<&str> = kept.iter().map(|x| x.name.as_str()).collect();
-        assert_eq!(names, vec!["eldrun-p1--a", "train", "eldrun-legacyuuid"]);
+        assert_eq!(names, vec![concat!(crate::app_slug!(), "-p1--a"), "train", concat!(crate::app_slug!(), "-legacyuuid")]);
         // The escape hatch returns the host listing untouched, so an orphaned run
         // is always reachable to kill.
         assert_eq!(
@@ -1812,7 +1813,7 @@ mod tests {
 
     #[test]
     fn is_valid_env_key_matches_posix_identifiers() {
-        assert!(is_valid_env_key("ELDRUN_TAB_UID"));
+        assert!(is_valid_env_key(crate::app_env!("TAB_UID")));
         assert!(is_valid_env_key("_x9"));
         assert!(!is_valid_env_key("9leading"));
         assert!(!is_valid_env_key("has space"));

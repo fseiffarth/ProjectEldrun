@@ -222,10 +222,10 @@ pub fn state_dir() -> std::path::PathBuf {
     // per-project session state moved here out of the project tree), and a test
     // suite that writes into the developer's real `~/.local/share/eldrun/` is
     // not a test suite. `start-eldrun-dev-sandbox.sh` sets it too, paired with
-    // `ELDRUN_HOME` (see `paths::eldrun_home`), so a dev window keeps its state
+    // `ELDRUN_HOME` (see `paths::app_home`), so a dev window keeps its state
     // away from the packaged daily-driver instance's. Still not a user-facing
     // knob — whatever sets it for the app already owns the process.
-    if let Ok(dir) = std::env::var("ELDRUN_STATE_DIR") {
+    if let Ok(dir) = std::env::var(crate::app_env!("STATE_DIR")) {
         if !dir.is_empty() {
             return std::path::PathBuf::from(dir);
         }
@@ -234,20 +234,32 @@ pub fn state_dir() -> std::path::PathBuf {
         let base = std::env::var("APPDATA")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| paths::home_dir());
-        base.join("eldrun")
+        base.join(crate::brand::STATE_DIR_NAME)
     } else if cfg!(target_os = "macos") {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         std::path::PathBuf::from(home)
             .join("Library")
             .join("Application Support")
-            .join("eldrun")
+            .join(crate::brand::STATE_DIR_NAME)
     } else {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
         std::path::PathBuf::from(home)
             .join(".local")
             .join("share")
-            .join("eldrun")
+            .join(crate::brand::STATE_DIR_NAME)
     }
+}
+
+/// `~/.local/share/<state dir name>` on every OS, whatever the state-dir
+/// override says. The local-model CLI homes and the frozen dev build's files
+/// have always lived there — fixed per user, outside a sandboxed state dir —
+/// so this is the one place that path is built. On Linux without an override
+/// it is [`state_dir`].
+pub fn home_share_dir() -> std::path::PathBuf {
+    paths::home_dir()
+        .join(".local")
+        .join("share")
+        .join(crate::brand::STATE_DIR_NAME)
 }
 
 /// The scope id of the root terminal — the one scope that is not a project and
@@ -617,10 +629,10 @@ mod tests {
     // ── state_dir ─────────────────────────────────────────────────────────
 
     #[test]
-    fn state_dir_ends_with_eldrun() {
+    fn state_dir_ends_with_app() {
         let dir = state_dir();
         let last = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        assert_eq!(last, "eldrun", "state_dir must end in 'eldrun': {:?}", dir);
+        assert_eq!(last, crate::app_slug!(), concat!("state_dir must end in '", crate::app_slug!(), "': {:?}"), dir);
     }
 
     // ── private state files ───────────────────────────────────────────────
@@ -636,7 +648,7 @@ mod tests {
     fn make_private_dir_creates_and_tightens_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
-        let fresh = tmp.path().join("a").join("eldrun");
+        let fresh = tmp.path().join("a").join(crate::app_slug!());
         make_private_dir(&fresh);
         assert_eq!(mode_of(&fresh), 0o700);
 
@@ -683,14 +695,14 @@ mod tests {
     }
 
     #[test]
-    fn root_work_dir_parent_is_eldrun() {
+    fn root_work_dir_parent_is_app() {
         let dir = root_work_dir();
         let parent = dir
             .parent()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("");
-        assert_eq!(parent, "eldrun");
+        assert_eq!(parent, crate::app_slug!());
     }
 
     // ── write_json / read_json ─────────────────────────────────────────────

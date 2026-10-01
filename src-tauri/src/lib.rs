@@ -43,7 +43,7 @@ static CRASH_LOG_HANDLE: std::sync::atomic::AtomicIsize = std::sync::atomic::Ato
 /// records is gone by the time anyone looks, and the commit is what
 /// `scripts/crash-symbolize.sh` needs to find the retained copy
 /// (`scripts/retain-dev-build.sh`).
-const BUILD_COMMIT: &str = match option_env!("ELDRUN_BUILD_COMMIT") {
+const BUILD_COMMIT: &str = match option_env!(crate::app_env!("BUILD_COMMIT")) {
     Some(c) => c,
     None => "unknown",
 };
@@ -770,7 +770,7 @@ enum MacMenuItem {
 }
 
 #[cfg(any(target_os = "macos", test))]
-const MAC_MENU_QUIT_ID: &str = "eldrun-quit";
+const MAC_MENU_QUIT_ID: &str = concat!(crate::app_slug!(), "-quit");
 
 /// The macOS menu bar: (submenu title, items). Tauri would otherwise install
 /// its default menu, and that one is wrong for Eldrun in two ways:
@@ -888,7 +888,7 @@ fn with_macos_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri:
 fn install_scrollbar_theme() {
     use gtk::prelude::*;
 
-    if std::env::var_os("ELDRUN_NO_SCROLLBAR_THEME").is_some() {
+    if std::env::var_os(crate::app_env!("NO_SCROLLBAR_THEME")).is_some() {
         return;
     }
 
@@ -1865,7 +1865,7 @@ pub fn run() {
             commands::terminal::pty_unwatch,
             commands::terminal::local_tmux_list,
             commands::terminal::local_tmux_kill,
-            commands::terminal::local_tmux_kill_eldrun_sessions,
+            commands::terminal::local_tmux_kill_app_sessions,
             commands::terminal::local_tmux_rename,
             commands::terminal::local_tmux_screen,
             commands::terminal::project_cpu_percent,
@@ -2218,7 +2218,7 @@ pub fn run() {
                 // — the dev launcher's Ctrl+C (SIGINT/SIGTERM → `app.exit`),
                 // an `app.exit()` from the backend. Idempotent: a second pass
                 // finds no server and returns.
-                if let Err(e) = services::tmux_local::kill_eldrun_sessions() {
+                if let Err(e) = services::tmux_local::kill_app_sessions() {
                     eprintln!("tmux_local: quit reap: {e}");
                 }
                 // Stop the Ollama server *this run started* — the spawned

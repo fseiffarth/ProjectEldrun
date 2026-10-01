@@ -1,9 +1,10 @@
+use crate::brand::SLUG;
 use std::collections::HashMap;
 
 use crate::commands::apps::{TrackedWindow, ORIGIN_DETACHED_SUBWINDOW};
 use crate::platform::WorkspaceBackend;
 use crate::schema::session::WindowSession;
-use crate::services::terminal_service::eldrun_sessions_dir;
+use crate::services::terminal_service::app_sessions_dir;
 use crate::storage;
 
 /// Physical monitor rects as reported by a live window (#42), for validating a
@@ -144,13 +145,13 @@ pub fn project_tracked_ids(
 
 /// Persist the project-owned window registry IDs to `.eldrun/sessions/windows.json`.
 pub fn save_window_session(local_file: &str, registry_ids: &[String]) {
-    if let Some(sessions_dir) = eldrun_sessions_dir(local_file) {
+    if let Some(sessions_dir) = app_sessions_dir(local_file) {
         let session = WindowSession {
             project_window_ids: registry_ids.to_vec(),
             extra: Default::default(),
         };
         if let Err(e) = storage::write_json(&sessions_dir.join("windows.json"), &session) {
-            eprintln!("WindowService: write .eldrun session: {e}");
+            eprintln!("WindowService: write .{SLUG} session: {e}");
         }
     }
 }
@@ -158,7 +159,7 @@ pub fn save_window_session(local_file: &str, registry_ids: &[String]) {
 /// Load the window session from `.eldrun/sessions/windows.json`.
 /// Returns an empty session if the file is absent or unreadable.
 pub fn load_window_session(local_file: &str) -> WindowSession {
-    if let Some(sessions_dir) = eldrun_sessions_dir(local_file) {
+    if let Some(sessions_dir) = app_sessions_dir(local_file) {
         let path = sessions_dir.join("windows.json");
         if path.exists() {
             if let Ok(session) = storage::read_json::<WindowSession>(&path) {
@@ -248,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn closing_main_takes_every_other_eldrun_window_with_it() {
+    fn closing_main_takes_every_other_app_window_with_it() {
         // Popouts, the presenter and live browser pages are siblings of `main`,
         // so all three must be in the teardown set — and `main` itself never is
         // (it is already gone by the time this runs).

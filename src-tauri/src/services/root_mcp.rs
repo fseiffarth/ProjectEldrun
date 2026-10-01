@@ -52,21 +52,21 @@ use crate::terminal::PtyOptions;
 /// The env var a root agent finds its token in. Codex reads it by name
 /// (`bearer_token_env_var`); it is set for every root agent so a CLI wired up by
 /// hand can use it too.
-pub const TOKEN_ENV: &str = "ELDRUN_ROOT_MCP_TOKEN";
+pub const TOKEN_ENV: &str = crate::app_env!("ROOT_MCP_TOKEN");
 /// The endpoint, for the same by-hand wiring.
-pub const URL_ENV: &str = "ELDRUN_ROOT_MCP_URL";
-pub const SCHEDULE_TOKEN_ENV: &str = "ELDRUN_SCHEDULE_MCP_TOKEN";
-pub const SCHEDULE_URL_ENV: &str = "ELDRUN_SCHEDULE_MCP_URL";
+pub const URL_ENV: &str = crate::app_env!("ROOT_MCP_URL");
+pub const SCHEDULE_TOKEN_ENV: &str = crate::app_env!("SCHEDULE_MCP_TOKEN");
+pub const SCHEDULE_URL_ENV: &str = crate::app_env!("SCHEDULE_MCP_URL");
 /// The push identity's pair (`services::git_push_mcp`), set for a local
 /// project-agent tab while agent pushes are switched on.
-pub const GIT_TOKEN_ENV: &str = "ELDRUN_GIT_MCP_TOKEN";
-pub const GIT_URL_ENV: &str = "ELDRUN_GIT_MCP_URL";
+pub const GIT_TOKEN_ENV: &str = crate::app_env!("GIT_MCP_TOKEN");
+pub const GIT_URL_ENV: &str = crate::app_env!("GIT_MCP_URL");
 /// The help identity's pair (`services::help_mcp`), set for every local agent
 /// tab while the help server is on.
-pub const HELP_TOKEN_ENV: &str = "ELDRUN_HELP_MCP_TOKEN";
-pub const HELP_URL_ENV: &str = "ELDRUN_HELP_MCP_URL";
+pub const HELP_TOKEN_ENV: &str = crate::app_env!("HELP_MCP_TOKEN");
+pub const HELP_URL_ENV: &str = crate::app_env!("HELP_MCP_URL");
 /// The server name the agent CLIs list the tools under.
-pub const SERVER_NAME: &str = "eldrun";
+pub const SERVER_NAME: &str = crate::brand::MCP_SERVER;
 
 const PROTOCOL_VERSION: &str = "2025-03-26";
 
@@ -542,7 +542,7 @@ fn wire_named_cli_args(bin: &str, args: &mut Vec<String>, url: &str, server: &st
 /// by the env pair `NewTabMenu` sets. A bare `vibe` is Mistral's cloud CLI.
 fn is_local_model(opts: &PtyOptions) -> bool {
     basename(&opts.cmd) == "vibe"
-        && (opts.env.contains_key("ELDRUN_LOCAL_MODEL") || opts.env.contains_key("VIBE_ACTIVE_MODEL"))
+        && (opts.env.contains_key(crate::app_env!("LOCAL_MODEL")) || opts.env.contains_key("VIBE_ACTIVE_MODEL"))
 }
 
 /// Whether a Vibe tab's local model wears the "MCP" chip. The tab names its
@@ -550,7 +550,7 @@ fn is_local_model(opts: &PtyOptions) -> bool {
 /// as the alias `prepare_local_agent` wrote — and a restored tab may carry
 /// only the alias (`CenterPanel` re-hydrates just that pair).
 fn local_model_has_tools(opts: &PtyOptions, tool_models: &[String]) -> bool {
-    let raw = opts.env.get("ELDRUN_LOCAL_MODEL");
+    let raw = opts.env.get(crate::app_env!("LOCAL_MODEL"));
     let alias = opts.env.get("VIBE_ACTIVE_MODEL");
     tool_models.iter().any(|m| {
         raw.is_some_and(|r| r == m) || alias.is_some_and(|a| *a == m.replace(':', "-"))
@@ -3209,7 +3209,7 @@ mod tests {
             apply_schedule_to_spawn_with(&mut spawn, &runtime, "secret", &[]);
             assert_eq!(spawn.env[SCHEDULE_TOKEN_ENV], "secret");
             assert!(!spawn.env.contains_key(TOKEN_ENV));
-            assert!(spawn.args.join(" ").contains("eldrun-schedule"));
+            assert!(spawn.args.join(" ").contains(concat!(crate::app_slug!(), "-schedule")));
             assert!(!spawn.args.join(" ").contains("secret"));
         }
         let mut root = opts("claude", &[], None);
@@ -3235,7 +3235,7 @@ mod tests {
             apply_help_to_spawn_with(&mut root, &runtime, "helptok", &[]);
             apply_help_to_spawn_with(&mut root, &runtime, "helptok", &[]);
             let argv = root.args.join(" ");
-            assert!(argv.contains("\"eldrun\":") || argv.contains("mcp_servers.eldrun.url"), "{argv}");
+            assert!(argv.contains(concat!("\"", crate::app_slug!(), "\":")) || argv.contains(concat!("mcp_servers.", crate::app_slug!(), ".url")), "{argv}");
             assert!(argv.contains("http://127.0.0.1:4321/mcp/help"), "{argv}");
             assert_eq!(argv.matches("/mcp/help").count(), 1, "never twice: {argv}");
             assert!(!argv.contains("helptok") && !argv.contains("roottok"));
@@ -3247,7 +3247,7 @@ mod tests {
             apply_schedule_to_spawn_with(&mut project, &runtime, "schedtok", &[]);
             apply_help_to_spawn_with(&mut project, &runtime, "helptok", &[]);
             let argv = project.args.join(" ");
-            assert!(argv.contains("eldrun-schedule") && argv.contains("eldrun-help"), "{argv}");
+            assert!(argv.contains(concat!(crate::app_slug!(), "-schedule")) && argv.contains(concat!(crate::app_slug!(), "-help")), "{argv}");
             // A container tab.
             let mut boxed = opts(cli, &[], Some("p"));
             boxed.sandbox = true;
@@ -3279,19 +3279,19 @@ mod tests {
     fn help_merges_into_a_local_models_vibe_servers() {
         let tagged = vec!["gemma4:e4b".to_string()];
         let mut o = opts("vibe", &[], None);
-        o.env.insert("ELDRUN_LOCAL_MODEL".into(), "gemma4:e4b".into());
+        o.env.insert(crate::app_env!("LOCAL_MODEL").into(), "gemma4:e4b".into());
         apply_to_spawn_with(&mut o, &rt(), "roottok", &[], &tagged, false);
         apply_help_to_spawn_with(&mut o, &rt(), "helptok", &tagged);
         apply_help_to_spawn_with(&mut o, &rt(), "helptok", &tagged);
         let servers: Value = serde_json::from_str(&o.env["VIBE_MCP_SERVERS"]).unwrap();
         let names: Vec<_> = servers.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["eldrun", "eldrun-help"]);
+        assert_eq!(names, [crate::app_slug!(), concat!(crate::app_slug!(), "-help")]);
         assert_eq!(servers[1]["api_key_env"], HELP_TOKEN_ENV);
-        assert_eq!(o.env["VIBE_ENABLED_TOOLS"], r#"["eldrun_*","eldrun-help_*"]"#);
+        assert_eq!(o.env["VIBE_ENABLED_TOOLS"], concat!(r#"[""#, crate::app_slug!(), r#"_*",""#, crate::app_slug!(), r#"-help_*"]"#));
         assert!(!o.env["VIBE_MCP_SERVERS"].contains("helptok"));
         // An untagged model cannot call tools: nothing at all.
         let mut o = opts("vibe", &[], None);
-        o.env.insert("ELDRUN_LOCAL_MODEL".into(), "llama3:latest".into());
+        o.env.insert(crate::app_env!("LOCAL_MODEL").into(), "llama3:latest".into());
         apply_help_to_spawn_with(&mut o, &rt(), "helptok", &tagged);
         assert!(!o.env.contains_key(HELP_TOKEN_ENV) && !o.env.contains_key("VIBE_MCP_SERVERS"));
     }
@@ -3416,9 +3416,9 @@ mod tests {
         assert_eq!(&o.args[..2], ["--resume", "abc"]);
         assert_eq!(o.args[2], "--mcp-config");
         let cfg: Value = serde_json::from_str(&o.args[3]).unwrap();
-        let server = &cfg["mcpServers"]["eldrun"];
+        let server = &cfg["mcpServers"][crate::app_slug!()];
         assert_eq!(server["url"], "http://127.0.0.1:4321/mcp");
-        assert_eq!(server["headers"]["Authorization"], "Bearer ${ELDRUN_ROOT_MCP_TOKEN}");
+        assert_eq!(server["headers"]["Authorization"], concat!("Bearer ${", crate::app_upper!(), "_ROOT_MCP_TOKEN}"));
         assert_eq!(o.env[TOKEN_ENV], "tok");
         assert!(!o.args.iter().any(|a| a.contains("Bearer tok")), "the token is never in Claude's argv");
         // A respawn that re-runs the wiring must not stack the flag.
@@ -3444,8 +3444,8 @@ mod tests {
         let mut o = opts("/usr/bin/codex", &["resume", "abc"], None);
         apply_to_spawn_with(&mut o, &rt(), "tok", &every_agent(), &[], false);
         assert_eq!(o.args[0], "-c");
-        assert_eq!(o.args[1], "mcp_servers.eldrun.url=\"http://127.0.0.1:4321/mcp\"");
-        assert_eq!(o.args[3], "mcp_servers.eldrun.bearer_token_env_var=\"ELDRUN_ROOT_MCP_TOKEN\"");
+        assert_eq!(o.args[1], concat!("mcp_servers.", crate::app_slug!(), ".url=\"http://127.0.0.1:4321/mcp\""));
+        assert_eq!(o.args[3], concat!("mcp_servers.", crate::app_slug!(), ".bearer_token_env_var=\"", crate::app_upper!(), "_ROOT_MCP_TOKEN\""));
         assert_eq!(&o.args[4..], ["resume", "abc"]);
         assert!(!o.args.iter().any(|a| a.contains("tok\"")), "the token is never in Codex's argv");
     }
@@ -3461,13 +3461,13 @@ mod tests {
             o
         };
 
-        let mut o = vibe(&[("ELDRUN_LOCAL_MODEL", "gemma4:e4b"), ("VIBE_ACTIVE_MODEL", "gemma4-e4b")]);
+        let mut o = vibe(&[(crate::app_env!("LOCAL_MODEL"), "gemma4:e4b"), ("VIBE_ACTIVE_MODEL", "gemma4-e4b")]);
         apply_to_spawn_with(&mut o, &rt(), "tok", &[], &tagged, false);
         let servers: Value = serde_json::from_str(&o.env["VIBE_MCP_SERVERS"]).unwrap();
-        assert_eq!(servers[0]["name"], "eldrun");
+        assert_eq!(servers[0]["name"], crate::app_slug!());
         assert_eq!(servers[0]["url"], "http://127.0.0.1:4321/mcp");
         assert_eq!(servers[0]["api_key_env"], TOKEN_ENV);
-        assert_eq!(o.env["VIBE_ENABLED_TOOLS"], r#"["eldrun_*"]"#);
+        assert_eq!(o.env["VIBE_ENABLED_TOOLS"], concat!(r#"[""#, crate::app_slug!(), r#"_*"]"#));
         assert!(!o.env["VIBE_MCP_SERVERS"].contains("tok"), "the token is named, never inlined");
         assert!(o.args.is_empty());
 
@@ -3478,7 +3478,7 @@ mod tests {
 
         // Untagged model ("Root" without "MCP"): tools stay off and it gets
         // nothing — not even the env pair, whichever agents wear the chip.
-        let mut o = vibe(&[("ELDRUN_LOCAL_MODEL", "llama3:latest"), ("VIBE_ACTIVE_MODEL", "llama3-latest")]);
+        let mut o = vibe(&[(crate::app_env!("LOCAL_MODEL"), "llama3:latest"), ("VIBE_ACTIVE_MODEL", "llama3-latest")]);
         apply_to_spawn_with(&mut o, &rt(), "tok", &every_agent(), &tagged, false);
         assert!(!o.env.contains_key("VIBE_MCP_SERVERS"));
         assert!(!o.env.contains_key("VIBE_ENABLED_TOOLS"));
@@ -3496,14 +3496,14 @@ mod tests {
         }
         let tagged = vec!["gemma4:e4b".to_string()];
         let mut o = opts("vibe", &[], None);
-        o.env.insert("ELDRUN_LOCAL_MODEL".into(), "gemma4:e4b".into());
+        o.env.insert(crate::app_env!("LOCAL_MODEL").into(), "gemma4:e4b".into());
         apply_to_spawn_with(&mut o, &rt(), "tok", &[], &tagged, true);
         assert!(o.env.contains_key("VIBE_MCP_SERVERS"));
         assert_eq!(o.env[TOKEN_ENV], "tok");
         // The local token is the local tab's with the switch off too, so
         // flipping it on later keeps that tab served.
         let mut o = opts("vibe", &[], None);
-        o.env.insert("ELDRUN_LOCAL_MODEL".into(), "gemma4:e4b".into());
+        o.env.insert(crate::app_env!("LOCAL_MODEL").into(), "gemma4:e4b".into());
         apply_to_spawn_with(&mut o, &rt(), "tok", &[], &tagged, false);
         assert_eq!(o.env[TOKEN_ENV], "tok");
     }
@@ -4570,7 +4570,7 @@ mod tests {
         f.write_state(
             "time_summary.json",
             json!({ "version": 1, "migrated": true, "days": {
-                "2026-09-15": { "p1": 3600.0, "__eldrun__": 60.0 },
+                "2026-09-15": { "p1": 3600.0, concat!("__", crate::app_slug!(), "__"): 60.0 },
                 "2026-09-16": { "p1": 1800.0, "p2": 7200.0 },
                 "2026-09-17": { "p1": 900.0 },
             }}),
@@ -4632,7 +4632,7 @@ mod tests {
             json!([
                 { "id": "b2", "name": "Later", "member_ids": ["p2"], "position": 20 },
                 { "id": "b1", "name": "Thesis", "member_ids": ["p1", "p2", "gone"], "position": 10,
-                  "folder": "/home/u/eldrun/boxes/thesis",
+                  "folder": concat!("/home/u/", crate::app_slug!(), "/boxes/thesis"),
                   "relations": [{ "source": "p1", "target": "p2", "kind": "python-lib" }] },
             ]),
         );
@@ -4643,7 +4643,7 @@ mod tests {
         // A member whose project is gone keeps its id rather than vanishing.
         assert_eq!(boxes[0]["members"][2]["name"], "gone");
         assert_eq!(boxes[0]["relations"][0]["source"], "Alpha");
-        assert_eq!(boxes[0]["folder"], "/home/u/eldrun/boxes/thesis");
+        assert_eq!(boxes[0]["folder"], concat!("/home/u/", crate::app_slug!(), "/boxes/thesis"));
         assert!(boxes[1]["folder"].is_null());
 
         let (r, _) = f.call("boxes_list", json!({ "project": "Alpha" }));

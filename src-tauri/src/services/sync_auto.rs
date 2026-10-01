@@ -283,7 +283,7 @@ pub fn event_touches_synced_bytes(mirror: &std::path::Path, paths: &[std::path::
         };
         !matches!(
             rel.components().next(),
-            Some(std::path::Component::Normal(first)) if first == ".git" || first == ".eldrun"
+            Some(std::path::Component::Normal(first)) if first == ".git" || first == crate::brand::PROJECT_DIR
         )
     })
 }
@@ -574,16 +574,16 @@ mod tests {
     }
 
     #[test]
-    fn git_and_eldrun_writes_do_not_wake_the_byte_sync_loop() {
+    fn git_and_app_writes_do_not_wake_the_byte_sync_loop() {
         use std::path::{Path, PathBuf};
         let mirror = Path::new("/m/mirror");
         let p = |s: &str| PathBuf::from(s);
         // Lockstep's own writes and git's stat-cache refreshes all live here.
         assert!(!event_touches_synced_bytes(
             mirror,
-            &[p("/m/mirror/.git/index"), p("/m/mirror/.git/refs/eldrun/peer/main")]
+            &[p("/m/mirror/.git/index"), p(concat!("/m/mirror/.git/refs/", crate::app_slug!(), "/peer/main"))]
         ));
-        assert!(!event_touches_synced_bytes(mirror, &[p("/m/mirror/.eldrun/tabs.json")]));
+        assert!(!event_touches_synced_bytes(mirror, &[p(concat!("/m/mirror/.", crate::app_slug!(), "/tabs.json"))]));
         // A real file write anywhere else does — even alongside a .git one.
         assert!(event_touches_synced_bytes(
             mirror,

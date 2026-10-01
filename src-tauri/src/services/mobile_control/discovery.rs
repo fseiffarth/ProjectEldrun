@@ -29,8 +29,9 @@ struct ProjectRecord {
     sandbox: Option<Value>,
     #[serde(default)]
     vm: Option<Value>,
-    #[serde(default)]
-    eldrun_mobile_access: bool,
+    // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
+    #[serde(default, rename = "eldrun_mobile_access")]
+    app_mobile_access: bool,
 }
 
 /// The slice of `boxes.json` the catalog reads (#31aa). A box is listed as a
@@ -45,8 +46,9 @@ struct BoxRecord {
     member_ids: Vec<String>,
     #[serde(default)]
     folder: Option<String>,
-    #[serde(default)]
-    eldrun_mobile_access: bool,
+    // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
+    #[serde(default, rename = "eldrun_mobile_access")]
+    app_mobile_access: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -413,7 +415,7 @@ fn root_open(state_dir: &Path, env: &RootEnv) -> bool {
         return false;
     };
     let switched_on = settings
-        .get("eldrun_mobile_host")
+        .get(crate::brand::MOBILE_HOST_KEY)
         .and_then(|host| host.get("root_access"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
@@ -450,7 +452,7 @@ fn project_key(id: &str) -> String {
 }
 
 fn expected_tmux(project_id: &str, kind: &str, name: &str) -> bool {
-    let prefix = format!("eldrun-{}--{kind}-", project_key(project_id));
+    let prefix = format!("{}{}--{kind}-", crate::brand::TMUX_PREFIX, project_key(project_id));
     name.starts_with(&prefix)
         && name.len() > prefix.len() + 8
         && name
@@ -580,7 +582,7 @@ impl Catalog {
             });
         }
         for project in &projects {
-            if !project.eldrun_mobile_access || !mobile_local(project) {
+            if !project.app_mobile_access || !mobile_local(project) {
                 continue;
             }
             // Root is listed above, by its own switch and gate, and is not a
@@ -604,7 +606,7 @@ impl Catalog {
             // A box never opened on the desktop has no folder and so no tabs;
             // the desktop's switch resolves the folder on enable, so this only
             // skips a bit hand-edited onto a folder-less record.
-            if !b.eldrun_mobile_access {
+            if !b.app_mobile_access {
                 continue;
             }
             let Some(folder) = b.folder.as_deref() else {
@@ -777,10 +779,23 @@ fn resolve_scope(
 
 #[cfg(test)]
 mod tests {
+    /// The serde keys are literals in the attributes; this ties them to the
+    /// brand module so they cannot drift.
+    #[test]
+    fn the_mobile_access_key_is_the_brand_constant() {
+        let key = crate::brand::MOBILE_ACCESS_KEY;
+        let project: super::ProjectRecord =
+            serde_json::from_str(&format!(r#"{{"id":"p","name":"P","status":"active","{key}":true}}"#)).unwrap();
+        assert!(project.app_mobile_access);
+        let b: super::BoxRecord = serde_json::from_str(&format!(r#"{{"id":"b","name":"B","{key}":true}}"#)).unwrap();
+        assert!(b.app_mobile_access);
+    }
+
+    use crate::brand::SLUG;
     use super::*;
 
     #[test]
-    fn tmux_ls_runs_through_eldrun_path() {
+    fn tmux_ls_runs_through_app_path() {
         let command = tmux_ls_command("#{session_name}");
         let path = command
             .get_envs()
@@ -814,9 +829,9 @@ mod tests {
 
     #[test]
     fn exact_session_names_only() {
-        assert!(expected_tmux("p1", "shell", "eldrun-p1--shell-123456789"));
-        assert!(!expected_tmux("p1", "shell", "eldrun-p2--shell-123456789"));
-        assert!(!expected_tmux("p1", "shell", "eldrun-p1--agent-123456789"));
+        assert!(expected_tmux("p1", "shell", concat!(crate::app_slug!(), "-p1--shell-123456789")));
+        assert!(!expected_tmux("p1", "shell", concat!(crate::app_slug!(), "-p2--shell-123456789")));
+        assert!(!expected_tmux("p1", "shell", concat!(crate::app_slug!(), "-p1--agent-123456789")));
     }
 
     #[test]
@@ -833,7 +848,7 @@ mod tests {
                 "name": name,
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             })
         };
         fs::write(
@@ -856,7 +871,7 @@ mod tests {
                     "cmd": "bash",
                     "cwd": root_a.to_string_lossy(),
                     "kind": "shell",
-                    "tmuxSession": "eldrun-p-a--shell-123456789",
+                    "tmuxSession": concat!(crate::app_slug!(), "-p-a--shell-123456789"),
                 }]
             }))
             .expect("session"),
@@ -891,7 +906,7 @@ mod tests {
                 "name": "P",
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             }]))
             .expect("projects"),
         )
@@ -910,7 +925,7 @@ mod tests {
             "cmd": "bash",
             "cwd": root.to_string_lossy(),
             "kind": "shell",
-            "tmuxSession": "eldrun-p-1--shell-123456789",
+            "tmuxSession": concat!(crate::app_slug!(), "-p-1--shell-123456789"),
         }]));
 
         let mut cache = CatalogCache::default();
@@ -949,7 +964,7 @@ mod tests {
                 "name": "P",
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             }]))
             .expect("projects"),
         )
@@ -962,7 +977,7 @@ mod tests {
                 "cmd": "bash",
                 "cwd": root.to_string_lossy(),
                 "kind": "shell",
-                "tmuxSession": format!("eldrun-p-1--shell-10000000{suffix}"),
+                "tmuxSession": format!("{SLUG}-p-1--shell-10000000{suffix}"),
                 "color": color,
             })
         };
@@ -1005,7 +1020,7 @@ mod tests {
                 "name": "Borrowed",
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             }]))
             .expect("projects"),
         )
@@ -1020,7 +1035,7 @@ mod tests {
                     "cwd": root.to_string_lossy(),
                     "kind": "agent",
                     "sessionId": "s1",
-                    "tmuxSession": "eldrun-root--agent-123456789",
+                    "tmuxSession": concat!(crate::app_slug!(), "-root--agent-123456789"),
                 }]
             }))
             .expect("session"),
@@ -1040,12 +1055,12 @@ mod tests {
         // No settings, or the switch unset/off: the borrowed record is refused
         // and nothing else lists root.
         assert!(load(None, &fenced).is_empty());
-        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": { "enabled": true } })), &fenced).is_empty());
-        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(false) })), &fenced).is_empty());
+        assert!(load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true } })), &fenced).is_empty());
+        assert!(load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(false) })), &fenced).is_empty());
 
         // Switched on, default review, fenced: one Root row — the gate's, not
         // the borrowed record's — with its tab and a pending count.
-        let listed = load(Some(serde_json::json!({ "eldrun_mobile_host": host(true) })), &fenced);
+        let listed = load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(true) })), &fenced);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].public.kind, ScopeKind::Root);
         assert_eq!(listed[0].public.label, "Root");
@@ -1053,19 +1068,19 @@ mod tests {
         assert_eq!(listed[0].tabs.len(), 1);
         assert_eq!(listed[0].public.pending_reviews, Some(0));
         // An unknown review value reads as `all`, as it does for the tools.
-        assert_eq!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp_review": "later" })), &fenced).len(), 1);
+        assert_eq!(load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(true), "root_mcp_review": "later" })), &fenced).len(), 1);
 
         // Tools on but writes not staged behind a fence: closed.
-        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(true) })), &unfenced).is_empty());
+        assert!(load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(true) })), &unfenced).is_empty());
         for level in ["destructive", "off"] {
             assert!(
-                load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp_review": level })), &fenced).is_empty(),
+                load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(true), "root_mcp_review": level })), &fenced).is_empty(),
                 "{level}"
             );
         }
         // Tools off: a root agent holds nothing extra, so neither matters.
         assert_eq!(
-            load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp": false, "root_mcp_review": "off" })), &unfenced).len(),
+            load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(true), "root_mcp": false, "root_mcp_review": "off" })), &unfenced).len(),
             1
         );
         // Unreadable settings refuse.
@@ -1123,7 +1138,7 @@ mod tests {
                 "name": "P",
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             }]))
             .expect("projects"),
         )
@@ -1136,7 +1151,7 @@ mod tests {
                 "cmd": cmd,
                 "cwd": root.to_string_lossy(),
                 "kind": "local_agent",
-                "tmuxSession": format!("eldrun-p-1--agent-10000000{n}"),
+                "tmuxSession": format!("{SLUG}-p-1--agent-10000000{n}"),
             });
             row.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
             row
@@ -1146,7 +1161,7 @@ mod tests {
         };
         // The wrong token.
         let mut wrong_token = tab("5", "vibe", serde_json::json!({ "sessionId": "s5" }));
-        wrong_token["tmuxSession"] = serde_json::json!("eldrun-p-1--local_agent-100000005");
+        wrong_token["tmuxSession"] = serde_json::json!(concat!(crate::app_slug!(), "-p-1--local_agent-100000005"));
         fs::write(
             sessions.join("terminals.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -1194,7 +1209,7 @@ mod tests {
                 "name": "P",
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             }]))
             .expect("projects"),
         )
@@ -1207,7 +1222,7 @@ mod tests {
                 "cmd": "claude",
                 "cwd": root.to_string_lossy(),
                 "kind": "agent",
-                "tmuxSession": format!("eldrun-p-1--agent-10000000{n}"),
+                "tmuxSession": format!("{SLUG}-p-1--agent-10000000{n}"),
             });
             row.as_object_mut().unwrap().extend(marker.as_object().unwrap().clone());
             row
@@ -1267,9 +1282,9 @@ mod tests {
             state.join("boxes.json"),
             serde_json::to_vec(&serde_json::json!([
                 { "id": "b1", "name": "Paper", "member_ids": ["p-lib", "p-remote", "p-gone"],
-                  "folder": folder.to_string_lossy(), "eldrun_mobile_access": true },
+                  "folder": folder.to_string_lossy(), concat!(crate::app_slug!(), "_mobile_access"): true },
                 { "id": "b2", "name": "Off", "folder": folder.to_string_lossy() },
-                { "id": "b3", "name": "Unopened", "eldrun_mobile_access": true },
+                { "id": "b3", "name": "Unopened", concat!(crate::app_slug!(), "_mobile_access"): true },
             ]))
             .expect("boxes"),
         )
@@ -1285,10 +1300,10 @@ mod tests {
         fs::write(
             sessions.join("terminals.json"),
             serde_json::to_vec(&serde_json::json!({ "tabLayout": [
-                tab("Box shell", &folder, "eldrun-box_b1--shell-123456789"),
-                tab("Lib shell", &member, "eldrun-box_b1--shell-223456789"),
-                tab("Remote shell", &remote_mirror, "eldrun-box_b1--shell-323456789"),
-                tab("Foreign", &folder, "eldrun-p-lib--shell-423456789"),
+                tab("Box shell", &folder, concat!(crate::app_slug!(), "-box_b1--shell-123456789")),
+                tab("Lib shell", &member, concat!(crate::app_slug!(), "-box_b1--shell-223456789")),
+                tab("Remote shell", &remote_mirror, concat!(crate::app_slug!(), "-box_b1--shell-323456789")),
+                tab("Foreign", &folder, concat!(crate::app_slug!(), "-p-lib--shell-423456789")),
             ]}))
             .expect("session"),
         )

@@ -2433,8 +2433,9 @@ fn igpu_fix_command(systemd: bool) -> (String, String) {
         format!(
             "sudo mkdir -p /etc/systemd/system/ollama.service.d && \
              printf '[Service]\\nEnvironment=\"{IGPU_ENABLE_VAR}=1\"\\n' | \
-             sudo tee /etc/systemd/system/ollama.service.d/eldrun-igpu.conf && \
-             sudo systemctl daemon-reload && sudo systemctl restart ollama"
+             sudo tee /etc/systemd/system/ollama.service.d/{dropin} && \
+             sudo systemctl daemon-reload && sudo systemctl restart ollama",
+            dropin = crate::brand::OLLAMA_IGPU_DROPIN
         ),
         "bash".to_string(),
     )
@@ -2565,9 +2566,10 @@ fn models_dir_service_command(path: &str, systemd: bool) -> (String, String) {
              svc_user=${{svc_user:-ollama}}; \
              sudo mkdir -p /etc/systemd/system/ollama.service.d && \
              printf '[Service]\\nEnvironment=\"OLLAMA_MODELS=%s\"\\n' {q} | \
-             sudo tee /etc/systemd/system/ollama.service.d/eldrun-models.conf && \
+             sudo tee /etc/systemd/system/ollama.service.d/{dropin} && \
              sudo mkdir -p {q} && sudo chown \"$svc_user\": {q} && \
-             sudo systemctl daemon-reload && sudo systemctl restart ollama"
+             sudo systemctl daemon-reload && sudo systemctl restart ollama",
+            dropin = crate::brand::OLLAMA_MODELS_DROPIN
         ),
         "bash".to_string(),
     )
@@ -3493,7 +3495,7 @@ pub struct LocalAgentPrep {
 pub async fn prepare_local_agent(model: String) -> Result<LocalAgentPrep, String> {
     validate_model_name(&model)?;
     let alias = sanitize_alias(&model);
-    let vibe_home = eldrun_vibe_local_dir_for(&alias)?;
+    let vibe_home = app_vibe_local_dir_for(&alias)?;
     std::fs::create_dir_all(&vibe_home).map_err(|e| format!("create vibe_local dir: {e}"))?;
 
     let config_path = vibe_home.join("config.toml");
@@ -4101,10 +4103,7 @@ fn catalog_arg_pair(path: &std::path::Path) -> Vec<String> {
 
 /// Where [`write_local_catalog`] keeps `model`'s catalog.
 fn local_catalog_path(model: &str) -> std::path::PathBuf {
-    crate::paths::home_dir()
-        .join(".local")
-        .join("share")
-        .join("eldrun")
+    crate::storage::home_share_dir()
         .join("codex_local")
         .join(sanitize_alias(model))
         .join("model.json")
@@ -4237,11 +4236,8 @@ fn validate_model_name(model: &str) -> Result<(), String> {
 /// Return the per-model VIBE_HOME path: `~/.local/share/eldrun/vibe_local/{alias}/`.
 /// Each Ollama tab gets its own subdirectory so the configs are independent
 /// and `active_model` is always unambiguous.
-fn eldrun_vibe_local_dir_for(alias: &str) -> Result<std::path::PathBuf, String> {
-    Ok(crate::paths::home_dir()
-        .join(".local")
-        .join("share")
-        .join("eldrun")
+fn app_vibe_local_dir_for(alias: &str) -> Result<std::path::PathBuf, String> {
+    Ok(crate::storage::home_share_dir()
         .join("vibe_local")
         .join(alias))
 }
@@ -4833,7 +4829,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persisted_local_launch_line_must_be_one_eldrun_builds() {
+    fn a_persisted_local_launch_line_must_be_one_app_builds() {
         let v = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
         let m = "qwen3-coder:30b";
         // `ollama launch`, for a driver that has it.
@@ -5471,7 +5467,7 @@ mod tests {
 
         let (cmd, shell) = models_dir_service_command(path, true);
         assert_eq!(shell, "bash");
-        assert!(cmd.contains("ollama.service.d/eldrun-models.conf"));
+        assert!(cmd.contains(concat!("ollama.service.d/", crate::app_slug!(), "-models.conf")));
         assert!(cmd.contains("OLLAMA_MODELS=%s")); // path arrives as a printf arg
         assert!(cmd.contains(&sh_single_quote(path)));
         assert!(cmd.contains("systemctl restart ollama"));

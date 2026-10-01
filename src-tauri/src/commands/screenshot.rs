@@ -519,7 +519,7 @@ mod platform {
                 .ok_or_else(|| "session bus assigned no unique name".to_string())?
                 .to_string();
             let token = format!(
-                "eldrun_{}_{}",
+                concat!(crate::app_slug!(), "_{}_{}"),
                 std::process::id(),
                 SEQ.fetch_add(1, Ordering::Relaxed)
             );
@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn pending_shot_refuses_paths_outside_the_staging_area() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("ELDRUN_STATE_DIR", tmp.path());
+        std::env::set_var(crate::app_env!("STATE_DIR"), tmp.path());
         let dir = ensure_pending_dir().unwrap();
 
         let shot = dir.join("Screenshot-20260101-000000.png");
@@ -856,7 +856,7 @@ mod tests {
         assert!(pending_shot(&dir.to_string_lossy()).is_err());
         assert!(pending_shot(&dir.join("gone.png").to_string_lossy()).is_err());
 
-        std::env::remove_var("ELDRUN_STATE_DIR");
+        std::env::remove_var(crate::app_env!("STATE_DIR"));
     }
 
     /// An overlay that never got an answer (a crash, a relaunch) must not leave
@@ -900,8 +900,8 @@ mod tests {
     #[test]
     fn portal_request_path_follows_the_sender_convention() {
         assert_eq!(
-            platform::portal::request_path(":1.42", "eldrun_7_0"),
-            "/org/freedesktop/portal/desktop/request/1_42/eldrun_7_0"
+            platform::portal::request_path(":1.42", concat!(crate::app_slug!(), "_7_0")),
+            concat!("/org/freedesktop/portal/desktop/request/1_42/", crate::app_slug!(), "_7_0")
         );
     }
 
@@ -962,7 +962,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn capture_command_reports_the_file_it_directs() {
-        let dir = std::path::Path::new("/tmp/eldrun-shots");
+        let dir = std::path::Path::new(concat!("/tmp/", crate::app_slug!(), "-shots"));
         let (_, expected) = platform::capture_command("scrot", dir).unwrap();
         let expected = expected.expect("scrot is directed at an explicit file");
         assert_eq!(expected.parent(), Some(dir));

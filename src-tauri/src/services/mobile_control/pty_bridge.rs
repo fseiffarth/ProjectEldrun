@@ -658,12 +658,12 @@ mod tests {
     async fn a_reconnecting_viewer_evicts_the_previous_one() {
         use super::TerminalRegistry;
         let registry = TerminalRegistry::default();
-        let first = registry.acquire("eldrun-p--agent-1").await.expect("first");
-        assert!(registry.is_busy("eldrun-p--agent-1"));
+        let first = registry.acquire(concat!(crate::app_slug!(), "-p--agent-1")).await.expect("first");
+        assert!(registry.is_busy(concat!(crate::app_slug!(), "-p--agent-1")));
         assert!(!first.evicted());
         let waiter = {
             let registry = registry.clone();
-            tokio::spawn(async move { registry.acquire("eldrun-p--agent-1").await })
+            tokio::spawn(async move { registry.acquire(concat!(crate::app_slug!(), "-p--agent-1")).await })
         };
         // The incumbent is asked to leave; releasing hands the slot over.
         tokio::time::sleep(std::time::Duration::from_millis(120)).await;
@@ -671,17 +671,17 @@ mod tests {
         drop(first);
         let second = waiter.await.expect("join").expect("second viewer");
         assert!(!second.evicted());
-        assert!(registry.is_busy("eldrun-p--agent-1"));
+        assert!(registry.is_busy(concat!(crate::app_slug!(), "-p--agent-1")));
         drop(second);
-        assert!(!registry.is_busy("eldrun-p--agent-1"));
+        assert!(!registry.is_busy(concat!(crate::app_slug!(), "-p--agent-1")));
     }
 
     #[tokio::test]
     async fn an_incumbent_that_never_leaves_still_yields_session_busy() {
         use super::TerminalRegistry;
         let registry = TerminalRegistry::default();
-        let _held = registry.acquire("eldrun-p--agent-2").await.expect("first");
-        match registry.acquire("eldrun-p--agent-2").await {
+        let _held = registry.acquire(concat!(crate::app_slug!(), "-p--agent-2")).await.expect("first");
+        match registry.acquire(concat!(crate::app_slug!(), "-p--agent-2")).await {
             Ok(_) => panic!("a held slot must not be handed over"),
             Err(reason) => assert_eq!(reason, "session_busy"),
         }
@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn tmux_attach_uses_a_non_alternate_screen_mobile_client() {
-        let command = tmux_attach_command("eldrun-project--shell-test");
+        let command = tmux_attach_command(concat!(crate::app_slug!(), "-project--shell-test"));
         assert_eq!(command.get_env("TERM"), Some(OsStr::new("vt100")));
         assert_eq!(command.get_env("COLORTERM"), Some(OsStr::new("truecolor")));
         let argv = command.get_argv();
@@ -702,7 +702,7 @@ mod tests {
         );
         assert_eq!(
             &argv[1..],
-            &["-u", "attach-session", "-t", "eldrun-project--shell-test"].map(OsStr::new)
+            &["-u", "attach-session", "-t", concat!(crate::app_slug!(), "-project--shell-test")].map(OsStr::new)
         );
     }
 
@@ -711,16 +711,16 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_tmux_spawns_use_eldrun_path() {
+    fn sidecar_tmux_spawns_use_app_path() {
         let expected = crate::paths::extra_path_dirs()[0].clone();
 
-        let attach = tmux_attach_command("eldrun-project--shell-test");
+        let attach = tmux_attach_command(concat!(crate::app_slug!(), "-project--shell-test"));
         let attach_path = attach.get_env("PATH").expect("attach carries PATH");
         assert_eq!(first_path_dir(attach_path), expected);
 
         for command in [
-            tmux_capture_command("eldrun-project--shell-test"),
-            tmux_window_size_command("eldrun-project--shell-test"),
+            tmux_capture_command(concat!(crate::app_slug!(), "-project--shell-test")),
+            tmux_window_size_command(concat!(crate::app_slug!(), "-project--shell-test")),
         ] {
             let path = command
                 .get_envs()
@@ -733,7 +733,7 @@ mod tests {
 
     #[test]
     fn tmux_capture_replays_the_same_depth_as_mobile_xterm() {
-        let command = tmux_capture_command("eldrun-project--shell-test");
+        let command = tmux_capture_command(concat!(crate::app_slug!(), "-project--shell-test"));
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             [
@@ -747,7 +747,7 @@ mod tests {
                 "-E",
                 "-1",
                 "-t",
-                "eldrun-project--shell-test",
+                concat!(crate::app_slug!(), "-project--shell-test"),
             ]
             .map(OsStr::new)
         );
@@ -755,7 +755,7 @@ mod tests {
 
     #[test]
     fn capture_stops_above_the_visible_screen_the_attach_will_redraw() {
-        let command = tmux_capture_command("eldrun-project--shell-test");
+        let command = tmux_capture_command(concat!(crate::app_slug!(), "-project--shell-test"));
         let args: Vec<_> = command
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -768,7 +768,7 @@ mod tests {
 
     #[test]
     fn window_size_is_probed_from_the_window_not_the_client() {
-        let command = tmux_window_size_command("eldrun-project--shell-test");
+        let command = tmux_window_size_command(concat!(crate::app_slug!(), "-project--shell-test"));
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             [
@@ -776,7 +776,7 @@ mod tests {
                 "display-message",
                 "-p",
                 "-t",
-                "eldrun-project--shell-test",
+                concat!(crate::app_slug!(), "-project--shell-test"),
                 "#{window_width}x#{window_height}",
             ]
             .map(OsStr::new)

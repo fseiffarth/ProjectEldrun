@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn spec_from_entry_none_for_local_project() {
-        let e = entry("p1", Some("/home/u/eldrun/projects/alpha"), None);
+        let e = entry("p1", Some(concat!("/home/u/", crate::app_slug!(), "/projects/alpha")), None);
         assert!(spec_from_entry(&e).is_none());
     }
 

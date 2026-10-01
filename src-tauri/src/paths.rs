@@ -589,22 +589,22 @@ where
 /// at another instance's folders. Set it together with `ELDRUN_STATE_DIR`:
 /// overriding only one splits a single instance's world across the sandbox and
 /// the real data.
-pub fn eldrun_home() -> PathBuf {
-    eldrun_home_for(|key| std::env::var(key).ok())
+pub fn app_home() -> PathBuf {
+    app_home_for(|key| std::env::var(key).ok())
 }
 
-pub fn eldrun_home_for<F>(mut env: F) -> PathBuf
+pub fn app_home_for<F>(mut env: F) -> PathBuf
 where
     F: FnMut(&str) -> Option<String>,
 {
-    match non_empty(env("ELDRUN_HOME")) {
+    match non_empty(env(crate::app_env!("HOME"))) {
         Some(dir) => PathBuf::from(dir),
-        None => home_dir().join("eldrun"),
+        None => home_dir().join(crate::brand::HOME_DIR_NAME),
     }
 }
 
 pub fn projects_root() -> PathBuf {
-    eldrun_home().join("projects")
+    app_home().join("projects")
 }
 
 /// The default parent for remote (SSH) projects' local mirrors: a top-level
@@ -612,19 +612,19 @@ pub fn projects_root() -> PathBuf {
 /// `projects/ssh/` subfolder. Keeps synced remote working copies out of the
 /// managed-local-projects tree.
 pub fn projects_ssh_root() -> PathBuf {
-    eldrun_home().join("projects-ssh")
+    app_home().join("projects-ssh")
 }
 
 pub fn root_work_dir() -> PathBuf {
-    eldrun_home().join("root")
+    app_home().join("root")
 }
 
 /// Id of the retired built-in Trash workspace. Kept only so its leftover
 /// `projects.json` entry is dropped.
-pub const LEGACY_TRASH_PROJECT_ID: &str = "eldrun-trash";
+pub const LEGACY_TRASH_PROJECT_ID: &str = concat!(crate::legacy_slug!(), "-trash");
 
 pub fn boxes_root() -> PathBuf {
-    eldrun_home().join("boxes")
+    app_home().join("boxes")
 }
 
 /// Holding area for deleted projects: `~/eldrun/archive/<id>/`. A deleted
@@ -632,7 +632,7 @@ pub fn boxes_root() -> PathBuf {
 /// erased, so it can be restored or permanently cleared from Settings. Only ever
 /// emptied manually from the Settings "Archived projects" panel.
 pub fn archive_root() -> PathBuf {
-    eldrun_home().join("archive")
+    app_home().join("archive")
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
@@ -959,22 +959,22 @@ mod tests {
     }
 
     #[test]
-    fn eldrun_home_for_honors_override() {
-        let dir = eldrun_home_for(|key| {
-            (key == "ELDRUN_HOME").then(|| "/tmp/eldrun-sandbox".to_string())
+    fn app_home_for_honors_override() {
+        let dir = app_home_for(|key| {
+            (key == crate::app_env!("HOME")).then(|| concat!("/tmp/", crate::app_slug!(), "-sandbox").to_string())
         });
-        assert_eq!(dir, PathBuf::from("/tmp/eldrun-sandbox"));
+        assert_eq!(dir, PathBuf::from(concat!("/tmp/", crate::app_slug!(), "-sandbox")));
     }
 
     #[test]
-    fn eldrun_home_for_ignores_empty_override() {
+    fn app_home_for_ignores_empty_override() {
         // An empty ELDRUN_HOME means unset, same as ELDRUN_STATE_DIR's rule.
-        let dir = eldrun_home_for(|key| (key == "ELDRUN_HOME").then(String::new));
-        assert_eq!(dir, home_dir().join("eldrun"));
+        let dir = app_home_for(|key| (key == crate::app_env!("HOME")).then(String::new));
+        assert_eq!(dir, home_dir().join(crate::app_slug!()));
     }
 
     #[test]
-    fn boxes_root_ends_with_boxes_under_eldrun() {
+    fn boxes_root_ends_with_boxes_under_app() {
         let dir = boxes_root();
         let last = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
         assert_eq!(last, "boxes", "boxes_root must end in 'boxes': {dir:?}");
@@ -983,11 +983,11 @@ mod tests {
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("");
-        assert_eq!(parent, "eldrun", "boxes_root parent must be 'eldrun'");
+        assert_eq!(parent, crate::app_slug!(), concat!("boxes_root parent must be '", crate::app_slug!(), "'"));
     }
 
     #[test]
-    fn archive_root_ends_with_archive_under_eldrun() {
+    fn archive_root_ends_with_archive_under_app() {
         let dir = archive_root();
         let last = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
         assert_eq!(
@@ -999,6 +999,6 @@ mod tests {
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("");
-        assert_eq!(parent, "eldrun", "archive_root parent must be 'eldrun'");
+        assert_eq!(parent, crate::app_slug!(), concat!("archive_root parent must be '", crate::app_slug!(), "'"));
     }
 }

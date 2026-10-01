@@ -11,7 +11,7 @@ pub const MIN_ROWS: u16 = 5;
 pub const MAX_ROWS: u16 = 200;
 pub const MAX_INPUT_FRAME: usize = 64 * 1024;
 pub const MAX_OUTPUT_QUEUE: usize = 1024 * 1024;
-pub const TERMINAL_PROTOCOL: &str = "eldrun-terminal.v1";
+pub const TERMINAL_PROTOCOL: &str = crate::brand::TERMINAL_PROTOCOL;
 /// The catalog truncates a tab label to this many characters when it
 /// publishes one, so a rename that came back longer would silently disagree
 /// with the row the phone is looking at. Rejected at the edge instead.
@@ -1606,7 +1606,7 @@ mod tests {
         let response = DesktopResponse::Catalog {
             agents: vec![],
             statuses: vec![AgentTabStatus {
-                tmux_session: "eldrun-project-0--agent-123456789".into(),
+                tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
                 status: "question".into(),
                 model: Some("opus-4-1".into()),
                 plan: true,
@@ -1615,7 +1615,7 @@ mod tests {
                 done_at: None,
             }],
             schedules: vec![AgentTabSchedules {
-                tmux_session: "eldrun-project-0--agent-123456789".into(),
+                tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
                 total: 3,
                 enabled: 2,
                 next: Some("2026-09-03T09:00".into()),
@@ -1625,14 +1625,14 @@ mod tests {
                 }],
             }],
             prompts: vec![AgentTabPrompts {
-                tmux_session: "eldrun-project-0--agent-123456789".into(),
+                tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
                 prompts: vec![AgentTabPrompt {
                     text: "fix the failing tests".into(),
                     at: Some("2026-09-17T08:12:00Z".into()),
                 }],
             }],
             timings: vec![AgentTabTiming {
-                tmux_session: "eldrun-project-0--agent-987654321".into(),
+                tmux_session: concat!(crate::app_slug!(), "-project-0--agent-987654321").into(),
                 model: None,
                 plan: false,
                 goal: true,
@@ -1663,7 +1663,7 @@ mod tests {
         // the sidecar is what turns the tmux name into the phone's tab id.
         assert_eq!(
             response_json["prompts"][0]["tmux_session"],
-            "eldrun-project-0--agent-123456789"
+            concat!(crate::app_slug!(), "-project-0--agent-123456789")
         );
         assert_eq!(
             response_json["prompts"][0]["prompts"][0]["text"],
@@ -1690,7 +1690,7 @@ mod tests {
             "status": "catalog",
             "agents": [{ "id": "agent-0", "label": "Claude", "modes": [] }],
             "statuses": [{
-                "tmux_session": "eldrun-project-0--agent-123456789",
+                "tmux_session": concat!(crate::app_slug!(), "-project-0--agent-123456789"),
                 "status": "working",
                 "working_at": 1_700_000_000_000u64,
                 "a_field_this_build_has_never_heard_of": "…",
@@ -1812,7 +1812,7 @@ mod tests {
         let request = DesktopRequest::TabPrompt {
             request_id: "request-prompt".into(),
             project_id: "raw-project".into(),
-            tmux_session: "eldrun-project-0--agent-123456789".into(),
+            tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
             message: "fix the tests".into(),
         };
         assert_eq!(request.request_id(), "request-prompt");
@@ -1829,7 +1829,7 @@ mod tests {
         let request = DesktopRequest::EditHeldPrompt {
             request_id: "request-held".into(),
             project_id: "raw-project".into(),
-            tmux_session: "eldrun-project-0--agent-123456789".into(),
+            tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
             held_id: "held-1".into(),
             message: "fix the tests, then the docs".into(),
         };
@@ -1859,7 +1859,7 @@ mod tests {
         let request = DesktopRequest::TabSeen {
             request_id: "request-seen".into(),
             project_id: "raw-project".into(),
-            tmux_session: "eldrun-project-0--agent-123456789".into(),
+            tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
         };
         assert_eq!(request.request_id(), "request-seen");
         let json = serde_json::to_value(&request).expect("serialize seen request");

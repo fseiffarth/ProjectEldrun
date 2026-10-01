@@ -1273,7 +1273,7 @@ mod tests {
 
     #[test]
     fn installed_in_marks_only_the_first_dir_removable() {
-        let root = std::env::temp_dir().join(format!("eldrun-spell-installed-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-spell-installed-{}"), std::process::id()));
         let state = root.join("state");
         let system = root.join("system");
         std::fs::create_dir_all(&state).unwrap();

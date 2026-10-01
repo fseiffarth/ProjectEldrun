@@ -178,7 +178,7 @@ pub fn walk_local_files(root: &Path) -> Vec<(String, u64)> {
         };
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name == ".git" || name == ".eldrun" {
+            if name == ".git" || name == crate::brand::PROJECT_DIR {
                 continue;
             }
             let child_rel = if rel.is_empty() {
@@ -236,8 +236,8 @@ pub fn parse_du_files(root: &str, out: &str) -> Vec<(String, u64)> {
         if rel.is_empty()
             || rel == ".git"
             || rel.starts_with(".git/")
-            || rel == ".eldrun"
-            || rel.starts_with(".eldrun/")
+            || rel == crate::brand::PROJECT_DIR
+            || rel.starts_with(crate::brand::PROJECT_DIR_EXCLUDE_RULE)
         {
             continue;
         }

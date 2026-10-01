@@ -850,7 +850,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn fenced_server_initializes_and_refuses_unauthenticated_completion() {
-        let install = std::env::var("ELDRUN_COPILOT_INSTALL").expect("ELDRUN_COPILOT_INSTALL");
+        let install = std::env::var(crate::app_env!("COPILOT_INSTALL")).expect(crate::app_env!("COPILOT_INSTALL"));
         let project = tempfile::tempdir().unwrap();
         let root = project.path().canonicalize().unwrap();
         std::fs::write(root.join("a.py"), "def square(x):\n    return ").unwrap();

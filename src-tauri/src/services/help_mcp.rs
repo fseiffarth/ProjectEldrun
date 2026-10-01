@@ -29,11 +29,15 @@ mod corpus {
     include!(concat!(env!("OUT_DIR"), "/help_corpus.rs"));
 }
 
-pub const SERVER_NAME: &str = "eldrun-help";
-pub const INSTRUCTIONS: &str = concat!(crate::app_name!(), "'s own user documentation, read-only. Use it to answer questions about using ", crate::app_name!(), " (projects, tabs, agent CLIs, local models, remote projects, sync, mobile, mail/calendar, containers, troubleshooting). Start with eldrun_help_search, then eldrun_help_read the best topic or section; eldrun_help_topics lists everything. It knows nothing about the user's projects, files or settings.");
+pub const SERVER_NAME: &str = crate::brand::MCP_HELP_SERVER;
+pub const INSTRUCTIONS: &str = concat!(crate::app_name!(), "'s own user documentation, read-only. Use it to answer questions about using ", crate::app_name!(), " (projects, tabs, agent CLIs, local models, remote projects, sync, mobile, mail/calendar, containers, troubleshooting). Start with ", crate::app_slug!(), "_help_search, then ", crate::app_slug!(), "_help_read the best topic or section; ", crate::app_slug!(), "_help_topics lists everything. It knows nothing about the user's projects, files or settings.");
 
 /// The tools, in the order `tools/list` gives them.
-pub const TOOLS: &[&str] = &["eldrun_help_search", "eldrun_help_read", "eldrun_help_topics", "eldrun_help_status"];
+const TOOL_SEARCH: &str = crate::brand::HELP_TOOL_SEARCH;
+const TOOL_READ: &str = crate::brand::HELP_TOOL_READ;
+const TOOL_TOPICS: &str = crate::brand::HELP_TOOL_TOPICS;
+const TOOL_STATUS: &str = crate::brand::HELP_TOOL_STATUS;
+pub const TOOLS: &[&str] = &[TOOL_SEARCH, TOOL_READ, TOOL_TOPICS, TOOL_STATUS];
 /// Search hits per call: default and ceiling.
 pub const DEFAULT_RESULTS: usize = 5;
 pub const MAX_RESULTS: usize = 10;
@@ -306,7 +310,7 @@ impl Index {
     pub fn read(&self, id: &str, section: Option<&str>) -> Result<Read, String> {
         let topic = self.topic(id).ok_or_else(|| {
             let near: Vec<String> = self.search(&id.replace('-', " "), 3).into_iter().map(|h| h.id).collect();
-            format!("unknown topic {:?}; call eldrun_help_topics for the list{}", clip(id, 64),
+            format!(concat!("unknown topic {:?}; call ", crate::app_slug!(), "_help_topics for the list{}"), clip(id, 64),
                 if near.is_empty() { String::new() } else { format!(" (closest: {})", near.join(", ")) })
         })?;
         let (text, cap) = match section {
@@ -402,7 +406,7 @@ pub fn index() -> &'static Index {
 pub fn status(index: &Index) -> Value {
     json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "commit": option_env!("ELDRUN_BUILD_COMMIT"),
+        "commit": option_env!(crate::app_env!("BUILD_COMMIT")),
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "topics": index.topics.len(),
@@ -417,12 +421,12 @@ pub fn status(index: &Index) -> Value {
 fn schema(name: &str) -> Value {
     let object = |properties: Value, required: Value| json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     match name {
-        "eldrun_help_search" => object(json!({
+        TOOL_SEARCH => object(json!({
             "query": {"type":"string","maxLength":MAX_QUERY_BYTES,"description":"What the user wants to know, in plain words (e.g. \"install a local model\", \"sync a remote project\")."},
             "limit": {"type":"integer","minimum":1,"maximum":MAX_RESULTS,"description":format!("How many hits, 1–{MAX_RESULTS}; default {DEFAULT_RESULTS}.")}
         }), json!(["query"])),
-        "eldrun_help_read" => object(json!({
-            "topic_id": {"type":"string","maxLength":64,"description":"A topic id from eldrun_help_search or eldrun_help_topics."},
+        TOOL_READ => object(json!({
+            "topic_id": {"type":"string","maxLength":64,"description":concat!("A topic id from ", crate::app_slug!(), "_help_search or ", crate::app_slug!(), "_help_topics.")},
             "section": {"type":"string","maxLength":96,"description":"Optional section id (from the hit or the topic's `sections`) to read just that part."}
         }), json!(["topic_id"])),
         _ => object(json!({}), json!([])),
@@ -431,9 +435,9 @@ fn schema(name: &str) -> Value {
 
 pub fn tools() -> Value {
     let describe = |name: &str| match name {
-        "eldrun_help_search" => concat!("Search ", crate::app_name!(), "'s user documentation. Returns ranked topic sections with a snippet; follow up with eldrun_help_read."),
-        "eldrun_help_read" => concat!("Read one ", crate::app_name!(), " help topic (or one of its sections) as markdown. Output is capped; read by section for long topics."),
-        "eldrun_help_topics" => concat!("List every ", crate::app_name!(), " help topic with its sections and keywords."),
+        TOOL_SEARCH => concat!("Search ", crate::app_name!(), "'s user documentation. Returns ranked topic sections with a snippet; follow up with ", crate::app_slug!(), "_help_read."),
+        TOOL_READ => concat!("Read one ", crate::app_name!(), " help topic (or one of its sections) as markdown. Output is capped; read by section for long topics."),
+        TOOL_TOPICS => concat!("List every ", crate::app_name!(), " help topic with its sections and keywords."),
         _ => concat!("Which ", crate::app_name!(), " build this is (version, OS) and which agent tabs have these help tools. No user data."),
     };
     Value::Array(TOOLS.iter().map(|name| json!({
@@ -450,19 +454,19 @@ pub fn call(index: &Index, name: &str, args: &Value) -> Result<Value, String> {
     if !security::tool(name).is_some_and(|t| t.serves(Caller::Helper)) { return Err("unknown tool".into()); }
     security::validate(&schema(name), args)?;
     match name {
-        "eldrun_help_search" => {
+        TOOL_SEARCH => {
             let query = args["query"].as_str().unwrap_or_default();
             let limit = args["limit"].as_u64().map_or(DEFAULT_RESULTS, |n| n as usize);
             let hits = index.search(query, limit);
             Ok(json!({"query": clip(query, 256), "results": hits,
-                "hint": if hits.is_empty() { "no match; try other words or eldrun_help_topics" } else { "eldrun_help_read(topic_id, section) for the full text" }}))
+                "hint": if hits.is_empty() { concat!("no match; try other words or ", crate::app_slug!(), "_help_topics") } else { concat!(crate::app_slug!(), "_help_read(topic_id, section) for the full text") }}))
         }
-        "eldrun_help_read" => {
+        TOOL_READ => {
             let read = index.read(args["topic_id"].as_str().unwrap_or_default(), args["section"].as_str())?;
             serde_json::to_value(read).map_err(|e| e.to_string())
         }
-        "eldrun_help_topics" => Ok(json!({"topics": index.list()})),
-        "eldrun_help_status" => Ok(status(index)),
+        TOOL_TOPICS => Ok(json!({"topics": index.list()})),
+        TOOL_STATUS => Ok(status(index)),
         _ => Err("unknown tool".into()),
     }
 }
@@ -579,10 +583,10 @@ mod tests {
         assert!(index.search("ollama", 3).iter().all(|h| h.snippet.chars().count() <= SNIPPET_CHARS));
         // The schema's bounds are enforced before any work.
         let long = "x".repeat(MAX_QUERY_BYTES + 1);
-        assert!(call(&index, "eldrun_help_search", &json!({"query": long})).is_err());
-        assert!(call(&index, "eldrun_help_search", &json!({"query": "a", "limit": 11})).is_err());
-        assert!(call(&index, "eldrun_help_search", &json!({"query": "a", "path": "/etc"})).is_err(), "unknown argument");
-        assert!(call(&index, "eldrun_help_topics", &json!({"x": 1})).is_err());
+        assert!(call(&index, concat!(crate::app_slug!(), "_help_search"), &json!({"query": long})).is_err());
+        assert!(call(&index, concat!(crate::app_slug!(), "_help_search"), &json!({"query": "a", "limit": 11})).is_err());
+        assert!(call(&index, concat!(crate::app_slug!(), "_help_search"), &json!({"query": "a", "path": "/etc"})).is_err(), "unknown argument");
+        assert!(call(&index, concat!(crate::app_slug!(), "_help_topics"), &json!({"x": 1})).is_err());
     }
 
     #[test]
@@ -602,7 +606,7 @@ mod tests {
     fn rpc_serves_only_the_helper_class() {
         let index = fixture();
         let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
-        let call_msg = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"eldrun_help_search","arguments":{"query":"ollama"}}});
+        let call_msg = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":concat!(crate::app_slug!(), "_help_search"),"arguments":{"query":"ollama"}}});
         for caller in [Caller::Agent, Caller::LocalModel, Caller::Reader, Caller::Scheduler, Caller::Pusher] {
             let (_, s) = super::super::root_mcp::test_session(caller);
             assert_eq!(handle_with(&s, &index, &call_msg).unwrap()["error"]["message"], "access refused", "{caller:?}");

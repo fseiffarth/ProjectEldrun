@@ -381,7 +381,7 @@ fn acquire_inhibitor(reason: &str) -> Option<Inhibitor> {
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<bool>();
     let spawned = std::thread::Builder::new()
-        .name("eldrun-presenter-awake".to_string())
+        .name(concat!(crate::app_slug!(), "-presenter-awake").to_string())
         .spawn(move || {
             // SAFETY: plain Win32 call with no pointer arguments; a zero return
             // means the request was refused.

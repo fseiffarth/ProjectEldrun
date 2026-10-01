@@ -1,25 +1,26 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use app_lib::brand::SLUG;
 fn main() {
     // `eldrun --agent-shim <cli> [args…]`: the shell-tab shim
     // (`services::agent_shim`) — builds the calling tab's fence and execs it.
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--agent-shim")) {
         let args: Vec<String> = std::env::args().skip(2).collect();
         let Some((cli, rest)) = args.split_first() else {
-            eprintln!("agent shim: usage: eldrun --agent-shim <cli> [args…]");
+            eprintln!(concat!("agent shim: usage: ", app_lib::app_slug!(), " --agent-shim <cli> [args…]"));
             std::process::exit(2);
         };
-        std::process::exit(eldrun_lib::services::agent_shim::run(cli, rest));
+        std::process::exit(app_lib::services::agent_shim::run(cli, rest));
     }
     // `eldrun --fence-scope <bwrap> [args…]`: the agent fence's step before
     // bwrap (`services::fence_scope`) — enters the Landlock scope and execs.
     #[cfg(target_os = "linux")]
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--fence-scope")) {
         let args: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
-        std::process::exit(eldrun_lib::services::fence_scope::run(&args));
+        std::process::exit(app_lib::services::fence_scope::run(&args));
     }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--mobile-host")) {
-        let state_dir = eldrun_lib::storage::state_dir();
+        let state_dir = app_lib::storage::state_dir();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -30,22 +31,22 @@ fn main() {
         // from `journalctl --user -u eldrun-mobile-host` alone — a silent exit 0
         // leaves a dead process, a stale socket, and a desktop that can only
         // report `Connection refused (os error 111)`.
-        match runtime.block_on(eldrun_lib::services::mobile_control::host::run(state_dir)) {
+        match runtime.block_on(app_lib::services::mobile_control::host::run(state_dir)) {
             // Disabled is a decision, not a failure: exiting non-zero would make
             // `Restart=on-failure` relaunch an enabled unit forever against a
             // configuration that says off.
             Err(error)
-                if error == eldrun_lib::services::mobile_control::config::DISABLED_ERROR =>
+                if error == app_lib::services::mobile_control::config::DISABLED_ERROR =>
             {
-                eprintln!("eldrun-mobile-host: exiting: {error}");
+                eprintln!("{SLUG}-mobile-host: exiting: {error}");
             }
             Err(error) => {
-                eprintln!("eldrun-mobile-host: {error}");
+                eprintln!("{SLUG}-mobile-host: {error}");
                 std::process::exit(1);
             }
-            Ok(()) => eprintln!("eldrun-mobile-host: exiting: shut down on admin request"),
+            Ok(()) => eprintln!(concat!(app_lib::app_slug!(), "-mobile-host: exiting: shut down on admin request")),
         }
         return;
     }
-    eldrun_lib::run()
+    app_lib::run()
 }

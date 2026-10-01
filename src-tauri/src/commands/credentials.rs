@@ -260,7 +260,7 @@ mod tests {
     /// login → type it into a PTY → that PTY (and only it) accepts that credential.
     #[test]
     fn only_a_pty_running_the_matching_login_accepts_a_secret() {
-        let config = format!("/tmp/eldrun-test-{}.ovpn", std::process::id());
+        let config = format!(concat!("/tmp/", crate::app_slug!(), "-test-{}.ovpn"), std::process::id());
         let vpn_cmd = format!("pkexec openvpn --config {config} --auth-nocache");
         let ssh_cmd = format!(
             "ssh -o ControlMaster=auto alice@host-{}",

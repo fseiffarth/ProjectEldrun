@@ -756,7 +756,7 @@ fn ipp_job_progress() -> HashMap<u32, JobProgress> {
         .or_else(|_| std::env::var("LOGNAME"))
         .ok()
         .filter(|u| !u.is_empty() && u.len() <= 255 && !u.contains(['\r', '\n']))
-        .unwrap_or_else(|| "eldrun".into());
+        .unwrap_or_else(|| crate::app_slug!().into());
     let body = ipp_get_jobs_request(&user);
     let host = match &server {
         CupsServer::Socket(_) => "localhost",
@@ -1250,7 +1250,7 @@ pub async fn print_test_page(printer: String) -> Result<(), String> {
              Printer: {printer}\n\
              If you are reading this on paper, the queue works.\n", app = crate::brand::DISPLAY
         );
-        let path = std::env::temp_dir().join("eldrun-print-test.txt");
+        let path = std::env::temp_dir().join(concat!(crate::app_slug!(), "-print-test.txt"));
         std::fs::write(&path, body).map_err(|e| format!("test page: {e}"))?;
         let path_str = path.to_string_lossy().into_owned();
         print_file_impl(&printer, &path_str, concat!(crate::app_name!(), " print test"))

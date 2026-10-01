@@ -228,9 +228,9 @@ fn validate_abs_path(what: &str, path: &str) -> Result<String, String> {
 /// Separates the `ws_list` detail blocks from the `id\tpath` map appended after
 /// them, so one round trip yields both the human detail and an authoritative path
 /// per workspace (`ws_find`), whatever the site's `ws_list` layout is.
-const PATHS_MARKER: &str = "---ELDRUN-WS-PATHS---";
+const PATHS_MARKER: &str = concat!("---", crate::app_upper!(), "-WS-PATHS---");
 /// Separates `ws_allocate`'s own output from the `ws_find` confirmation after it.
-const PATH_MARKER: &str = "---ELDRUN-WS-PATH---";
+const PATH_MARKER: &str = concat!("---", crate::app_upper!(), "-WS-PATH---");
 
 /// `-F <fs>` when a filesystem was chosen, else nothing. Pre-validated + quoted.
 fn fs_flag(filesystem: Option<&str>) -> Result<String, String> {
@@ -450,15 +450,15 @@ async fn run_off_thread<T: Send + 'static>(
 #[tauri::command]
 pub async fn hpc_ws_available(target: HpcWsTarget) -> Result<HpcWsInfo, String> {
     run_off_thread(move || {
-        let script = "command -v ws_allocate >/dev/null 2>&1 || exit 0\n\
-                      printf 'ELDRUN-WS-OK\\n'\n\
-                      ws_list -l 2>/dev/null || true";
+        let script = concat!("command -v ws_allocate >/dev/null 2>&1 || exit 0\n\
+                      printf '", crate::app_upper!(), "-WS-OK\\n'\n\
+                      ws_list -l 2>/dev/null || true");
         let stdout = run_ws_script(&target, script).unwrap_or_default();
-        if !stdout.contains("ELDRUN-WS-OK") {
+        if !stdout.contains(concat!(crate::app_upper!(), "-WS-OK")) {
             return Ok(HpcWsInfo::default());
         }
         let rest = stdout
-            .split_once("ELDRUN-WS-OK")
+            .split_once(concat!(crate::app_upper!(), "-WS-OK"))
             .map(|(_, b)| b)
             .unwrap_or("");
         Ok(HpcWsInfo {
@@ -1056,10 +1056,10 @@ mod tests {
     #[test]
     fn anchor_rel_is_home_relative_and_path_safe() {
         assert_eq!(
-            validate_anchor_rel("eldrun/my-project").unwrap(),
-            "eldrun/my-project"
+            validate_anchor_rel(concat!(crate::app_slug!(), "/my-project")).unwrap(),
+            concat!(crate::app_slug!(), "/my-project")
         );
-        assert_eq!(validate_anchor_rel("/eldrun/p/").unwrap(), "eldrun/p");
+        assert_eq!(validate_anchor_rel(concat!("/", crate::app_slug!(), "/p/")).unwrap(), concat!(crate::app_slug!(), "/p"));
         assert!(validate_anchor_rel("../../etc").is_err());
         assert!(validate_anchor_rel("a/../b").is_err());
         assert!(validate_anchor_rel("a b").is_err());
@@ -1087,7 +1087,7 @@ mod tests {
 
     #[test]
     fn ws_list_blocks_and_path_map_merge() {
-        let out = "Id: demo\n    \
+        let out = concat!("Id: demo\n    \
                    workspace directory  : /lustre/scratch/data/alice-demo\n    \
                    remaining time       : 89 days 23 hours\n    \
                    creation time        : Mon Jul 21 10:00:00 2026\n    \
@@ -1098,9 +1098,9 @@ mod tests {
                    workspace directory  : /lustre/mlnvme/data/alice-fast\n    \
                    remaining time       : 5 days 1 hours\n    \
                    filesystem name      : mlnvme\n\
-                   ---ELDRUN-WS-PATHS---\n\
+                   ---", crate::app_upper!(), "-WS-PATHS---\n\
                    demo\t/lustre/scratch/data/alice-demo\n\
-                   fast\t/lustre/mlnvme/data/alice-fast\n";
+                   fast\t/lustre/mlnvme/data/alice-fast\n");
         let ws = parse_ws_list(out);
         assert_eq!(ws.len(), 2);
         assert_eq!(ws[0].id, "demo");
@@ -1120,10 +1120,10 @@ mod tests {
     fn ws_find_map_is_authoritative_and_adds_missed_workspaces() {
         // The listing's own path is stale/absent; the map states the truth, and a
         // workspace only in the map still shows up.
-        let out = "Id: demo\n    remaining time : 3 days\n\
-                   ---ELDRUN-WS-PATHS---\n\
+        let out = concat!("Id: demo\n    remaining time : 3 days\n\
+                   ---", crate::app_upper!(), "-WS-PATHS---\n\
                    demo\t/lustre/scratch/data/alice-demo\n\
-                   extra\t/lustre/scratch/data/alice-extra\n";
+                   extra\t/lustre/scratch/data/alice-extra\n");
         let ws = parse_ws_list(out);
         assert_eq!(ws.len(), 2);
         assert_eq!(ws[0].path, "/lustre/scratch/data/alice-demo");
@@ -1141,12 +1141,12 @@ mod tests {
 
     #[test]
     fn allocate_takes_the_ws_find_path_and_details() {
-        let out = "Info: creating workspace.\n\
+        let out = concat!("Info: creating workspace.\n\
                    /lustre/scratch/data/alice-demo\n\
                    remaining extensions  : 3\n\
                    remaining time in days: 90\n\
-                   ---ELDRUN-WS-PATH---\n\
-                   /lustre/scratch/data/alice-demo\n";
+                   ---", crate::app_upper!(), "-WS-PATH---\n\
+                   /lustre/scratch/data/alice-demo\n");
         let ws = parse_ws_allocate("demo", out).expect("path");
         assert_eq!(ws.id, "demo");
         assert_eq!(ws.path, "/lustre/scratch/data/alice-demo");

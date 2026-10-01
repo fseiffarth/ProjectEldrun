@@ -35,7 +35,7 @@ use crate::storage;
 /// The bundle filename shipped into a worker's `remote_path`. A relative name, so
 /// the worker-side script (which runs `cd <remote_path> && …`) never has to
 /// interpolate a path.
-const WORKER_BUNDLE: &str = ".eldrun-worker.bundle";
+const WORKER_BUNDLE: &str = crate::brand::WORKER_BUNDLE;
 
 /// In-memory fan-out registry: the `(project, host)` keys currently syncing, used
 /// as a crude in-flight lock so a commit-triggered and a connect-triggered push to
@@ -732,7 +732,7 @@ mod tests {
         // reports a non-empty bundle and that the untracked file is irrelevant to it
         // (git bundle carries objects + HEAD only, never the worktree's untracked
         // bytes — the read half of the "outputs survive" guarantee).
-        let tmp = std::env::temp_dir().join(format!("eldrun-ws-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-ws-{}"), std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let git = |args: &[&str]| Peer::Local(tmp.clone()).run(args).unwrap();

@@ -46,9 +46,9 @@ use crate::storage;
 /// The layer's directory under the state dir.
 pub const GLOBAL_DIR: &str = "agent-global";
 /// Per home: what the last apply placed there.
-const MANIFEST: &str = ".eldrun-global.json";
+const MANIFEST: &str = crate::brand::AGENT_GLOBAL_MANIFEST;
 /// Per home: the scope's own files the layer replaced on first contact.
-const BACKUP_DIR: &str = ".eldrun-global-backup";
+const BACKUP_DIR: &str = crate::brand::AGENT_GLOBAL_BACKUP_DIR;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
@@ -592,14 +592,14 @@ fn take_dir(src: &Path, dst: &Path, depth: usize) -> usize {
 }
 
 /// Whether a hook entry is one of Eldrun's own session hooks.
-fn is_eldrun_hook(command: &str, hooks_dir: &str) -> bool {
+fn is_app_hook(command: &str, hooks_dir: &str) -> bool {
     !hooks_dir.is_empty() && command.contains(hooks_dir)
 }
 
 /// Drop Eldrun's own hook commands from a Claude/Gemini-style `hooks` map
 /// (`{event: [{matcher, hooks: [{command}]}]}`), and the groups and events
 /// that leaves empty.
-pub(crate) fn strip_eldrun_json_hooks(settings: &mut Value, hooks_dir: &str) {
+pub(crate) fn strip_app_json_hooks(settings: &mut Value, hooks_dir: &str) {
     let Some(events) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
         return;
     };
@@ -610,7 +610,7 @@ pub(crate) fn strip_eldrun_json_hooks(settings: &mut Value, hooks_dir: &str) {
                 hooks.retain(|h| {
                     !h.get("command")
                         .and_then(Value::as_str)
-                        .is_some_and(|c| is_eldrun_hook(c, hooks_dir))
+                        .is_some_and(|c| is_app_hook(c, hooks_dir))
                 });
             }
         }
@@ -639,7 +639,7 @@ pub(crate) fn filtered_codex_config(text: &str, hooks_dir: &str) -> Option<Strin
             };
             let mut i = 0;
             while i < groups.len() {
-                let eldrun = groups.get(i).is_some_and(|g| {
+                let ours = groups.get(i).is_some_and(|g| {
                     toml_table_json(g)
                         .get("hooks")
                         .and_then(Value::as_array)
@@ -647,11 +647,11 @@ pub(crate) fn filtered_codex_config(text: &str, hooks_dir: &str) -> Option<Strin
                             hs.iter().any(|h| {
                                 h.get("command")
                                     .and_then(Value::as_str)
-                                    .is_some_and(|c| is_eldrun_hook(c, hooks_dir))
+                                    .is_some_and(|c| is_app_hook(c, hooks_dir))
                             })
                         })
                 });
-                if eldrun {
+                if ours {
                     groups.remove(i);
                 } else {
                     i += 1;
@@ -677,7 +677,7 @@ pub(crate) fn filtered_vibe_hooks(text: &str, hooks_dir: &str) -> Option<String>
         hooks.retain(|h| {
             let name = h.get("name").and_then(toml_edit::Item::as_str);
             let command = h.get("command").and_then(toml_edit::Item::as_str).unwrap_or("");
-            name != Some("eldrun-session") && !is_eldrun_hook(command, hooks_dir)
+            name != Some(crate::brand::VIBE_SESSION_HOOK) && !is_app_hook(command, hooks_dir)
         });
         if hooks.is_empty() {
             doc.remove("hooks");
@@ -746,7 +746,7 @@ pub fn import_from_user_home_in(state_dir: &Path, user_home: &Path) -> io::Resul
     }
 
     if let Some(mut settings) = read_json(&claude.join("settings.json")).filter(Value::is_object) {
-        strip_eldrun_json_hooks(&mut settings, &hooks_dir);
+        strip_app_json_hooks(&mut settings, &hooks_dir);
         if write_layer_json(&layer, ".claude/settings.json", &settings) {
             report.configs += 1;
         }
@@ -773,7 +773,7 @@ pub fn import_from_user_home_in(state_dir: &Path, user_home: &Path) -> io::Resul
         }
     }
     if let Some(mut settings) = read_json(&user_home.join(".gemini/settings.json")).filter(Value::is_object) {
-        strip_eldrun_json_hooks(&mut settings, &hooks_dir);
+        strip_app_json_hooks(&mut settings, &hooks_dir);
         if write_layer_json(&layer, ".gemini/settings.json", &settings) {
             report.configs += 1;
         }
@@ -907,6 +907,7 @@ pub fn ensure_dir() -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use crate::brand::SLUG;
     use super::*;
     use serde_json::json;
 
@@ -919,7 +920,7 @@ mod tests {
     fn json_merge_then_unmerge_leaves_what_the_cli_wrote() {
         let mut home = json!({
             "model": "sonnet",
-            "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "eldrun"}]}]}
+            "hooks": {"Stop": [{"hooks": [{"type": "command", "command": crate::app_slug!()}]}]}
         });
         let layer = json!({
             "permissions": {"defaultMode": "auto"},
@@ -941,7 +942,7 @@ mod tests {
             home,
             json!({
                 "model": "sonnet",
-                "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "eldrun"}]}]}
+                "hooks": {"Stop": [{"hooks": [{"type": "command", "command": crate::app_slug!()}]}]}
             })
         );
     }
@@ -1016,7 +1017,7 @@ mod tests {
         write(&global_dir_in(&state).join(".codex/AGENTS.md"), "global");
         write(&home.join(".codex/AGENTS.md"), "scope");
         write(&victim, "keep");
-        std::os::unix::fs::symlink(&victim, home.join(".codex/.AGENTS.md.eldrun-tmp")).unwrap();
+        std::os::unix::fs::symlink(&victim, home.join(concat!(".codex/.AGENTS.md.", crate::app_slug!(), "-tmp"))).unwrap();
 
         apply_to_home(&state, &home).unwrap();
 
@@ -1100,7 +1101,7 @@ mod tests {
         write(&layer_file, "[mcp_servers.docs]\ncommand = \"docs-mcp\"\nargs = [\"--stdio\"]\n");
         write(
             &home.join(".codex/config.toml"),
-            "model = \"gpt-5\"\n\n[projects.\"/work/p\"]\ntrust_level = \"trusted\"\n\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = 'eldrun'\n",
+            concat!("model = \"gpt-5\"\n\n[projects.\"/work/p\"]\ntrust_level = \"trusted\"\n\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = '", crate::app_slug!(), "'\n"),
         );
         apply_to_home(&state, &home).unwrap();
         let text = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
@@ -1108,7 +1109,7 @@ mod tests {
         assert_eq!(doc["mcp_servers"]["docs"]["command"].as_str(), Some("docs-mcp"));
         assert_eq!(doc["projects"]["/work/p"]["trust_level"].as_str(), Some("trusted"));
         assert_eq!(doc["model"].as_str(), Some("gpt-5"));
-        assert!(text.contains("command = 'eldrun'"));
+        assert!(text.contains(concat!("command = '", crate::app_slug!(), "'")));
         // Idempotent.
         apply_to_home(&state, &home).unwrap();
         assert_eq!(std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(), text);
@@ -1195,11 +1196,11 @@ mod tests {
     }
 
     #[test]
-    fn import_takes_config_and_leaves_logins_state_and_eldrun_hooks() {
+    fn import_takes_config_and_leaves_logins_state_and_app_hooks() {
         let tmp = tempfile::tempdir().unwrap();
         let state = tmp.path().join("state");
         let user = tmp.path().join("user");
-        let hooks = state.join("hooks").join("eldrun_session_start.sh");
+        let hooks = state.join("hooks").join(concat!(crate::app_slug!(), "_session_start.sh"));
         let hooks = hooks.to_string_lossy();
         write(&user.join(".claude/CLAUDE.md"), "@RTK.md");
         write(&user.join(".claude/RTK.md"), "rtk");
@@ -1220,7 +1221,7 @@ mod tests {
         write(
             &user.join(".vibe/hooks.toml"),
             &format!(
-                "[[hooks]]\nname = \"eldrun-session\"\ntype = \"post_agent\"\ncommand = '{hooks}'\n\n[[hooks]]\nname = \"rtk-rewrite\"\ntype = \"pre_tool\"\nmatch = \"bash\"\ncommand = \"rtk hook vibe\"\n"
+                "[[hooks]]\nname = \"{SLUG}-session\"\ntype = \"post_agent\"\ncommand = '{hooks}'\n\n[[hooks]]\nname = \"rtk-rewrite\"\ntype = \"pre_tool\"\nmatch = \"bash\"\ncommand = \"rtk hook vibe\"\n"
             ),
         );
         write(
@@ -1286,7 +1287,7 @@ mod tests {
             &global_dir_in(&state).join(".vibe/hooks.toml"),
             "[[hooks]]\nname = \"rtk-rewrite\"\ntype = \"pre_tool\"\ncommand = \"rtk hook vibe\"\n",
         );
-        let own = "# Eldrun: remember the live Vibe session for this tab.\n[[hooks]]\nname = \"eldrun-session\"\ntype = \"post_agent\"\ncommand = \"x\"\n";
+        let own = concat!("# ", crate::app_name!(), ": remember the live Vibe session for this tab.\n[[hooks]]\nname = \"", crate::app_slug!(), "-session\"\ntype = \"post_agent\"\ncommand = \"x\"\n");
         write(&home.join(".vibe/hooks.toml"), own);
         apply_to_home(&state, &home).unwrap();
         let doc: toml_edit::DocumentMut =
@@ -1297,7 +1298,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(names, ["eldrun-session", "rtk-rewrite"]);
+        assert_eq!(names, [concat!(crate::app_slug!(), "-session"), "rtk-rewrite"]);
         std::fs::remove_file(global_dir_in(&state).join(".vibe/hooks.toml")).unwrap();
         apply_to_home(&state, &home).unwrap();
         assert_eq!(std::fs::read_to_string(home.join(".vibe/hooks.toml")).unwrap(), own);

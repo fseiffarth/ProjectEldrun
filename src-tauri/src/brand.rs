@@ -1,6 +1,18 @@
-//! The app's name — the ONE backend place it is spelled. Display text and
-//! user agents are built from these, so a rename edits this file and its
-//! frontend twin `src/lib/brand.ts`, nothing else.
+//! The app's name — the ONE backend place it is spelled. Display text, user
+//! agents and every name the app puts on disk, in a keyring, on the wire or
+//! into another program's config are built from the macros below, so a rename
+//! edits this file and its frontend twin `src/lib/brand.ts`, nothing else.
+//!
+//! Each such name comes as a pair: the current name, built from the current
+//! brand, and a `LEGACY_*` twin built from the old brand. Today both brands
+//! are the same, so the pairs are equal. Code that *writes* a name uses the
+//! current constant; code that must still *find* something an older build
+//! wrote uses the `LEGACY_*` one.
+//!
+//! Three spellings need a literal the compiler cannot derive: a `match`
+//! pattern is fine with a constant, but `#[serde(rename = "…")]` and
+//! `include_bytes!` paths are not. Those few carry a `brand-check: allow`
+//! marker and a test that pins them to the constant here.
 
 /// The name as shown to the user, as a literal: `concat!` needs one, so text
 /// that must stay a `&'static str` is written
@@ -13,18 +25,338 @@ macro_rules! app_name {
     };
 }
 
+/// The lowercase form as a literal, for `concat!`. Everything else reads
+/// [`SLUG`].
+#[macro_export]
+macro_rules! app_slug {
+    () => {
+        "eldrun"
+    };
+}
+
+/// The uppercase form as a literal, for `concat!`. Everything else reads
+/// [`UPPER`].
+#[macro_export]
+macro_rules! app_upper {
+    () => {
+        "ELDRUN"
+    };
+}
+
+/// The name of one of the app's environment variables, as a literal:
+/// `app_env!("TAB_UID")` is `<UPPER>_TAB_UID`.
+#[macro_export]
+macro_rules! app_env {
+    ($name:literal) => {
+        concat!($crate::app_upper!(), "_", $name)
+    };
+}
+
+/// The command a saved tab of a built-in view carries, as a literal:
+/// `app_tab_command!("mail")` is `__<slug>_mail__`.
+#[macro_export]
+macro_rules! app_tab_command {
+    ($view:literal) => {
+        concat!("__", $crate::app_slug!(), "_", $view, "__")
+    };
+}
+
+/// The GitHub repository releases are published from, `<owner>/<name>`. It
+/// moves on its own schedule (after the name does), so it is its own literal.
+#[macro_export]
+macro_rules! app_repo {
+    () => {
+        "fseiffarth/ProjectEldrun"
+    };
+}
+
+/// The old display name, as a literal.
+#[macro_export]
+macro_rules! legacy_name {
+    () => {
+        "Eldrun"
+    };
+}
+
+/// The old lowercase form, as a literal.
+#[macro_export]
+macro_rules! legacy_slug {
+    () => {
+        "eldrun"
+    };
+}
+
+/// The old uppercase form, as a literal.
+#[macro_export]
+macro_rules! legacy_upper {
+    () => {
+        "ELDRUN"
+    };
+}
+
 /// The name as shown to the user.
 pub const DISPLAY: &str = app_name!();
 
 /// Lowercase form for file names, service names and protocol names.
-pub const SLUG: &str = "eldrun";
+pub const SLUG: &str = app_slug!();
+
+/// Uppercase form, for markers and environment variables.
+pub const UPPER: &str = app_upper!();
 
 /// Prefix of the app's environment variables.
-pub const ENV_PREFIX: &str = "ELDRUN_";
+pub const ENV_PREFIX: &str = concat!(app_upper!(), "_");
+
+/// The old display name.
+pub const LEGACY_DISPLAY: &str = legacy_name!();
+
+/// The old lowercase form.
+pub const LEGACY_SLUG: &str = legacy_slug!();
+
+/// The old uppercase form.
+pub const LEGACY_UPPER: &str = legacy_upper!();
+
+/// Prefix of the environment variables older builds exported.
+pub const LEGACY_ENV_PREFIX: &str = concat!(legacy_upper!(), "_");
+
+/// `<owner>/<name>` of the GitHub repository releases are published from.
+pub const REPO: &str = app_repo!();
 
 /// `<Display>/<version>` — how the app names itself to a server.
 pub fn user_agent() -> String {
     format!("{DISPLAY}/{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Declare a current name and its `LEGACY_*` twin from one pattern. `slug`,
+/// `name` and `upper` stand for the brand's three forms; every other piece is
+/// a literal.
+macro_rules! names {
+    ($( $(#[$doc:meta])* $cur:ident / $legacy:ident = [$($part:tt),+ $(,)?]; )+) => {
+        $(
+            $(#[$doc])*
+            pub const $cur: &str = concat!($(names!(@cur $part)),+);
+            /// The name an older build used for the constant it is the twin of.
+            pub const $legacy: &str = concat!($(names!(@legacy $part)),+);
+        )+
+    };
+    (@cur slug) => { $crate::app_slug!() };
+    (@cur name) => { $crate::app_name!() };
+    (@cur upper) => { $crate::app_upper!() };
+    (@cur $lit:literal) => { $lit };
+    (@legacy slug) => { $crate::legacy_slug!() };
+    (@legacy name) => { $crate::legacy_name!() };
+    (@legacy upper) => { $crate::legacy_upper!() };
+    (@legacy $lit:literal) => { $lit };
+}
+
+names! {
+    // ── Folders the app owns ────────────────────────────────────────────────
+    /// Leaf of the state dir (`~/.local/share/<this>`, `%APPDATA%\<this>`).
+    STATE_DIR_NAME / LEGACY_STATE_DIR_NAME = [slug];
+    /// Leaf of the tree in the user's home that holds projects, boxes, the
+    /// archive and the root console's folder (`~/<this>`).
+    HOME_DIR_NAME / LEGACY_HOME_DIR_NAME = [slug];
+    /// The Tauri identifier; the webview's data dir is named after it.
+    APP_IDENTIFIER / LEGACY_APP_IDENTIFIER = ["io.github.fseiffarth.", slug];
+    /// The built main binary (`target/<profile>/<this>`), also the process
+    /// name a window manager reports.
+    BIN_NAME / LEGACY_BIN_NAME = [slug];
+    /// The frozen dev build's binary, next to its launcher.
+    DEV_BIN_NAME / LEGACY_DEV_BIN_NAME = [slug, "-dev"];
+    /// The stamp `package-dev.sh` leaves next to the release binary.
+    FROZEN_RECORD_NAME / LEGACY_FROZEN_RECORD_NAME = [slug, ".frozen"];
+    /// The checkout's launcher script for the frozen dev build.
+    DEV_LAUNCHER_SCRIPT / LEGACY_DEV_LAUNCHER_SCRIPT = ["start-", slug, "-dev-build.sh"];
+    /// WM_CLASS of the main window.
+    WM_CLASS / LEGACY_WM_CLASS = [name];
+    /// WM_CLASS of a window parked out of sight.
+    WM_CLASS_HIDDEN / LEGACY_WM_CLASS_HIDDEN = [name, "-Hidden"];
+
+    // ── Inside a project folder ─────────────────────────────────────────────
+    /// The app's own folder in a project (sessions, inbox, outbox, worktrees).
+    PROJECT_DIR / LEGACY_PROJECT_DIR = [".", slug];
+    /// The `info/exclude` rule that keeps [`PROJECT_DIR`] out of git.
+    PROJECT_DIR_EXCLUDE_RULE / LEGACY_PROJECT_DIR_EXCLUDE_RULE = [".", slug, "/"];
+    /// Where files sent from the phone land, relative to the project root.
+    INBOX_DIR / LEGACY_INBOX_DIR = [".", slug, "/inbox"];
+    /// Where files for the phone are staged, relative to the project root.
+    OUTBOX_DIR / LEGACY_OUTBOX_DIR = [".", slug, "/outbox"];
+    /// Linked worktrees, relative to the project root.
+    WORKTREES_DIR / LEGACY_WORKTREES_DIR = [".", slug, "/worktrees"];
+    /// Screenshots folder in a project.
+    SCREENSHOTS_DIR / LEGACY_SCREENSHOTS_DIR = [slug, "-screenshots"];
+    /// Saved-mail folder in a project.
+    EMAILS_DIR / LEGACY_EMAILS_DIR = [slug, "-emails"];
+    /// The bundle a worker sync leaves in the remote project.
+    WORKER_BUNDLE / LEGACY_WORKER_BUNDLE = [".", slug, "-worker.bundle"];
+    /// The bundle a lockstep transfer stages inside `.git`.
+    LOCKSTEP_BUNDLE / LEGACY_LOCKSTEP_BUNDLE = [slug, "-lockstep.bundle"];
+    /// Manifest of the box links written into a box folder.
+    BOX_LINKS_MANIFEST / LEGACY_BOX_LINKS_MANIFEST = [".", slug, "-box-links.json"];
+    /// Opening marker of the generated box-links block in agent docs.
+    BOX_LINKS_START / LEGACY_BOX_LINKS_START = ["<!-- ", slug, ":box-links:start -->"];
+    /// Closing marker of the generated box-links block in agent docs.
+    BOX_LINKS_END / LEGACY_BOX_LINKS_END = ["<!-- ", slug, ":box-links:end -->"];
+
+    // ── Project exchange ────────────────────────────────────────────────────
+    /// Manifest inside an exported project bundle.
+    EXPORT_MANIFEST / LEGACY_EXPORT_MANIFEST = [slug, "-export.json"];
+    /// File extension of an exported project bundle (no dot).
+    EXPORT_EXTENSION / LEGACY_EXPORT_EXTENSION = [slug, "proj"];
+
+    // ── git ─────────────────────────────────────────────────────────────────
+    /// Namespace of the refs the app keeps in a repository.
+    GIT_REF_NAMESPACE / LEGACY_GIT_REF_NAMESPACE = ["refs/", slug];
+    /// Backups of branches a sync moved (`<this>/<secs>/<branch>`).
+    GIT_REF_BACKUP / LEGACY_GIT_REF_BACKUP = ["refs/", slug, "/backup"];
+    /// Where each peer's branch tips are tracked.
+    GIT_REF_PEER / LEGACY_GIT_REF_PEER = ["refs/", slug, "/peer"];
+    /// Where fetched-but-not-adopted refs wait.
+    GIT_REF_INCOMING / LEGACY_GIT_REF_INCOMING = ["refs/", slug, "/incoming"];
+
+    // ── Agent homes ─────────────────────────────────────────────────────────
+    /// Marks an agent home as seeded.
+    AGENT_HOME_MARKER / LEGACY_AGENT_HOME_MARKER = [".", slug, "-home"];
+    /// What the global layer last merged into a home.
+    AGENT_GLOBAL_MANIFEST / LEGACY_AGENT_GLOBAL_MANIFEST = [".", slug, "-global.json"];
+    /// Backups of files the global layer replaced in a home.
+    AGENT_GLOBAL_BACKUP_DIR / LEGACY_AGENT_GLOBAL_BACKUP_DIR = [".", slug, "-global-backup"];
+    /// The session hook script in `<state>/hooks` (POSIX).
+    SESSION_HOOK_SH / LEGACY_SESSION_HOOK_SH = [slug, "_session_start.sh"];
+    /// The session hook script in `<state>/hooks` (PowerShell).
+    SESSION_HOOK_PS1 / LEGACY_SESSION_HOOK_PS1 = [slug, "_session_start.ps1"];
+    /// The agent-hint hook script in `<state>/hooks` (POSIX).
+    AGENT_HINT_SH / LEGACY_AGENT_HINT_SH = [slug, "_agent_hint.sh"];
+    /// The agent-hint hook script in `<state>/hooks` (PowerShell).
+    AGENT_HINT_PS1 / LEGACY_AGENT_HINT_PS1 = [slug, "_agent_hint.ps1"];
+    /// The agent-hint instructions file in `<state>/hooks`.
+    AGENT_HINT_MD / LEGACY_AGENT_HINT_MD = [slug, "_agent_hint.md"];
+    /// Copilot's hint hook file, relative to an agent home.
+    COPILOT_HINT_HOOKS / LEGACY_COPILOT_HINT_HOOKS = [".copilot/hooks/", slug, "-hint.json"];
+    /// Opening marker of the agent-hint block in a CLI's instructions file.
+    AGENT_HINT_START / LEGACY_AGENT_HINT_START = ["<!-- ", slug, ":agent-hint:start -->"];
+    /// Closing marker of the agent-hint block in a CLI's instructions file.
+    AGENT_HINT_END / LEGACY_AGENT_HINT_END = ["<!-- ", slug, ":agent-hint:end -->"];
+    /// Name of the session hook entry in a Vibe config.
+    VIBE_SESSION_HOOK / LEGACY_VIBE_SESSION_HOOK = [slug, "-session"];
+    /// The CLI an agent runs to put a file in front of the user.
+    SEND_CLI / LEGACY_SEND_CLI = [slug, "-send"];
+
+    // ── MCP ─────────────────────────────────────────────────────────────────
+    /// The root console's MCP server.
+    MCP_SERVER / LEGACY_MCP_SERVER = [slug];
+    /// The git-push MCP server.
+    MCP_GIT_SERVER / LEGACY_MCP_GIT_SERVER = [slug, "-git"];
+    /// The help MCP server.
+    MCP_HELP_SERVER / LEGACY_MCP_HELP_SERVER = [slug, "-help"];
+    /// The schedule MCP server.
+    MCP_SCHEDULE_SERVER / LEGACY_MCP_SCHEDULE_SERVER = [slug, "-schedule"];
+    /// Help MCP tool: search.
+    HELP_TOOL_SEARCH / LEGACY_HELP_TOOL_SEARCH = [slug, "_help_search"];
+    /// Help MCP tool: read.
+    HELP_TOOL_READ / LEGACY_HELP_TOOL_READ = [slug, "_help_read"];
+    /// Help MCP tool: topics.
+    HELP_TOOL_TOPICS / LEGACY_HELP_TOOL_TOPICS = [slug, "_help_topics"];
+    /// Help MCP tool: status.
+    HELP_TOOL_STATUS / LEGACY_HELP_TOOL_STATUS = [slug, "_help_status"];
+
+    // ── Persisted keys and ids ──────────────────────────────────────────────
+    /// Settings key of the phone host's settings.
+    MOBILE_HOST_KEY / LEGACY_MOBILE_HOST_KEY = [slug, "_mobile_host"];
+    /// Project / box key that opens it to the phone.
+    MOBILE_ACCESS_KEY / LEGACY_MOBILE_ACCESS_KEY = [slug, "_mobile_access"];
+    /// What every built-in view's saved tab command starts with.
+    TAB_COMMAND_PREFIX / LEGACY_TAB_COMMAND_PREFIX = ["__", slug, "_"];
+    /// Id of the app's own row in the time log.
+    APP_TIMER_ID / LEGACY_APP_TIMER_ID = ["__", slug, "__"];
+    /// Keyring service of the remote (SSH / VPN) passwords.
+    KEYRING_REMOTE / LEGACY_KEYRING_REMOTE = [slug, "-remote"];
+    /// Keyring service of the git hosting tokens.
+    KEYRING_GIT_HOSTING / LEGACY_KEYRING_GIT_HOSTING = [slug, "-git-hosting"];
+    /// HKDF salt of the phone's sealed file tokens.
+    MOBILE_FILES_SALT / LEGACY_MOBILE_FILES_SALT = [slug, "-mobile-files"];
+    /// Root of the mail store's key-derivation labels. A label is a key
+    /// input: a store written under one root opens under no other.
+    MAIL_LABEL_ROOT / LEGACY_MAIL_LABEL_ROOT = [slug, "/mail/v1/"];
+    /// Associated data of the mail store's wrapped master key; a key input
+    /// like the labels.
+    MAIL_WRAP_AAD / LEGACY_MAIL_WRAP_AAD = [slug, "/mail/v1/master"];
+    /// Hashed with a gateway's MAC into the id a remembered network carries.
+    GATEWAY_ID_CONTEXT / LEGACY_GATEWAY_ID_CONTEXT = [slug, "-gateway:"];
+    /// Hashed with a subagent's id into the handle the phone sees.
+    SUBAGENT_TOKEN_CONTEXT / LEGACY_SUBAGENT_TOKEN_CONTEXT = [slug, "-subagent:"];
+
+    // ── Phone host ──────────────────────────────────────────────────────────
+    /// The phone host's binary (no `.exe`).
+    MOBILE_HOST_BIN / LEGACY_MOBILE_HOST_BIN = [slug, "-mobile-host"];
+    /// The phone host's binary on Windows.
+    MOBILE_HOST_EXE / LEGACY_MOBILE_HOST_EXE = [slug, "-mobile-host.exe"];
+    /// The phone host's systemd user unit.
+    MOBILE_HOST_UNIT / LEGACY_MOBILE_HOST_UNIT = [slug, "-mobile-host.service"];
+    /// The phone host's launchd label.
+    MOBILE_HOST_LAUNCHD_LABEL / LEGACY_MOBILE_HOST_LAUNCHD_LABEL = ["io.github.fseiffarth.", slug, ".mobile-host"];
+    /// The phone host's value under the Windows `Run` key.
+    MOBILE_HOST_RUN_VALUE / LEGACY_MOBILE_HOST_RUN_VALUE = [name, "MobileHost"];
+    /// WebSocket subprotocol of a phone terminal.
+    TERMINAL_PROTOCOL / LEGACY_TERMINAL_PROTOCOL = [slug, "-terminal.v1"];
+    /// The phone session cookie.
+    SESSION_COOKIE / LEGACY_SESSION_COOKIE = ["__Host-", slug, "_session"];
+    /// Domain-separation prefix of the phone's signed requests.
+    MOBILE_AUTH_CONTEXT / LEGACY_MOBILE_AUTH_CONTEXT = [slug, "-mobile-auth-v1"];
+    /// Prefix of the admin control pipe on Windows.
+    CONTROL_PIPE_PREFIX / LEGACY_CONTROL_PIPE_PREFIX = [slug, "-control-"];
+
+    // ── Sessions, containers, VMs ───────────────────────────────────────────
+    /// What every tmux session the app owns starts with.
+    TMUX_PREFIX / LEGACY_TMUX_PREFIX = [slug, "-"];
+    /// What every container and per-project image the app owns starts with.
+    CONTAINER_PREFIX / LEGACY_CONTAINER_PREFIX = [slug, "-"];
+    /// The stock sandbox image.
+    SANDBOX_IMAGE / LEGACY_SANDBOX_IMAGE = [slug, "-agent-sandbox:latest"];
+    /// Docker label (`key=value`) on every container the app owns.
+    DOCKER_OWNER_LABEL / LEGACY_DOCKER_OWNER_LABEL = [slug, ".owner=", slug];
+    /// Docker label key naming a container's project.
+    DOCKER_PROJECT_LABEL / LEGACY_DOCKER_PROJECT_LABEL = [slug, ".project"];
+    /// Docker label key holding a container's spec fingerprint.
+    DOCKER_SPEC_LABEL / LEGACY_DOCKER_SPEC_LABEL = [slug, ".spec"];
+    /// Default libvirt-style name, hostname and key comment of a project VM.
+    VM_NAME / LEGACY_VM_NAME = [slug, "-vm"];
+    /// The guest user of a project VM.
+    VM_USER / LEGACY_VM_USER = [slug];
+    /// The project's mount point in a VM guest.
+    VM_PROJECT_DIR / LEGACY_VM_PROJECT_DIR = ["/home/", slug, "/project"];
+    /// What a VM's cloud-init instance id starts with. cloud-init runs first
+    /// boot again when the id changes, so an existing VM must keep its id.
+    VM_INSTANCE_ID_PREFIX / LEGACY_VM_INSTANCE_ID_PREFIX = [slug, "-"];
+    /// What a VM base image's file name starts with.
+    VM_BASE_IMAGE_PREFIX / LEGACY_VM_BASE_IMAGE_PREFIX = [slug, "-base-"];
+    /// Ollama systemd drop-in that pins the integrated GPU.
+    OLLAMA_IGPU_DROPIN / LEGACY_OLLAMA_IGPU_DROPIN = [slug, "-igpu.conf"];
+    /// Ollama systemd drop-in that moves the model store.
+    OLLAMA_MODELS_DROPIN / LEGACY_OLLAMA_MODELS_DROPIN = [slug, "-models.conf"];
+
+    // ── Between the window and the backend ──────────────────────────────────
+    /// Custom-protocol request header: the file to serve.
+    FILE_PATH_HEADER / LEGACY_FILE_PATH_HEADER = ["x-", slug, "-path"];
+    /// Custom-protocol request header: the project the file belongs to.
+    FILE_PROJECT_HEADER / LEGACY_FILE_PROJECT_HEADER = ["x-", slug, "-project"];
+    /// Event: a native file drag ended.
+    FILE_DRAG_ENDED_EVENT / LEGACY_FILE_DRAG_ENDED_EVENT = [slug, ":file-drag-ended"];
+    /// Event: the phone asked the desktop for something.
+    MOBILE_DESKTOP_EVENT / LEGACY_MOBILE_DESKTOP_EVENT = [slug, "-mobile-desktop-request"];
+    /// Error prefix: the project must be trusted before this runs.
+    TRUST_REQUIRED_PREFIX / LEGACY_TRUST_REQUIRED_PREFIX = [slug, "-trust-required:"];
+    /// Error sentinel: native printing is not available here.
+    NATIVE_PRINT_UNSUPPORTED / LEGACY_NATIVE_PRINT_UNSUPPORTED = [slug, "-native-print-unsupported"];
+}
+
+/// The app's environment variable `<ENV_PREFIX><name>`.
+pub fn env_name(name: &str) -> String {
+    format!("{ENV_PREFIX}{name}")
+}
+
+/// One of the mail store's key-derivation labels under [`MAIL_LABEL_ROOT`].
+pub fn mail_label(leaf: &str) -> Vec<u8> {
+    format!("{MAIL_LABEL_ROOT}{leaf}").into_bytes()
 }
 
 #[cfg(test)]
@@ -32,8 +364,135 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_three_forms_agree() {
+    fn the_forms_agree() {
         assert_eq!(SLUG, DISPLAY.to_lowercase());
-        assert_eq!(ENV_PREFIX, format!("{}_", SLUG.to_uppercase()));
+        assert_eq!(UPPER, SLUG.to_uppercase());
+        assert_eq!(ENV_PREFIX, format!("{UPPER}_"));
+        assert_eq!(LEGACY_SLUG, LEGACY_DISPLAY.to_lowercase());
+        assert_eq!(LEGACY_UPPER, LEGACY_SLUG.to_uppercase());
+        assert_eq!(LEGACY_ENV_PREFIX, format!("{LEGACY_UPPER}_"));
+    }
+
+    #[test]
+    fn the_literal_macros_build_the_same_names() {
+        assert_eq!(app_env!("TAB_UID"), env_name("TAB_UID"));
+        assert_eq!(app_tab_command!("mail"), format!("{TAB_COMMAND_PREFIX}mail__"));
+        assert!(GIT_REF_BACKUP.starts_with(GIT_REF_NAMESPACE));
+        assert!(INBOX_DIR.starts_with(PROJECT_DIR));
+        assert_eq!(mail_label("field"), format!("{SLUG}/mail/v1/field").into_bytes());
+    }
+
+    /// Until the name changes, every old name is the current one: nothing is
+    /// looked up twice and nothing moves.
+    #[test]
+    fn legacy_names_equal_current_names_while_the_brand_is_unchanged() {
+        if SLUG != LEGACY_SLUG {
+            return;
+        }
+        assert_eq!(STATE_DIR_NAME, LEGACY_STATE_DIR_NAME);
+        assert_eq!(PROJECT_DIR, LEGACY_PROJECT_DIR);
+        assert_eq!(MAIL_LABEL_ROOT, LEGACY_MAIL_LABEL_ROOT);
+        assert_eq!(MOBILE_HOST_RUN_VALUE, LEGACY_MOBILE_HOST_RUN_VALUE);
+        assert_eq!(ENV_PREFIX, LEGACY_ENV_PREFIX);
+    }
+
+    /// The old names, spelled out. These are what existing installs have on
+    /// disk, in keyrings and in other programs' configs, so a slip in a
+    /// pattern above would orphan data; this is the one place they are literal.
+    #[test]
+    fn legacy_names_are_exactly_what_older_builds_wrote() {
+        let expected: &[(&str, &str)] = &[
+            (LEGACY_STATE_DIR_NAME, "eldrun"),
+            (LEGACY_HOME_DIR_NAME, "eldrun"),
+            (LEGACY_APP_IDENTIFIER, "io.github.fseiffarth.eldrun"),
+            (LEGACY_BIN_NAME, "eldrun"),
+            (LEGACY_DEV_BIN_NAME, "eldrun-dev"),
+            (LEGACY_FROZEN_RECORD_NAME, "eldrun.frozen"),
+            (LEGACY_DEV_LAUNCHER_SCRIPT, "start-eldrun-dev-build.sh"),
+            (LEGACY_WM_CLASS, "Eldrun"),
+            (LEGACY_WM_CLASS_HIDDEN, "Eldrun-Hidden"),
+            (LEGACY_PROJECT_DIR, ".eldrun"),
+            (LEGACY_PROJECT_DIR_EXCLUDE_RULE, ".eldrun/"),
+            (LEGACY_INBOX_DIR, ".eldrun/inbox"),
+            (LEGACY_OUTBOX_DIR, ".eldrun/outbox"),
+            (LEGACY_WORKTREES_DIR, ".eldrun/worktrees"),
+            (LEGACY_SCREENSHOTS_DIR, "eldrun-screenshots"),
+            (LEGACY_EMAILS_DIR, "eldrun-emails"),
+            (LEGACY_WORKER_BUNDLE, ".eldrun-worker.bundle"),
+            (LEGACY_LOCKSTEP_BUNDLE, "eldrun-lockstep.bundle"),
+            (LEGACY_BOX_LINKS_MANIFEST, ".eldrun-box-links.json"),
+            (LEGACY_BOX_LINKS_START, "<!-- eldrun:box-links:start -->"),
+            (LEGACY_BOX_LINKS_END, "<!-- eldrun:box-links:end -->"),
+            (LEGACY_EXPORT_MANIFEST, "eldrun-export.json"),
+            (LEGACY_EXPORT_EXTENSION, "eldrunproj"),
+            (LEGACY_GIT_REF_NAMESPACE, "refs/eldrun"),
+            (LEGACY_GIT_REF_BACKUP, "refs/eldrun/backup"),
+            (LEGACY_GIT_REF_PEER, "refs/eldrun/peer"),
+            (LEGACY_GIT_REF_INCOMING, "refs/eldrun/incoming"),
+            (LEGACY_AGENT_HOME_MARKER, ".eldrun-home"),
+            (LEGACY_AGENT_GLOBAL_MANIFEST, ".eldrun-global.json"),
+            (LEGACY_AGENT_GLOBAL_BACKUP_DIR, ".eldrun-global-backup"),
+            (LEGACY_SESSION_HOOK_SH, "eldrun_session_start.sh"),
+            (LEGACY_SESSION_HOOK_PS1, "eldrun_session_start.ps1"),
+            (LEGACY_AGENT_HINT_SH, "eldrun_agent_hint.sh"),
+            (LEGACY_AGENT_HINT_PS1, "eldrun_agent_hint.ps1"),
+            (LEGACY_AGENT_HINT_MD, "eldrun_agent_hint.md"),
+            (LEGACY_COPILOT_HINT_HOOKS, ".copilot/hooks/eldrun-hint.json"),
+            (LEGACY_AGENT_HINT_START, "<!-- eldrun:agent-hint:start -->"),
+            (LEGACY_AGENT_HINT_END, "<!-- eldrun:agent-hint:end -->"),
+            (LEGACY_VIBE_SESSION_HOOK, "eldrun-session"),
+            (LEGACY_SEND_CLI, "eldrun-send"),
+            (LEGACY_MCP_SERVER, "eldrun"),
+            (LEGACY_MCP_GIT_SERVER, "eldrun-git"),
+            (LEGACY_MCP_HELP_SERVER, "eldrun-help"),
+            (LEGACY_MCP_SCHEDULE_SERVER, "eldrun-schedule"),
+            (LEGACY_HELP_TOOL_SEARCH, "eldrun_help_search"),
+            (LEGACY_HELP_TOOL_READ, "eldrun_help_read"),
+            (LEGACY_HELP_TOOL_TOPICS, "eldrun_help_topics"),
+            (LEGACY_HELP_TOOL_STATUS, "eldrun_help_status"),
+            (LEGACY_MOBILE_HOST_KEY, "eldrun_mobile_host"),
+            (LEGACY_MOBILE_ACCESS_KEY, "eldrun_mobile_access"),
+            (LEGACY_TAB_COMMAND_PREFIX, "__eldrun_"),
+            (LEGACY_APP_TIMER_ID, "__eldrun__"),
+            (LEGACY_KEYRING_REMOTE, "eldrun-remote"),
+            (LEGACY_KEYRING_GIT_HOSTING, "eldrun-git-hosting"),
+            (LEGACY_MOBILE_FILES_SALT, "eldrun-mobile-files"),
+            (LEGACY_MAIL_LABEL_ROOT, "eldrun/mail/v1/"),
+            (LEGACY_MAIL_WRAP_AAD, "eldrun/mail/v1/master"),
+            (LEGACY_GATEWAY_ID_CONTEXT, "eldrun-gateway:"),
+            (LEGACY_SUBAGENT_TOKEN_CONTEXT, "eldrun-subagent:"),
+            (LEGACY_MOBILE_HOST_BIN, "eldrun-mobile-host"),
+            (LEGACY_MOBILE_HOST_EXE, "eldrun-mobile-host.exe"),
+            (LEGACY_MOBILE_HOST_UNIT, "eldrun-mobile-host.service"),
+            (LEGACY_MOBILE_HOST_LAUNCHD_LABEL, "io.github.fseiffarth.eldrun.mobile-host"),
+            (LEGACY_MOBILE_HOST_RUN_VALUE, "EldrunMobileHost"),
+            (LEGACY_TERMINAL_PROTOCOL, "eldrun-terminal.v1"),
+            (LEGACY_SESSION_COOKIE, "__Host-eldrun_session"),
+            (LEGACY_MOBILE_AUTH_CONTEXT, "eldrun-mobile-auth-v1"),
+            (LEGACY_CONTROL_PIPE_PREFIX, "eldrun-control-"),
+            (LEGACY_TMUX_PREFIX, "eldrun-"),
+            (LEGACY_CONTAINER_PREFIX, "eldrun-"),
+            (LEGACY_SANDBOX_IMAGE, "eldrun-agent-sandbox:latest"),
+            (LEGACY_DOCKER_OWNER_LABEL, "eldrun.owner=eldrun"),
+            (LEGACY_DOCKER_PROJECT_LABEL, "eldrun.project"),
+            (LEGACY_DOCKER_SPEC_LABEL, "eldrun.spec"),
+            (LEGACY_VM_NAME, "eldrun-vm"),
+            (LEGACY_VM_USER, "eldrun"),
+            (LEGACY_VM_PROJECT_DIR, "/home/eldrun/project"),
+            (LEGACY_VM_INSTANCE_ID_PREFIX, "eldrun-"),
+            (LEGACY_VM_BASE_IMAGE_PREFIX, "eldrun-base-"),
+            (LEGACY_OLLAMA_IGPU_DROPIN, "eldrun-igpu.conf"),
+            (LEGACY_OLLAMA_MODELS_DROPIN, "eldrun-models.conf"),
+            (LEGACY_FILE_PATH_HEADER, "x-eldrun-path"),
+            (LEGACY_FILE_PROJECT_HEADER, "x-eldrun-project"),
+            (LEGACY_FILE_DRAG_ENDED_EVENT, "eldrun:file-drag-ended"),
+            (LEGACY_MOBILE_DESKTOP_EVENT, "eldrun-mobile-desktop-request"),
+            (LEGACY_TRUST_REQUIRED_PREFIX, "eldrun-trust-required:"),
+            (LEGACY_NATIVE_PRINT_UNSUPPORTED, "eldrun-native-print-unsupported"),
+        ];
+        for (actual, literal) in expected {
+            assert_eq!(actual, literal);
+        }
+        assert_eq!(LEGACY_ENV_PREFIX, "ELDRUN_");
     }
 }
