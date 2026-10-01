@@ -3,7 +3,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import autoprefixer from "autoprefixer";
 import { shellAssets } from "./mobile-web/src/shellAssets";
+import { themeColors } from "./mobile-web/src/themeColors";
 
 const BUILD_PLACEHOLDER = "__ELDRUN_BUILD__";
 const ASSETS_PLACEHOLDER = "__ELDRUN_ASSETS__";
@@ -69,6 +71,14 @@ export default defineConfig({
   root: "mobile-web",
   plugins: [react(), stampServiceWorker()],
   base: "/",
+  // The phone's own sheets are written in one palette and rebuilt onto the
+  // theme anchors in `themes.css` (`themeColors.ts`). Declaring PostCSS here
+  // replaces the root config, whose Tailwind the phone never used.
+  css: {
+    postcss: {
+      plugins: [themeColors({ include: (file) => file.replaceAll("\\", "/").includes("/mobile-web/src/") }), autoprefixer()],
+    },
+  },
   // The commit and build time the phone shows beside its version (see `src/buildInfo.ts`).
   define: {
     __ELDRUN_MOBILE_BUILT_AT__: JSON.stringify(new Date().toISOString()),

@@ -129,4 +129,11 @@ describe("system theme", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
     expect(localStorage.getItem("eldrun-theme")).toBe("dark");
   });
+
+  it("marks a 'system' pick on the root, for the looks only it has", () => {
+    applyTheme("system");
+    expect(document.documentElement.getAttribute("data-theme-pick")).toBe("system");
+    applyTheme("light_lavender");
+    expect(document.documentElement.hasAttribute("data-theme-pick")).toBe(false);
+  });
 });

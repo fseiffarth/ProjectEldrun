@@ -125,6 +125,10 @@ function armSystemThemeListener(scheme: string) {
 export function applyTheme(scheme: string) {
   const resolved = resolveTheme(scheme);
   document.documentElement.setAttribute("data-theme", resolved);
+  // "System" paints as Fancy Dark / Fancy Light but has looks of its own (the
+  // Reader's octagon bubbles), which need to know it was picked.
+  if (scheme === "system") document.documentElement.setAttribute("data-theme-pick", "system");
+  else document.documentElement.removeAttribute("data-theme-pick");
   armSystemThemeListener(scheme);
   // Cache for index.html's pre-paint inline script, so the next launch
   // paints the right theme immediately instead of flashing the CSS

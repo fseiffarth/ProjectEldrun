@@ -1,6 +1,7 @@
 import ReactDOM from "react-dom/client";
 import { Terminal } from "./screens/Terminal";
 import "./style.css";
+import "./themes.css";
 
 // Escape sequences on purpose: the reading view renders the colours the
 // program emitted, so a fixture without them exercises none of that path.

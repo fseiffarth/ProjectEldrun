@@ -494,15 +494,25 @@ async fn status(State(state): State<HostState>, headers: HeaderMap) -> impl Into
     // (and every crash), and on Windows the nominal path is never a file.
     let desktop_available =
         admin::desktop_reachable(&state.config.control_dir.join("desktop-control.sock")).await;
-    let show_untested_tags = std::fs::read(state.config.state_dir.join("settings.json"))
+    let settings = std::fs::read(state.config.state_dir.join("settings.json"))
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let show_untested_tags = settings
+        .as_ref()
         .and_then(|settings| settings.get("show_untested_tags").and_then(|value| value.as_bool()))
         .unwrap_or(false);
+    // The desktop's theme, for a phone that follows it. Only a short plain
+    // name crosses: the phone checks it against the themes it knows.
+    let color_scheme = settings
+        .as_ref()
+        .and_then(|settings| settings.get("color_scheme").and_then(|value| value.as_str()))
+        .filter(|scheme| scheme.len() <= 32 && scheme.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+        .unwrap_or("dark")
+        .to_string();
     (
         StatusCode::OK,
         Json(
-            json!({ "desktop_available": desktop_available, "host": state.config.host.display_name, "show_untested_tags": show_untested_tags }),
+            json!({ "desktop_available": desktop_available, "host": state.config.host.display_name, "show_untested_tags": show_untested_tags, "color_scheme": color_scheme }),
         ),
     )
 }
@@ -6346,6 +6356,26 @@ mod tests {
         let (status, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json(&body)["show_untested_tags"], true);
+    }
+
+    #[tokio::test]
+    async fn status_reports_the_desktop_theme_for_a_phone_that_follows_it() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(92)).await.0;
+        let settings = host.state.config.state_dir.join("settings.json");
+
+        // Unset is the desktop's own default.
+        let (_, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(json(&body)["color_scheme"], "dark");
+
+        std::fs::write(&settings, br#"{"color_scheme":"light_lavender"}"#).expect("settings");
+        let (_, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(json(&body)["color_scheme"], "light_lavender");
+
+        // Anything that is not a plain theme name never crosses.
+        std::fs::write(&settings, br#"{"color_scheme":"<b>/etc/passwd</b>"}"#).expect("settings");
+        let (_, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(json(&body)["color_scheme"], "dark");
     }
 
     /// The desktop pill's git dot reaches the list row and the project screen

@@ -398,6 +398,7 @@ export const UNTESTED = {
   "mobile.focus.noSessionYet": { area: "mobile", what: "Terminal · A tab created from the phone stays in the Reader and shows its stored session once the agent records one" },
   "mobile.calendar.push": { area: "mobile", what: "Calendar · Reminders button → Notifications sheet: desktop calendar reminders as Web Push notifications on the phone (with or without details); tap opens Calendar" },
   "mobile.push.title": { area: "mobile", what: "This phone · Notifications: agent tabs waiting on an answer (or finishing a turn) as push notifications, silent while the tab is open on the phone; tap opens that tab" },
+  "mobile.theme": { area: "mobile", what: "This phone · Theme: the desktop's themes on the phone, picked per phone (default: same as the desktop); Plain Dark / Plain Light / Light Lavender / System draw the Focus chat bubbles as octagons" },
   "mobile.calendar.manage": { area: "mobile", what: "Calendar · Edit a calendar's name and colour in a sheet; deletes ask in the option sheet" },
   "mobile.todo.fold": { area: "mobile", what: "Todo · Tap a column's name to fold it; the fold is kept on this phone" },
   "mobile.headless.todo": { area: "mobile", what: "Todo · With the Eldrun window closed the board is read off calendar.json by the Mobile host (read-only notice); edits still need the window" },

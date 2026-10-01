@@ -8,6 +8,7 @@ import { forgetLastPlace, parsePlace, rememberLastPlace, resolvePlace, restoreLa
 import { refreshPush } from "./push";
 import { hasLocalUnlock } from "./localLock";
 import { clearConnectReload, isConnectReload, noteUnlockedLeave, takeConnectReload, takeReloadGrace } from "./reloadGrace";
+import { noteDesktopTheme } from "./theme";
 import { isUntested, setUntestedTagsVisible } from "../../src/lib/untested";
 import { useT } from "../../src/lib/i18n";
 import { Pair } from "./screens/Pair";
@@ -333,7 +334,8 @@ export function App() {
   useEffect(() => {
     if (auth !== "paired") return;
     const refresh = () => {
-      void getMobileStatus().then(({ show_untested_tags }) => {
+      void getMobileStatus().then(({ show_untested_tags, color_scheme }) => {
+        noteDesktopTheme(color_scheme);
         const visible = show_untested_tags === true;
         if (setUntestedTagsVisible(visible)) refreshTags((tick) => tick + 1);
         try { localStorage.setItem("eldrun-show-untested-tags", String(visible)); } catch { /* unavailable */ }

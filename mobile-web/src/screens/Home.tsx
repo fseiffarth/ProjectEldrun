@@ -11,6 +11,8 @@ import { BUNDLE_VERSION } from "../buildInfo";
 import { isUntested } from "../../../src/lib/untested";
 import { useT } from "../../../src/lib/i18n";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
+import { ThemeRow, ThemeSheet } from "../components/ThemePicker";
+import { readPhoneTheme, type PhoneTheme } from "../theme";
 import { SendToDesktop } from "../components/SendToDesktop";
 import { GitMark } from "../components/GitMark";
 import { readSpeechLang, type SpeechLang } from "../speechLang";
@@ -143,6 +145,9 @@ export function Home({ open, openTab, todo, mail }: {
    * fix it mid-answer has already been read to in the wrong voice. */
   const [speechLang, setSpeechLang] = useState<SpeechLang>(() => readSpeechLang());
   const [speechLangSheet, setSpeechLangSheet] = useState(false);
+  /** The phone's own theme (`theme.ts`); unset, it follows the desktop's. */
+  const [theme, setTheme] = useState<PhoneTheme>(() => readPhoneTheme());
+  const [themeSheet, setThemeSheet] = useState(false);
   const [pushSheet, setPushSheet] = useState(false);
   const [push, setPush] = useState<HostPushState | null>(null);
   useEffect(() => {
@@ -313,6 +318,7 @@ export function Home({ open, openTab, todo, mail }: {
     <section className="phone-settings" aria-labelledby="phone-settings-heading">
       <h2 id="phone-settings-heading">{t("mobile.home.phoneSettings")}</h2>
       <ul className="option-list">
+        <ThemeRow choice={theme} open={() => setThemeSheet(true)} expanded={themeSheet} />
         <li><button aria-haspopup="dialog" aria-expanded={speechLangSheet} onClick={() => setSpeechLangSheet(true)}>
           <span><strong>{t("mobile.speech.language")}{isUntested("mobile.speech.language") && <span className="untested">Untested</span>}</strong><small>{speechLangSummary(speechLang, t)}</small></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
@@ -323,6 +329,7 @@ export function Home({ open, openTab, todo, mail }: {
         </button></li>
       </ul>
     </section>
+    {themeSheet && <ThemeSheet chosen={theme} onChoose={setTheme} onClose={() => setThemeSheet(false)} />}
     {speechLangSheet && <SpeechLangSheet chosen={speechLang} onChoose={setSpeechLang} onClose={() => setSpeechLangSheet(false)} />}
     {pushSheet && <NotificationsSheet onChange={setPush} onClose={() => setPushSheet(false)} />}
   </main>;
