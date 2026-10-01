@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
-import { ANY_FILE_ACCEPT, ApiError, MAX_INBOX_FILE, uploadToProjectInbox } from "../api";
+import { ANY_FILE_ACCEPT, ApiError, MAX_INBOX_FILE, pickPhoneFiles, uploadToProjectInbox } from "../api";
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 
 /** Why a file did not reach the project's inbox, by the desktop's code. */
@@ -41,7 +41,7 @@ export function useProjectInbox(projectId: string): { open: () => void; view: Re
     setUploads((current) => current.map((upload) => upload.id === id ? { ...upload, ...patch } : upload));
   const dismiss = (id: number) => setUploads((current) => current.filter((upload) => upload.id !== id));
 
-  const send = (files: FileList | null) => {
+  const send = (files: ArrayLike<File> | null) => {
     if (!files) return;
     for (const file of Array.from(files)) {
       const id = ++seq.current;
@@ -80,5 +80,5 @@ export function useProjectInbox(projectId: string): { open: () => void; view: Re
     })}
   </>;
 
-  return { open: () => input.current?.click(), view };
+  return { open: () => pickPhoneFiles(input.current, send), view };
 }

@@ -655,13 +655,43 @@ export interface InboxAttachment { name: string; reference: string; size: number
 /** Mirrors the desktop's `inbox::MAX_INBOX_FILE`; checked here first so an
  * oversized pick fails before any bytes leave the phone. */
 export const MAX_INBOX_FILE = 24 * 1024 * 1024;
-/** The `accept` of every "a file from this phone" picker. A bare file input
- * reads to Android Chrome as media-only: it offers the camera twice and the
- * photo picker, with no way into the phone's files. Naming a non-media family
- * next to the media ones makes it hand the pick to the system file chooser
- * instead, which still lists the gallery and the camera. The wildcards cover
- * every type between them — an unknown file is `application/octet-stream`. */
+/** The `accept` of the fallback `<input>` behind every "a file from this
+ * phone" picker (see `pickPhoneFiles`). The wildcards cover every type between
+ * them — an unknown file is `application/octet-stream`. */
 export const ANY_FILE_ACCEPT = "application/*,text/*,image/*,video/*,audio/*";
+
+type OpenFilePicker = (options: { multiple: boolean }) => Promise<Array<{ getFile(): Promise<File> }>>;
+
+/** Opens the phone's own file picker for "a file from this phone" and hands
+ * the picks to `onFiles`. Android Chrome routes every `<input type=file>`
+ * through a chooser of the camera plus whichever app takes GET_CONTENT — on
+ * many phones only the photo picker, so internal storage and the SD card are
+ * out of reach whatever the `accept` says. `showOpenFilePicker` launches the
+ * system Files picker (OPEN_DOCUMENT) directly. Where it is missing (iOS,
+ * older Chrome) or refuses, `fallback` — an `ANY_FILE_ACCEPT` input — is
+ * clicked instead. Must run inside the tap that asked for it. */
+export function pickPhoneFiles(fallback: HTMLInputElement | null, onFiles: (files: File[]) => void): void {
+  const picker = (window as { showOpenFilePicker?: OpenFilePicker }).showOpenFilePicker;
+  if (typeof picker !== "function") {
+    fallback?.click();
+    return;
+  }
+  let handles: ReturnType<OpenFilePicker>;
+  try {
+    handles = picker.call(window, { multiple: true });
+  } catch {
+    fallback?.click();
+    return;
+  }
+  void handles.then(
+    (picked) => Promise.all(picked.map((handle) => handle.getFile())).then(onFiles),
+    (error: unknown) => {
+      // Backing out of the picker is an AbortError — nothing was asked for.
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      fallback?.click();
+    },
+  );
+}
 /** A photo over a cellular link is not a 10-second request. */
 const UPLOAD_TIMEOUT = 120_000;
 

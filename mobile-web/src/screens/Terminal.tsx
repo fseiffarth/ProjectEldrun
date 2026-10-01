@@ -26,6 +26,7 @@ import {
   outboxFileUrl,
   openOutside,
   openSignInTab,
+  pickPhoneFiles,
   recoverSession,
   editHeldPrompt,
   holdPrompt,
@@ -2865,7 +2866,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   /** Sends the picked files into the project inbox one by one and writes each
    * one's `@` reference into the draft as it lands. The reference is the
    * desktop's — the phone never composes a path. */
-  const attachFromPhone = (files: FileList | null) => {
+  const attachFromPhone = (files: ArrayLike<File> | null) => {
     if (!files || files.length === 0) return;
     const run = uploadRun.current;
     for (const file of Array.from(files)) {
@@ -2939,7 +2940,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   const pickAdd = (key: string) => {
     setAddSheet(false);
     if (key === "phone") {
-      fileInput.current?.click();
+      pickPhoneFiles(fileInput.current, attachFromPhone);
     } else if (key === "gallery") {
       galleryInput.current?.click();
     } else if (key === "desktop") {
