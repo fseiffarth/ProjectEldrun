@@ -12,7 +12,8 @@ import {
   isPtyTabKind,
   type TabEntry,
 } from "../../stores/tabs";
-import { useActivityStore, type AttentionKind } from "../../stores/activity";
+import { useShallow } from "zustand/react/shallow";
+import { useActivityStore, type AttentionKind, type BusyKind } from "../../stores/activity";
 import { resolveProjectDirectory, type FilesPanelView } from "../../types";
 import { useT } from "../../lib/i18n";
 import { RailSwitchSideIcon } from "../common/EdgeRailIcons";
@@ -227,9 +228,38 @@ export function SidePanel({
   // Same working/decision/finished glow the tab bar draws for a live tab — a
   // hidden subwindow's tabs are still running underneath the pane, so they keep
   // reporting status even while parked.
-  const busyByTab = useActivityStore((s) => s.busyByTab);
-  const busyKindByTab = useActivityStore((s) => s.busyKindByTab);
-  const attentionByTab = useActivityStore((s) => s.attentionByTab);
+  //
+  // Subscribed to the HIDDEN tabs' entries only, flattened to primitives so a
+  // shallow compare can hold: the whole `busyByTab` / `attentionByTab` maps
+  // move on every agent's every turn edge, in every project, and each move
+  // re-rendered this panel — and the entire file view under it — for the sake
+  // of a section that is usually not even there.
+  const hiddenPtyIds = useMemo(
+    () =>
+      (hiddenGroups ?? []).flatMap((h) => orderedTabKeys(h.subtree).map((k) => `${scope}:${k}`)),
+    [hiddenGroups, scope],
+  );
+  const hiddenActivity = useActivityStore(
+    useShallow((s) =>
+      hiddenPtyIds.flatMap((id) => [
+        s.busyByTab[id] ?? false,
+        s.busyKindByTab[id] ?? "",
+        s.attentionByTab[id] ?? "",
+      ]),
+    ),
+  );
+  const { busyByTab, busyKindByTab, attentionByTab } = useMemo(() => {
+    const busy: Record<string, boolean> = {};
+    const kind: Record<string, BusyKind> = {};
+    const attention: Record<string, AttentionKind> = {};
+    hiddenPtyIds.forEach((id, i) => {
+      const [b, k, a] = hiddenActivity.slice(i * 3, i * 3 + 3);
+      if (b) busy[id] = true;
+      if (k) kind[id] = k as BusyKind;
+      if (a) attention[id] = a as AttentionKind;
+    });
+    return { busyByTab: busy, busyKindByTab: kind, attentionByTab: attention };
+  }, [hiddenPtyIds, hiddenActivity]);
   // One status per hidden group's tab, rolled up per group and overall, so the
   // Hidden section still says "something's running in there" without needing
   // the group unhidden and its tab bar drawn.
