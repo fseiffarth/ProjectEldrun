@@ -592,8 +592,12 @@ export interface TranscriptEntry {
    * no result in the transcript). */
   running?: boolean;
   /** On an `agent`: it has reported back (Claude's spawn call has its
-   * result). Absent where the CLI's record does not say. */
+   * result, or — sent to the background — its task notification came).
+   * Absent where the CLI's record does not say. */
   finished?: boolean;
+  /** On an `agent`: it runs in the background (Claude's async launch), at
+   * work while the session's own turn may be over. */
+  background?: boolean;
   /** Phone-only, never on the wire: a prompt sent from here that the session
    * has not recorded yet (`terminal/pendingPrompts`), by its id — and whether
    * the link failed to deliver it, or is trying again. */

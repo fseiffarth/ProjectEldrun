@@ -94,14 +94,20 @@ pub struct TranscriptEntry {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plan: bool,
     /// On an `agent` entry: the subagent has not reported back yet — the call
-    /// that spawned it has no result in the transcript (Claude's).
+    /// that spawned it has no result in the transcript, or (one sent to the
+    /// background) no task notification has ended it (Claude's).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub running: bool,
     /// On an `agent` entry: the subagent has reported back — its spawn call
-    /// has a result (Claude's). Neither this nor `running` on a CLI whose
-    /// record does not say, so a missing mark is "unknown", never "done".
+    /// has a result, or its task notification came (Claude's). Neither this
+    /// nor `running` on a CLI whose record does not say, so a missing mark is
+    /// "unknown", never "done".
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub finished: bool,
+    /// On an `agent` entry: it runs in the background (Claude's async
+    /// `Agent` launch), so it can be at work while the session's turn is over.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 /// What a tab's stored session answers with. Always a value, never an error:
@@ -768,8 +774,10 @@ fn parse_entries<'a>(
     let mut backgrounded: Vec<(String, String)> = Vec::new();
     let mut ended = std::collections::HashSet::new();
     // The tool calls that have their result: a spawn call without one is a
-    // subagent still at work.
+    // subagent still at work. A background spawn's result comes at once
+    // (`async_launched`); what it does after is replayed in `agents`.
     let mut returned = std::collections::HashSet::new();
+    let mut agents = BackgroundAgents::default();
     for line in lines {
         let line = line.trim();
         if line.is_empty() {
@@ -787,6 +795,7 @@ fn parse_entries<'a>(
             returned.extend(claude_tool_results(&value));
             backgrounded.extend(claude_backgrounded(&value));
             ended.extend(claude_tasks_ended(line));
+            agents.read(&value, line);
         }
         let records = match kind {
             TranscriptKind::Claude => claude_records(&value),
@@ -821,9 +830,11 @@ fn parse_entries<'a>(
         }
     }
     for (index, call) in &calls {
-        let finished = returned.contains(call);
+        let background = agents.at_work.get(call).copied();
+        let finished = background.map_or_else(|| returned.contains(call), |at_work| !at_work);
         entries[*index].running = !finished;
         entries[*index].finished = finished;
+        entries[*index].background = background.is_some();
     }
     let waiting = shells.into_iter().filter(|(call, _)| !returned.contains(call)).map(|(_, shell)| shell).collect();
     let background = backgrounded
@@ -832,6 +843,80 @@ fn parse_entries<'a>(
         .filter_map(|(call, output)| Some((RunningShell { background: true, ..commands.remove(&call)? }, output)))
         .collect();
     (entries, calls, ShellCalls { waiting, background })
+}
+
+/// Claude's background subagents (`Agent` calls whose result is only the
+/// launch, `async_launched`), replayed in record order: launched, each is at
+/// work until a task notification says it stopped. Notifications name the
+/// call (`<tool-use-id>`) or only the agent (`<task-id>`, on a later stop);
+/// one that "may be interim" stopped with background work of its own still
+/// running, and works on. A `SendMessage` to a stopped one resumes it, until
+/// its next notification. A notification is recorded more than once (queued,
+/// delivered, absorbed): each counts once, where it is first read, so a copy
+/// delivered after a resume does not end it again.
+#[derive(Default)]
+struct BackgroundAgents {
+    /// By spawn call: whether it is at work.
+    at_work: std::collections::HashMap<String, bool>,
+    /// The spawn call of each agent id.
+    calls: std::collections::HashMap<String, String>,
+    seen: std::collections::HashSet<String>,
+}
+
+impl BackgroundAgents {
+    fn read(&mut self, value: &Value, line: &str) {
+        if let Some((call, agent)) = claude_async_launched(value) {
+            self.at_work.insert(call.clone(), true);
+            if let Some(agent) = agent {
+                self.calls.insert(agent, call);
+            }
+        }
+        for agent in claude_messaged(value) {
+            if let Some(at_work) = self.calls.get(&agent).and_then(|call| self.at_work.get_mut(call)) {
+                *at_work = true;
+            }
+        }
+        for note in claude_task_notes(line) {
+            if !self.seen.insert(note.text.to_string()) || !note.ends || note.interim {
+                continue;
+            }
+            let call = note.call.or_else(|| self.calls.get(note.task.as_deref()?).cloned());
+            if let Some(at_work) = call.and_then(|call| self.at_work.get_mut(&call)) {
+                *at_work = false;
+            }
+        }
+    }
+}
+
+/// The spawn call a Claude `user` record says went to the background
+/// (`toolUseResult.status` `async_launched`): its result is only the launch.
+/// With the agent id its notifications and messages name it by.
+fn claude_async_launched(value: &Value) -> Option<(String, Option<String>)> {
+    let result = value.get("toolUseResult")?;
+    if result.get("status").and_then(Value::as_str) != Some("async_launched") && result.get("isAsync").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let agent = result.get("agentId").and_then(Value::as_str).map(str::to_string);
+    let Some(Value::Array(blocks)) = value.get("message").and_then(|m| m.get("content")) else {
+        return None;
+    };
+    let result = blocks.iter().find(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))?;
+    Some((result.get("tool_use_id")?.as_str()?.to_string(), agent))
+}
+
+/// Whom a Claude `assistant` record's `SendMessage` calls write to (`to`).
+fn claude_messaged(value: &Value) -> Vec<String> {
+    if value.get("type").and_then(Value::as_str) != Some("assistant") {
+        return Vec::new();
+    }
+    let Some(Value::Array(blocks)) = value.get("message").and_then(|m| m.get("content")) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use") && b.get("name").and_then(Value::as_str) == Some("SendMessage"))
+        .filter_map(|b| b.get("input")?.get("to")?.as_str().map(str::to_string))
+        .collect()
 }
 
 /// A Claude `user` record's shell results that went to the background
@@ -857,11 +942,22 @@ fn claude_backgrounded(value: &Value) -> Option<(String, String)> {
     Some((call.to_string(), output.to_string()))
 }
 
-/// The background calls a raw Claude record says have ended: each
-/// `<task-notification>` in it — queued, delivered as a prompt, or absorbed
-/// mid-turn — names the call (`<tool-use-id>`) and its status; every status
-/// but `starting` ends it (`completed`, `failed`, `killed`, `stopped`).
-fn claude_tasks_ended(line: &str) -> Vec<String> {
+/// One `<task-notification>` in a raw Claude record: the call it names
+/// (`<tool-use-id>`, absent on an agent's later stops), the task
+/// (`<task-id>`), whether its status ends the task — every one but
+/// `starting` (`completed`, `failed`, `killed`, `stopped`) — and whether its
+/// note says the result "may be interim". `text` is the whole notification.
+struct TaskNote<'a> {
+    call: Option<String>,
+    task: Option<String>,
+    ends: bool,
+    interim: bool,
+    text: &'a str,
+}
+
+/// The `<task-notification>`s in a raw Claude record — queued, delivered as
+/// a prompt, or absorbed mid-turn.
+fn claude_task_notes(line: &str) -> Vec<TaskNote<'_>> {
     let tag = |text: &str, name: &str| -> Option<String> {
         let open = format!("<{name}>");
         let start = text.find(&open)? + open.len();
@@ -871,12 +967,23 @@ fn claude_tasks_ended(line: &str) -> Vec<String> {
     line.split("<task-notification>")
         .skip(1)
         .filter_map(|note| {
-            let note = note.split("</task-notification>").next()?;
-            let call = tag(note, "tool-use-id")?;
-            let status = tag(note, "status")?;
-            (status != "starting" && call.starts_with("toolu_")).then_some(call)
+            let text = note.split("</task-notification>").next()?;
+            let status = tag(text, "status")?;
+            Some(TaskNote {
+                call: tag(text, "tool-use-id").filter(|call| call.starts_with("toolu_")),
+                task: tag(text, "task-id"),
+                ends: status != "starting",
+                interim: text.contains("may be interim"),
+                text,
+            })
         })
         .collect()
+}
+
+/// The background calls a raw Claude record says have ended: each
+/// notification that names its call and ends it (`claude_task_notes`).
+fn claude_tasks_ended(line: &str) -> Vec<String> {
+    claude_task_notes(line).into_iter().filter(|note| note.ends).filter_map(|note| note.call).collect()
 }
 
 /// Which of `outputs` some process still holds open — a background shell
@@ -1446,6 +1553,54 @@ mod tests {
             vec![("prompt", "long task"), ("agent", "Dig deeper"), ("answer", "The backend is in src-tauri.")]
         );
         assert!(claude_subagent_file(&folder, &subagent_token("elsewhere")).is_none());
+    }
+
+    #[test]
+    fn a_background_claude_subagent_runs_until_its_task_notification() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        let spawn = |id: &str| format!("{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Agent\",\"input\":{{\"description\":\"scout {id}\",\"run_in_background\":true}}}}]}}}}\n");
+        let launched = |id: &str| format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":[{{\"type\":\"text\",\"text\":\"Async agent launched successfully.\"}}]}}]}},\"toolUseResult\":{{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"a1\"}}}}\n");
+        let note = |id: &str, status: &str| format!("{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"<task-notification>\\n<task-id>a1</task-id>\\n<tool-use-id>{id}</tool-use-id>\\n<status>{status}</status>\\n</task-notification>\"}}\n");
+        std::fs::write(&main, [spawn("toolu_A"), launched("toolu_A"), spawn("toolu_B"), launched("toolu_B"), note("toolu_A", "completed")].concat()).unwrap();
+        let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        // The launch result is not the report: B is still at work, A is done.
+        assert_eq!(read.entries.iter().map(|e| (e.running, e.finished, e.background)).collect::<Vec<_>>(), vec![(false, true, true), (true, false, true)]);
+        let wire = serde_json::to_value(&read).unwrap();
+        assert_eq!(wire["entries"][1]["background"], true);
+
+        std::fs::write(&main, [spawn("toolu_A"), launched("toolu_A"), note("toolu_A", "starting")].concat()).unwrap();
+        let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        assert!(read.entries[0].running && !read.entries[0].finished);
+    }
+
+    #[test]
+    fn a_background_claude_subagent_works_on_past_an_interim_stop_and_after_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        let spawn = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_A\",\"name\":\"Agent\",\"input\":{\"description\":\"scout\"}}]}}\n";
+        let launched = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_A\",\"content\":\"launched\"}]},\"toolUseResult\":{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"a1\"}}\n";
+        // Queued, then delivered: the same notification twice.
+        let note = |body: &str| {
+            let content = format!("<task-notification>\\n<task-id>a1</task-id>\\n{body}<status>completed</status>\\n</task-notification>");
+            format!("{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"{content}\"}}\n{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{content}\"}}}}\n")
+        };
+        let interim = note("<tool-use-id>toolu_A</tool-use-id>\\n<note>the result below may be interim.</note>\\n");
+        let done = note("<usage>1</usage>\\n");
+        let message = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_M\",\"name\":\"SendMessage\",\"input\":{\"to\":\"a1\",\"message\":\"more\"}}]}}\n";
+        let state = |parts: &[&str]| {
+            std::fs::write(&main, parts.concat()).unwrap();
+            let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+            (read.entries[0].running, read.entries[0].finished)
+        };
+        // An interim stop leaves it at work; the later stop, naming only the
+        // agent, ends it.
+        assert_eq!(state(&[spawn, launched, &interim]), (true, false));
+        assert_eq!(state(&[spawn, launched, &interim, &done]), (false, true));
+        // A message resumes it until it stops again.
+        assert_eq!(state(&[spawn, launched, &done, message]), (true, false));
+        let again = note("<usage>2</usage>\\n");
+        assert_eq!(state(&[spawn, launched, &done, message, &again]), (false, true));
     }
 
     #[test]
