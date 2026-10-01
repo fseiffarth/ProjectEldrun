@@ -205,31 +205,26 @@ small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-
 .card.in-plan,.project-screen .tab-card.in-plan { border-color:#7b6ee0; }
 .card.in-goal,.project-screen .tab-card.in-goal { border-color:#4fb3c0; }
 .card.in-plan.has-tab-color,.tab-card.in-plan.has-tab-color,.card.in-goal.has-tab-color,.tab-card.in-goal.has-tab-color { border-left-color:var(--tab-color); }
-/* The project screen's tab cards are hexagons: flat top and bottom, a point at
-   each end, so the status mark (also a hexagon) sits on the left vertex. The
-   card itself is not clipped — the mark hangs outside it — so the shape is two
-   clipped layers under the content: `::before` is the outline in `--hex-edge`,
-   `::after` the face inset 1px. Plan/goal/focus retint the outline; a tab
-   colour fills the left point and widens its edge to 3px, as its left border
-   did. The drop line stays a straight rule across the box. The point depth is fixed rather than an angle, so a tall card with
-   prompts keeps its padding clear of the slant. */
-.project-screen .tab-card { --hex:18px; --hex-edge:#363c50; --hex-shape:polygon(var(--hex) 0,calc(100% - var(--hex)) 0,100% 50%,calc(100% - var(--hex)) 100%,var(--hex) 100%,0 50%); isolation:isolate; border:0; border-radius:0; background:none; box-shadow:none; }
-.project-screen .tab-card::before,.project-screen .tab-card::after { content:""; position:absolute; z-index:-1; clip-path:var(--hex-shape); pointer-events:none; }
-.project-screen .tab-card::before { inset:0; background:var(--hex-edge); }
-.project-screen .tab-card::after { inset:1px; background:linear-gradient(155deg, #222637, #1a1d2b 76%); }
-.project-screen .tab-card:focus-within { --hex-edge:#8578ed; }
-.project-screen .tab-card.in-plan { --hex-edge:#7b6ee0; }
-.project-screen .tab-card.in-goal { --hex-edge:#4fb3c0; }
-.project-screen .tab-card.has-tab-color::before { background:linear-gradient(90deg, var(--tab-color) calc(var(--hex) + 3px), var(--hex-edge) 0); }
+/* The project screen's tab cards are octagons: each rounded corner becomes a
+   straight 45° cut. The card itself is not clipped — the status mark hangs over
+   its left edge — so the shape is two clipped layers under the content:
+   `::before` is the outline in `--oct-edge`, `::after` the face inset 1px. The
+   face's cut is .41px shorter so the diagonal edges stay as thick as the
+   straight ones. Plan/goal/focus retint the outline; a tab colour widens the
+   left edge to 3px, its cuts included, as its left border did. The drop line
+   stays a straight rule across the box. */
+.project-screen .tab-card { --oct:12px; --oct-edge:#363c50; isolation:isolate; border:0; border-radius:0; background:none; box-shadow:none; }
+.project-screen .tab-card::before,.project-screen .tab-card::after { content:""; position:absolute; z-index:-1; clip-path:polygon(var(--cut) 0,calc(100% - var(--cut)) 0,100% var(--cut),100% calc(100% - var(--cut)),calc(100% - var(--cut)) 100%,var(--cut) 100%,0 calc(100% - var(--cut)),0 var(--cut)); pointer-events:none; }
+.project-screen .tab-card::before { --cut:var(--oct); inset:0; background:var(--oct-edge); }
+.project-screen .tab-card::after { --cut:calc(var(--oct) - .41px); inset:1px; background:linear-gradient(155deg, #222637, #1a1d2b 76%); }
+.project-screen .tab-card:focus-within { --oct-edge:#8578ed; }
+.project-screen .tab-card.in-plan { --oct-edge:#7b6ee0; }
+.project-screen .tab-card.in-goal { --oct-edge:#4fb3c0; }
+.project-screen .tab-card.has-tab-color::before { background:linear-gradient(90deg, var(--tab-color) calc(var(--oct) + 3px), var(--oct-edge) 0); }
 .project-screen .tab-card.has-tab-color::after { left:3px; }
 .project-screen .tab-card.drop-before { box-shadow:inset 0 3px 0 0 #7c6cff; }
 .project-screen .tab-card.drop-after { box-shadow:inset 0 -3px 0 0 #7c6cff; }
 .project-screen .tab-card-open,.project-screen .tab-card-dot,.project-screen .tab-card-grip { border-radius:0; }
-/* The foot's rule runs into the slanted ends, so it fades out before them, and
-   its text keeps clear of the points. */
-.project-screen .tab-card-foot { padding-left:calc(var(--hex) + 8px); padding-right:calc(var(--hex) + 6px); border-image:linear-gradient(90deg, transparent, #303549 calc(var(--hex) + 10px), #303549 calc(100% - var(--hex) - 10px), transparent) 1; }
-.agent-status-glyph { font-size:.85em; line-height:1; }
-.agent-status.working .agent-status-glyph { font-size:.7em; }
 /* The project screen's tab cards carry a hexagonal status mark on the left
    border. Its inset face leaves a coloured edge around the glyph; a static
    dark shadow separates it from the tab colour. Taps pass through the mark. */
