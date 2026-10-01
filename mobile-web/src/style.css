@@ -228,6 +228,16 @@ small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-
 .project-screen .tab-card.drop-before::after,.tab-card.home-project-card.drop-before::after { box-shadow:inset 0 3px 0 0 #7c6cff; }
 .project-screen .tab-card.drop-after::after,.tab-card.home-project-card.drop-after::after { box-shadow:inset 0 -3px 0 0 #7c6cff; }
 .project-screen .tab-card-open,.project-screen .tab-card-dot,.project-screen .tab-card-grip,.tab-card.one-row.home-project-card .tab-card-grip { border-radius:0; }
+/* On an octagon the grip is no column beside ✕: it sits in the lower-right
+   cut, its ⠿ turned 45° so the dots run along the cut. The button is a 36px
+   triangle in that corner — `clip-path` clips its hit area too — so ✕ above it
+   and the opener around it keep their taps; the prompts, the schedule line and
+   a project row's count step in to stay clear of the glyph. */
+.project-screen .tab-card-grip,.tab-card.home-project-card .tab-card-grip { position:absolute; right:0; bottom:0; width:36px; height:36px; border:0; clip-path:polygon(100% 0,100% 100%,0 100%); }
+.project-screen .tab-card-grip > span,.tab-card.home-project-card .tab-card-grip > span { position:absolute; right:4px; bottom:4px; display:grid; place-items:center; width:16px; height:16px; line-height:1; transform:rotate(45deg); }
+.project-screen .tab-card:has(.tab-card-grip) .tab-card-prompts { margin-right:26px; }
+.project-screen .tab-card:has(.tab-card-grip) .tab-card-foot { padding-right:26px; }
+.tab-card.home-project-card:has(.tab-card-grip) .card { padding-right:28px; }
 /* The project screen's tab cards carry a hexagonal status mark on the left
    border. Its inset face leaves a coloured edge around the glyph; a static
    dark shadow separates it from the tab colour. Taps pass through the mark. */
