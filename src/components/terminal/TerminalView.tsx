@@ -362,6 +362,20 @@ function terminalTheme(scheme: string | undefined) {
 // grow this without bound; xterm trims to its own scrollback on flush anyway.
 const PENDING_OUTPUT_CAP = 1_000_000;
 
+/** How long an OPEN pane must stay hidden before its renderer addon is
+ *  released. The canvas renderer keeps four full-pane canvases (text,
+ *  selection, link, cursor) whose backing stores stay allocated under
+ *  `display: none` — ~4 × width × height × 4 bytes at device pixels, about
+ *  30 MB for a 1800×1100 pane — and the WebGL renderer holds a GL context the
+ *  browser evicts once too many are live. Every tab of every open project
+ *  stays mounted, so a session with several projects carried that for every
+ *  terminal ever shown. Releasing the addon leaves xterm's paused DOM renderer
+ *  in place; the buffer, scrollback, selection and PTY are untouched, and the
+ *  addon is re-loaded the moment the pane is shown again (the same swap a
+ *  WebGL context loss or the renderer flag already performs). The delay keeps
+ *  ordinary tab flipping from paying the re-load. */
+export const RENDERER_RELEASE_MS = 60_000;
+
 // Agent-terminal zoom. Agent TUIs (Claude, Codex, …) render dense layouts, so
 // zoomable agent panes let the user scale the font with Ctrl+wheel / Ctrl +/-/0.
 // The chosen size is a single global preference (one knob for every agent pane),
@@ -439,6 +453,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const openedRef = useRef(false);
   const pendingOutput = useRef("");
   const doFitRef = useRef<(() => void) | null>(null);
+  // Renderer hibernation (see RENDERER_RELEASE_MS): the `visible` effect's way
+  // into the mount effect's renderer manager.
+  const rendererVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
   const visibleRef = useRef(visible);
   // Announcement text for an accepted OSC 52 clipboard write, held in a ref because
   // the OSC handler is registered once inside the setup effect (see below).
@@ -696,8 +713,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         dropCanvas();
       }
     };
+    // Hibernation state: true while a long-hidden pane has had its renderer
+    // addon released (RENDERER_RELEASE_MS). While set, `applyRenderer` stands
+    // down — a renderer-flag flip on a hidden pane would otherwise re-allocate
+    // what was just released; `restoreRenderer` picks the current flag on show.
+    let rendererReleased = false;
+    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
     const applyRenderer = (wantWebgl: boolean) => {
-      if (cancelled || !openedRef.current) return;
+      if (cancelled || !openedRef.current || rendererReleased) return;
       if (wantWebgl) {
         if (webglAddon) return;
         dropCanvas();
@@ -718,6 +741,31 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
     };
     applyRendererRef.current = applyRenderer;
+    const releaseRenderer = () => {
+      releaseTimer = null;
+      if (cancelled || !openedRef.current || visibleRef.current) return;
+      if (!canvasAddon && !webglAddon) return;
+      dropWebgl();
+      dropCanvas();
+      rendererReleased = true;
+    };
+    const restoreRenderer = () => {
+      if (releaseTimer) {
+        clearTimeout(releaseTimer);
+        releaseTimer = null;
+      }
+      if (!rendererReleased) return;
+      rendererReleased = false;
+      applyRenderer(webglWantedRef.current);
+    };
+    rendererVisibilityRef.current = (nowVisible: boolean) => {
+      if (nowVisible) {
+        restoreRenderer();
+        return;
+      }
+      if (releaseTimer || rendererReleased || !openedRef.current) return;
+      releaseTimer = setTimeout(releaseRenderer, RENDERER_RELEASE_MS);
+    };
 
     // THE one way buffered output reaches xterm — every catch-up goes through
     // here, never through a bare `term.write`, because output written late is
@@ -1617,7 +1665,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // (writeTerm buffers past a hidden pane's xterm) — flush it in the
         // same beat the pane regains its layout, before the refit, so the
         // catch-up isn't waiting on the next live chunk to drain it.
-        if (visibleRef.current) flushPending();
+        if (visibleRef.current) {
+          restoreRenderer();
+          flushPending();
+        }
         fitRef.current.fit();
         invoke("pty_resize", {
           id,
@@ -1805,6 +1856,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       ro.disconnect();
       doFitRef.current = null;
       applyRendererRef.current = null;
+      rendererVisibilityRef.current = null;
+      if (releaseTimer) clearTimeout(releaseTimer);
       unlistenOutput.current?.();
       unlistenReplay.current?.();
       unlistenReady.current?.();
@@ -1900,6 +1953,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   // most resizes, but a hidden→visible transition doesn't always fire it, so
   // drive the open/fit logic explicitly here.
   useEffect(() => {
+    // Re-load a released renderer before the refit paints (show), or arm the
+    // release of a pane that just went hidden.
+    rendererVisibilityRef.current?.(visible);
     if (visible) doFitRef.current?.();
   }, [visible, id]);
 
