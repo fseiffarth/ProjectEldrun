@@ -224,6 +224,15 @@ impl Utf8StreamDecoder {
     /// Decode all complete UTF-8 in `bytes`, retaining only an incomplete suffix
     /// for the next PTY read. Invalid sequences are replaced exactly once.
     fn push(&mut self, bytes: &[u8]) -> String {
+        // The common case — no split codepoint carried over, a chunk that is
+        // all valid UTF-8 — is one validation and one copy, rather than a copy
+        // into `pending`, a validation and a second copy out of it. Every flush
+        // of every PTY comes through here.
+        if self.pending.is_empty() {
+            if let Ok(valid) = std::str::from_utf8(bytes) {
+                return valid.to_owned();
+            }
+        }
         self.pending.extend_from_slice(bytes);
         let mut out = String::new();
         loop {
