@@ -245,8 +245,9 @@ export function lineCommentMarker(lang: Lang): string | null {
   return SPECS[lang].line[0] ?? null;
 }
 
-const isIdentStart = (c: string) => /[A-Za-z_$]/.test(c);
-const isIdentPart = (c: string) => /[A-Za-z0-9_$]/.test(c);
+const isIdentStart = (c: string) =>
+  (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "_" || c === "$";
+const isIdentPart = (c: string) => isIdentStart(c) || (c >= "0" && c <= "9");
 const isDigit = (c: string) => c >= "0" && c <= "9";
 
 /** Read a string literal starting at `i` (on the opening delimiter). Returns the
@@ -285,7 +286,11 @@ function scanCode(code: string, spec: LangSpec): string {
   let i = 0;
   const n = code.length;
 
-  const atLineComment = () => spec.line.find((m) => code.startsWith(m, i));
+  // The first characters of the line-comment markers: most positions start none,
+  // and are told so without a search over the markers.
+  const commentLeads = new Set(spec.line.map((m) => m[0]));
+  const atLineComment = () =>
+    commentLeads.has(code[i]) ? spec.line.find((m) => code.startsWith(m, i)) : undefined;
 
   while (i < n) {
     const c = code[i];
