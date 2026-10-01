@@ -21,7 +21,7 @@ import {
 } from "pdf-lib";
 import type { PDFContext, PDFPage } from "pdf-lib";
 import * as pdfjs from "pdfjs-dist";
-import type { PDFDocumentProxy } from "pdfjs-dist";
+import type { PDFDocumentProxy, PDFWorker } from "pdfjs-dist";
 import { loadPdf } from "../../../lib/viewers/pdfLoad";
 import type { PageList, PageRef, PdfNote, SourceId } from "../../../lib/viewers/pageModel";
 import { isHighlight } from "../../../lib/viewers/pdfNotes";
@@ -69,6 +69,9 @@ export interface OpenSourceOptions {
    * or dragged-in document has no such address and keeps its copy.
    */
   reread?: () => Promise<Uint8Array>;
+  /** The pdf.js worker to open it on, owned by the caller (`PdfWorkerSlot`).
+   *  Not kept on the source. */
+  worker?: PDFWorker;
 }
 
 /** Open a PDF for rendering, keeping (or being able to re-read) the bytes for a save. */
@@ -76,11 +79,12 @@ export async function openSource(
   bytes: Uint8Array,
   opts: OpenSourceOptions = {},
 ): Promise<PdfSource> {
+  const { worker, ...keep } = opts;
   // One copy for pdf.js to detach, one to keep — unless the caller said where the
   // bytes can be found again, in which case the copy is what we are avoiding.
-  const pristine = opts.reread ? undefined : bytes.slice();
-  const doc = await loadPdf(bytes);
-  return { ...(pristine ? { bytes: pristine } : {}), ...opts, doc };
+  const pristine = keep.reread ? undefined : bytes.slice();
+  const doc = await loadPdf(bytes, worker);
+  return { ...(pristine ? { bytes: pristine } : {}), ...keep, doc };
 }
 
 /**

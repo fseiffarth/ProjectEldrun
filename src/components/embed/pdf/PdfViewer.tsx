@@ -155,6 +155,7 @@ import {
 } from "../../../lib/viewers/tex/tex";
 import { useT, type TranslationKey } from "../../../lib/i18n";
 import { pdfRasterRatio } from "./raster";
+import { PdfWorkerSlot } from "../../../lib/viewers/pdfLoad";
 import { useUnsavedWork } from "../../../lib/window/unsavedWork";
 import { ArrowUpRightIcon, CommentIcon, PlayIcon, SearchIcon, TagIcon } from "../../common/icons/Icon";
 
@@ -1674,6 +1675,9 @@ function PdfCanvas({
   // The authoritative live map. State mirrors it for rendering, but the ref is what
   // the load effect's cleanup frees from — correct even if teardown beats a re-render.
   const sourcesRef = useRef<PdfSources>(new Map());
+  /** The pdf.js worker every load of the viewed file opens on (see the unmount
+   *  effect below, which owns its life). */
+  const workerSlot = useRef<PdfWorkerSlot | null>(null);
   const [pages, setPages] = useState<PageList>([]);
   // A drag's callbacks outlive the render they were created in (an import can land
   // seconds later, from another window), so they read the arrangement from here
@@ -3538,6 +3542,9 @@ function PdfCanvas({
           // usually never comes.
           const src = await openSource(bytes, {
             reread: () => readFileBytes(path, scope),
+            // The viewer's own worker, so a recompile's reload (and each retry of
+            // a mid-write read) does not spawn a fresh one (`PdfWorkerSlot`).
+            worker: workerSlot.current?.get(),
           });
           if (cancelled) {
             src.doc.loadingTask.destroy();
@@ -3613,13 +3620,20 @@ function PdfCanvas({
   // effect (not the load effect's cleanup) because the load effect now hands its
   // outgoing sources to the next load to free on success — so a same-path reload
   // never tears down the document that is still on screen.
-  useEffect(
-    () => () => {
-      for (const s of sourcesRef.current.values()) s.doc.loadingTask.destroy();
+  //
+  // It also owns the viewer's pdf.js worker (`PdfWorkerSlot`), created here rather
+  // than at render so a StrictMode remount gets a live one, and ended only once the
+  // documents on it have been torn down.
+  useEffect(() => {
+    const slot = new PdfWorkerSlot();
+    workerSlot.current = slot;
+    return () => {
+      const pending = [...sourcesRef.current.values()].map((s) => s.doc.loadingTask.destroy());
       sourcesRef.current = new Map();
-    },
-    [],
-  );
+      if (workerSlot.current === slot) workerSlot.current = null;
+      slot.dispose(pending);
+    };
+  }, []);
 
   // Intrinsic (scale-1) CSS dimensions of every page, computed once per document
   // load. Lets each PdfPageCanvas reserve its true size before rendering so the

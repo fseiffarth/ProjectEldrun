@@ -307,7 +307,7 @@ stores stay at the top. No `index.ts` barrels.
 | `lib/viewers/mdGraph.ts` | Pure markdown-graph logic (#101): fence-aware link extraction, bounded BFS crawl, radial layout. Tests: `MdGraph.test.ts`. |
 | `lib/projects/projectRemarks.ts` / `stores/projectRemarks.ts` | Defensive REMARKS.md parser/splicer plus local-or-SFTP I/O. Conforming bullets are editable; all other bytes are parked verbatim. |
 | `lib/viewers/{fileUtils,markdown,highlight}.ts`, `lib/viewers/tex/tex.ts` | Pure viewer logic (XSS-safe markdown/highlight, TeX, file utils). `tex.ts` also resolves `\ref`/`\cite` keys to their `\label`/`.bib` entry via the editor-jump channel. |
-| `lib/viewers/pdfLoad.ts` | `loadPdf`: the only way to open a PDF with pdf.js (sets the worker). Destroys the loading task on failure — a rejected load otherwise leaks a Worker. |
+| `lib/viewers/pdfLoad.ts` | `loadPdf`: the only way to open a PDF with pdf.js (sets the worker). Destroys the loading task on failure — a rejected load otherwise leaks a Worker. `PdfWorkerSlot`: the viewer's one reused worker across reloads, ended after its documents' teardown. |
 | `lib/viewers/tex/texPreview.ts` | TeX hover preview (frontend half): typesets a hovered formula via `tex_preview_snippet`; cache keyed by preamble + snippet text, not position. |
 | `lib/viewers/tex/beamer.ts` | Beamer mode for the TeX editor (pure): overlay-spec recognition, wrap/re-target (never nest), `insertPause`, `nextOverlayNumber`, `beamerEditRange`. |
 | `lib/projects/projectDialogEvent.ts` | `eldrun:open-project-dialog` — asks `ProjectSwitcher` to open its New / Import / Clone dialog (used by the intro). |
