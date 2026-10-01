@@ -2758,17 +2758,25 @@ pub fn move_remote_mirror_blocking(
 /// The one file that carries real instructions. Every agent-specific doc is a
 /// pointer to it (see `CLAUDE_SCAFFOLD`/`GEMINI_SCAFFOLD`), so guidance is
 /// written once and every agent reads the same text instead of three stubs
-/// drifting apart. It links out to the sibling agent files and the rest of the
-/// scaffold, which is what makes it a usable entry point on a fresh project.
+/// drifting apart.
+///
+/// Kept to placeholders: agents load it every session, and it is the user's
+/// file from the first write on — never rewritten unless still byte-identical
+/// to a template Eldrun shipped (`AGENTS_HISTORY`). So nothing about Eldrun
+/// itself goes here (the `eldrun-send` hint comes from `services::agent_hint`
+/// and the session hook), and the map of the other files is `PROJECT.md`'s.
+/// Changing this text? Add the old one to `scaffold_history/` first — a test
+/// pins it.
 const AGENTS_SCAFFOLD: &str = r#"# Agents
 
-Canonical instructions for every AI coding agent working in this project.
-The agent-specific files are pointers to this one — write guidance **here**
-so every agent reads the same thing.
+Canonical instructions for every AI coding agent in this project;
+`CLAUDE.md` and `GEMINI.md` import this file. Write guidance **here**, and
+keep it to what an agent would otherwise get wrong: it is loaded into every
+session. [PROJECT.md](./PROJECT.md) maps the rest of the project.
 
 ## Project
 
-_What this project is and what it is for._
+_What this project is, in a sentence or two._
 
 ## Running
 
@@ -2777,31 +2785,6 @@ _Build, run and test commands._
 ## Conventions
 
 _Layout, style, and anything an agent must not do._
-
-## Showing the user a file
-
-To put a file in front of the user on their phone (Eldrun Mobile), run
-`eldrun-send <file>` — any file up to 24 MiB; images, PDFs and text show
-on the phone, anything else is offered as a download. Local and container
-tabs. `command | eldrun-send -n tests.log` sends stdin; `eldrun-send --clear`
-empties the outbox. A file sent from this tab shows in this tab's phone chat
-and every gallery; one copied into `.eldrun/outbox/` by hand, in the gallery only.
-
-## Agent files
-
-- [AGENTS.md](./AGENTS.md) — this file: the single source of truth
-- [CLAUDE.md](./CLAUDE.md) — Claude Code; imports this file
-- [GEMINI.md](./GEMINI.md) — Gemini CLI; imports this file
-
-## Project docs
-
-- [PROJECT.md](./PROJECT.md) — map of the scaffold: every file linked, with what it is for
-- [README.md](./README.md) — overview
-- [DOCUMENTATION.md](./DOCUMENTATION.md) — reference documentation
-- [ROADMAP.md](./ROADMAP.md) — planned direction
-- [TODO.md](./TODO.md) — open work items
-- [REMARKS.md](./REMARKS.md) — project-wide remarks attached to files and lines
-- [STATUS.md](./STATUS.md) — current state
 "#;
 
 /// Claude Code pointer. `@AGENTS.md` on its own line is Claude Code's import
@@ -3169,13 +3152,32 @@ const LEGACY_AGENT_STUBS: &[(&str, &str)] = &[
     ("GEMINI.md", "# Gemini Context\n"),
 ];
 
+/// Every earlier `AGENTS_SCAFFOLD`, byte for byte, oldest first (2026-08-26 to
+/// 2026-09-28). A project scaffolded with one of them still holds that text
+/// until someone edits it, and only this list lets a repair tell such an
+/// untouched copy from the user's own words: the never-overwrite rule meant
+/// the 09-05 copy kept telling agents the outbox takes images only.
+const AGENTS_HISTORY: &[&str] = &[
+    include_str!("scaffold_history/AGENTS.2026-08-26.md"),
+    include_str!("scaffold_history/AGENTS.2026-08-30.md"),
+    include_str!("scaffold_history/AGENTS.2026-09-05.md"),
+    include_str!("scaffold_history/AGENTS.2026-09-14.md"),
+    include_str!("scaffold_history/AGENTS.2026-09-28.md"),
+];
+
 /// True when `content` is the untouched legacy stub for the agent doc `name`
-/// (or empty). Pure, so the upgrade rule is unit-testable without touching disk.
+/// (or empty), or an untouched earlier `AGENTS.md` template. Line endings are
+/// ignored — a checkout may have turned them to CRLF. Pure, so the upgrade rule
+/// is unit-testable without touching disk.
 fn is_legacy_agent_stub(name: &str, content: &str) -> bool {
     let Some((_, stub)) = LEGACY_AGENT_STUBS.iter().find(|(n, _)| *n == name) else {
         return false;
     };
-    content.trim().is_empty() || content.trim() == stub.trim()
+    if content.trim().is_empty() || content.trim() == stub.trim() {
+        return true;
+    }
+    let content = content.replace("\r\n", "\n");
+    name == "AGENTS.md" && AGENTS_HISTORY.contains(&content.as_str())
 }
 
 /// Like `scaffold_project`, but for an **already-scaffolded** project whose
@@ -5898,21 +5900,13 @@ mod tests {
         scaffold_project(tmp.path(), false).unwrap();
 
         let agents = std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap();
-        // AGENTS.md carries the instructions and links every sibling agent doc
-        // plus the rest of the scaffold.
-        for link in &[
-            "(./CLAUDE.md)",
-            "(./GEMINI.md)",
-            "(./PROJECT.md)",
-            "(./README.md)",
-            "(./DOCUMENTATION.md)",
-            "(./ROADMAP.md)",
-            "(./TODO.md)",
-            "(./REMARKS.md)",
-            "(./STATUS.md)",
-        ] {
-            assert!(agents.contains(link), "AGENTS.md missing link {link}");
+        // AGENTS.md carries the instructions and points at the map; it is
+        // loaded every session, so it doesn't repeat the map's links.
+        assert!(agents.contains("(./PROJECT.md)"), "AGENTS.md must link PROJECT.md");
+        for link in &["(./README.md)", "(./TODO.md)", "(./AGENTS.md)"] {
+            assert!(!agents.contains(link), "AGENTS.md repeats the map: {link}");
         }
+        assert!(!agents.contains("eldrun-send"), "Eldrun's own hint is not the project's");
 
         // The agent-specific docs carry no instructions of their own: each
         // imports AGENTS.md and links the other agent files.
@@ -5960,6 +5954,38 @@ mod tests {
         assert!(scaffold_is_missing_at(tmp.path(), true));
         repair_project_scaffold_at(tmp.path(), true).unwrap();
         assert!(!scaffold_is_missing_at(tmp.path(), true));
+    }
+
+    #[test]
+    fn untouched_earlier_agents_templates_are_upgraded_and_edited_ones_kept() {
+        for old in AGENTS_HISTORY {
+            assert_ne!(*old, AGENTS_SCAFFOLD);
+            let tmp = tempfile::tempdir().unwrap();
+            scaffold_project(tmp.path(), false).unwrap();
+            std::fs::write(tmp.path().join("AGENTS.md"), old.replace('\n', "\r\n")).unwrap();
+            assert!(scaffold_is_missing_at(tmp.path(), false));
+            let report = repair_project_scaffold_at(tmp.path(), false).unwrap();
+            assert_eq!(report.updated_files, vec!["AGENTS.md".to_string()]);
+            assert_eq!(std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(), AGENTS_SCAFFOLD);
+
+            let edited = format!("{old}\n## Mine\n");
+            std::fs::write(tmp.path().join("AGENTS.md"), &edited).unwrap();
+            assert!(!scaffold_is_missing_at(tmp.path(), false));
+            repair_project_scaffold_at(tmp.path(), false).unwrap();
+            assert_eq!(std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(), edited);
+        }
+    }
+
+    /// Pins the shipped `AGENTS.md` template. When this fails, the template
+    /// changed: copy the *previous* text byte for byte into
+    /// `scaffold_history/AGENTS.<date>.md`, add it to `AGENTS_HISTORY`, then
+    /// update the pin — otherwise every project scaffolded with it keeps it.
+    #[test]
+    fn the_agents_template_is_pinned_so_its_predecessor_stays_upgradable() {
+        let fnv1a = AGENTS_SCAFFOLD.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+        assert_eq!(fnv1a, 0x75197758527454ff, "AGENTS_SCAFFOLD changed; see this test's doc");
     }
 
     #[test]
