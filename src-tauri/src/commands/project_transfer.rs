@@ -973,8 +973,13 @@ type Bundle = zip::ZipArchive<fs::File>;
 fn open_bundle(path: &str) -> Result<(Bundle, ExportManifest), String> {
     let file = fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("read {path}: {e}"))?;
+    // A bundle an older build wrote carries its manifest under the app's old
+    // name; such bundles stay importable.
+    let manifest_name = crate::services::brand_migration::compat::export_manifest_name(&crate::brand::PAIR, |name| {
+        zip.file_names().any(|entry| entry == name)
+    });
     let manifest: ExportManifest = {
-        let entry = zip.by_name(BUNDLE_MANIFEST).map_err(|_| {
+        let entry = zip.by_name(&manifest_name).map_err(|_| {
             concat!("That file is not an ", crate::app_name!(), " project export (no ", crate::app_slug!(), "-export.json inside)").to_string()
         })?;
         serde_json::from_reader(entry).map_err(|e| format!("read {BUNDLE_MANIFEST}: {e}"))?

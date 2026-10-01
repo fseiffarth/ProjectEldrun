@@ -46,7 +46,6 @@
 //! `RemoteSpec` (`projects.json` + `project.json`) before connecting — nothing
 //! may assume they are stable across boots.
 
-use crate::brand::SLUG;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -112,9 +111,16 @@ impl GuestArch {
     /// The baked image keeps its historical name on x86-64 (existing state
     /// dirs), and carries the arch elsewhere.
     fn baked_image_name(self) -> String {
+        self.baked_image_name_for(&crate::brand::CURRENT)
+    }
+
+    /// [`baked_image_name`](Self::baked_image_name) as a build named `forms`
+    /// writes it.
+    fn baked_image_name_for(self, forms: &crate::brand::Forms) -> String {
+        let prefix = forms.name(crate::brand::Name::VM_BASE_IMAGE_PREFIX);
         match self {
-            GuestArch::X86_64 => format!("{}{BASE_VERSION}.qcow2", crate::brand::VM_BASE_IMAGE_PREFIX),
-            GuestArch::Aarch64 => format!("{}{BASE_VERSION}-arm64.qcow2", crate::brand::VM_BASE_IMAGE_PREFIX),
+            GuestArch::X86_64 => format!("{prefix}{BASE_VERSION}.qcow2"),
+            GuestArch::Aarch64 => format!("{prefix}{BASE_VERSION}-arm64.qcow2"),
         }
     }
 
@@ -251,6 +257,29 @@ fn stock_image_path() -> PathBuf {
 }
 
 fn baked_image_path() -> PathBuf {
+    baked_image_path_in(&crate::brand::PAIR, &images_dir())
+}
+
+/// The baked image in `images`: under its current name, or — while only that
+/// exists — under the name an older build baked it as. That file is never
+/// renamed: the overlays of existing VMs name it as their backing file. A new
+/// bake writes the current name.
+fn baked_image_path_in(pair: &crate::brand::Pair, images: &Path) -> PathBuf {
+    let current = images.join(GuestArch::host().baked_image_name_for(&pair.cur));
+    if pair.legacy(crate::brand::Name::VM_BASE_IMAGE_PREFIX).is_none() || current.is_file() {
+        return current;
+    }
+    let old = images.join(GuestArch::host().baked_image_name_for(&pair.legacy));
+    if old.is_file() {
+        crate::brand::legacy_hit("vm-base-image");
+        old
+    } else {
+        current
+    }
+}
+
+/// Where a bake writes: always the current name.
+fn baked_image_target() -> PathBuf {
     images_dir().join(GuestArch::host().baked_image_name())
 }
 
@@ -957,7 +986,7 @@ Write-Output '   New VM projects boot from it; existing VMs keep their current d
             qemu = qemu,
             machine = machine,
             stock = stock_image_path().display(),
-            baked = baked_image_path().display(),
+            baked = baked_image_target().display(),
         );
         let path = root.join("bake-base.ps1");
         std::fs::write(&path, script).map_err(|e| e.to_string())?;
@@ -992,7 +1021,7 @@ echo '   New VM projects boot from it; existing VMs keep their current disk.'
         qemu = qemu,
         machine = machine,
         stock = stock_image_path().display(),
-        baked = baked_image_path().display(),
+        baked = baked_image_target().display(),
     );
     let path = root.join("bake-base.sh");
     std::fs::write(&path, script).map_err(|e| e.to_string())?;
@@ -1002,7 +1031,68 @@ echo '   New VM projects boot from it; existing VMs keep their current disk.'
 // ── cloud-init seed (per project) ──────────────────────────────────────────
 
 /// Guest-safe hostname from a project name: ASCII alphanumerics and dashes.
+/// The names a VM's guest was set up with: its account, its project folder,
+/// and the names cloud-init wrote files and its instance id under.
+///
+/// They are fixed when a VM is created and must never change afterwards.
+/// cloud-init runs "first boot" again whenever the instance id moves, and the
+/// id is computed at every boot from a prefix and a hash of the user-data —
+/// which itself names the account, the folder and two files. So an existing
+/// VM is always seeded with the names it was created under, whatever the app
+/// is called now; only a VM created by this build gets the current ones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VmNames {
+    /// The guest account.
+    pub user: String,
+    /// The project's folder in the guest.
+    pub project_dir: String,
+    /// In the names of the files cloud-init writes.
+    pub slug: String,
+    /// What the instance id starts with.
+    pub instance_prefix: String,
+    /// The hostname of a project whose name has no usable character.
+    pub default_hostname: String,
+}
+
+impl VmNames {
+    /// The names a build called `forms` gives a VM it creates.
+    pub fn of(forms: &crate::brand::Forms) -> Self {
+        use crate::brand::Name;
+        Self {
+            user: forms.name(Name::VM_USER),
+            project_dir: forms.name(Name::VM_PROJECT_DIR),
+            slug: forms.slug.to_string(),
+            instance_prefix: forms.name(Name::VM_INSTANCE_ID_PREFIX),
+            default_hostname: forms.name(Name::VM_NAME),
+        }
+    }
+
+    /// The names of the VM whose project record stores `guest_user` as its
+    /// SSH user (written once, when the project was created): the old names
+    /// for a VM an older build created, the current ones otherwise.
+    pub fn of_existing(pair: &crate::brand::Pair, guest_user: Option<&str>) -> Self {
+        match (guest_user, pair.legacy(crate::brand::Name::VM_USER)) {
+            (Some(user), Some(old_user)) if user == old_user => Self::of(&pair.legacy),
+            _ => Self::of(&pair.cur),
+        }
+    }
+
+    /// The names of project `project_id`'s VM, from its stored record.
+    fn of_project(project_id: &str) -> Self {
+        let pair = crate::brand::PAIR;
+        if !pair.renamed() {
+            return Self::of(&pair.cur);
+        }
+        let user = crate::services::remote::remote_target_for(project_id).and_then(|target| target.spec.user);
+        Self::of_existing(&pair, user.as_deref())
+    }
+}
+
 pub fn vm_hostname(project_name: &str) -> String {
+    vm_hostname_for(&VmNames::of(&crate::brand::CURRENT), project_name)
+}
+
+fn vm_hostname_for(names: &VmNames, project_name: &str) -> String {
     let mut out = String::new();
     for c in project_name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -1013,7 +1103,7 @@ pub fn vm_hostname(project_name: &str) -> String {
     }
     let trimmed = out.trim_matches('-');
     if trimmed.is_empty() {
-        crate::brand::VM_NAME.to_string()
+        names.default_hostname.clone()
     } else {
         let mut name = String::from("vm-");
         name.push_str(&trimmed.chars().take(24).collect::<String>());
@@ -1025,6 +1115,12 @@ pub fn vm_hostname(project_name: &str) -> String {
 /// public key, the project dir, and — under `Proxy` egress — the proxy env
 /// pointing at the fixed guest-side `guestfwd` address. Pure.
 pub fn cloud_init_user_data(hostname: &str, pubkey: &str, proxy: bool) -> String {
+    cloud_init_user_data_for(&VmNames::of(&crate::brand::CURRENT), hostname, pubkey, proxy)
+}
+
+/// [`cloud_init_user_data`] with the names of the VM it is for.
+fn cloud_init_user_data_for(names: &VmNames, hostname: &str, pubkey: &str, proxy: bool) -> String {
+    let slug = names.slug.as_str();
     let mut doc = format!(
         r#"#cloud-config
 hostname: {hostname}
@@ -1039,14 +1135,14 @@ users:
 ssh_pwauth: false
 "#,
         hostname = hostname,
-        user = VM_USER,
+        user = names.user,
         pubkey = pubkey.trim(),
     );
     if proxy {
         let addr = crate::services::vm_proxy::GUEST_PROXY_ADDR;
         doc.push_str(&format!(
             r#"write_files:
-  - path: /etc/profile.d/{SLUG}-proxy.sh
+  - path: /etc/profile.d/{slug}-proxy.sh
     permissions: '0644'
     content: |
       export http_proxy=http://{addr}
@@ -1055,7 +1151,7 @@ ssh_pwauth: false
       export HTTPS_PROXY=http://{addr}
       export no_proxy=localhost,127.0.0.1,::1
       export NO_PROXY=localhost,127.0.0.1,::1
-  - path: /etc/apt/apt.conf.d/95{SLUG}-proxy
+  - path: /etc/apt/apt.conf.d/95{slug}-proxy
     permissions: '0644'
     content: |
       Acquire::http::Proxy "http://{addr}";
@@ -1068,8 +1164,8 @@ ssh_pwauth: false
   - mkdir -p {dir}
   - chown {user}:{user} {dir}
 "#,
-        dir = VM_PROJECT_DIR,
-        user = VM_USER,
+        dir = names.project_dir,
+        user = names.user,
     ));
     if proxy {
         let addr = crate::services::vm_proxy::GUEST_PROXY_ADDR;
@@ -1089,13 +1185,17 @@ pub fn cloud_init_meta_data(instance_id: &str, hostname: &str) -> String {
 
 /// Instance id for a seed: stable while the config is, new when it changes.
 pub fn seed_instance_id(project_id: &str, user_data: &str) -> String {
+    seed_instance_id_for(&VmNames::of(&crate::brand::CURRENT), project_id, user_data)
+}
+
+fn seed_instance_id_for(names: &VmNames, project_id: &str, user_data: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(user_data.as_bytes());
     let digest = hasher.finalize();
     let hash_hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
     let id8: String = project_id.chars().take(8).collect();
-    format!("{}{id8}-{hash_hex}", crate::brand::VM_INSTANCE_ID_PREFIX)
+    format!("{}{id8}-{hash_hex}", names.instance_prefix)
 }
 
 // ── QEMU argv (pure builders) ──────────────────────────────────────────────
@@ -1249,6 +1349,7 @@ fn ensure_overlay(dir: &Path, disk_gb: u32) -> Result<(PathBuf, String), String>
 
 fn ensure_seed(
     dir: &Path,
+    names: &VmNames,
     project_id: &str,
     hostname: &str,
     pubkey: &str,
@@ -1256,8 +1357,8 @@ fn ensure_seed(
 ) -> Result<PathBuf, String> {
     let seed_dir = dir.join("seed");
     std::fs::create_dir_all(&seed_dir).map_err(|e| e.to_string())?;
-    let user_data = cloud_init_user_data(hostname, pubkey, proxy);
-    let meta_data = cloud_init_meta_data(&seed_instance_id(project_id, &user_data), hostname);
+    let user_data = cloud_init_user_data_for(names, hostname, pubkey, proxy);
+    let meta_data = cloud_init_meta_data(&seed_instance_id_for(names, project_id, &user_data), hostname);
     let iso = dir.join("seed.iso");
 
     // Rebuild only when the inputs changed — the iso is consumed on every
@@ -1365,9 +1466,13 @@ pub fn ensure_booted(project_id: &str, project_name: &str) -> Result<VmRuntime, 
         _ => None,
     };
 
-    let hostname = vm_hostname(project_name);
+    // The names this VM was created under (see [`VmNames`]): they decide
+    // the seed, and so whether cloud-init sees the instance it already set up.
+    let names = VmNames::of_project(project_id);
+    let hostname = vm_hostname_for(&names, project_name);
     let seed = ensure_seed(
         &dir,
+        &names,
         project_id,
         &hostname,
         &pubkey,
@@ -2038,6 +2143,79 @@ mod tests {
         assert!(a.starts_with(concat!(crate::app_slug!(), "-project-")));
         // …and is stable for a stable config:
         assert_eq!(a, seed_instance_id("project-1234", "#cloud-config\na"));
+    }
+
+    /// The rule of [`VmNames`]: after a rename, a VM an older build created
+    /// is seeded byte-for-byte as that build seeded it — same user-data, same
+    /// instance id, same hostname — so cloud-init does not run first boot
+    /// again. Only a VM created under the current name gets the current ones.
+    #[test]
+    fn an_existing_vm_keeps_its_seed_across_a_rename() {
+        use crate::brand::{Forms, Pair, LEGACY};
+        let renamed = Pair {
+            cur: Forms { display: "Newname", slug: "newname", upper: "NEWNAME" },
+            legacy: LEGACY,
+        };
+        let key = "ssh-ed25519 AAAA test";
+        // What the older build wrote at every boot of this VM.
+        let old_names = VmNames::of(&LEGACY);
+        for proxy in [false, true] {
+            let was_data = cloud_init_user_data_for(&old_names, "vm-proj", key, proxy);
+            let was_id = seed_instance_id_for(&old_names, "project-1234", &was_data);
+
+            // The renamed build, for the same VM: its record stores the old user.
+            let names = VmNames::of_existing(&renamed, Some(LEGACY.name(crate::brand::Name::VM_USER).as_str()));
+            assert_eq!(names, old_names);
+            let data = cloud_init_user_data_for(&names, "vm-proj", key, proxy);
+            assert_eq!(data, was_data, "user-data moved (proxy: {proxy})");
+            assert_eq!(seed_instance_id_for(&names, "project-1234", &data), was_id);
+            assert_eq!(vm_hostname_for(&names, "---"), vm_hostname_for(&old_names, "---"));
+
+            // A VM the renamed build creates stores the current user.
+            let fresh = VmNames::of_existing(&renamed, Some("newname"));
+            let fresh_data = cloud_init_user_data_for(&fresh, "vm-proj", key, proxy);
+            assert!(fresh_data.contains("  - name: newname\n"));
+            assert!(fresh_data.contains("mkdir -p /home/newname/project"));
+            assert!(!fresh_data.contains(LEGACY.slug));
+            assert!(seed_instance_id_for(&fresh, "project-1234", &fresh_data).starts_with("newname-project-"));
+            assert_ne!(seed_instance_id_for(&fresh, "project-1234", &fresh_data), was_id);
+        }
+        // No record, or a user that is neither: the current names.
+        assert_eq!(VmNames::of_existing(&renamed, None), VmNames::of(&renamed.cur));
+        // The production pair: the constants, whichever way it is asked.
+        let production = VmNames::of_existing(&crate::brand::PAIR, Some(VM_USER));
+        assert_eq!(production.user, VM_USER);
+        assert_eq!(production.project_dir, VM_PROJECT_DIR);
+        assert_eq!(
+            cloud_init_user_data_for(&production, "vm-proj", key, true),
+            cloud_init_user_data("vm-proj", key, true)
+        );
+    }
+
+    /// A base image an older build baked is found under its old name and is
+    /// never renamed — existing overlays back onto that very file. A new
+    /// bake writes the current name, which then wins.
+    #[test]
+    fn the_baked_image_is_found_under_its_old_name() {
+        use crate::brand::{Forms, Pair, LEGACY};
+        use crate::services::brand_migration::hits;
+        let renamed = Pair {
+            cur: Forms { display: "Newname", slug: "newname", upper: "NEWNAME" },
+            legacy: LEGACY,
+        };
+        let images = tempfile::tempdir().expect("tempdir");
+        let arch = GuestArch::host();
+        let old = images.path().join(arch.baked_image_name_for(&LEGACY));
+        let new = images.path().join(arch.baked_image_name_for(&renamed.cur));
+        let _ = hits::taken();
+        assert_eq!(baked_image_path_in(&renamed, images.path()), new);
+        assert!(hits::taken().is_empty());
+        std::fs::write(&old, b"qcow").expect("write");
+        assert_eq!(baked_image_path_in(&renamed, images.path()), old);
+        assert_eq!(hits::taken(), ["vm-base-image"]);
+        std::fs::write(&new, b"qcow").expect("write");
+        assert_eq!(baked_image_path_in(&renamed, images.path()), new);
+        assert!(old.is_file(), "the old image stays for the overlays that back onto it");
     }
 
     #[test]

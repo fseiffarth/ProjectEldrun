@@ -274,6 +274,11 @@ pub async fn pty_spawn(
         opts.cwd = root_dir.to_string_lossy().into_owned();
     }
 
+    // A tab saved by an older build names the app's variables by the old
+    // prefix; everything below reads the current names. Nothing to move while
+    // the prefix is unchanged.
+    crate::brand::PAIR.adopt_legacy_env(&mut opts.env);
+
     // The renderer's two authority flags (`sandbox`, `local_only`) are re-derived
     // here from `projects.json` in the state dir — the one project record a
     // containerized agent cannot write, unlike the persisted tab layout the
@@ -591,6 +596,12 @@ pub async fn pty_spawn(
         // respawn replaces — reap it (cheap no-op for never-containerized tabs).
         crate::services::sandbox::kill_tab_process(&opts.id);
     }
+    // What runs in the tab may still read the app's variables by their old
+    // names (a hook an older build registered in a config the app does not
+    // own, a user's script): export both, here before a wrapper turns the
+    // environment into an argv, and once more before the spawn for what the
+    // wrappers add. A no-op while the prefix is unchanged.
+    crate::brand::PAIR.export_both(&mut opts.env);
     if opts.sandbox && !opts.local_only {
         // Every host, Windows included: the mount destinations and `-w` are
         // spelled for the container by `sandbox::container_path`, so a `C:\`
@@ -773,6 +784,7 @@ pub async fn pty_spawn(
     // survives an Eldrun crash and the tab reattaches on restart. A remote tab is
     // now `cmd == "ssh"` (its tmux is inside the remote command) and a container tab
     // is `cmd == "docker"`, so both are skipped. No-op on Windows / without tmux.
+    crate::brand::PAIR.export_both(&mut opts.env);
     #[cfg(unix)]
     if opts.tmux_session.is_some() && opts.cmd != "ssh" && opts.cmd != "docker" {
         crate::services::tmux_local::wrap_pty_options_local(&mut opts);

@@ -111,10 +111,25 @@ impl Machine {
                 { "id": "beta", "name": "Beta", "directory": mirror, "remote": { "host": "example.org" } }
             ]),
         );
-        write_json(&state.join("settings.json"), &serde_json::json!({ "theme": "dark" }));
+        write_json(
+            &state.join("settings.json"),
+            &serde_json::json!({ "theme": "dark", forms.name(Name::MOBILE_HOST_KEY): { "enabled": true, "port": 8742 } }),
+        );
+        write_json(
+            &state.join("boxes.json"),
+            &serde_json::json!([{ "id": "b1", "name": "Box", forms.name(Name::MOBILE_ACCESS_KEY): true }]),
+        );
+        write_json(
+            &state.join("time_summary.json"),
+            &serde_json::json!({ "days": { "2026-09-30": { forms.name(Name::APP_TIMER_ID): 90.0, "alpha": 10.0 } } }),
+        );
         write_json(
             &state.join("sessions").join("beta").join("tabs.json"),
-            &serde_json::json!({ "tabs": [{ "id": "t1", "cmd": "bash", "cwd": mirror }] }),
+            &serde_json::json!({ "tabs": [
+                { "id": "t1", "cmd": "bash", "cwd": mirror },
+                { "id": "t2", "cmd": format!("{}mail__", forms.name(Name::TAB_COMMAND_PREFIX)) },
+                { "id": "t3", "cmd": "claude", "env": { forms.env_name("TAB_UID"): "uid-3" } }
+            ] }),
         );
         write_json(
             &state.join("remote-projects").join("beta").join("sync.json"),

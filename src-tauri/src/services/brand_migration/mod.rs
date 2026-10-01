@@ -25,9 +25,11 @@
 
 pub mod agent_homes;
 pub mod compat;
+pub mod docker;
 pub mod hits;
 pub mod host;
 pub mod keyring;
+pub mod persisted;
 pub mod project;
 pub mod state_dir;
 
@@ -213,6 +215,7 @@ const STARTUP_STEPS: &[Step] = &[
     Step { id: "state-dir", run: state_dir::move_state_dir },
     Step { id: "share-dir", run: state_dir::move_share_dir },
     Step { id: "state-paths", run: state_dir::rewrite_state_paths },
+    Step { id: "persisted-names", run: persisted::rewrite_persisted_names },
     Step { id: "webview-data", run: state_dir::copy_webview_data },
     Step { id: "agent-homes", run: agent_homes::migrate_agent_homes },
 ];
@@ -221,6 +224,12 @@ const STARTUP_STEPS: &[Step] = &[
 /// lists them in the record; the module that owns the thing runs them (see
 /// [`lazy_done`] and [`lazy_ran`]).
 pub const LAZY_STEPS: &[(&str, StepState, &str)] = &[
+    ("docker-image", StepState::Pending, "the next time a project container is started"),
+    (
+        "ollama-dropins",
+        StepState::Lazy,
+        "needs root: the command that next writes a drop-in also removes the old file",
+    ),
     ("keyring", StepState::Lazy, "each saved secret, when it is next read"),
     ("project-folders", StepState::Lazy, "each project, when it is opened"),
     ("remote-projects", StepState::Lazy, "each remote project, when it connects"),

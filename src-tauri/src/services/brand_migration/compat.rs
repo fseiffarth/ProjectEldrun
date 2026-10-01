@@ -34,6 +34,48 @@ pub fn legacy_env_preamble_ps1(pair: &Pair, names: &[&str]) -> String {
     out
 }
 
+/// What follows the app's prefix in a tmux session name (`<slug>-<rest>`),
+/// when `session` is one of the app's: under the current prefix, or under
+/// the one an older build minted (counted as a legacy hit). Sessions on a
+/// remote host outlive an update by weeks and end under their old names; new
+/// ones are only ever minted under the current prefix.
+pub fn tmux_session_rest<'a>(pair: &Pair, session: &'a str) -> Option<&'a str> {
+    if let Some(rest) = session.strip_prefix(pair.cur(Name::TMUX_PREFIX).as_str()) {
+        return Some(rest);
+    }
+    let rest = session.strip_prefix(pair.legacy(Name::TMUX_PREFIX)?.as_str())?;
+    crate::brand::legacy_hit("tmux-prefix");
+    Some(rest)
+}
+
+/// A shell fragment that removes the Ollama systemd drop-in an older build
+/// wrote under the app's old name, to splice in before the `daemon-reload`
+/// of the command that writes the current one: `sudo rm -f <old file> && `.
+/// The drop-ins need root, so the old file can only go when the user next
+/// runs that command — and it has to go then, or two drop-ins would set the
+/// same variable. Empty while the name is unchanged.
+pub fn ollama_dropin_cleanup(pair: &Pair, dropin: Name) -> String {
+    match pair.legacy(dropin) {
+        Some(old) => format!("sudo rm -f /etc/systemd/system/ollama.service.d/{old} && "),
+        None => String::new(),
+    }
+}
+
+/// The name of the manifest inside a project export, given which entries
+/// the bundle `has`: the current name, or — for a bundle an older build wrote
+/// — the old one (counted as a legacy hit). Old bundles sit in backups for
+/// years, so this lookup is meant to stay.
+pub fn export_manifest_name(pair: &Pair, has: impl Fn(&str) -> bool) -> String {
+    let current = pair.cur(Name::EXPORT_MANIFEST);
+    match pair.legacy(Name::EXPORT_MANIFEST) {
+        Some(old) if !has(&current) && has(&old) => {
+            crate::brand::legacy_hit("export-manifest");
+            old
+        }
+        _ => current,
+    }
+}
+
 /// The help MCP tools, whose names carry the app's name.
 const HELP_TOOLS: [Name; 4] = [
     Name::HELP_TOOL_SEARCH,
@@ -127,6 +169,49 @@ mod tests {
         assert_eq!(run(&[(&old_uid, "u-old"), (&old_dir, "/p")]), "u-old|/p");
         assert_eq!(run(&[(&old_uid, "u-old"), ("NEWNAME_TAB_UID", "u-new")]), "u-new|");
         assert_eq!(run(&[]), "|");
+    }
+
+    #[test]
+    fn the_old_ollama_dropin_is_removed_by_the_command_that_writes_the_new_one() {
+        assert_eq!(
+            ollama_dropin_cleanup(&RENAMED, Name::OLLAMA_MODELS_DROPIN),
+            format!(
+                "sudo rm -f /etc/systemd/system/ollama.service.d/{} && ",
+                LEGACY.name(Name::OLLAMA_MODELS_DROPIN)
+            )
+        );
+        if !PAIR.renamed() {
+            assert_eq!(ollama_dropin_cleanup(&PAIR, Name::OLLAMA_IGPU_DROPIN), "");
+        }
+    }
+
+    #[test]
+    fn an_export_written_by_an_older_build_is_still_recognised() {
+        let _ = hits::taken();
+        let old = LEGACY.name(Name::EXPORT_MANIFEST);
+        assert_eq!(export_manifest_name(&RENAMED, |name| name == old), old);
+        assert_eq!(hits::taken(), ["export-manifest"]);
+        assert_eq!(export_manifest_name(&RENAMED, |name| name == "newname-export.json"), "newname-export.json");
+        assert_eq!(export_manifest_name(&RENAMED, |_| true), "newname-export.json");
+        // Neither inside: the current name, so the error names what is expected.
+        assert_eq!(export_manifest_name(&RENAMED, |_| false), "newname-export.json");
+        assert_eq!(export_manifest_name(&PAIR, |_| false), crate::brand::EXPORT_MANIFEST);
+        assert!(hits::taken().is_empty());
+    }
+
+    #[test]
+    fn a_tmux_session_is_the_apps_under_either_prefix() {
+        let _ = hits::taken();
+        let old = format!("{}p1--agent-0123456789", LEGACY.name(Name::TMUX_PREFIX));
+        assert_eq!(tmux_session_rest(&RENAMED, &old), Some("p1--agent-0123456789"));
+        assert_eq!(hits::taken(), ["tmux-prefix"]);
+        assert_eq!(tmux_session_rest(&RENAMED, "newname-p1--shell-1"), Some("p1--shell-1"));
+        assert_eq!(tmux_session_rest(&RENAMED, "train"), None);
+        assert_eq!(
+            tmux_session_rest(&PAIR, &format!("{}p1--x", crate::brand::TMUX_PREFIX)),
+            Some("p1--x")
+        );
+        assert!(hits::taken().is_empty());
     }
 
     #[test]

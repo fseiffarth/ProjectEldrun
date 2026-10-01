@@ -109,7 +109,15 @@ fn an_upgrade_moves_the_state_dir_and_leaves_a_link() {
         .exists());
 
     let record = env.record();
-    for id in ["mobile-host", "state-dir", "share-dir", "state-paths", "webview-data", "agent-homes"] {
+    for id in [
+        "mobile-host",
+        "state-dir",
+        "share-dir",
+        "state-paths",
+        "persisted-names",
+        "webview-data",
+        "agent-homes",
+    ] {
         assert_eq!(record.state_of(id), Some(StepState::Done), "{id}");
     }
 }
@@ -165,6 +173,47 @@ fn stored_paths_into_the_state_dir_follow_it() {
 }
 
 #[test]
+fn names_written_into_the_state_files_are_the_current_ones() {
+    use crate::brand::Name;
+    let machine = Machine::new();
+    machine.seed_install(&LEGACY);
+    let env = machine.env(RENAMED);
+    run_startup(&env);
+    let state = &env.state_dir;
+    let settings = read_json(&state.join("settings.json"));
+    assert_eq!(settings["newname_mobile_host"]["port"], 8742);
+    assert_eq!(settings["theme"], "dark");
+    assert!(settings.get(LEGACY.name(Name::MOBILE_HOST_KEY)).is_none());
+    assert_eq!(read_json(&state.join("boxes.json"))[0]["newname_mobile_access"], true);
+    assert_eq!(read_json(&state.join("time_summary.json"))["days"]["2026-09-30"]["__newname__"], 90.0);
+    let tabs = read_json(&state.join("sessions").join("beta").join("tabs.json"));
+    assert_eq!(tabs["tabs"][1]["cmd"], "__newname_mail__");
+    assert_eq!(tabs["tabs"][2]["env"]["NEWNAME_TAB_UID"], "uid-3");
+    assert_eq!(tabs["tabs"][0]["cmd"], "bash");
+}
+
+/// After an upgrade nothing in the state dir spells the old name any more —
+/// not a file name, not a stored path, not a key. (The record's own notes
+/// may name the old folder.)
+#[test]
+fn after_an_upgrade_the_state_dir_does_not_spell_the_old_name() {
+    let machine = Machine::new();
+    machine.seed_install(&LEGACY);
+    let env = machine.env(RENAMED);
+    let report = run_startup(&env);
+    assert!(report.pending.is_empty(), "{report:?}");
+    let mut tree = snapshot(&env.state_dir);
+    tree.remove(RECORD_FILE);
+    // The `~/<name>` tree of an existing install keeps its old name (moving
+    // the user's projects is a step of its own), so paths into it still do.
+    let home_tree = machine.home_tree(&LEGACY).to_string_lossy().into_owned();
+    for content in tree.values_mut() {
+        *content = content.replace(&home_tree, "<home tree>");
+    }
+    assert_eq!(spellings(&tree, LEGACY.slug), Vec::<String>::new());
+}
+
+#[test]
 fn the_webview_data_is_copied_and_the_old_copy_stays() {
     let machine = Machine::new();
     machine.seed_install(&LEGACY);
@@ -202,6 +251,7 @@ fn a_crash_at_any_checkpoint_is_finished_by_the_next_launch() {
         "dir:before-rename",
         "dir:after-rename",
         "paths:before-file",
+        "names:before-file",
         "copy:before-file",
         "webview:after-copy",
         "homes:before-home",

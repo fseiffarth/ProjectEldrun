@@ -124,11 +124,13 @@ fn valid_rel(rel: &str) -> bool {
     rel.len() <= MAX_REL && (rel.is_empty() || rel.split('/').all(valid_segment))
 }
 
-fn token_key(host_key: &[u8]) -> [u8; 32] {
+/// The token key under a given salt: the current one, or the one an older
+/// build's host sealed with.
+fn token_key_with(salt: &str, host_key: &[u8]) -> [u8; 32] {
     // Not `[0u8; 32]`: CodeQL reads that literal as the key itself, since it
     // doesn't see `expand` overwrite the buffer.
     let mut key: [u8; 32] = std::array::from_fn(|_| 0);
-    Hkdf::<Sha256>::new(Some(crate::brand::MOBILE_FILES_SALT.as_bytes()), host_key)
+    Hkdf::<Sha256>::new(Some(salt.as_bytes()), host_key)
         .expand(b"path-token v1", &mut key)
         .expect("32 bytes is a valid HKDF-SHA256 length");
     key
@@ -136,9 +138,13 @@ fn token_key(host_key: &[u8]) -> [u8; 32] {
 
 /// Seals a project-relative path for the phone.
 pub fn seal(host_key: &[u8], raw_id: &str, rel: &str) -> String {
+    seal_with(crate::brand::MOBILE_FILES_SALT, host_key, raw_id, rel)
+}
+
+fn seal_with(salt: &str, host_key: &[u8], raw_id: &str, rel: &str) -> String {
     let mut nonce = [0u8; NONCE_LEN];
     getrandom::fill(&mut nonce).expect("the OS RNG must be available to seal a path");
-    let cipher = XChaCha20Poly1305::new((&token_key(host_key)).into());
+    let cipher = XChaCha20Poly1305::new((&token_key_with(salt, host_key)).into());
     let sealed = cipher
         .encrypt((&nonce).into(), Payload { msg: rel.as_bytes(), aad: raw_id.as_bytes() })
         .expect("XChaCha20-Poly1305 only fails on an impossibly long message");
@@ -151,6 +157,25 @@ pub fn seal(host_key: &[u8], raw_id: &str, rel: &str) -> String {
 /// The relative path a token seals, if it was sealed for this project by this
 /// host and names a path the browser would list.
 pub fn unseal(host_key: &[u8], raw_id: &str, token: &str) -> Option<String> {
+    unseal_for(&crate::brand::PAIR, host_key, raw_id, token)
+}
+
+/// [`unseal`] for a brand pair: a token that does not open under the current
+/// salt is tried under the one an older build's host sealed with (counted as
+/// a legacy hit). A phone that kept a page open across the update still holds
+/// such tokens; new ones are only ever sealed under the current salt.
+pub(crate) fn unseal_for(pair: &crate::brand::Pair, host_key: &[u8], raw_id: &str, token: &str) -> Option<String> {
+    let salt = pair.cur(crate::brand::Name::MOBILE_FILES_SALT);
+    if let Some(rel) = unseal_with(&salt, host_key, raw_id, token) {
+        return Some(rel);
+    }
+    let old_salt = pair.legacy(crate::brand::Name::MOBILE_FILES_SALT)?;
+    let rel = unseal_with(&old_salt, host_key, raw_id, token)?;
+    crate::brand::legacy_hit("mobile-files-salt");
+    Some(rel)
+}
+
+fn unseal_with(salt: &str, host_key: &[u8], raw_id: &str, token: &str) -> Option<String> {
     if token.len() > 2 * MAX_REL {
         return None;
     }
@@ -160,7 +185,7 @@ pub fn unseal(host_key: &[u8], raw_id: &str, token: &str) -> Option<String> {
     }
     let (nonce, sealed) = bytes.split_at(NONCE_LEN);
     let nonce: [u8; NONCE_LEN] = nonce.try_into().ok()?;
-    let cipher = XChaCha20Poly1305::new((&token_key(host_key)).into());
+    let cipher = XChaCha20Poly1305::new((&token_key_with(salt, host_key)).into());
     let plain = cipher
         .decrypt((&nonce).into(), Payload { msg: sealed, aad: raw_id.as_bytes() })
         .ok()?;
@@ -421,6 +446,25 @@ mod tests {
     use super::*;
 
     const KEY: &[u8] = b"host-key-for-tests-0123456789abcdef";
+
+    /// A token sealed by an older build's host still opens after a rename
+    /// (and is counted); one sealed now opens without a second try; a token
+    /// for another project opens under neither salt.
+    #[test]
+    fn a_token_sealed_under_the_old_salt_still_opens() {
+        use crate::brand::Name;
+        use crate::services::brand_migration::{hits, testing::RENAMED};
+        let _ = hits::taken();
+        let old = seal_with(&crate::brand::LEGACY.name(Name::MOBILE_FILES_SALT), KEY, "p1", "docs/a.pdf");
+        assert_eq!(unseal_for(&RENAMED, KEY, "p1", &old).as_deref(), Some("docs/a.pdf"));
+        assert_eq!(hits::taken(), ["mobile-files-salt"]);
+        let new = seal_with(&RENAMED.cur(Name::MOBILE_FILES_SALT), KEY, "p1", "docs/a.pdf");
+        assert_eq!(unseal_for(&RENAMED, KEY, "p1", &new).as_deref(), Some("docs/a.pdf"));
+        assert_eq!(unseal_for(&RENAMED, KEY, "p2", &old), None);
+        assert!(hits::taken().is_empty());
+        // The production pair: what `seal` writes, `unseal` reads.
+        assert_eq!(unseal(KEY, "p1", &seal(KEY, "p1", "x/y.txt")).as_deref(), Some("x/y.txt"));
+    }
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR-body";
 
     fn tree() -> tempfile::TempDir {

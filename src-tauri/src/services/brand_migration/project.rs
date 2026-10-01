@@ -68,7 +68,7 @@ fn git_common_dir(root: &Path) -> Option<std::path::PathBuf> {
 /// while the name is unchanged.
 pub fn migrate_project(pair: &Pair, root: &Path) -> ProjectReport {
     let mut report = ProjectReport::default();
-    if !pair.renamed() || !root.is_dir() {
+    if !pair.renamed() || !root.is_dir() || !needs_work(pair, root) {
         return report;
     }
     rename_folder(pair, root, &mut report);
@@ -80,6 +80,52 @@ pub fn migrate_project(pair: &Pair, root: &Path) -> ProjectReport {
         move_refs(pair, root, &mut report);
     }
     report
+}
+
+/// Whether anything of the app's under its old name is left in the project,
+/// judged from the file system alone. The launch sweep asks this of every
+/// known project, so a project that is done costs a few `stat`s and no `git`.
+fn needs_work(pair: &Pair, root: &Path) -> bool {
+    let old_folder = pair.legacy(Name::PROJECT_DIR).map(|old| root.join(old));
+    if old_folder.is_some_and(|old| std::fs::symlink_metadata(old).is_ok_and(|meta| meta.is_dir())) {
+        return true;
+    }
+    let git_dir = root.join(".git");
+    match std::fs::symlink_metadata(&git_dir) {
+        // A pointer file (the root is itself a linked worktree or a
+        // submodule): the refs live elsewhere, so let git answer.
+        Ok(meta) if meta.is_file() => true,
+        Ok(meta) if meta.is_dir() => {
+            let old_ns = pair.legacy(Name::GIT_REF_NAMESPACE);
+            let old_rule = pair.legacy(Name::PROJECT_DIR_EXCLUDE_RULE);
+            old_ns.as_ref().is_some_and(|ns| {
+                has_file_under(&ns.split('/').fold(git_dir.clone(), |dir, part| dir.join(part)))
+                    || std::fs::read_to_string(git_dir.join("packed-refs"))
+                        .is_ok_and(|refs| refs.contains(&format!(" {ns}/")))
+            }) || old_rule.is_some_and(|rule| {
+                std::fs::read_to_string(git_dir.join("info").join("exclude"))
+                    .is_ok_and(|rules| rules.lines().any(|line| line.trim() == rule))
+            })
+        }
+        _ => false,
+    }
+}
+
+/// Whether any file sits under `dir` (git leaves the emptied folders of
+/// deleted loose refs behind).
+fn has_file_under(dir: &Path) -> bool {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => stack.push(entry.path()),
+                Ok(_) => return true,
+                Err(_) => {}
+            }
+        }
+    }
+    false
 }
 
 fn rename_folder(pair: &Pair, root: &Path, report: &mut ProjectReport) {
@@ -281,6 +327,25 @@ pub fn on_project_open(project_id: &str) {
     }
 }
 
+/// Bring every known project on this machine to the current names, on a
+/// background thread: local projects and the mirrors of remote ones. A
+/// project is otherwise brought over when it is opened; this is what makes
+/// the phone host and the sync layers — which reach a project without the
+/// desktop opening it — find the app's folder where they look. Returns at
+/// once while the name is unchanged.
+pub fn sweep_at_launch() {
+    if !crate::brand::PAIR.renamed() {
+        return;
+    }
+    std::thread::spawn(|| {
+        let list: crate::schema::projects::ProjectsList =
+            crate::storage::read_json(&crate::storage::state_dir().join("projects.json")).unwrap_or_default();
+        for project in &list {
+            on_project_open(&project.id);
+        }
+    });
+}
+
 /// Bring the remote side of a project to the current names, over the live
 /// SSH session. Blocking; called off the connect's critical path. Never on a
 /// host the user called shared or a cluster login node: nothing runs there
@@ -429,6 +494,37 @@ mod tests {
         assert_eq!(migrate_project(&PAIR, &root), ProjectReport::default());
         assert_eq!(snapshot(&root), before);
         assert_eq!(remote_script(&PAIR), None);
+    }
+
+    /// The launch sweep's fast path: once a project is done, nothing in it
+    /// asks for git — and packed refs under the old namespace still count.
+    #[test]
+    fn a_finished_project_needs_no_work_and_packed_refs_still_do() {
+        let machine = Machine::new();
+        let root = machine.home.join("alpha");
+        seed_repo(&root, &LEGACY);
+        assert!(needs_work(&RENAMED, &root));
+        migrate_project(&RENAMED, &root);
+        assert!(!needs_work(&RENAMED, &root));
+
+        let packed = machine.home.join("packed");
+        let head = seed_repo(&packed, &LEGACY);
+        std::fs::rename(packed.join(LEGACY.name(Name::PROJECT_DIR)), packed.join("moved-away")).expect("rename");
+        let exclude = packed.join(".git").join("info").join("exclude");
+        write(&exclude, "*.log\n");
+        run(&packed, &["pack-refs", "--all", "--prune"]);
+        assert!(needs_work(&RENAMED, &packed), "packed refs under the old namespace");
+        let report = migrate_project(&RENAMED, &packed);
+        assert_eq!(report.refs_moved, 3, "{report:?}");
+        assert_eq!(
+            run(&packed, &["rev-parse", &format!("{}/main", RENAMED.cur(Name::GIT_REF_PEER))]),
+            head
+        );
+        assert!(!needs_work(&RENAMED, &packed));
+        // A plain folder with nothing of the app's in it.
+        let plain = machine.home.join("plain-folder");
+        write(&plain.join("notes.txt"), "n");
+        assert!(!needs_work(&RENAMED, &plain));
     }
 
     #[test]

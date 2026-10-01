@@ -269,20 +269,29 @@ fn json_files_one_level_down(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The files that may hold an absolute path into the state dir.
-fn path_holders(env: &Env) -> Vec<PathBuf> {
-    let state = &env.state_dir;
+/// The app's own JSON state under `state`: the registry files directly in
+/// it, each project's saved session, and each remote project's sync state.
+/// Not the migrator's own two files.
+pub(super) fn state_json_files(state: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     json_files_in(state, &mut files);
     json_files_one_level_down(&state.join("sessions"), &mut files);
     json_files_one_level_down(&state.join("remote-projects"), &mut files);
-    for tree in &env.home_trees {
-        json_files_one_level_down(&tree.join("archive"), &mut files);
-    }
     files.retain(|file| {
         let name = file.file_name().and_then(|name| name.to_str());
         name != Some(super::RECORD_FILE) && name != Some(super::hits::FILE)
     });
+    files.sort();
+    files
+}
+
+/// The files that may hold an absolute path into the state dir: the state
+/// files, and the archive's restore manifests in the home tree.
+fn path_holders(env: &Env) -> Vec<PathBuf> {
+    let mut files = state_json_files(&env.state_dir);
+    for tree in &env.home_trees {
+        json_files_one_level_down(&tree.join("archive"), &mut files);
+    }
     files.sort();
     files
 }

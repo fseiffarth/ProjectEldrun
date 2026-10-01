@@ -231,15 +231,21 @@ impl Pair {
     /// as well, for a program that still reads the old name (an agent CLI's
     /// hook written by an older build, a user's script). A variable already
     /// set under the old name is left alone.
+    ///
+    /// A variable that carries a secret is never given a twin: the places
+    /// that keep secrets out of an argv or a log know them by their current
+    /// names only, and nothing outside the app is meant to read them.
     pub fn export_both(&self, env: &mut std::collections::HashMap<String, String>) {
         if self.cur.upper == self.legacy.upper {
             return;
         }
         let prefix = self.cur.env_prefix();
+        const SINGLE_NAMED: [&str; 4] = ["TOKEN", "ASKPASS", "SECRET", "PASSWORD"];
+        let single_named = |name: &str| SINGLE_NAMED.iter().any(|word| name.contains(word));
         let twins: Vec<(String, String)> = env
             .iter()
             .filter_map(|(key, value)| {
-                let name = key.strip_prefix(&prefix)?;
+                let name = key.strip_prefix(&prefix).filter(|name| !single_named(name))?;
                 Some((self.legacy.env_name(name), value.clone()))
             })
             .collect();
@@ -794,7 +800,13 @@ mod tests {
 
     #[test]
     fn both_names_are_exported() {
-        let mut env = env_map(&[("NEWNAME_TAB_UID", "uid-1"), ("NEWNAME_SCOPE", "root"), ("PATH", "/bin")]);
+        let mut env = env_map(&[
+            ("NEWNAME_TAB_UID", "uid-1"),
+            ("NEWNAME_SCOPE", "root"),
+            ("NEWNAME_ROOT_MCP_TOKEN", "s3cret"),
+            ("NEWNAME_GIT_TOKEN", "s3cret"),
+            ("PATH", "/bin"),
+        ]);
         RENAMED.export_both(&mut env);
         assert_eq!(
             env,
@@ -803,6 +815,9 @@ mod tests {
                 (&LEGACY.env_name("TAB_UID"), "uid-1"),
                 ("NEWNAME_SCOPE", "root"),
                 (&LEGACY.env_name("SCOPE"), "root"),
+                // A secret is exported under its current name only.
+                ("NEWNAME_ROOT_MCP_TOKEN", "s3cret"),
+                ("NEWNAME_GIT_TOKEN", "s3cret"),
                 ("PATH", "/bin"),
             ])
         );

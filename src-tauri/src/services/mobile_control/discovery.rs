@@ -452,9 +452,16 @@ fn project_key(id: &str) -> String {
 }
 
 fn expected_tmux(project_id: &str, kind: &str, name: &str) -> bool {
-    let prefix = format!("{}{}--{kind}-", crate::brand::TMUX_PREFIX, project_key(project_id));
-    name.starts_with(&prefix)
-        && name.len() > prefix.len() + 8
+    expected_tmux_for(&crate::brand::PAIR, project_id, kind, name)
+}
+
+/// [`expected_tmux`] for a brand pair: the session may carry the prefix an
+/// older build minted (a saved tab keeps its session's name, and a remote
+/// session keeps running across an update).
+fn expected_tmux_for(pair: &crate::brand::Pair, project_id: &str, kind: &str, name: &str) -> bool {
+    let scoped = format!("{}--{kind}-", project_key(project_id));
+    crate::services::brand_migration::compat::tmux_session_rest(pair, name)
+        .is_some_and(|rest| rest.starts_with(&scoped) && rest.len() > scoped.len() + 8)
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -779,6 +786,22 @@ fn resolve_scope(
 
 #[cfg(test)]
 mod tests {
+    /// A saved tab keeps the session name it was created with, and a remote
+    /// session keeps running across an update: the name an older build
+    /// minted still matches its tab, and is counted.
+    #[test]
+    fn a_session_minted_under_the_old_prefix_still_matches_its_tab() {
+        use crate::brand::{Name, LEGACY};
+        use crate::services::brand_migration::{hits, testing::RENAMED};
+        let _ = hits::taken();
+        let old = format!("{}p1--agent-123456789", LEGACY.name(Name::TMUX_PREFIX));
+        assert!(super::expected_tmux_for(&RENAMED, "p1", "agent", &old));
+        assert_eq!(hits::taken(), ["tmux-prefix"]);
+        assert!(super::expected_tmux_for(&RENAMED, "p1", "agent", "newname-p1--agent-123456789"));
+        assert!(!super::expected_tmux_for(&RENAMED, "p2", "agent", &old));
+        assert!(!super::expected_tmux_for(&RENAMED, "p1", "agent", "other-p1--agent-123456789"));
+    }
+
     /// The serde keys are literals in the attributes; this ties them to the
     /// brand module so they cannot drift.
     #[test]

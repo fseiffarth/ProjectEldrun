@@ -1138,6 +1138,10 @@ pub fn run() {
             // than waiting for the next login. Off the main thread, bounded,
             // and a no-op when Mobile is off or the host is already up.
             commands::mobile_control::start_host_on_launch();
+            // Projects an older build worked in: bring what the app keeps
+            // inside each one to the current names, off the main thread.
+            // Returns at once while the name is unchanged.
+            services::brand_migration::project::sweep_at_launch();
             // The root console's MCP endpoint (`services::root_mcp`): loopback,
             // token minted here per run, handed only to root-scope agent tabs.
             commands::root_mcp::start(_app.handle().clone());

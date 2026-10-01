@@ -395,7 +395,11 @@ pub fn docker_exec_args(
             a.push(k.clone());
             continue;
         }
-        let value = if k == crate::app_env!("PROJECT_DIR") { container_path(v) } else { v.clone() };
+        // The project dir is spelled for the container — under the variable's
+        // old name too, when both are exported after a rename.
+        let project_dir = k == crate::app_env!("PROJECT_DIR")
+            || crate::brand::PAIR.legacy_env_name("PROJECT_DIR").as_deref() == Some(k.as_str());
+        let value = if project_dir { container_path(v) } else { v.clone() };
         a.push(format!("{k}={value}"));
     }
     for k in auth_env.keys() {
@@ -1041,19 +1045,25 @@ fn sweep_should_probe(docker_on_path: bool) -> bool {
 /// `docker rm -f` every container carrying our owner label. Best-effort.
 fn remove_all_owned() {
     let _guard = lifecycle_lock().lock().unwrap();
-    let Ok(out) = docker(&["ps", "-aq", "--filter", &format!("label={OWNER_LABEL}")]) else {
-        return;
-    };
-    let ids: Vec<&str> = std::str::from_utf8(&out.stdout)
-        .unwrap_or("")
-        .split_whitespace()
-        .collect();
-    if ids.is_empty() {
-        return;
+    // The owner label, and — after a rename — the one an older build put on
+    // its containers: both are this app's, and both are stale.
+    let pair = crate::brand::PAIR;
+    for label in crate::services::brand_migration::docker::owner_labels(&pair) {
+        let Ok(out) = docker(&["ps", "-aq", "--filter", &format!("label={label}")]) else {
+            return;
+        };
+        let ids: Vec<&str> = std::str::from_utf8(&out.stdout)
+            .unwrap_or("")
+            .split_whitespace()
+            .collect();
+        if ids.is_empty() {
+            continue;
+        }
+        crate::services::brand_migration::docker::swept_legacy(&pair, &label);
+        let mut args = vec!["rm", "-f"];
+        args.extend(ids);
+        let _ = docker(&args);
     }
-    let mut args = vec!["rm", "-f"];
-    args.extend(ids);
-    let _ = docker(&args);
 }
 
 /// Inspect the named container: does it exist, is it running, and which spec
@@ -1219,9 +1229,17 @@ fn preflight_daemon() -> Result<(), String> {
 }
 
 fn image_exists(image: &str) -> bool {
-    docker(&["image", "inspect", image])
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    let exists = |image: &str| {
+        docker(&["image", "inspect", image])
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    // The stock image an older build pulled or built carries the app's old
+    // name: it is tagged with the current one instead of being rebuilt. One
+    // `inspect`, as before, while the name is unchanged.
+    crate::services::brand_migration::docker::adopt_legacy_image(&crate::brand::PAIR, image, exists, |from, to| {
+        docker(&["tag", from, to]).map(|o| o.status.success()).unwrap_or(false)
+    })
 }
 
 /// Toggle-time preflight verdict, surfaced to the frontend so a missing image

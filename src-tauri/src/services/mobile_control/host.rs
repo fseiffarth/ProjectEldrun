@@ -37,7 +37,7 @@ use super::{
         MailMarkAction, MobileCollectedPrompt, MobilePromptInput, MobileSchedule,
         MobileScheduleInput, PromptMutation, ScheduleMutation,
         TabPlace, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES,
-        MAX_TAB_LABEL, TERMINAL_PROTOCOL,
+        MAX_TAB_LABEL,
     },
     pty_bridge::{self, TerminalRegistry},
     push::{AgentTabRef, PushPrefs},
@@ -173,15 +173,42 @@ fn exact_origin(headers: &HeaderMap, state: &HostState) -> bool {
 }
 
 fn cookie_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .find_map(|part| {
+    session_cookie_in(&crate::brand::PAIR, headers.get(header::COOKIE)?.to_str().ok()?)
+}
+
+/// The session token in a `Cookie` header: the cookie under its current name,
+/// else under the name an older build's host set (counted as a legacy hit).
+fn session_cookie_in<'a>(pair: &crate::brand::Pair, cookies: &'a str) -> Option<&'a str> {
+    let named = |wanted: &str| {
+        cookies.split(';').find_map(|part| {
             let (name, value) = part.trim().split_once('=')?;
-            (name == crate::brand::SESSION_COOKIE).then_some(value)
+            (name == wanted).then_some(value)
         })
+    };
+    if let Some(token) = named(&pair.cur(crate::brand::Name::SESSION_COOKIE)) {
+        return Some(token);
+    }
+    let token = named(&pair.legacy(crate::brand::Name::SESSION_COOKIE)?)?;
+    crate::brand::legacy_hit("session-cookie");
+    Some(token)
+}
+
+/// The terminal subprotocol to answer a WebSocket upgrade with, given what
+/// the client offered: the current one, else the one an older build of the
+/// phone app still offers (counted as a legacy hit). A phone keeps running
+/// its cached app until the service worker has updated.
+fn terminal_protocol_in(pair: &crate::brand::Pair, offered: &str) -> Option<String> {
+    let offers = |wanted: &str| offered.split(',').any(|v| v.trim() == wanted);
+    let current = pair.cur(crate::brand::Name::TERMINAL_PROTOCOL);
+    if offers(&current) {
+        return Some(current);
+    }
+    let old = pair.legacy(crate::brand::Name::TERMINAL_PROTOCOL)?;
+    if !offers(&old) {
+        return None;
+    }
+    crate::brand::legacy_hit("terminal-protocol");
+    Some(old)
 }
 
 fn authenticate(
@@ -483,6 +510,15 @@ async fn logout(State(state): State<HostState>, headers: HeaderMap) -> Response<
             concat!("__Host-", crate::app_slug!(), "_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"),
         ),
     );
+    // A cookie an older build's host set is expired as well; there is none
+    // to name while the name is unchanged.
+    if let Some(old) = crate::brand::PAIR.legacy(crate::brand::Name::SESSION_COOKIE) {
+        if let Ok(expired) =
+            HeaderValue::from_str(&format!("{old}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"))
+        {
+            response.headers_mut().append(header::SET_COOKIE, expired);
+        }
+    }
     response
 }
 
@@ -2999,9 +3035,9 @@ async fn terminal(
         .get(header::SEC_WEBSOCKET_PROTOCOL)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if !offered.split(',').any(|v| v.trim() == TERMINAL_PROTOCOL) {
+    let Some(protocol) = terminal_protocol_in(&crate::brand::PAIR, offered) else {
         return api_error(StatusCode::BAD_REQUEST, "terminal_protocol_required").into_response();
-    }
+    };
     let Ok(catalog) = catalog(&state) else {
         return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable").into_response();
     };
@@ -3033,7 +3069,7 @@ async fn terminal(
     // `DefaultBodyLimit` does not reach WebSocket frames, and tungstenite's
     // default is 64 MiB — so `MAX_INPUT_FRAME` was only checked *after* the
     // server had already buffered a thousandfold more than it allows.
-    ws.protocols([TERMINAL_PROTOCOL])
+    ws.protocols([protocol])
         .max_message_size(MAX_INPUT_FRAME)
         .max_frame_size(MAX_INPUT_FRAME)
         .on_upgrade(move |socket| async move {
@@ -3995,6 +4031,40 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
 mod tests {
     use crate::brand::SLUG;
     use super::*;
+
+    /// The host accepts the names an older phone app or an older host used,
+    /// counts them, and prefers the current ones.
+    #[test]
+    fn old_protocol_names_are_accepted_and_counted() {
+        use crate::brand::{Name, LEGACY, PAIR};
+        use crate::services::brand_migration::{hits, testing::RENAMED};
+        let _ = hits::taken();
+        let old_protocol = LEGACY.name(Name::TERMINAL_PROTOCOL);
+        assert_eq!(terminal_protocol_in(&RENAMED, &old_protocol), Some(old_protocol.clone()));
+        assert_eq!(hits::taken(), ["terminal-protocol"]);
+        assert_eq!(
+            terminal_protocol_in(&RENAMED, &format!("{old_protocol}, newname-terminal.v1")).as_deref(),
+            Some("newname-terminal.v1")
+        );
+        assert_eq!(terminal_protocol_in(&RENAMED, "something-else"), None);
+        assert!(hits::taken().is_empty());
+
+        let old_cookie = format!("theme=dark; {}=tok-old", LEGACY.name(Name::SESSION_COOKIE));
+        assert_eq!(session_cookie_in(&RENAMED, &old_cookie), Some("tok-old"));
+        assert_eq!(hits::taken(), ["session-cookie"]);
+        let both = format!("{old_cookie}; __Host-newname_session=tok-new");
+        assert_eq!(session_cookie_in(&RENAMED, &both), Some("tok-new"));
+        assert_eq!(session_cookie_in(&RENAMED, "theme=dark"), None);
+        assert!(hits::taken().is_empty());
+
+        // The production pair: one name each, as before.
+        let current = super::super::protocol::TERMINAL_PROTOCOL;
+        assert_eq!(terminal_protocol_in(&PAIR, current).as_deref(), Some(current));
+        assert_eq!(
+            session_cookie_in(&PAIR, &format!("{}=tok", crate::brand::SESSION_COOKIE)),
+            Some("tok")
+        );
+    }
 
     use axum::body::to_bytes;
     use p256::{

@@ -138,7 +138,8 @@ pub fn kill_app_sessions() -> Result<(), String> {
 /// ownership rule here means the quit path never touches a user-created session
 /// such as `train` or `work`.
 pub fn is_app_local_tmux_session(session: &str) -> bool {
-    session.starts_with(LOCAL_TMUX_PREFIX)
+    // Under the current prefix, or the one an older build minted.
+    crate::services::brand_migration::compat::tmux_session_rest(&crate::brand::PAIR, session).is_some()
 }
 
 /// The tab variables worth putting in a session's environment, sorted so the

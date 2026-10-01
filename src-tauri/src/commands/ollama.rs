@@ -2434,8 +2434,12 @@ fn igpu_fix_command(systemd: bool) -> (String, String) {
             "sudo mkdir -p /etc/systemd/system/ollama.service.d && \
              printf '[Service]\\nEnvironment=\"{IGPU_ENABLE_VAR}=1\"\\n' | \
              sudo tee /etc/systemd/system/ollama.service.d/{dropin} && \
-             sudo systemctl daemon-reload && sudo systemctl restart ollama",
-            dropin = crate::brand::OLLAMA_IGPU_DROPIN
+             {drop_old}sudo systemctl daemon-reload && sudo systemctl restart ollama",
+            dropin = crate::brand::OLLAMA_IGPU_DROPIN,
+            drop_old = crate::services::brand_migration::compat::ollama_dropin_cleanup(
+                &crate::brand::PAIR,
+                crate::brand::Name::OLLAMA_IGPU_DROPIN,
+            ),
         ),
         "bash".to_string(),
     )
@@ -2568,8 +2572,12 @@ fn models_dir_service_command(path: &str, systemd: bool) -> (String, String) {
              printf '[Service]\\nEnvironment=\"OLLAMA_MODELS=%s\"\\n' {q} | \
              sudo tee /etc/systemd/system/ollama.service.d/{dropin} && \
              sudo mkdir -p {q} && sudo chown \"$svc_user\": {q} && \
-             sudo systemctl daemon-reload && sudo systemctl restart ollama",
-            dropin = crate::brand::OLLAMA_MODELS_DROPIN
+             {drop_old}sudo systemctl daemon-reload && sudo systemctl restart ollama",
+            dropin = crate::brand::OLLAMA_MODELS_DROPIN,
+            drop_old = crate::services::brand_migration::compat::ollama_dropin_cleanup(
+                &crate::brand::PAIR,
+                crate::brand::Name::OLLAMA_MODELS_DROPIN,
+            ),
         ),
         "bash".to_string(),
     )
