@@ -14,7 +14,7 @@ export function BrandHead({ children }: { children: ReactNode }) {
       <span className="splash-orbit splash-orbit-two" />
       <EldrunMark />
     </div>
-    <div className="splash-name" aria-hidden="true">ELDRUN</div>
+    <div className="splash-name" aria-hidden="true">TABTIVITY</div>
     <h1>{children}</h1>
   </div>;
 }

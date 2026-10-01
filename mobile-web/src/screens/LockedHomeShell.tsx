@@ -12,7 +12,7 @@ export function LockedHomeShell() {
     <header className="home-header">
       <div className="home-brand" aria-label="Eldrun">
         <span className="home-logo-frame" aria-hidden="true"><EldrunMark className="home-logo" /></span>
-        <span className="home-brand-copy"><strong>Eldrun</strong><small>{BUNDLE_VERSION}</small></span>
+        <span className="home-brand-copy"><strong>Tabtivity</strong><small>{BUNDLE_VERSION}</small></span>
       </div>
     </header>
     <div className="projects-row"><h1>Projects</h1></div>
