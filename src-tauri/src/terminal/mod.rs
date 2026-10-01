@@ -901,30 +901,28 @@ impl PtyRegistry {
             .collect()
     }
 
+    /// Kill one PTY and its process subtree: [`Self::take`] plus
+    /// [`TakenPty::teardown`]. Holds `self` for the whole teardown, a full
+    /// process-table walk included — callers that share the registry behind a
+    /// lock should `take` under it and tear down after releasing it.
     pub fn kill(&mut self, id: &str) {
-        if let Some(mut e) = self.entries.remove(id) {
-            e.dead.store(true, Ordering::SeqCst);
-            // Abort the child's whole process subtree, not just the shell leader.
-            // `child.kill()` below reaps only the leader, so a long-running
-            // descendant (a dev server, a build, a training run) started in the
-            // tab would otherwise be orphaned and keep running after the tab
-            // closes. Gather the subtree first — it is unreachable once the
-            // leader dies and its children reparent to init.
-            if let Some(pid) = e.child.process_id() {
-                reap_child_subtree(pid, ReapMode::Graceful);
-            }
-            let _ = e.child.kill();
-            // The tree shrank; drop the cached descendant-pid set.
-            invalidate_proc_tree_cache();
-            // The tab is gone for good, so stop watching for its Codex session.
-            crate::services::codex_bind::untrack_now(id);
-            // Containerized tab: killing the child above only killed the
-            // `docker exec` CLIENT — TERM the process inside the container too
-            // (best-effort, no-op for tabs that never containerized).
-            crate::services::sandbox::kill_tab_process(id);
-            crate::services::agent_fence::on_tab_gone(id);
-            crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), id);
+        if let Some(taken) = self.take(id) {
+            taken.teardown();
         }
+    }
+
+    /// Remove a PTY from the registry and mark it dead, leaving the teardown
+    /// (process-tree walk, signals, per-tab cleanups) to the caller.
+    ///
+    /// Exists because the registry lock is on the keystroke path: `pty_write`
+    /// takes it to find the input channel, for every key in every tab. Tearing
+    /// down under it — a `/proc` walk per closed tab — stalled typing in every
+    /// other tab for as long as a tab (or a whole project's tabs, one walk
+    /// each) took to close.
+    pub fn take(&mut self, id: &str) -> Option<TakenPty> {
+        let entry = self.entries.remove(id)?;
+        entry.dead.store(true, Ordering::SeqCst);
+        Some(TakenPty { id: id.to_string(), entry })
     }
 
     /// Abort every live PTY and its process subtree. Called once at app exit so
@@ -985,6 +983,51 @@ impl PtyRegistry {
         entry.crash_times.push(now);
         true
     }
+}
+
+/// A PTY [`PtyRegistry::take`]n out of the registry, still to be torn down.
+pub struct TakenPty {
+    id: String,
+    entry: PtyEntry,
+}
+
+impl TakenPty {
+    /// Tear this one PTY down; see [`teardown_taken`].
+    pub fn teardown(self) {
+        teardown_taken(vec![self]);
+    }
+}
+
+/// Tear down PTYs taken out of the registry: abort each child's whole process
+/// subtree, not just the shell leader — `child.kill()` reaps only the leader,
+/// so a long-running descendant (a dev server, a build, a training run) would
+/// otherwise be orphaned and keep running after its tab closes. The subtrees
+/// are gathered first (they are unreachable once a leader dies and its
+/// children reparent to init), in ONE process-table walk for all of them, so
+/// closing a project's ten tabs costs one walk rather than ten.
+pub fn teardown_taken(taken: Vec<TakenPty>) {
+    if taken.is_empty() {
+        return;
+    }
+    let leaders: Vec<u32> = taken.iter().filter_map(|t| t.entry.child.process_id()).collect();
+    if !leaders.is_empty() {
+        // Fresh walk: a cached set may predate a just-spawned child.
+        crate::sysstat::invalidate_descendant_cache();
+        reap_pids(crate::sysstat::descendant_pids(&leaders), ReapMode::Graceful);
+    }
+    for TakenPty { id, mut entry } in taken {
+        let _ = entry.child.kill();
+        // The tab is gone for good, so stop watching for its Codex session.
+        crate::services::codex_bind::untrack_now(&id);
+        // Containerized tab: killing the child above only killed the
+        // `docker exec` CLIENT — TERM the process inside the container too
+        // (best-effort, no-op for tabs that never containerized).
+        crate::services::sandbox::kill_tab_process(&id);
+        crate::services::agent_fence::on_tab_gone(&id);
+        crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), &id);
+    }
+    // The tree shrank; drop the cached descendant-pid set.
+    invalidate_proc_tree_cache();
 }
 
 fn pty_id_in_scope(id: &str, scope: &str) -> bool {
@@ -1973,5 +2016,78 @@ mod tests {
             gone,
             "the inner process must be aborted when the tab is closed"
         );
+    }
+
+    /// `take` + `teardown_taken`, the shape `pty_kill_scope` uses: the PTYs
+    /// leave the registry at once (so the lock is free for every other tab's
+    /// keystrokes), and one teardown afterwards still aborts every tab's inner
+    /// process, not just the shell leaders.
+    #[test]
+    fn taken_ptys_leave_the_registry_and_one_teardown_reaps_every_subtree() {
+        let _cache_guard = crate::sysstat::lock_cache_for_test();
+        // SAFETY: kill(pid, 0) probes existence without signalling; no pointers.
+        let alive = |pid: u32| unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        let registry = Arc::new(Mutex::new(PtyRegistry::default()));
+        let mut leaders = Vec::new();
+        for id in ["scope:a", "scope:b"] {
+            let pair = NativePtySystem::default()
+                .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+                .expect("openpty");
+            let mut cmd = CommandBuilder::new("sh");
+            cmd.arg("-c");
+            cmd.arg("sleep 300; true");
+            let child = pair.slave.spawn_command(cmd).expect("spawn sh");
+            leaders.push(child.process_id().expect("leader pid"));
+            let writer = pair.master.take_writer().expect("take writer");
+            registry.lock().unwrap().insert(
+                id.to_string(),
+                pair.master,
+                writer,
+                child,
+                Arc::new(AtomicBool::new(false)),
+            );
+        }
+        // Each leader's `sleep` child, once it has appeared.
+        let mut inner = Vec::new();
+        for &leader in &leaders {
+            let mut found = None;
+            for _ in 0..100 {
+                crate::sysstat::invalidate_descendant_cache();
+                if let Some(&pid) =
+                    crate::sysstat::descendant_pids(&[leader]).iter().find(|&&p| p != leader)
+                {
+                    found = Some(pid);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            inner.push(found.expect("sleep child should have spawned"));
+        }
+
+        let taken: Vec<TakenPty> = {
+            let mut reg = registry.lock().unwrap();
+            let ids = reg.ids_for_scope("scope");
+            ids.iter().filter_map(|id| reg.take(id)).collect()
+        };
+        assert_eq!(taken.len(), 2);
+        {
+            let reg = registry.lock().unwrap();
+            assert!(reg.input_sender("scope:a").is_none() && reg.input_sender("scope:b").is_none());
+            assert!(!reg.any_live_for_scope("scope"));
+        }
+        assert!(taken.iter().all(|t| t.entry.dead.load(Ordering::SeqCst)));
+
+        teardown_taken(taken);
+        for pid in inner {
+            let mut gone = false;
+            for _ in 0..250 {
+                if !alive(pid) {
+                    gone = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(gone, "every taken tab's inner process must be aborted");
+        }
     }
 }

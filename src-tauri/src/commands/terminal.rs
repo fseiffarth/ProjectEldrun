@@ -1064,7 +1064,14 @@ pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<
     // The terminal is gone, so its login marking must not outlive it and bless a
     // future PTY that reuses the id.
     crate::commands::credentials::forget_login_pty(&id);
-    registry.lock().unwrap().kill(&id);
+    // Taken under the lock, torn down after it: the lock is on every
+    // keystroke's path, the teardown walks the process table.
+    let taken = registry.lock().unwrap().take(&id);
+    if let Some(taken) = taken {
+        tauri::async_runtime::spawn_blocking(move || taken.teardown())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     crate::services::agent_fence::on_tab_gone(&id);
     crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), &id);
     crate::services::agent_turn::on_tab_gone(&id);
@@ -1079,11 +1086,23 @@ pub async fn pty_kill_scope(
     registry: State<'_, RegistryState>,
     scope: String,
 ) -> Result<Vec<String>, String> {
-    let ids = registry.lock().unwrap().ids_for_scope(&scope);
+    // Every PTY of the scope is taken in one short hold of the registry lock
+    // (it is on every keystroke's path) and torn down after it, with one
+    // process-table walk for the lot instead of one per tab.
+    let (ids, taken) = {
+        let mut registry = registry.lock().unwrap();
+        let ids = registry.ids_for_scope(&scope);
+        let taken: Vec<_> = ids.iter().filter_map(|id| registry.take(id)).collect();
+        (ids, taken)
+    };
     for id in &ids {
         crate::commands::credentials::forget_login_pty(id);
         crate::terminal::route_remove_all_views(id);
-        registry.lock().unwrap().kill(id);
+    }
+    tauri::async_runtime::spawn_blocking(move || crate::terminal::teardown_taken(taken))
+        .await
+        .map_err(|e| e.to_string())?;
+    for id in &ids {
         crate::services::agent_fence::on_tab_gone(id);
         crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), id);
         crate::services::agent_turn::on_tab_gone(id);
