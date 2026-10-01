@@ -39,6 +39,7 @@ pub mod fence_scope;
 // Claude rotates that file by rename.
 pub mod agent_auth;
 pub mod agent_global;
+pub mod agent_hint;
 pub mod agent_home;
 pub mod agent_install;
 pub mod agent_shim;

@@ -1731,7 +1731,8 @@ pub fn codex_binder_enabled(scope_id: Option<&str>) -> bool {
 /// The shared script keys by `$ELDRUN_TAB_UID` and reads `session_id` from the
 /// hook's stdin JSON — both CLIs use that schema.
 pub fn install_session_start_hook() -> std::io::Result<()> {
-    write_hook_script()
+    write_hook_script()?;
+    crate::services::agent_hint::write_script()
 }
 
 /// Register the hooks in one Eldrun-owned agent home (`services::agent_home`):
@@ -1766,6 +1767,9 @@ pub fn register_hooks_in_home(home: &std::path::Path) {
             eprintln!("agent_session: register vibe hook in {}: {e}", home.display());
         }
     }
+    // The other CLIs' `eldrun-send` hint (Claude and Codex get it from the
+    // session hook above).
+    crate::services::agent_hint::register_in_home(home);
 }
 
 /// Vibe's user hook runs after each completed turn and reports the live ID.
@@ -1909,6 +1913,7 @@ fn hook_script_body(live_dir: &str) -> String {
 /// The POSIX body itself — the hook on Unix, and on Windows the container twin
 /// (see `write_hook_script`), so it is compiled everywhere.
 fn posix_hook_script_body(live_dir: &str) -> String {
+    let hint = crate::services::agent_hint::HINT;
     format!(
         "#!/bin/sh\n\
          # Eldrun agent hook (SessionStart, Stop, UserPromptSubmit, PostToolUse,\n\
@@ -1964,9 +1969,9 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          \x20      esac\n\
          \x20    fi ;;\n\
          esac\n\
-         if [ \"$event\" = SessionStart ] && [ \"$ELDRUN_TAB_AGENT\" = claude ] && [ -n \"$ELDRUN_PROJECT_DIR\" ]; then\n\
-         \x20 printf '%s\\n' 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).'\n\
-         fi\n\
+         case \"$event:$ELDRUN_TAB_AGENT\" in SessionStart:claude|SessionStart:codex) [ -z \"$ELDRUN_PROJECT_DIR\" ] ||\n\
+         \x20 printf '%s\\n' '{hint}' ;;\n\
+         esac\n\
          # The turn state, from the events the agent fires as it works: a prompt\n\
          # submitted or a tool finished means working (a finished tool is also what\n\
          # ends an approval wait), Stop means done, a permission or elicitation\n\
@@ -2009,6 +2014,7 @@ fn hook_script_body(live_dir: &str) -> String {
     // `live_dir` is a Windows path (backslashes); embed it in a single-quoted
     // PowerShell literal so backslashes are not treated as escapes.
     let live_dir = live_dir.replace('\'', "''");
+    let hint = crate::services::agent_hint::HINT;
     format!(
         "# Eldrun agent hook (SessionStart, Stop, UserPromptSubmit, PostToolUse,\r\n\
          # Notification, SessionEnd) - records, per tab, the agent's live session id\r\n\
@@ -2069,7 +2075,7 @@ fn hook_script_body(live_dir: &str) -> String {
          \x20   if (Test-Path -Path (Join-Path (Split-Path $tdir -Parent) ('*\\' + $ref + '.jsonl'))) {{ exit 0 }}\r\n\
          \x20 }} elseif (($src -ne 'clear') -and ($src -ne 'resume')) {{ exit 0 }}\r\n\
          }}\r\n\
-         if ($env:ELDRUN_TAB_AGENT -eq 'claude' -and $env:ELDRUN_PROJECT_DIR -and $event -eq 'SessionStart') {{ Write-Output 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).' }}\r\n\
+         if (($env:ELDRUN_TAB_AGENT -eq 'claude' -or $env:ELDRUN_TAB_AGENT -eq 'codex') -and $env:ELDRUN_PROJECT_DIR -and $event -eq 'SessionStart') {{ Write-Output '{hint}' }}\r\n\
          # The turn state, from the events the agent fires as it works (see the\r\n\
          # POSIX twin for the mapping).\r\n\
          $turn = ''\r\n\
@@ -2925,7 +2931,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn phone_hint_only_reaches_the_scoped_claude_session_start() {
+    fn phone_hint_only_reaches_a_scoped_claude_or_codex_session_start() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("hook.sh");
@@ -2935,7 +2941,9 @@ mod tests {
             ("claude", false, "aaaa", "SessionStart", false),
             ("claude", true, "bbbb", "SessionStart", false),
             ("claude", true, "aaaa", "Stop", false),
-            ("codex", true, "aaaa", "SessionStart", false),
+            ("codex", true, "cccc", "SessionStart", true),
+            ("codex", false, "cccc", "SessionStart", false),
+            ("codex", true, "cccc", "Stop", false),
         ] {
             let mut cmd = std::process::Command::new("sh");
             cmd.arg(&script).env_clear().env("PATH", std::env::var_os("PATH").unwrap_or_default())

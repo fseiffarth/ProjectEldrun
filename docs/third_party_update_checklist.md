@@ -126,9 +126,10 @@ resumes.
   [hooks reference](https://code.claude.com/docs/en/hooks#sessionstart) specifies
   SessionStart stdout as model context. Eldrun prints `eldrun-send <file>` only
   after session continuity accepts the payload, with `ELDRUN_TAB_AGENT=claude`
-  and `ELDRUN_PROJECT_DIR` set; tests execute the hook and prove nested startups,
-  Stop, Codex and unscoped invocations stay silent. Verify context ingestion
-  again on CLI upgrades; an authenticated live Claude round trip remains QA.
+  (or `codex`, see 1.2) and `ELDRUN_PROJECT_DIR` set; tests execute the hook
+  and prove nested startups, Stop and unscoped invocations stay silent. Verify
+  context ingestion again on CLI upgrades; an authenticated live Claude round
+  trip remains QA.
 
 
 **Where** `services/agent_session.rs`, `services/agent_usage.rs`,
@@ -285,6 +286,12 @@ aliases, and anything about where or how credentials are stored.
 `src/lib/agents/codexHooks.ts`, `commands/ollama.rs` (`non_thinking_args`,
 `write_local_catalog`), `mobile-web/src/terminal/agentModes.ts`,
 `src/lib/agents/prompt/prompt.ts` + `src/stores/activity.ts` (the decision lamp).
+
+- Mobile send hint (2026-10-01): the Codex [hooks
+  docs](https://learn.chatgpt.com/docs/hooks) say plain SessionStart stdout
+  "is added as extra developer context", so the hook prints the same
+  `eldrun-send <file>` line as for Claude (1.1) and the project scaffold's
+  `AGENTS.md` no longer carries it. Never verified live.
 
 **Assumes**
 
@@ -477,6 +484,22 @@ and still defaults the login to `$XDG_CONFIG_HOME` or `~/.config/muse/auth.json`
 Copilot's row is 1.0.89 (2026-09-30, from the npm package, not live): `-p`,
 `--continue`, `session-state` under `COPILOT_HOME`/home, and `authTokens` /
 `storeTokenPlaintext` in the runtime it unpacks into `~/.cache/copilot/pkg/`.
+
+The `eldrun-send` hint (`services/agent_hint.rs`, 2026-10-01) leans on each
+CLI's session-start context channel; re-check it on update. Gemini, Qwen,
+Auggie, CodeBuddy: `settings.json` `hooks.SessionStart[].hooks[]`, stdout JSON
+`hookSpecificOutput.additionalContext` (Gemini requires stdout to be JSON only).
+Droid: `~/.factory/hooks.json` with the events at the top level, plain stdout.
+Cursor: `~/.cursor/hooks.json` `hooks.sessionStart[]`, `{"additional_context"}`
+(its forum reports the context dropped on some first messages). Copilot: every
+`*.json` in `~/.copilot/hooks/`, the `bash`/`powershell` command printing
+`{"additionalContext"}` — probed live on 1.0.88 (2026-10-01). Vibe (hooks are
+`pre_tool`/`post_tool`/`post_agent` only) and OpenCode (no start hook outside
+the experimental plugin API) get instructions instead: a marker block in
+`~/.vibe/AGENTS.md`, and for OpenCode `<state_dir>/hooks/eldrun_agent_hint.md`
+in `~/.config/opencode/opencode.json` `instructions` (its global `AGENTS.md`
+would shadow the `~/.claude/CLAUDE.md` fallback). All but Copilot are from the vendors'
+docs, not live.
 
 A fenced tab resumes only if its session store is mounted into the fence:
 `sandbox::agent_home_mounts` lists each continue-last agent's store (OpenCode

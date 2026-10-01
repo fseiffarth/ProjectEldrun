@@ -945,6 +945,28 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
      composer shows only in the Terminal view.
   Windows PowerShell and macOS runtime behavior also require platform QA.
 
+- [ ] **31bs — Every agent CLI learns `eldrun-send` from Eldrun, not the
+  project** (2026-10-01; implemented, never live; the backend needs a restart).
+  The hint left the scaffold's `AGENTS.md`. Codex now gets it from the session
+  hook like Claude; `services::agent_hint` registers a SessionStart hook for
+  Gemini, Qwen, Auggie, CodeBuddy, Droid, Cursor and Copilot, a managed
+  block in Vibe's user `AGENTS.md`, and a hint file in OpenCode's
+  `opencode.json` `instructions`, all in the agent home. Copilot's
+  hook shape was probed against Copilot CLI 1.0.88 in a fenced tab (the model
+  read the context); the rest is from each CLI's hook docs.
+  - [ ] 🖐️ In a fresh project tab of each installed CLI, ask "How do you show
+    me a file on my phone?" — it should name `eldrun-send <file>` without
+    reading any file. Codex needs its `/hooks` trust first; Cursor is known
+    upstream to drop session-start context now and then.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 - [~] **31ac — "Set up in terminal" opens in the root console** (2026-09-14;
   ✅ code-complete, tests passing, ⚠️ live QA pending). The Tailscale Serve
   guide's button switched the whole window to the root scope and opened a tab
