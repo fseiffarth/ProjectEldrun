@@ -40,13 +40,38 @@ fn holders_of(root: &Path, needle: &str) -> Vec<(PathBuf, usize)> {
     found
 }
 
+/// The kind of place a holder is: its first two path components, with an
+/// agent home's own name left out (`agent-homes/*/.claude/projects`), so a
+/// thousand transcripts are one line and a single config file is not lost
+/// among them.
+fn group_of(rel: &Path) -> String {
+    let parts: Vec<String> = rel.components().map(|part| part.as_os_str().to_string_lossy().into_owned()).collect();
+    let dirs = &parts[..parts.len().saturating_sub(1)];
+    match dirs {
+        [first, _, rest @ ..] if first == "agent-homes" => {
+            let tail: Vec<&str> = rest.iter().take(2).map(String::as_str).collect();
+            if tail.is_empty() {
+                format!("agent-homes/*/{}", parts.last().map(String::as_str).unwrap_or(""))
+            } else {
+                format!("agent-homes/*/{}", tail.join("/"))
+            }
+        }
+        [] => parts.join("/"),
+        _ => dirs.iter().take(2).map(String::as_str).collect::<Vec<_>>().join("/"),
+    }
+}
+
 fn print_holders(title: &str, root: &Path, holders: &[(PathBuf, usize)]) {
     println!("\n{title}: {} file(s)", holders.len());
-    for (path, count) in holders.iter().take(60) {
-        println!("  {count:>5}  {}", path.strip_prefix(root).unwrap_or(path).display());
+    let mut groups: std::collections::BTreeMap<String, (usize, usize, PathBuf)> = std::collections::BTreeMap::new();
+    for (path, count) in holders {
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        let group = groups.entry(group_of(rel)).or_insert((0, 0, rel.to_path_buf()));
+        group.0 += 1;
+        group.1 += count;
     }
-    if holders.len() > 60 {
-        println!("  … and {} more", holders.len() - 60);
+    for (group, (files, count, example)) in &groups {
+        println!("  {files:>5} file(s) {count:>6} hit(s)  {group}   e.g. {}", example.display());
     }
 }
 
