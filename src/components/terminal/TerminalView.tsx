@@ -1928,9 +1928,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     ? state.tabsByScope[readerIds.scope]?.find((entry) => entry.key === readerIds.key)
     : undefined);
   const readerAvailable = readerOffered(readerTab) && !attachOnly;
-  const readerOn = useReaderOpen(readerAvailable);
+  const readerAgent = readerTab?.cmd ?? cmd;
+  const readerOn = useReaderOpen(readerAgent, readerAvailable);
   const setReader = (on: boolean) => {
-    useAgentReaderStore.getState().set(on);
+    useAgentReaderStore.getState().set(readerAgent, on);
     if (!on) setTimeout(() => termRef.current?.focus(), 0);
   };
 

@@ -563,6 +563,41 @@ pub fn check_project_site(req: CheckProjectSiteRequest) -> Result<Option<Project
     Ok(find_project_conflict(&list, &site, req.skip_id.as_deref()))
 }
 
+/// Whether anything — a folder, a file, a symlink (dangling or not) — already
+/// sits at `directory`. The New-project dialog asks before Create so it can say
+/// the project can't be made there; advisory, like `check_project_site` —
+/// `create_project`'s own `claim_new_project_dir` is the gate.
+#[tauri::command]
+pub fn project_folder_exists(directory: String) -> bool {
+    !directory.trim().is_empty() && fs::symlink_metadata(&directory).is_ok()
+}
+
+/// Create a **new** local project's folder, refusing one that already exists.
+///
+/// A new project starts in a folder of its own. One that is already there holds
+/// somebody's files — a project that was never registered, a backup, another
+/// app's data — and creating over it would scaffold into it, `git init` it, and
+/// replace any `project.json` it carries. Importing is the verb for an existing
+/// folder. `create_dir` (not `_all`) on the leaf makes the check and the claim
+/// one step, so a folder appearing between the dialog's check and this call is
+/// refused too.
+fn claim_new_project_dir(dir: &Path) -> Result<(), String> {
+    if dir.as_os_str().is_empty() {
+        return Err("No folder was given for the new project".to_string());
+    }
+    if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::create_dir(dir).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => format!(
+            "The folder {} already exists, so the project cannot be created there. \
+             Choose another name, or import the folder instead.",
+            dir.display()
+        ),
+        _ => e.to_string(),
+    })
+}
+
 // ── Project list ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -2810,17 +2845,25 @@ pub fn move_remote_mirror_blocking(
 /// The one file that carries real instructions. Every agent-specific doc is a
 /// pointer to it (see `CLAUDE_SCAFFOLD`/`GEMINI_SCAFFOLD`), so guidance is
 /// written once and every agent reads the same text instead of three stubs
-/// drifting apart. It links out to the sibling agent files and the rest of the
-/// scaffold, which is what makes it a usable entry point on a fresh project.
+/// drifting apart.
+///
+/// Kept to placeholders: agents load it every session, and it is the user's
+/// file from the first write on — never rewritten unless still byte-identical
+/// to a template Eldrun shipped (`AGENTS_HISTORY`). So nothing about Eldrun
+/// itself goes here (the `eldrun-send` hint comes from `services::agent_hint`
+/// and the session hook), and the map of the other files is `PROJECT.md`'s.
+/// Changing this text? Add the old one to `scaffold_history/` first — a test
+/// pins it.
 const AGENTS_SCAFFOLD: &str = r#"# Agents
 
-Canonical instructions for every AI coding agent working in this project.
-The agent-specific files are pointers to this one — write guidance **here**
-so every agent reads the same thing.
+Canonical instructions for every AI coding agent in this project;
+`CLAUDE.md` and `GEMINI.md` import this file. Write guidance **here**, and
+keep it to what an agent would otherwise get wrong: it is loaded into every
+session. [PROJECT.md](./PROJECT.md) maps the rest of the project.
 
 ## Project
 
-_What this project is and what it is for._
+_What this project is, in a sentence or two._
 
 ## Running
 
@@ -2829,31 +2872,6 @@ _Build, run and test commands._
 ## Conventions
 
 _Layout, style, and anything an agent must not do._
-
-## Showing the user a file
-
-To put a file in front of the user on their phone (Eldrun Mobile), run
-`eldrun-send <file>` — any file up to 24 MiB; images, PDFs and text show
-on the phone, anything else is offered as a download. Local and container
-tabs. `command | eldrun-send -n tests.log` sends stdin; `eldrun-send --clear`
-empties the outbox. A file sent from this tab shows in this tab's phone chat
-and every gallery; one copied into `.eldrun/outbox/` by hand, in the gallery only.
-
-## Agent files
-
-- [AGENTS.md](./AGENTS.md) — this file: the single source of truth
-- [CLAUDE.md](./CLAUDE.md) — Claude Code; imports this file
-- [GEMINI.md](./GEMINI.md) — Gemini CLI; imports this file
-
-## Project docs
-
-- [PROJECT.md](./PROJECT.md) — map of the scaffold: every file linked, with what it is for
-- [README.md](./README.md) — overview
-- [DOCUMENTATION.md](./DOCUMENTATION.md) — reference documentation
-- [ROADMAP.md](./ROADMAP.md) — planned direction
-- [TODO.md](./TODO.md) — open work items
-- [REMARKS.md](./REMARKS.md) — project-wide remarks attached to files and lines
-- [STATUS.md](./STATUS.md) — current state
 "#;
 
 /// Claude Code pointer. `@AGENTS.md` on its own line is Claude Code's import
@@ -2981,22 +2999,15 @@ pub struct ScaffoldPreviewItem {
 /// `"none"`).
 pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
     fs::create_dir_all(dir)?;
-    let dot_claude = dir.join(".claude");
-    fs::create_dir_all(&dot_claude)?;
 
     for (name, content) in SCAFFOLD_FILES {
-        let p = dir.join(name);
-        if !p.exists() {
-            fs::write(&p, content)?;
-        }
+        write_scaffold_file(&dir.join(name), content)?;
     }
-    let gi = dir.join(".gitignore");
-    if with_git && !gi.exists() {
-        fs::write(gi, GITIGNORE_DEFAULT)?;
+    if with_git {
+        write_scaffold_file(&dir.join(".gitignore"), GITIGNORE_DEFAULT)?;
     }
-    let cs = dot_claude.join("settings.json");
-    if !cs.exists() {
-        fs::write(cs, CLAUDE_SETTINGS)?;
+    if let Some(dot_claude) = scaffold_claude_dir(dir)? {
+        write_scaffold_file(&dot_claude.join("settings.json"), CLAUDE_SETTINGS)?;
     }
     if with_git && !dir.join(".git").exists() {
         let _ = crate::services::git_init::init_repo(dir);
@@ -3011,6 +3022,39 @@ pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
         git_scaffold_commit(dir);
     }
     Ok(())
+}
+
+/// Create one scaffold file unless something — a file, a folder, a symlink,
+/// dangling or not — is already at `path`. Returns whether it was written.
+///
+/// The never-overwrite rule in one place. An imported tree is attacker-controlled
+/// and the user's own, so an `exists()`-then-write pair was two holes: a dangling
+/// `CLAUDE.md -> ~/somewhere` passed the check and the write then created the
+/// link's target outside the project, and a file appearing between the check and
+/// the write was truncated. `create_new` + `O_NOFOLLOW` decide in the one open.
+fn write_scaffold_file(path: &Path, content: &str) -> std::io::Result<bool> {
+    match write_no_follow(path, content.as_bytes(), true) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// `dir/.claude`, created when absent. `None` when something other than a real
+/// folder is already there — a file, or a symlink the tree shipped — and the
+/// scaffold then leaves `.claude/settings.json` alone rather than write through
+/// it or fail the whole import on it.
+fn scaffold_claude_dir(dir: &Path) -> std::io::Result<Option<PathBuf>> {
+    let dot_claude = dir.join(".claude");
+    match fs::symlink_metadata(&dot_claude) {
+        Ok(meta) if meta.is_dir() => Ok(Some(dot_claude)),
+        Ok(_) => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&dot_claude)?;
+            Ok(Some(dot_claude))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// `skip_scaffold`'s half of `scaffold_project`: no template files, but a project
@@ -3221,13 +3265,32 @@ const LEGACY_AGENT_STUBS: &[(&str, &str)] = &[
     ("GEMINI.md", "# Gemini Context\n"),
 ];
 
+/// Every earlier `AGENTS_SCAFFOLD`, byte for byte, oldest first (2026-08-26 to
+/// 2026-09-28). A project scaffolded with one of them still holds that text
+/// until someone edits it, and only this list lets a repair tell such an
+/// untouched copy from the user's own words: the never-overwrite rule meant
+/// the 09-05 copy kept telling agents the outbox takes images only.
+const AGENTS_HISTORY: &[&str] = &[
+    include_str!("scaffold_history/AGENTS.2026-08-26.md"),
+    include_str!("scaffold_history/AGENTS.2026-08-30.md"),
+    include_str!("scaffold_history/AGENTS.2026-09-05.md"),
+    include_str!("scaffold_history/AGENTS.2026-09-14.md"),
+    include_str!("scaffold_history/AGENTS.2026-09-28.md"),
+];
+
 /// True when `content` is the untouched legacy stub for the agent doc `name`
-/// (or empty). Pure, so the upgrade rule is unit-testable without touching disk.
+/// (or empty), or an untouched earlier `AGENTS.md` template. Line endings are
+/// ignored — a checkout may have turned them to CRLF. Pure, so the upgrade rule
+/// is unit-testable without touching disk.
 fn is_legacy_agent_stub(name: &str, content: &str) -> bool {
     let Some((_, stub)) = LEGACY_AGENT_STUBS.iter().find(|(n, _)| *n == name) else {
         return false;
     };
-    content.trim().is_empty() || content.trim() == stub.trim()
+    if content.trim().is_empty() || content.trim() == stub.trim() {
+        return true;
+    }
+    let content = content.replace("\r\n", "\n");
+    name == "AGENTS.md" && AGENTS_HISTORY.contains(&content.as_str())
 }
 
 /// Like `scaffold_project`, but for an **already-scaffolded** project whose
@@ -3238,14 +3301,11 @@ fn is_legacy_agent_stub(name: &str, content: &str) -> bool {
 /// (plain `scaffold_project` leaves a pre-existing `.gitignore` untouched).
 fn repair_project_scaffold_at(dir: &Path, with_git: bool) -> std::io::Result<ScaffoldRepairReport> {
     fs::create_dir_all(dir)?;
-    let dot_claude = dir.join(".claude");
-    fs::create_dir_all(&dot_claude)?;
 
     let mut report = ScaffoldRepairReport::default();
     for (name, content) in SCAFFOLD_FILES {
         let p = dir.join(name);
-        if !p.exists() {
-            fs::write(&p, content)?;
+        if write_scaffold_file(&p, content)? {
             report.created_files.push((*name).to_string());
             continue;
         }
@@ -3254,7 +3314,7 @@ fn repair_project_scaffold_at(dir: &Path, with_git: bool) -> std::io::Result<Sca
             continue;
         };
         if existing != *content && is_legacy_agent_stub(name, &existing) {
-            fs::write(&p, content)?;
+            write_no_follow(&p, content.as_bytes(), false)?;
             report.updated_files.push((*name).to_string());
         }
     }
@@ -3262,12 +3322,12 @@ fn repair_project_scaffold_at(dir: &Path, with_git: bool) -> std::io::Result<Sca
         report.gitignore_lines_added = ensure_gitignore_defaults(dir)?;
     }
 
-    let cs = dot_claude.join("settings.json");
-    if !cs.exists() {
-        fs::write(&cs, CLAUDE_SETTINGS)?;
-        report
-            .created_files
-            .push(".claude/settings.json".to_string());
+    if let Some(dot_claude) = scaffold_claude_dir(dir)? {
+        if write_scaffold_file(&dot_claude.join("settings.json"), CLAUDE_SETTINGS)? {
+            report
+                .created_files
+                .push(".claude/settings.json".to_string());
+        }
     }
     if with_git && !dir.join(".git").exists() {
         let _ = crate::services::git_init::init_repo(dir);
@@ -3446,18 +3506,22 @@ pub fn migrate_legacy_projects() {
 }
 
 fn scaffold_preview(dir: &Path) -> Vec<ScaffoldPreviewItem> {
+    // Anything at the path counts — a dangling symlink too — because that is
+    // what `write_scaffold_file` keeps; `exists()` would call such a link
+    // missing and promise a file the import then doesn't write.
+    let present = |rel: &str| fs::symlink_metadata(dir.join(rel)).is_ok();
     let mut items = SCAFFOLD_FILES
         .iter()
         .map(|(name, _)| ScaffoldPreviewItem {
             path: (*name).to_string(),
-            exists: dir.join(name).exists(),
+            exists: present(name),
             kind: "file".to_string(),
         })
         .collect::<Vec<_>>();
 
     items.push(ScaffoldPreviewItem {
         path: ".gitignore".to_string(),
-        exists: dir.join(".gitignore").exists(),
+        exists: present(".gitignore"),
         kind: "file".to_string(),
     });
     items.push(ScaffoldPreviewItem {
@@ -3470,7 +3534,7 @@ fn scaffold_preview(dir: &Path) -> Vec<ScaffoldPreviewItem> {
     });
     items.push(ScaffoldPreviewItem {
         path: ".claude/settings.json".to_string(),
-        exists: dir.join(".claude/settings.json").exists(),
+        exists: present(".claude/settings.json"),
         kind: "file".to_string(),
     });
     items
@@ -3651,27 +3715,26 @@ fn apply_migration_steps_at(
     let mut report = ScaffoldRepairReport::default();
     for (name, content) in SCAFFOLD_FILES {
         let p = dir.join(name);
-        if accepted.contains(&format!("file:{name}")) && !p.exists() {
-            fs::write(&p, content)?;
-            report.created_files.push((*name).to_string());
+        if accepted.contains(&format!("file:{name}")) {
+            if write_scaffold_file(&p, content)? {
+                report.created_files.push((*name).to_string());
+            }
         } else if accepted.contains(&format!("stub:{name}")) {
             if let Ok(existing) = fs::read_to_string(&p) {
                 if existing != *content && is_legacy_agent_stub(name, &existing) {
-                    fs::write(&p, content)?;
+                    write_no_follow(&p, content.as_bytes(), false)?;
                     report.updated_files.push((*name).to_string());
                 }
             }
         }
     }
     if accepted.contains("claude_settings") {
-        let dot_claude = dir.join(".claude");
-        fs::create_dir_all(&dot_claude)?;
-        let cs = dot_claude.join("settings.json");
-        if !cs.exists() {
-            fs::write(&cs, CLAUDE_SETTINGS)?;
-            report
-                .created_files
-                .push(".claude/settings.json".to_string());
+        if let Some(dot_claude) = scaffold_claude_dir(dir)? {
+            if write_scaffold_file(&dot_claude.join("settings.json"), CLAUDE_SETTINGS)? {
+                report
+                    .created_files
+                    .push(".claude/settings.json".to_string());
+            }
         }
     }
     if with_git && accepted.contains("gitignore") {
@@ -3849,6 +3912,35 @@ pub fn create_project_blocking(mut req: CreateProjectRequest) -> Result<ProjectE
         }
     }
 
+    // A new local project gets a folder of its own (`claim_new_project_dir`),
+    // claimed before anything is written. Should creation fail after that, the
+    // folder — holding nothing but what this call put there — is removed again,
+    // so a retry isn't refused by the remains of the failed attempt.
+    let claimed = match req.remote {
+        None => {
+            let dir = PathBuf::from(&req.directory);
+            claim_new_project_dir(&dir)?;
+            Some(dir)
+        }
+        Some(_) => None,
+    };
+    let created = create_claimed_project(req, id, &registered, is_vm);
+    if created.is_err() {
+        if let Some(dir) = claimed {
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+    created
+}
+
+/// `create_project_blocking` past its gates: the site is free and, for a local
+/// project, its folder was just created empty by `claim_new_project_dir`.
+fn create_claimed_project(
+    req: CreateProjectRequest,
+    id: String,
+    registered: &ProjectsList,
+    is_vm: bool,
+) -> Result<ProjectEntry, String> {
     // Mount-free remote: a remote project's `directory` is a LOCAL per-project
     // state dir that holds its `project.json` (tabs/time/etc.); the project's
     // actual tree lives on the host at `remote.remote_path` and is reached over
@@ -3887,7 +3979,7 @@ pub fn create_project_blocking(mut req: CreateProjectRequest) -> Result<ProjectE
         None
     } else {
         req.remote.as_ref().map(|_| {
-            resolve_remote_mirror(req.mirror_parent.as_deref(), &req.name, &id, &registered)
+            resolve_remote_mirror(req.mirror_parent.as_deref(), &req.name, &id, registered)
         })
     };
 
@@ -5761,6 +5853,90 @@ mod tests {
     }
 
     #[test]
+    fn scaffold_project_keeps_every_existing_scaffold_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ours: Vec<String> = SCAFFOLD_FILES.iter().map(|(n, _)| n.to_string()).collect();
+        ours.push(".gitignore".to_string());
+        ours.push(".claude/settings.json".to_string());
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        for name in &ours {
+            std::fs::write(tmp.path().join(name), format!("user's own {name}")).unwrap();
+        }
+
+        scaffold_project(tmp.path(), true).unwrap();
+
+        for name in &ours {
+            assert_eq!(
+                std::fs::read_to_string(tmp.path().join(name)).unwrap(),
+                format!("user's own {name}"),
+                "{name} must survive an import's scaffold"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scaffold_project_never_writes_through_a_shipped_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        // A tree can ship a dangling link: `exists()` says false, and a plain
+        // write would create the link's target outside the project.
+        let outside = tmp.path().join("outside.md");
+        std::os::unix::fs::symlink(&outside, project.join("CLAUDE.md")).unwrap();
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, project.join(".claude")).unwrap();
+
+        scaffold_project(&project, false).unwrap();
+
+        assert!(!outside.exists(), "the link's target must not be created");
+        assert!(!elsewhere.join("settings.json").exists());
+        assert!(std::fs::symlink_metadata(project.join("CLAUDE.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(project.join("AGENTS.md").is_file(), "the rest is still scaffolded");
+        let preview = scaffold_preview(&project);
+        let claude = preview.iter().find(|i| i.path == "CLAUDE.md").unwrap();
+        assert!(claude.exists, "the preview must call the kept link present");
+    }
+
+    #[test]
+    fn claim_new_project_dir_refuses_anything_already_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fresh = tmp.path().join("parent/fresh");
+        claim_new_project_dir(&fresh).unwrap();
+        assert!(fresh.is_dir());
+        assert!(project_folder_exists(fresh.to_string_lossy().to_string()));
+
+        let err = claim_new_project_dir(&fresh).unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+
+        let file = tmp.path().join("a-file");
+        std::fs::write(&file, "keep me").unwrap();
+        assert!(claim_new_project_dir(&file).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep me");
+
+        assert!(claim_new_project_dir(Path::new("")).is_err());
+        assert!(!project_folder_exists(String::new()));
+        assert!(!project_folder_exists(
+            tmp.path().join("nope").to_string_lossy().to_string()
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claim_new_project_dir_refuses_a_dangling_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(tmp.path().join("missing"), &link).unwrap();
+        assert!(project_folder_exists(link.to_string_lossy().to_string()));
+        assert!(claim_new_project_dir(&link).is_err());
+        assert!(!tmp.path().join("missing").exists());
+    }
+
+    #[test]
     fn scaffold_project_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         scaffold_project(tmp.path(), true).unwrap();
@@ -5944,21 +6120,13 @@ mod tests {
         scaffold_project(tmp.path(), false).unwrap();
 
         let agents = std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap();
-        // AGENTS.md carries the instructions and links every sibling agent doc
-        // plus the rest of the scaffold.
-        for link in &[
-            "(./CLAUDE.md)",
-            "(./GEMINI.md)",
-            "(./PROJECT.md)",
-            "(./README.md)",
-            "(./DOCUMENTATION.md)",
-            "(./ROADMAP.md)",
-            "(./TODO.md)",
-            "(./REMARKS.md)",
-            "(./STATUS.md)",
-        ] {
-            assert!(agents.contains(link), "AGENTS.md missing link {link}");
+        // AGENTS.md carries the instructions and points at the map; it is
+        // loaded every session, so it doesn't repeat the map's links.
+        assert!(agents.contains("(./PROJECT.md)"), "AGENTS.md must link PROJECT.md");
+        for link in &["(./README.md)", "(./TODO.md)", "(./AGENTS.md)"] {
+            assert!(!agents.contains(link), "AGENTS.md repeats the map: {link}");
         }
+        assert!(!agents.contains("eldrun-send"), "Eldrun's own hint is not the project's");
 
         // The agent-specific docs carry no instructions of their own: each
         // imports AGENTS.md and links the other agent files.
@@ -6006,6 +6174,38 @@ mod tests {
         assert!(scaffold_is_missing_at(tmp.path(), true));
         repair_project_scaffold_at(tmp.path(), true).unwrap();
         assert!(!scaffold_is_missing_at(tmp.path(), true));
+    }
+
+    #[test]
+    fn untouched_earlier_agents_templates_are_upgraded_and_edited_ones_kept() {
+        for old in AGENTS_HISTORY {
+            assert_ne!(*old, AGENTS_SCAFFOLD);
+            let tmp = tempfile::tempdir().unwrap();
+            scaffold_project(tmp.path(), false).unwrap();
+            std::fs::write(tmp.path().join("AGENTS.md"), old.replace('\n', "\r\n")).unwrap();
+            assert!(scaffold_is_missing_at(tmp.path(), false));
+            let report = repair_project_scaffold_at(tmp.path(), false).unwrap();
+            assert_eq!(report.updated_files, vec!["AGENTS.md".to_string()]);
+            assert_eq!(std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(), AGENTS_SCAFFOLD);
+
+            let edited = format!("{old}\n## Mine\n");
+            std::fs::write(tmp.path().join("AGENTS.md"), &edited).unwrap();
+            assert!(!scaffold_is_missing_at(tmp.path(), false));
+            repair_project_scaffold_at(tmp.path(), false).unwrap();
+            assert_eq!(std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(), edited);
+        }
+    }
+
+    /// Pins the shipped `AGENTS.md` template. When this fails, the template
+    /// changed: copy the *previous* text byte for byte into
+    /// `scaffold_history/AGENTS.<date>.md`, add it to `AGENTS_HISTORY`, then
+    /// update the pin — otherwise every project scaffolded with it keeps it.
+    #[test]
+    fn the_agents_template_is_pinned_so_its_predecessor_stays_upgradable() {
+        let fnv1a = AGENTS_SCAFFOLD.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+        assert_eq!(fnv1a, 0x75197758527454ff, "AGENTS_SCAFFOLD changed; see this test's doc");
     }
 
     #[test]

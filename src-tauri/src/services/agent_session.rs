@@ -473,6 +473,54 @@ pub fn agent_session_last_prompt(
     read_agent_transcript_from(cmd, project_id, launch_id, false, last_prompt_in_transcript, |_, _| None)
 }
 
+/// Whether the tab launched as `cmd` with launch id `launch_id` is pursuing a
+/// `/goal`, from the session's own record rather than its screen — the one
+/// source that reads the same whatever the footer looks like: Claude's latest
+/// `goal_status` in its transcript, Codex's thread row in its goal store.
+/// `None` when the CLI keeps no such record or it cannot be read; the caller
+/// then goes by the footer.
+pub fn agent_session_goal(cmd: &str, project_id: Option<&str>, launch_id: &str) -> Option<bool> {
+    match cmd {
+        "claude" => read_agent_transcript_from(cmd, project_id, launch_id, false, |path, _| claude_goal_in_transcript(path), |_, _| None),
+        "codex" => {
+            if !is_uuid_shaped(launch_id) {
+                return None;
+            }
+            let thread = read_live_session_for(project_id, launch_id)?;
+            let db = crate::services::codex_store::goals_db_for(Some(project_id.unwrap_or("root")))?;
+            crate::services::codex_store::thread_goal_active(&db, &thread)
+        }
+        _ => None,
+    }
+}
+
+/// Claude's goal state in the transcript at `path`: its last word on a goal.
+/// `/goal` writes a `goal_status` attachment when it is set (`met: false`,
+/// the `sentinel`), another at every check that finds it unmet, and one with
+/// `met: true` — or `failed` when Claude gives up — when it ends; `/goal clear`
+/// is the user's own end. `None` when the tail holds none of them.
+fn claude_goal_in_transcript(path: &std::path::Path) -> Option<bool> {
+    with_prompt_tail(path, |lines| lines.iter().rev().find_map(|line| claude_goal_in_record(line)))
+}
+
+fn claude_goal_in_record(line: &str) -> Option<bool> {
+    if !line.contains("\"goal_status\"") && !line.contains("/goal</command-name>") {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if value.get("isSidechain").and_then(|s| s.as_bool()) == Some(true) {
+        return None;
+    }
+    if let Some(attachment) = value.get("attachment").filter(|a| a.get("type").and_then(|t| t.as_str()) == Some("goal_status")) {
+        let met = attachment.get("met").and_then(|m| m.as_bool()).unwrap_or(false);
+        let failed = attachment.get("failed").and_then(|f| f.as_bool()).unwrap_or(false);
+        return Some(!met && !failed);
+    }
+    let content = value.get("message")?.get("content")?.as_str()?;
+    let args = between(content, "<command-args>", "</command-args>")?.trim();
+    (content.contains("<command-name>/goal</command-name>") && args == "clear").then_some(false)
+}
+
 /// Resolve the transcript behind a tab and read one fact out of it. The
 /// resolution is the same whichever fact is wanted, so it lives once:
 ///
@@ -710,10 +758,11 @@ fn timed_prompt_in_record(line: &str, kind: TranscriptKind) -> Option<Transcript
 /// Whether a transcript line can hold a prompt at all, checked before it is
 /// parsed: every prompt record names the user as a JSON value — Claude's
 /// `"type":"user"`, Codex's `"role":"user"` and `"user_message"` — or is
-/// Claude's `queued_command`. Most of a busy transcript is tool output, and
-/// the prompt reads now reach back through megabytes of it.
+/// Claude's `queued_command` or Codex's `thread_goal_updated`. Most of a busy
+/// transcript is tool output, and the prompt reads now reach back through
+/// megabytes of it.
 fn may_be_prompt(line: &str) -> bool {
-    line.contains("\"user") || line.contains("queued_command")
+    line.contains("\"user") || line.contains("queued_command") || line.contains("thread_goal_updated")
 }
 
 /// A message the user sent while Claude was working: a `queued_command`
@@ -1090,6 +1139,7 @@ fn collapse_pasted_blocks(text: &str) -> String {
 /// which is also where Codex injects `<environment_context>`, `<user_instructions>`
 /// and the `AGENTS.md` text — those open with a tag or a heading, and are
 /// skipped. Both shapes are read, so either dialect of rollout answers.
+/// A `/goal` is neither: see [`codex_goal_prompt`].
 pub(crate) fn codex_prompt_in_record(value: &serde_json::Value) -> Option<String> {
     let payload = value.get("payload")?;
     let payload_type = payload.get("type").and_then(|t| t.as_str());
@@ -1097,6 +1147,7 @@ pub(crate) fn codex_prompt_in_record(value: &serde_json::Value) -> Option<String
         "event_msg" if payload_type == Some("user_message") => {
             payload.get("message")?.as_str().map(str::to_string)
         }
+        "event_msg" if payload_type == Some("thread_goal_updated") => codex_goal_prompt(payload),
         "response_item"
             if payload_type == Some("message")
                 && payload.get("role").and_then(|r| r.as_str()) == Some("user") =>
@@ -1121,6 +1172,27 @@ pub(crate) fn codex_prompt_in_record(value: &serde_json::Value) -> Option<String
         }
         _ => None,
     }
+}
+
+/// A `/goal` the user set, as they typed it. Codex (0.153+) records no user
+/// message for it: the objective rides only on a `thread_goal_updated` event,
+/// and every turn the goal drives — its first included — opens with a
+/// `<codex_internal_context source="goal">` user message, which is Codex's
+/// own and skipped. The event is also written when a goal resumes, paused or
+/// across a relaunch, with the time and tokens it has used; only a goal
+/// updated at the second it was created is a new one, so a resumed goal
+/// does not read as the prompt again.
+fn codex_goal_prompt(payload: &serde_json::Value) -> Option<String> {
+    let goal = payload.get("goal")?;
+    if goal.get("status").and_then(|s| s.as_str()) != Some("active") {
+        return None;
+    }
+    let created = goal.get("createdAt").and_then(|t| t.as_i64())?;
+    if goal.get("updatedAt").and_then(|t| t.as_i64()) != Some(created) {
+        return None;
+    }
+    let objective = goal.get("objective")?.as_str()?.trim();
+    (!objective.is_empty()).then(|| format!("/goal {objective}"))
 }
 
 /// The text between the first `open` and the `close` after it, if both exist.
@@ -1514,13 +1586,10 @@ pub enum CodexHookState {
 pub fn codex_hook_state() -> CodexHookState {
     let mut worst: Option<CodexHookState> = None;
     for home in crate::services::agent_home::existing_homes_in(&storage::state_dir()) {
-        let codex_dir = home.join(".codex");
-        if !codex_dir.join("sessions").is_dir() {
+        if !home.join(".codex").join("sessions").is_dir() {
             continue;
         }
-        let config = codex_dir.join("config.toml");
-        let src = std::fs::read_to_string(&config).unwrap_or_default();
-        let state = codex_hook_state_in(&src, &config.to_string_lossy(), &hook_command());
+        let state = codex_hook_state_of_home(&home);
         let rank = |s: CodexHookState| match s {
             CodexHookState::Enabled => 0,
             CodexHookState::NoCodex => 1,
@@ -1533,6 +1602,13 @@ pub fn codex_hook_state() -> CodexHookState {
         }
     }
     worst.unwrap_or(CodexHookState::NoCodex)
+}
+
+/// Eldrun's hook as the Codex of one agent home sees it.
+fn codex_hook_state_of_home(home: &std::path::Path) -> CodexHookState {
+    let config = home.join(".codex").join("config.toml");
+    let src = std::fs::read_to_string(&config).unwrap_or_default();
+    codex_hook_state_in(&src, &config.to_string_lossy(), &hook_command())
 }
 
 /// Testable core of [`codex_hook_state`].
@@ -1579,6 +1655,10 @@ pub fn codex_hook_state_in(src: &str, config_path: &str, cmd: &str) -> CodexHook
         } else if let Some(key) = state_key.as_ref() {
             if let Some(v) = toml_value(line, "enabled") {
                 verdicts.insert(key.clone(), v == "true");
+            } else if toml_value(line, "trusted_hash").is_some() {
+                // Codex (0.15x) records a trusted, enabled hook as its hash
+                // alone — `enabled` is written only to switch it off.
+                verdicts.entry(key.clone()).or_insert(true);
             }
         }
     }
@@ -1636,9 +1716,12 @@ fn toml_value(line: &str, key: &str) -> Option<String> {
 /// Whether the hook-free rollout binder ([`crate::services::codex_bind`]) should
 /// run for a Codex tab. It is the *fallback*: when the hook is trusted it is
 /// strictly more precise (it fires on `/clear` immediately and can't confuse two
-/// tabs sharing a cwd), so we stay out of its way.
-pub fn codex_binder_enabled() -> bool {
-    !matches!(codex_hook_state(), CodexHookState::Enabled)
+/// tabs sharing a cwd), so we stay out of its way. Decided by the tab's own
+/// scope home, where Codex keeps the trust verdict: a guessing binder beside a
+/// live hook hands one tab's fresh `/clear` rollout to a sibling in the same
+/// folder, since the hook records it only at the first prompt after the clear.
+pub fn codex_binder_enabled(scope_id: Option<&str>) -> bool {
+    codex_hook_state_of_home(&crate::services::agent_home::scope_home(scope_id)) != CodexHookState::Enabled
 }
 
 /// Install (idempotently) the session hooks and their script for every agent
@@ -1648,7 +1731,8 @@ pub fn codex_binder_enabled() -> bool {
 /// The shared script keys by `$ELDRUN_TAB_UID` and reads `session_id` from the
 /// hook's stdin JSON — both CLIs use that schema.
 pub fn install_session_start_hook() -> std::io::Result<()> {
-    write_hook_script()
+    write_hook_script()?;
+    crate::services::agent_hint::write_script()
 }
 
 /// Register the hooks in one Eldrun-owned agent home (`services::agent_home`):
@@ -1683,6 +1767,9 @@ pub fn register_hooks_in_home(home: &std::path::Path) {
             eprintln!("agent_session: register vibe hook in {}: {e}", home.display());
         }
     }
+    // The other CLIs' `eldrun-send` hint (Claude and Codex get it from the
+    // session hook above).
+    crate::services::agent_hint::register_in_home(home);
 }
 
 /// Vibe's user hook runs after each completed turn and reports the live ID.
@@ -1826,6 +1913,7 @@ fn hook_script_body(live_dir: &str) -> String {
 /// The POSIX body itself — the hook on Unix, and on Windows the container twin
 /// (see `write_hook_script`), so it is compiled everywhere.
 fn posix_hook_script_body(live_dir: &str) -> String {
+    let hint = crate::services::agent_hint::HINT;
     format!(
         "#!/bin/sh\n\
          # Eldrun agent hook (SessionStart, Stop, UserPromptSubmit, PostToolUse,\n\
@@ -1881,9 +1969,9 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          \x20      esac\n\
          \x20    fi ;;\n\
          esac\n\
-         if [ \"$event\" = SessionStart ] && [ \"$ELDRUN_TAB_AGENT\" = claude ] && [ -n \"$ELDRUN_PROJECT_DIR\" ]; then\n\
-         \x20 printf '%s\\n' 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).'\n\
-         fi\n\
+         case \"$event:$ELDRUN_TAB_AGENT\" in SessionStart:claude|SessionStart:codex) [ -z \"$ELDRUN_PROJECT_DIR\" ] ||\n\
+         \x20 printf '%s\\n' '{hint}' ;;\n\
+         esac\n\
          # The turn state, from the events the agent fires as it works: a prompt\n\
          # submitted or a tool finished means working (a finished tool is also what\n\
          # ends an approval wait), Stop means done, a permission or elicitation\n\
@@ -1926,6 +2014,7 @@ fn hook_script_body(live_dir: &str) -> String {
     // `live_dir` is a Windows path (backslashes); embed it in a single-quoted
     // PowerShell literal so backslashes are not treated as escapes.
     let live_dir = live_dir.replace('\'', "''");
+    let hint = crate::services::agent_hint::HINT;
     format!(
         "# Eldrun agent hook (SessionStart, Stop, UserPromptSubmit, PostToolUse,\r\n\
          # Notification, SessionEnd) - records, per tab, the agent's live session id\r\n\
@@ -1986,7 +2075,7 @@ fn hook_script_body(live_dir: &str) -> String {
          \x20   if (Test-Path -Path (Join-Path (Split-Path $tdir -Parent) ('*\\' + $ref + '.jsonl'))) {{ exit 0 }}\r\n\
          \x20 }} elseif (($src -ne 'clear') -and ($src -ne 'resume')) {{ exit 0 }}\r\n\
          }}\r\n\
-         if ($env:ELDRUN_TAB_AGENT -eq 'claude' -and $env:ELDRUN_PROJECT_DIR -and $event -eq 'SessionStart') {{ Write-Output 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).' }}\r\n\
+         if (($env:ELDRUN_TAB_AGENT -eq 'claude' -or $env:ELDRUN_TAB_AGENT -eq 'codex') -and $env:ELDRUN_PROJECT_DIR -and $event -eq 'SessionStart') {{ Write-Output '{hint}' }}\r\n\
          # The turn state, from the events the agent fires as it works (see the\r\n\
          # POSIX twin for the mapping).\r\n\
          $turn = ''\r\n\
@@ -2842,7 +2931,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn phone_hint_only_reaches_the_scoped_claude_session_start() {
+    fn phone_hint_only_reaches_a_scoped_claude_or_codex_session_start() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("hook.sh");
@@ -2852,7 +2941,9 @@ mod tests {
             ("claude", false, "aaaa", "SessionStart", false),
             ("claude", true, "bbbb", "SessionStart", false),
             ("claude", true, "aaaa", "Stop", false),
-            ("codex", true, "aaaa", "SessionStart", false),
+            ("codex", true, "cccc", "SessionStart", true),
+            ("codex", false, "cccc", "SessionStart", false),
+            ("codex", true, "cccc", "Stop", false),
         ] {
             let mut cmd = std::process::Command::new("sh");
             cmd.arg(&script).env_clear().env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -3322,6 +3413,24 @@ mod tests {
     }
 
     #[test]
+    fn codex_hook_state_reads_a_bare_trusted_hash_as_enabled() {
+        // Codex 0.159 writes a trusted hook as its hash alone. Read as
+        // untrusted, the cwd binder kept guessing beside the live hook and gave
+        // one tab's fresh `/clear` rollout to its sibling: two phone tabs, one
+        // conversation.
+        let src = format!(
+            "{}\n[hooks.state]\n\n[hooks.state.\"{CFG}:post_tool_use:0:0\"]\ntrusted_hash = \"sha256:c6bc\"\n\n\
+             [hooks.state.\"{CFG}:session_start:0:0\"]\ntrusted_hash = \"sha256:93f0\"\n\n\
+             [projects.\"/home/x\"]\ntrust_level = \"trusted\"\n",
+            our_hook()
+        );
+        assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Enabled);
+        // `enabled = false` after the hash still switches it off.
+        let off = src.replace("sha256:93f0\"\n", "sha256:93f0\"\nenabled = false\n");
+        assert_eq!(codex_hook_state_in(&off, CFG, CMD), CodexHookState::Disabled);
+    }
+
+    #[test]
     fn codex_hook_state_indexes_our_hook_past_the_users_own() {
         // A user hook group precedes ours, so our verdict key is `:0:0` → no,
         // `:1:0`. Their `enabled = true` at `:0:0` must not be read as ours.
@@ -3688,6 +3797,31 @@ mod tests {
         let long = clean_prompt_text(&"p".repeat(MAX_PROMPT_CHARS + 50)).unwrap();
         assert_eq!(long.chars().count(), MAX_PROMPT_CHARS + 1);
         assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn a_claude_goal_runs_from_its_sentinel_until_met_failed_or_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let set = r#"{"type":"attachment","attachment":{"type":"goal_status","met":false,"sentinel":true,"condition":"fix it"}}"#;
+        let typed = r#"{"type":"user","message":{"role":"user","content":"<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args>fix it</command-args>"}}"#;
+        let answer = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"On it."}]}}"#;
+        let unmet = r#"{"type":"attachment","attachment":{"type":"goal_status","met":false,"reason":"not yet"}}"#;
+        let met = r#"{"type":"attachment","attachment":{"type":"goal_status","met":true,"condition":"fix it"}}"#;
+        let failed = r#"{"type":"attachment","attachment":{"type":"goal_status","met":false,"failed":true,"iterations":4}}"#;
+        let cleared = r#"{"type":"user","message":{"role":"user","content":"<command-name>/goal</command-name>\n<command-args>clear</command-args>"}}"#;
+        let sidechain = r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"goal_status","met":false,"sentinel":true}}"#;
+        let read = |lines: &[&str]| {
+            std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+            claude_goal_in_transcript(&path)
+        };
+        assert_eq!(read(&[answer]), None);
+        assert_eq!(read(&[set, typed, answer]), Some(true));
+        assert_eq!(read(&[set, typed, answer, unmet, answer]), Some(true));
+        assert_eq!(read(&[set, typed, answer, met, answer]), Some(false));
+        assert_eq!(read(&[set, typed, answer, failed]), Some(false));
+        assert_eq!(read(&[set, typed, answer, cleared]), Some(false));
+        assert_eq!(read(&[met, sidechain]), Some(false));
     }
 
     #[test]

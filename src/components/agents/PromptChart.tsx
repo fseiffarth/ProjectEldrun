@@ -12,6 +12,7 @@ import {
   type PromptChartWindow,
 } from "../../lib/agents/prompt/chart";
 import { agentModelsFor, prefaceCommandsFor } from "../../lib/agents/agentPrefaces";
+import { historyTabId } from "../../lib/agents/prompt/adopt";
 import { afterLinkRefusal } from "../../lib/agents/prompt/links";
 import { agentItemFor, newAgentTabForDraft, promptChartNewTabAgent } from "../../lib/agents/prompt/newTab";
 import { useUse24h } from "../../lib/timeFormat";
@@ -274,7 +275,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
     scheduleTargetId: tab.scheduleTargetId,
     tabKey: tab.key,
     sessionId: tab.sessionId,
-    tabId: tab.sessionId,
+    tabId: historyTabId(tab),
     agent: tab.cmd,
     model: modelByTab[`${scope}:${tab.key}`],
     schedules: schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId!)] ?? [],

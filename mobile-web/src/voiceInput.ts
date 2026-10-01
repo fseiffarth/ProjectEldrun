@@ -234,6 +234,23 @@ export function dictationPreview(progress: DictationProgress, interim: string): 
   return [...progress.heard.slice(progress.shownFrom), ...(interim ? [interim] : [])].join(" ");
 }
 
+/** "go on", or German "los", said last sends the draft. Only after a word
+ * boundary, so "ziellos" or a "Los Angeles" mid-draft stays text. */
+const SPOKEN_SEND = /(^|[\s\p{P}])(go\s+on|los)[\s\p{P}]*$/iu;
+
+/**
+ * The draft without its spoken send, when it ends in one; `null` otherwise.
+ * German "was ist los" is a question, not a send, so a "los" right after
+ * "ist" stays in the draft.
+ */
+export function spokenSend(draft: string): string | null {
+  const match = SPOKEN_SEND.exec(draft);
+  if (!match) return null;
+  const before = draft.slice(0, match.index);
+  if (match[2].toLowerCase() === "los" && /(^|[\s\p{P}])ist$/iu.test(before.trimEnd())) return null;
+  return before.replace(/[\s,;:–-]+$/u, "");
+}
+
 /** Voice text is terminal input, so never forward terminal control bytes. */
 export function sanitizeVoiceTranscript(value: string): string {
   return value

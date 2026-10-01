@@ -41,7 +41,7 @@ class ResizeObserverStub {
 (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = ResizeObserverStub;
 
 const { invoke, terminals, disposeThrows } = vi.hoisted(() => ({
-  invoke: vi.fn((..._a: unknown[]) => Promise.resolve(undefined)),
+  invoke: vi.fn((..._a: unknown[]): Promise<unknown> => Promise.resolve(undefined)),
   terminals: [] as { opened: boolean; disposed: boolean; el: HTMLElement | null }[],
   // Flipped per test: does the teardown reach its element-removal disposable?
   disposeThrows: { value: false },
@@ -197,13 +197,20 @@ describe("TerminalView — a re-opened pane never stacks two xterms", () => {
 describe("TerminalView — the sweep leaves the pane's portaled cards to React", () => {
   beforeEach(() => {
     invoke.mockClear();
+    invoke.mockImplementation((cmd: unknown) => Promise.resolve(
+      cmd === "agent_versions"
+        ? [{
+          agent: "claude", label: "Claude Code", version: "9.9.9", state: "moved",
+          stale: [{ version: "1.0.0", surface: "test", direction: "newer" }], dismissed: false,
+        }]
+        : undefined,
+    ));
     terminals.length = 0;
     disposeThrows.value = false;
     giveLayout(true);
     // A host CLI newer than the verified release: every zoomable agent pane
     // portals the version card into its xterm container.
     useAgentVersionNoticeStore.setState({
-      loaded: true,
       hidden: {},
       newer: { claude: { agent: "claude", label: "Claude Code", installed: "9.9.9", verified: "1.0.0" } },
     });

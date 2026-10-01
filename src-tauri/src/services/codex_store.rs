@@ -38,13 +38,24 @@ pub fn state_dbs(scope_id: Option<&str>) -> Vec<PathBuf> {
 
 /// Testable core of [`state_db_for`] against an explicit `.codex` dir.
 pub(crate) fn state_db_in(dir: &Path) -> Option<PathBuf> {
+    newest_db_in(dir, "state")
+}
+
+/// The scope's goal store (`<scope home>/.codex/goals_<n>.sqlite`, Codex
+/// 0.153+), numbered the way the thread store is.
+pub fn goals_db_for(scope_id: Option<&str>) -> Option<PathBuf> {
+    newest_db_in(&crate::services::agent_home::scope_home(scope_id).join(".codex"), "goals")
+}
+
+/// The highest-numbered `<stem>_<n>.sqlite` (a bare `<stem>.sqlite` is zero) in `dir`.
+fn newest_db_in(dir: &Path, stem: &str) -> Option<PathBuf> {
     let mut best: Option<(u32, PathBuf)> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let Some(rest) = name.strip_prefix("state").and_then(|r| r.strip_suffix(".sqlite")) else {
+        let Some(rest) = name.strip_prefix(stem).and_then(|r| r.strip_suffix(".sqlite")) else {
             continue;
         };
         // "state.sqlite" → 0; "state_5.sqlite" → 5; anything else is not a store.
@@ -104,6 +115,21 @@ pub fn thread_model(db: &Path, thread_id: &str) -> Option<String> {
         })
         .ok()?;
     clean_model_name(&model?)
+}
+
+/// Whether the thread `thread_id` is pursuing a `/goal`, per the goal store at
+/// `db`: its row says `active` — not paused, blocked, out of budget or
+/// complete. A thread with no row has no goal. `None` when the store cannot
+/// be read or has another shape.
+pub fn thread_goal_active(db: &Path, thread_id: &str) -> Option<bool> {
+    use rusqlite::{Connection, OpenFlags, OptionalExtension};
+
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let status: Option<String> = conn
+        .query_row("SELECT status FROM thread_goals WHERE thread_id = ?1", [thread_id], |row| row.get(0))
+        .optional()
+        .ok()?;
+    Some(status.as_deref() == Some("active"))
 }
 
 /// A thread another thread spawned: one of Codex's subagents.
@@ -233,6 +259,21 @@ mod tests {
         }
         // 10 > 2 numerically; sorted as text "state_10" would lose to "state_2".
         assert_eq!(state_db_in(&dir), Some(dir.join("state_10.sqlite")));
+    }
+
+    #[test]
+    fn a_thread_pursues_its_goal_only_while_the_row_says_active() {
+        let dir = unique_tmp("eldrun-codex-goals");
+        std::fs::write(dir.join("goals_1.sqlite"), b"").unwrap();
+        let db = newest_db_in(&dir, "goals").unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("CREATE TABLE thread_goals (thread_id TEXT PRIMARY KEY, objective TEXT, status TEXT)", []).unwrap();
+        conn.execute("INSERT INTO thread_goals VALUES ('run', 'x', 'active'), ('stuck', 'y', 'blocked')", []).unwrap();
+        assert_eq!(thread_goal_active(&db, "run"), Some(true));
+        assert_eq!(thread_goal_active(&db, "stuck"), Some(false));
+        assert_eq!(thread_goal_active(&db, "none"), Some(false));
+        // Another shape of store is no answer, not "no goal".
+        assert_eq!(thread_goal_active(&dir.join("state_1.sqlite"), "run"), None);
     }
 
     #[test]

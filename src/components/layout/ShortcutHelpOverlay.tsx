@@ -112,7 +112,17 @@ export function ShortcutHelpOverlay() {
             </section>
           ))}
           <section className="shortcut-help-section">
-            <h3>{t("shortcutHelp.steeringTitle")}</h3>
+            {/* The legend itself stays free of pills: they would crowd the
+                level name it shows. Its untested features are tagged here. */}
+            <h3>
+              {t("shortcutHelp.steeringTitle")}
+              <UntestedTag id="steering.agentKeysStay" />
+              <UntestedTag id="steering.overlays" />
+              <UntestedTag id="steering.scroll" />
+              <UntestedTag id="steering.legendGroups" />
+              <UntestedTag id="steering.handoffLegend" />
+              <UntestedTag id="steering.dim" />
+            </h3>
             <p className="shortcut-help-intro">
               {t("shortcutHelp.steeringIntro", {
                 chord: chordLabel(resolveChord("steeringMode", overrides)),

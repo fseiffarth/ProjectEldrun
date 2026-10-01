@@ -51,12 +51,10 @@ pub const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 /// a page of prose into the state file and onto a settings row.
 pub const MAX_VERSION_TEXT: usize = 200;
 
-/// How long a probe result is reused before the CLI is asked again.
+/// How long a probe result is reused while its executable is unchanged.
 ///
-/// A day, because that is the rate the answer changes at: an agent CLI is
-/// updated by a person running an installer, not by Eldrun. It also means the
-/// Manage Agents panel spawns processes on its first open of the day and never
-/// again — opening the panel five times in a row costs nothing.
+/// A day is the fallback for changes that do not replace the launcher itself.
+/// Normal installs change its metadata and invalidate the cache immediately.
 pub const PROBE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Per-agent argv that prints a version and exits, keyed by the registry `id`.
@@ -114,7 +112,7 @@ pub struct Verified {
 const VERIFIED: &[Verified] = &[
     Verified {
         agent: "claude",
-        version: "2.1.285",
+        version: "2.1.286",
         surface: "§1.1 — SessionStart/Stop hook payload, --resume, /usage envelope",
     },
     Verified {
@@ -388,10 +386,47 @@ pub struct Seen {
     /// store and taking every other agent's entry with it.
     #[serde(default)]
     pub checked_at: u64,
+    /// Identity of the executable that answered. An installer can replace it
+    /// before the day-long probe TTL expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<VersionSource>,
     /// The installed version the user has already been told about. A newer one
     /// raises the notice again; the same one does not nag every launch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dismissed: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionSource {
+    path: PathBuf,
+    modified_nanos: u128,
+    len: u64,
+    link_modified_nanos: u128,
+}
+
+fn modified_nanos(metadata: &std::fs::Metadata) -> Option<u128> {
+    Some(
+        metadata
+            .modified()
+            .ok()?
+            .duration_since(UNIX_EPOCH)
+            .ok()?
+            .as_nanos(),
+    )
+}
+
+/// Follow the launcher and also watch its link: installers can replace either
+/// the binary itself or a symlink that selects a different release.
+fn version_source(path: &Path) -> Option<VersionSource> {
+    let target = std::fs::metadata(path).ok()?;
+    let link = std::fs::symlink_metadata(path).ok()?;
+    Some(VersionSource {
+        path: path.canonicalize().ok()?,
+        modified_nanos: modified_nanos(&target)?,
+        len: target.len(),
+        link_modified_nanos: modified_nanos(&link)?,
+    })
 }
 
 /// `<state_dir>/agent_versions.json` — probe results keyed by registry `id`.
@@ -427,15 +462,28 @@ pub fn fresh(seen: &Seen, ttl: Duration) -> bool {
     now_secs().saturating_sub(seen.checked_at) < ttl.as_secs()
 }
 
+/// A cached answer belongs to the same executable only while its identity and
+/// metadata still match. Old cache entries without `source` get one new probe.
+pub fn fresh_for_path(seen: &Seen, ttl: Duration, path: &Path) -> bool {
+    fresh(seen, ttl)
+        && seen.source.is_some()
+        && seen.source.as_ref() == version_source(path).as_ref()
+}
+
 /// The entry one probe result becomes, carrying `dismissed` over from whatever
 /// the store already held for that agent.
-fn seen_from(result: Result<String, String>, dismissed: Option<String>) -> Seen {
+fn seen_from(
+    result: Result<String, String>,
+    dismissed: Option<String>,
+    source: Option<VersionSource>,
+) -> Seen {
     match result {
         Ok(raw) => Seen {
             version: parse_version(&raw),
             raw: Some(raw),
             error: None,
             checked_at: now_secs(),
+            source,
             dismissed,
         },
         Err(error) => Seen {
@@ -443,6 +491,7 @@ fn seen_from(result: Result<String, String>, dismissed: Option<String>) -> Seen 
             raw: None,
             error: Some(error),
             checked_at: now_secs(),
+            source,
             dismissed,
         },
     }
@@ -456,18 +505,27 @@ fn seen_from(result: Result<String, String>, dismissed: Option<String>) -> Seen 
 /// otherwise be the one thing this loses. A failed write costs a re-probe and
 /// nothing else, so the probe result is still returned.
 pub fn remember_in(path: &Path, agent_id: &str, result: Result<String, String>) -> Seen {
-    let unwritten = seen_from(result.clone(), None);
+    remember_with_source_in(path, agent_id, result, None)
+}
+
+fn remember_with_source_in(
+    path: &Path,
+    agent_id: &str,
+    result: Result<String, String>,
+    source: Option<VersionSource>,
+) -> Seen {
+    let unwritten = seen_from(result.clone(), None, source.clone());
     crate::storage::patch_json(path, Store::new(), |store| {
         let dismissed = store.get(agent_id).and_then(|seen| seen.dismissed.clone());
-        let entry = seen_from(result, dismissed);
+        let entry = seen_from(result, dismissed, source);
         store.insert(agent_id.to_string(), entry.clone());
         Ok(entry)
     })
     .unwrap_or(unwritten)
 }
 
-pub fn remember(agent_id: &str, result: Result<String, String>) -> Seen {
-    remember_in(&store_path(), agent_id, result)
+pub fn remember(agent_id: &str, result: Result<String, String>, executable: &Path) -> Seen {
+    remember_with_source_in(&store_path(), agent_id, result, version_source(executable))
 }
 
 /// Mark the drift notice for `version` as seen. Recording the *version* rather
@@ -752,7 +810,7 @@ mod tests {
 
     #[test]
     fn matching_every_note_is_a_match_and_no_notes_is_unverified() {
-        assert_eq!(drift("claude", Some("2.1.285")).0, DriftState::Match);
+        assert_eq!(drift("claude", Some("2.1.286")).0, DriftState::Match);
         // `muse` has a recipe but no recorded check — the honest answer is
         // "nobody has verified this", not a tick.
         assert_eq!(drift("muse", Some("1.3.0")).0, DriftState::Unverified);
@@ -840,6 +898,26 @@ mod tests {
             ..Default::default()
         };
         assert!(!fresh(&stale, PROBE_TTL));
+    }
+
+    #[test]
+    fn replacing_an_executable_invalidates_its_cached_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("codex");
+        std::fs::write(&executable, "old binary").unwrap();
+        let seen = Seen {
+            checked_at: now_secs(),
+            source: version_source(&executable),
+            ..Default::default()
+        };
+        assert!(fresh_for_path(&seen, PROBE_TTL, &executable));
+        assert!(!fresh_for_path(
+            &Seen { source: None, ..seen.clone() },
+            PROBE_TTL,
+            &executable
+        ));
+        std::fs::write(&executable, "newer, longer binary").unwrap();
+        assert!(!fresh_for_path(&seen, PROBE_TTL, &executable));
     }
 
     #[test]

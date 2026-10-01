@@ -80,6 +80,11 @@ interface AgentModelsStore {
    *  Shift+Tab lands). Sticky like `screenByTab`: an unreadable screen keeps
    *  the last reading. Absent until a screen was read. */
   modeByTab: Record<string, AgentModeMarks>;
+  /** Composed PTY id → whether the session is pursuing a `/goal`, per its own
+   *  record (`agent_tab_goal`: Claude's transcript, Codex's goal store) — the
+   *  same answer whatever the CLI's footer looks like, so it outranks the goal
+   *  in `modeByTab` (`tabModeMarks`). Absent for a CLI that keeps no record. */
+  goalByTab: Record<string, boolean>;
   /** Record a reading of one tab's marks, when it differs from the last. */
   noteModes: (ptyId: string, marks: AgentModeMarks) => void;
   /** Re-read one tab's model off its live tmux screen, throttled unless
@@ -89,6 +94,19 @@ interface AgentModelsStore {
    *  turn just started or ended); `turnStarted` says the read is the one at a
    *  turn's start, where a changed prompt is a typed one to adopt. */
   refresh: (scope: string, tab: TabEntry, force?: boolean, turnStarted?: boolean) => Promise<void>;
+}
+
+/** The PLAN / GOAL marks one agent tab wears, on the tab strip and the phone's
+ * cards alike: the footer's reading, with the goal taken from the session's
+ * own record wherever the CLI keeps one. `undefined` while neither has been read. */
+export function tabModeMarks(
+  state: Pick<AgentModelsStore, "modeByTab" | "goalByTab">,
+  ptyId: string,
+): AgentModeMarks | undefined {
+  const screen = state.modeByTab[ptyId];
+  const goal = state.goalByTab[ptyId];
+  if (goal === undefined) return screen;
+  return { plan: screen?.plan ?? false, goal };
 }
 
 export function isModelTaggedTab(tab: TabEntry): boolean {
@@ -160,6 +178,7 @@ export const useAgentModelsStore = create<AgentModelsStore>((set, get) => ({
   recentByTab: {},
   screenByTab: {},
   modeByTab: {},
+  goalByTab: {},
   noteModes: (ptyId, marks) => {
     const known = get().modeByTab[ptyId];
     if (known && known.plan === marks.plan && known.goal === marks.goal) return;
@@ -203,10 +222,19 @@ export const useAgentModelsStore = create<AgentModelsStore>((set, get) => ({
     askedAt[ptyId] = now;
     const args = { agent: tab.cmd, projectId: scope === "root" ? null : scope, sessionId: tab.sessionId };
     // Reads of the same tail; a failure of one must not cost the others.
-    const [model, recent] = await Promise.all([
+    const [model, recent, goal] = await Promise.all([
       invoke("agent_tab_model", args).catch(() => null),
       invoke("agent_tab_recent_prompts", args).catch(() => null),
+      invoke("agent_tab_goal", args).catch(() => null),
     ]);
+    if (typeof goal === "boolean" ? get().goalByTab[ptyId] !== goal : ptyId in get().goalByTab) {
+      set((state) => {
+        const goalByTab = { ...state.goalByTab };
+        if (typeof goal === "boolean") goalByTab[ptyId] = goal;
+        else delete goalByTab[ptyId];
+        return { goalByTab };
+      });
+    }
     // A backend predating the recent-prompts read answers with a rejection;
     // then the last prompt alone is read, and adopted the old way below. An
     // empty list still asks for the last prompt: one whose record carries no

@@ -827,12 +827,17 @@ fn claude_spawn(block: &Value) -> Option<Record> {
 /// user's `input_text` (minus the context Codex injects, as the last-prompt
 /// reader skips it) and the assistant's `output_text`. The `event_msg` copies
 /// of the same messages are not read, so nothing shows twice; function calls,
-/// their outputs and reasoning items are stepped over.
+/// their outputs and reasoning items are stepped over. A `/goal` has no
+/// message of its own and is read off the event that sets it.
 fn codex_entry(value: &Value) -> Option<(&'static str, String)> {
-    if value.get("type").and_then(Value::as_str)? != "response_item" {
-        return None;
-    }
     let payload = value.get("payload")?;
+    match value.get("type").and_then(Value::as_str)? {
+        "response_item" => {}
+        "event_msg" if payload.get("type").and_then(Value::as_str) == Some("thread_goal_updated") => {
+            return agent_session::codex_prompt_in_record(value).map(|text| ("prompt", text));
+        }
+        _ => return None,
+    }
     if payload.get("type").and_then(Value::as_str)? != "message" {
         return None;
     }
@@ -1003,6 +1008,42 @@ mod tests {
         assert_eq!(kinds(&read), vec![("prompt", "add a test"), ("answer", "done")]);
         assert_eq!(read.entries[0].at.as_deref(), Some("2026-09-15T06:00:00Z"));
         assert_eq!(read.usage, None);
+    }
+
+    #[test]
+    fn a_codex_goal_reads_as_the_prompt_that_set_it() {
+        // Codex 0.153+: `/goal …` writes no user message — the objective is on
+        // the event, and each turn it drives opens with Codex's own context.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let goal = |at: &str, updated: i64, tokens: i64| {
+            format!(
+                "{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"thread_goal_updated\",\"threadId\":\"t\",\"goal\":{{\"threadId\":\"t\",\"objective\":\" fix the phone chat \",\"status\":\"active\",\"tokensUsed\":{tokens},\"timeUsedSeconds\":0,\"createdAt\":1790789474,\"updatedAt\":{updated}}}}}}}\n"
+            )
+        };
+        let context = "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<codex_internal_context source=\\\"goal\\\">\\nContinue working toward the active thread goal.\\n</codex_internal_context>\"}]}}\n";
+        let answer = "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"On it.\"}]}}\n";
+        std::fs::write(
+            &path,
+            [
+                goal("2026-09-30T17:31:14.270Z", 1790789474, 0),
+                context.to_string(),
+                answer.to_string(),
+                context.to_string(),
+                // Resumed later, with the tokens it has spent: not a new prompt.
+                goal("2026-09-30T19:00:00.000Z", 1790795000, 228822),
+                context.to_string(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let read = read_transcript(&path, TranscriptKind::Codex, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(kinds(&read), vec![("prompt", "/goal fix the phone chat"), ("answer", "On it.")]);
+        assert_eq!(read.entries[0].at.as_deref(), Some("2026-09-30T17:31:14.270Z"));
+        assert_eq!(
+            agent_session::last_prompt_in_transcript(&path, TranscriptKind::Codex).as_deref(),
+            Some("/goal fix the phone chat")
+        );
     }
 
     #[test]

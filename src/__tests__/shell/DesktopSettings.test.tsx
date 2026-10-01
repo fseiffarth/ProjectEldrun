@@ -14,6 +14,26 @@ const links = () => nav().querySelector(".settings-navigation-links") as HTMLEle
 const mainScroll = () => document.querySelector(".settings-panel-content .dialog-scroll") as HTMLElement;
 
 describe("settings category navigation", () => {
+  it("defaults untested tags off and lets General show and hide them", async () => {
+    const originalUpdateSettings = useSettingsStore.getState().updateSettings;
+    const updateSettings = vi.fn().mockImplementation(async (patch: { show_untested_tags: boolean }) => {
+      useSettingsStore.setState({ settings: { show_untested_tags: patch.show_untested_tags } });
+    });
+    useSettingsStore.setState({ settings: {}, updateSettings } as never);
+    await act(async () => { render(<SettingsDialog onClose={() => {}} />); });
+    const toggle = screen.getByRole("checkbox", { name: /Show untested tags/ }) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(document.documentElement.classList.contains("show-untested-tags")).toBe(false);
+    await act(async () => { fireEvent.click(toggle); });
+    expect(updateSettings).toHaveBeenCalledWith({ show_untested_tags: true });
+    expect(document.documentElement.classList.contains("show-untested-tags")).toBe(true);
+    expect(toggle.checked).toBe(true);
+    await act(async () => { fireEvent.click(toggle); });
+    expect(document.documentElement.classList.contains("show-untested-tags")).toBe(false);
+    expect(toggle.checked).toBe(false);
+    act(() => { useSettingsStore.setState({ updateSettings: originalUpdateSettings }); });
+  });
+
   it("opens one page per entry and honors the Mobile deep link", async () => {
     await act(async () => { render(<SettingsDialog onClose={() => {}} initialAnchor={SETTINGS_ANCHORS.mobile} />); });
     // The deep link lands on the Mobile page alone — not a long scroll that

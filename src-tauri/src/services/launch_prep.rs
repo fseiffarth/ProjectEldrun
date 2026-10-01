@@ -441,7 +441,7 @@ pub async fn prepare(
     // above then picks it up on the next spawn, unchanged. Tracked here, while
     // `cmd`/`cwd`/`env` still describe the tab itself — after the wrapping below
     // they describe `docker`/`ssh`.
-    if opts.cmd == "codex" && crate::services::agent_session::codex_binder_enabled() {
+    if opts.cmd == "codex" && crate::services::agent_session::codex_binder_enabled(opts.project_id.as_deref()) {
         // A remote tab's Codex runs on the far host, so its rollouts (and its
         // cwd) are over there; the local sessions tree would only mis-attribute
         // someone else's. `local_only` tabs of a remote project are the exception

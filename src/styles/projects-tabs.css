@@ -2869,6 +2869,10 @@ button:has(> .menu-shortcut) {
   user-select: none;
 }
 
+html:not(.show-untested-tags) .untested-tag {
+  display: none !important;
+}
+
 /* ── Dropdown (the one custom themed dropdown; native <select> popups can't
    be themed on WebKitGTK so we render trigger + menu ourselves) ─────────── */
 .dropdown {

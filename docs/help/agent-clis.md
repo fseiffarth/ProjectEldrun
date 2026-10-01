@@ -108,10 +108,11 @@ chat; click one to answer. While the agent works, a **working** row shows
 how long it has been busy, and its **Stop** button interrupts it. Press Esc in
 that box, or click **Terminal**, to go back. The terminal keeps running
 underneath, so nothing is lost by switching. The chat is optional: tabs
-open on their terminal until you pick Chat. The choice is one for all agent
-tabs and is remembered: picking Chat (or Terminal) in one tab switches every
-open agent tab that has the chat, and new tabs open the same way. Agents
-without a chat view keep their terminal.
+open on their terminal until you pick Chat. The choice is kept per agent
+and remembered: picking Chat (or Terminal) in a Claude tab switches every
+open Claude tab, and new Claude tabs open the same way, while Codex and
+OpenCode tabs keep their own choice. Agents without a chat view keep their
+terminal.
 
 ## Resume after a restart
 

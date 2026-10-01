@@ -137,6 +137,24 @@ describe("Eldrun Mobile readable terminal view", () => {
     ]))).toEqual(["> run the tests"]);
   });
 
+  it("marks the line a dropped rule stood above, without opening a break", () => {
+    // Claude Code 2.1.286 fences a permission prompt's command in dashed
+    // rules; the rule goes, but the dialog's heading still has to stop there.
+    const screen = readableScreen(plainBuffer([
+      " Write Unix timestamp to a.txt",
+      "╌".repeat(40),
+      " date +%s > a.txt",
+      "╌".repeat(40),
+      " Do you want to proceed?",
+    ]));
+    expect(screen.lines.map((line) => line.text)).toEqual([
+      " Write Unix timestamp to a.txt",
+      " date +%s > a.txt",
+      " Do you want to proceed?",
+    ]);
+    expect(screen.lines.map((line) => line.afterRule ?? false)).toEqual([false, true, true]);
+  });
+
   it("leaves a frame edge that is not the row's own, indent and all", () => {
     // OpenCode's full TUI paints a centred dialog over its composer box, so
     // each of the dialog's rows carries the box's `┃` far in from the margin.

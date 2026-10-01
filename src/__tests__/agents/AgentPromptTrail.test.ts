@@ -129,11 +129,25 @@ describe("joining the history and the typed prompts", () => {
       row("second Claude tab", T0, { tab_id: "launch-2" }),
       row("second, before tab ids", T0 + 1, { tab_id: undefined, session_id: "launch-2" }),
       row("mine, before tab ids", T0 + 2, { tab_id: undefined, session_id: "launch-1" }),
-      // A row with no id at all can only go by its label.
+      // A row with no id at all could be any "Claude" tab's: none takes it.
       row("no ids", T0 + 3, { tab_id: undefined }),
       row("mine", T0 + 4),
     ];
-    expect(buildPromptTrail(history, [], tab).map((p) => p.text)).toEqual(["mine, before tab ids", "no ids", "mine"]);
+    expect(buildPromptTrail(history, [], tab).map((p) => p.text)).toEqual(["mine, before tab ids", "mine"]);
+    const second: TabEntry = { ...tab, key: "agent-2", sessionId: "launch-2" };
+    expect(buildPromptTrail(history, [], second).map((p) => p.text)).toEqual(["second Claude tab", "second, before tab ids"]);
+  });
+
+  it("keeps apart tabs without a session id by their schedule target", () => {
+    const gemini: TabEntry = { key: "agent-3", label: "Gemini", cmd: "gemini", cwd: "/p", kind: "agent", scheduleTargetId: "target-3" };
+    const other: TabEntry = { ...gemini, key: "agent-4", scheduleTargetId: "target-4" };
+    const history = [
+      row("to the first", T0, { tab_id: "target-3", tab_label: "Gemini" }),
+      row("to the second", T0 + 1, { tab_id: "target-4", tab_label: "Gemini" }),
+      row("no ids", T0 + 2, { tab_id: undefined, tab_label: "Gemini" }),
+    ];
+    expect(buildPromptTrail(history, [], gemini).map((p) => p.text)).toEqual(["to the first"]);
+    expect(buildPromptTrail(history, [], other).map((p) => p.text)).toEqual(["to the second"]);
   });
 });
 

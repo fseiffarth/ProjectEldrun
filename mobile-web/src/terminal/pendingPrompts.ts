@@ -9,7 +9,9 @@ import type { TranscriptEntry } from "../api";
  * bubble; a prompt typed while the agent works is recorded only once the
  * agent takes it in, often after more of its messages, and swapping the
  * bubble for the record would move it. What is held lives as long as the
- * view: reopened, the chat is simply the session's record.
+ * view: reopened, the chat is simply the session's record — save the prompts
+ * the desktop still holds, which the record lacks until the agent takes them
+ * in; those come back with the tab (`heldPrompts.ts`).
  */
 export interface PendingPrompt {
   id: number;

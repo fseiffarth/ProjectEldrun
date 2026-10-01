@@ -149,13 +149,13 @@ nav button,.keys button { flex:1; }
 .reorder-hint { margin:-4px 0 12px; color:#9aa0b4; font-size:.84rem; }
 /* A project's pending git state (`GitMark`), in the desktop pill's colours. */
 .git-mark { display:inline-flex; align-items:center; gap:5px; font-style:normal; font-weight:600; }
+small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-weight:400; }
 .git-mark > i { width:8px; height:8px; border-radius:50%; background:currentColor; flex:0 0 auto; }
 .git-mark.git-dirty { color:#f85149; }
 .git-mark.git-staged { color:#d29922; }
 .git-mark.git-unpushed { color:#3fb950; }
 .git-mark.git-broken { color:#8b949e; }
 .git-mark.git-broken > i { background:none; border:1px dashed currentColor; box-sizing:border-box; }
-.project-git { margin:-4px 0 12px; font-size:.86rem; }
 .tab-card-foot { display:flex; align-items:center; gap:8px; min-height:56px; padding:8px 14px 9px 10px; border-top:1px solid #303549; }
 .tab-card-when { min-width:0; flex:1 1 auto; color:#a9b0c6; font-size:.78rem; line-height:1.3; }
 .tab-card .agent-status { padding:5px 9px; border-radius:999px; font-size:.72rem; line-height:1; white-space:nowrap; }
@@ -205,35 +205,79 @@ nav button,.keys button { flex:1; }
 .card.in-plan,.project-screen .tab-card.in-plan { border-color:#7b6ee0; }
 .card.in-goal,.project-screen .tab-card.in-goal { border-color:#4fb3c0; }
 .card.in-plan.has-tab-color,.tab-card.in-plan.has-tab-color,.card.in-goal.has-tab-color,.tab-card.in-goal.has-tab-color { border-left-color:var(--tab-color); }
-.agent-status-glyph { font-size:.85em; line-height:1; }
-.agent-status.working .agent-status-glyph { font-size:.7em; }
-/* The project screen's tab cards carry the glyph alone, as a disc centred on
-   the card's left border, half over the page gutter. The card no longer clips
-   (`overflow` was only rounding what its own radii already round), so the disc
-   can stand out past the edge; its dark ring parts it from the border line and
-   the tab colour running through it. Taps pass through to the card. */
-.tab-card > .tab-card-status { position:absolute; top:50%; left:-12px; z-index:2; display:grid; place-items:center; width:22px; height:22px; padding:0; border:1.5px solid currentColor; border-radius:50%; box-shadow:0 0 0 2px #000; font-size:.72rem; line-height:1; transform:translateY(-50%); pointer-events:none; }
-.tab-card > .tab-card-status.working { font-size:.56rem; }
-/* Each glyph moves the way its state reads. ▶ drifts forward while the turn
-   runs, and on the card's disc a ring keeps widening out of it; ? tips its
-   head now and then while it waits on you. ✓ and ■ are news, not a state in
-   progress: each lands once, when it first appears, and then holds still.
-   A class change swaps the animation name, so a tab moving between states
-   replays its entrance; a poll that leaves it alone does not. Transform and
-   opacity only — the disc's own `transform` places it, hence the glyph span. */
-.agent-status-glyph { display:inline-block; }
-.agent-status.working .agent-status-glyph { animation:agent-status-run 1.1s ease-in-out infinite; }
+/* The project screen's tab cards and the home screen's project rows are
+   octagons: each rounded corner becomes a straight 45° cut. The card itself is
+   not clipped — the status mark hangs over its left edge — so the shape is two
+   clipped layers under the content: `::before` is the outline in `--oct-edge`,
+   `::after` the face inset 1px (`--oct-face`, opaque, or the outline would show
+   through it). The face's cut is .41px shorter so the diagonal edges stay as
+   thick as the straight ones. Plan/goal/focus retint the outline; a tab colour
+   widens the left edge to 3px, its cuts included, as its left border did. The
+   drop line is drawn on the face: the card's own shadow paints under both
+   layers. */
+.project-screen .tab-card,.tab-card.home-project-card { --oct:12px; --oct-edge:#363c50; --oct-face:linear-gradient(155deg, #222637, #1a1d2b 76%); isolation:isolate; border:0; border-radius:0; background:none; box-shadow:none; }
+.project-screen .tab-card::before,.project-screen .tab-card::after,.tab-card.home-project-card::before,.tab-card.home-project-card::after { content:""; position:absolute; z-index:-1; clip-path:polygon(var(--cut) 0,calc(100% - var(--cut)) 0,100% var(--cut),100% calc(100% - var(--cut)),calc(100% - var(--cut)) 100%,var(--cut) 100%,0 calc(100% - var(--cut)),0 var(--cut)); pointer-events:none; }
+.project-screen .tab-card::before,.tab-card.home-project-card::before { --cut:var(--oct); inset:0; background:var(--oct-edge); }
+.project-screen .tab-card::after,.tab-card.home-project-card::after { --cut:calc(var(--oct) - .41px); inset:1px; background:var(--oct-face); }
+.project-screen .tab-card:focus-within { --oct-edge:#8578ed; }
+.project-screen .tab-card.in-plan { --oct-edge:#7b6ee0; }
+.project-screen .tab-card.in-goal { --oct-edge:#4fb3c0; }
+.project-screen .tab-card.has-tab-color::before { background:linear-gradient(90deg, var(--tab-color) calc(var(--oct) + 3px), var(--oct-edge) 0); }
+.project-screen .tab-card.has-tab-color::after { left:3px; }
+.project-screen .tab-card.drop-before,.project-screen .tab-card.drop-after,.tab-card.home-project-card.drop-before,.tab-card.home-project-card.drop-after { box-shadow:none; }
+.project-screen .tab-card.drop-before::after,.tab-card.home-project-card.drop-before::after { box-shadow:inset 0 3px 0 0 #7c6cff; }
+.project-screen .tab-card.drop-after::after,.tab-card.home-project-card.drop-after::after { box-shadow:inset 0 -3px 0 0 #7c6cff; }
+.project-screen .tab-card-open,.project-screen .tab-card-dot,.project-screen .tab-card-grip,.tab-card.one-row.home-project-card .tab-card-grip { border-radius:0; }
+/* On an octagon the grip is no column beside ✕: it sits in the lower-right
+   cut, its ⠿ turned 45° so the dots run along the cut. The button is a 36px
+   triangle in that corner — `clip-path` clips its hit area too — so ✕ above it
+   and the opener around it keep their taps; the prompts, the schedule line and
+   a project row's count step in to stay clear of the glyph. */
+.project-screen .tab-card-grip,.tab-card.home-project-card .tab-card-grip { position:absolute; right:0; bottom:0; width:36px; height:36px; border:0; clip-path:polygon(100% 0,100% 100%,0 100%); }
+.project-screen .tab-card-grip > span,.tab-card.home-project-card .tab-card-grip > span { position:absolute; right:4px; bottom:4px; display:grid; place-items:center; width:16px; height:16px; line-height:1; transform:rotate(45deg); }
+.project-screen .tab-card:has(.tab-card-grip) .tab-card-prompts { margin-right:26px; }
+.project-screen .tab-card:has(.tab-card-grip) .tab-card-foot { padding-right:26px; }
+.tab-card.home-project-card:has(.tab-card-grip) .card { padding-right:28px; }
+/* The project screen's tab cards carry a hexagonal status mark on the left
+   border. Its inset face leaves a coloured edge around the glyph. The card's
+   outline and face have a round hole punched where the mark sits (centre 1px
+   left of the card's edge, 2.5px wider than the 11px the turning hexagon
+   sweeps), so the page shows between mark and card, as the disc's dark ring
+   once did. Each layer places the hole from its own left edge. Taps pass
+   through the mark. */
+.tab-card:has(> .tab-card-status)::before,.tab-card:has(> .tab-card-status)::after { --hole:radial-gradient(circle at calc(-1px - var(--hole-left, 0px)) 50%, transparent 13.5px, #000 14px); -webkit-mask:var(--hole); mask:var(--hole); }
+.tab-card:has(> .tab-card-status)::after { --hole-left:1px; }
+.project-screen .tab-card.has-tab-color:has(> .tab-card-status)::after { --hole-left:3px; }
+.tab-card > .tab-card-status { position:absolute; top:50%; left:-12px; z-index:2; display:grid; place-items:center; width:22px; height:22px; padding:0; border:0; border-radius:0; background:currentColor; clip-path:polygon(25% 6.7%,75% 6.7%,100% 50%,75% 93.3%,25% 93.3%,0 50%); font-size:.72rem; line-height:1; transform:translateY(-50%); pointer-events:none; }
+.tab-card > .tab-card-status::before { content:""; position:absolute; inset:1.5px; background:var(--status-face); clip-path:polygon(25% 6.7%,75% 6.7%,100% 50%,75% 93.3%,25% 93.3%,0 50%); }
+.tab-card > .tab-card-status.working { --status-face:#173827; font-size:.56rem; }
+.tab-card > .tab-card-status.question { --status-face:#493b1d; }
+.tab-card > .tab-card-status.done { --status-face:#193a29; }
+.tab-card > .tab-card-status.interrupted { --status-face:#46202a; }
+/* The Activity pill breathes; the working hexagon turns slowly while a faint
+   fill pulses inside it, and its ▶ counter-turns so it stays upright and
+   legible at phone size. ? tips its head while it waits; ✓ and ■ land once.
+   The mark's own transform places it on the border, so the spin repeats it.
+   The hexagon is regular (flat edges at 6.7%/93.3% of its square box) so it
+   turns without wobbling. */
+.agent-status-glyph { display:inline-block; position:relative; z-index:1; }
+.agent-status.working:not(.tab-card-status) .agent-status-glyph { animation:agent-status-breathe 1.6s ease-in-out infinite; }
 .agent-status.question .agent-status-glyph { animation:agent-status-ask 2.6s ease-in-out infinite; transform-origin:50% 85%; }
 .agent-status.done .agent-status-glyph { animation:agent-status-pop .5s cubic-bezier(.3,1.6,.5,1) both; }
 .agent-status.interrupted .agent-status-glyph { animation:agent-status-stop .45s cubic-bezier(.3,1.5,.5,1) both; }
-.tab-card > .tab-card-status.working::after { content:""; position:absolute; inset:-1.5px; border:1.5px solid currentColor; border-radius:50%; animation:agent-status-ping 1.6s ease-out infinite; }
-@keyframes agent-status-run { 0%,100% { transform:translateX(-1px); opacity:.75; } 50% { transform:translateX(1.5px); opacity:1; } }
-@keyframes agent-status-ping { 0% { transform:scale(1); opacity:.8; } 80%,100% { transform:scale(1.9); opacity:0; } }
+.tab-card > .tab-card-status.working::after { content:""; position:absolute; inset:0; background:currentColor; animation:agent-status-hex-pulse 1.6s ease-in-out infinite; }
+.tab-card > .tab-card-status.working { animation:agent-status-hex-spin 3.6s linear infinite; }
+.tab-card > .tab-card-status.working .agent-status-glyph { animation:agent-status-hex-unspin 3.6s linear infinite; }
+@keyframes agent-status-breathe { 50% { opacity:.55; } }
+@keyframes agent-status-hex-pulse { 0%,100% { opacity:0; } 50% { opacity:.18; } }
+@keyframes agent-status-hex-spin { from { transform:translateY(-50%) rotate(0); } to { transform:translateY(-50%) rotate(360deg); } }
+@keyframes agent-status-hex-unspin { to { transform:rotate(-360deg); } }
 @keyframes agent-status-ask { 0%,64%,100% { transform:rotate(0); } 72% { transform:rotate(-16deg); } 80% { transform:rotate(13deg); } 88% { transform:rotate(-7deg); } 94% { transform:rotate(3deg); } }
 @keyframes agent-status-pop { 0% { transform:scale(.3); opacity:0; } 60% { transform:scale(1.3); opacity:1; } 100% { transform:scale(1); } }
 @keyframes agent-status-stop { 0% { transform:scale(1.8); opacity:0; } 55% { transform:scale(.85); opacity:1; } 100% { transform:scale(1); } }
 @media (prefers-reduced-motion:reduce) {
   .agent-status .agent-status-glyph { animation:none; }
+  .tab-card > .tab-card-status.working,.tab-card > .tab-card-status.working .agent-status-glyph { animation:none; }
   .tab-card > .tab-card-status.working::after { display:none; }
 }
 small { color:#9498aa; }
@@ -282,11 +326,10 @@ small { color:#9498aa; }
 .home-logo-frame { position:relative; display:grid; place-items:center; width:50px; height:47px; flex:0 0 auto; }
 .home-logo { position:relative; width:35px; height:35px; color:#f0efff; }
 .home-header > .lamp { flex:0 0 auto; }
-.home-project-card { border-color:#3b4055; border-radius:14px; background:linear-gradient(115deg,rgba(54,49,85,.42),rgba(28,31,43,.96) 38%); }
-.home-project-card:focus-within { border-color:#8d80ee; }
+.tab-card.home-project-card { --oct-edge:#3b4055; --oct-face:linear-gradient(115deg,rgba(54,49,85,.42),rgba(54,49,85,0) 38%),#1c1f2b; }
+.tab-card.home-project-card:focus-within { --oct-edge:#8d80ee; }
 .home-project-card .card { min-height:62px; }
 .home-project-card .count { border-radius:8px; background:#38305f; color:#ebe6ff; font-variant-numeric:tabular-nums; }
-.tab-card.one-row.home-project-card .tab-card-grip { border-radius:0 14px 14px 0; }
 @media (max-width:380px) {
   .home-brand strong { font-size:.9rem; }
   .home-logo-frame { width:43px; height:41px; }
@@ -326,6 +369,40 @@ button.mobile-alert-row { cursor:pointer; }
 .mobile-alert-row time { color:#b7bac8; font-size:.78rem; white-space:nowrap; }
 .mobile-alerts-error { margin:0; padding:10px 12px; border:1px solid #6d3b46; border-radius:11px; background:rgba(60,30,38,.6); color:#f3c3ca; font-size:.85rem; }
 .mobile-alerts-empty,.projects-empty { margin:0; padding:16px; border:1px solid #383c4d; border-radius:11px; color:#9498aa; text-align:center; }
+/* The rest of the home screen is cut to the project rows' octagon too. These
+   hang nothing over their edges, so the element itself is clipped. The clip
+   takes the corners of the border with it, so a bordered element repaints the
+   four cuts as its first background layers (`--oct-corners`): each a square
+   `--oct` wide whose gradient turns to the edge colour on the diagonal and
+   stays it for 1px (`--oct-lw` on the left, so a tab colour's 3px edge runs
+   into its cuts). `--oct-edge` is the border colour, so a state retints both.
+   Borderless elements need only the clip. The outer shadows go: a clip would
+   cut them off anyway. */
+.home-header,.home-screen > nav button,.home-screen .search,.home-screen .activity-sort select,.home-screen .projects-empty,.home-screen .mobile-alerts-empty,.home-screen .mobile-alerts-error,.home-screen .mobile-alert-row,.home-screen .mobile-alert-done,.home-screen .cards > button.card,.home-screen .error,.home-screen .notice,.home-screen .phone-settings .option-list button,.home-screen .inbox-upload,.home-screen .inbox-upload button,.home-project-card .count {
+  --oct:10px; --oct-edge:#383c4d;
+  --oct-corners:linear-gradient(to bottom right, var(--oct-lc, var(--oct-edge)) calc(50% + var(--oct-lw, 1px)), transparent 0) top left / var(--oct) var(--oct) no-repeat border-box,
+    linear-gradient(to bottom left, var(--oct-edge) calc(50% + 1px), transparent 0) top right / var(--oct) var(--oct) no-repeat border-box,
+    linear-gradient(to top left, var(--oct-edge) calc(50% + 1px), transparent 0) bottom right / var(--oct) var(--oct) no-repeat border-box,
+    linear-gradient(to top right, var(--oct-lc, var(--oct-edge)) calc(50% + var(--oct-lw, 1px)), transparent 0) bottom left / var(--oct) var(--oct) no-repeat border-box;
+  border-radius:0; box-shadow:none;
+  clip-path:polygon(var(--oct) 0,calc(100% - var(--oct)) 0,100% var(--oct),100% calc(100% - var(--oct)),calc(100% - var(--oct)) 100%,var(--oct) 100%,0 calc(100% - var(--oct)),0 var(--oct));
+}
+.home-header,.home-screen .projects-empty,.home-screen .mobile-alerts-empty,.home-screen .mobile-alert-row,.home-screen .cards > button.card { --oct:12px; }
+.home-screen .activity-sort select,.home-screen .mobile-alert-done,.home-screen .inbox-upload { --oct:8px; }
+.home-screen .inbox-upload button,.home-project-card .count { --oct:6px; }
+.home-header { --oct-edge:#3a3c58; border-color:var(--oct-edge); background:var(--oct-corners),linear-gradient(125deg,rgba(50,44,76,.92),rgba(27,31,46,.95) 62%,rgba(25,37,54,.94)); }
+.home-screen > nav button { border-color:var(--oct-edge); background:var(--oct-corners),#1b1e29; }
+.home-screen > nav button.selected { --oct-edge:#7c6cff; background:var(--oct-corners),#3b326e !important; }
+.home-screen .search,.home-screen .activity-sort select { --oct-edge:#3a3e50; border-color:var(--oct-edge); }
+.home-screen .search { background:var(--oct-corners),#171a24; }
+.home-screen .activity-sort select { background:var(--oct-corners),url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%239aa0b4' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.6 6 6.4 11 1.6'/%3E%3C/svg%3E") right 10px center / 12px 8px no-repeat,#171a24; }
+.home-screen .projects-empty,.home-screen .mobile-alerts-empty { border-color:var(--oct-edge); background:var(--oct-corners); }
+.home-screen .mobile-alerts-error { --oct-edge:#6d3b46; border-color:var(--oct-edge); background:var(--oct-corners),rgba(60,30,38,.6); }
+.home-screen .mobile-alert-row,.home-screen .cards > button.card { border-color:var(--oct-edge); background:var(--oct-corners),rgba(28,31,43,.92); }
+.home-screen .mobile-alert-done { --oct-edge:#776db4; border-color:var(--oct-edge); background:var(--oct-corners),#24203b; }
+.home-screen .cards > button.card.in-plan { --oct-edge:#7b6ee0; }
+.home-screen .cards > button.card.in-goal { --oct-edge:#4fb3c0; }
+.home-screen .cards > button.card.has-tab-color { --oct-lc:var(--tab-color); --oct-lw:3px; border-left-color:var(--tab-color); }
 .todo-create { display:grid; grid-template-columns:1fr 120px auto; gap:8px; margin:14px 0; }
 /* Adding a column is a rare, structural act, and it now sits at the foot of the
    column list where a new column would land — drawn as a ghost so it reads as
@@ -498,6 +575,73 @@ button.mobile-alert-row { cursor:pointer; }
 .mobile-calendar-agenda article span { color:#aeb2c2; font-size:.86rem; }
 .mobile-calendar-agenda article.cancelled { opacity:.58; }
 .mobile-calendar-agenda article.cancelled strong { text-decoration:line-through; }
+/* Mail's pickers: the account dropdown heads the overview, and inside a folder
+   the account and folder dropdowns share one row. */
+.mail-mobile-picker { gap:6px; font-size:.86rem; }
+.mail-mobile-switch { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); gap:8px; margin-bottom:12px; }
+.mail-mobile-folders button { align-items:center; }
+.mail-mobile-folders button i { flex:0 0 auto; font-style:normal; }
+.mail-mobile-folders button span { flex:1; min-width:0; }
+.mail-mobile-folders button.has-unread span { font-weight:700; color:#fff; }
+.mail-mobile-folders button.has-unread small { color:#d6d0ff; }
+/* Mail, To-do and Calendar are cut to the home screen's octagon as well, on the
+   same two rules: a bordered element is clipped and repaints its four cut
+   corners as gradient layers in `--oct-edge` (`--oct-lc`/`--oct-lw` for a
+   heavier left edge); a borderless one is only clipped. Unlike the home block
+   the layers are set as longhands, so each element keeps its own background
+   colour, and a dropdown's chevron rides along as a fifth layer (`--oct-extra`).
+   The defaults sit in `:where()` so any rule can retint or resize a piece. */
+:where(:is(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) > header > button:not(.back),:is(.todo-screen,.mobile-calendar-screen) .todo-editor,:is(.todo-screen,.mobile-calendar-screen) .todo-editor :is(button,select,textarea,fieldset,input:not([type="checkbox"],[type="range"],[type="color"])),.mail-mobile-screen :is(.mail-mobile-account,.mail-mobile-folders button,.mail-mobile-row,.mail-mobile-pager button,.mail-mobile-actions button,.mail-mobile-message pre,.mail-mobile-reply,.mail-mobile-reply textarea,.mail-mobile-reply button,.mail-mobile-switch select,.mail-mobile-picker select),.todo-screen :is(.todo-mobile-search,.todo-mobile-filters select,.todo-mobile-filters .todo-inline-check,.todo-mobile-column,.todo-mobile-card,.todo-check,.todo-mobile-actions button,.todo-mobile-actions select,.todo-mobile-column-head > div > button,.todo-add-column,.todo-fab,.todo-chip),.mobile-calendar-screen :is(.mobile-calendar-actions button,.mobile-calendar-nav button,.mobile-calendar-day,.mobile-calendar-event,.mobile-calendar-agenda > p,.calendar-new input:not([type="color"]))) { --oct:10px; --oct-edge:#383c4d; }
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) select { --oct-extra:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%239aa0b4' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.6 6 6.4 11 1.6'/%3E%3C/svg%3E"); --oct-extra-at:right 12px center; --oct-extra-size:12px 8px; }
+:is(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) > header > button:not(.back),:is(.todo-screen,.mobile-calendar-screen) .todo-editor,:is(.todo-screen,.mobile-calendar-screen) .todo-editor :is(button,select,textarea,fieldset,input:not([type="checkbox"],[type="range"],[type="color"])),.mail-mobile-screen :is(.mail-mobile-account,.mail-mobile-folders button,.mail-mobile-row,.mail-mobile-pager button,.mail-mobile-actions button,.mail-mobile-message pre,.mail-mobile-reply,.mail-mobile-reply textarea,.mail-mobile-reply button,.mail-mobile-switch select,.mail-mobile-picker select),.todo-screen :is(.todo-mobile-search,.todo-mobile-filters select,.todo-mobile-filters .todo-inline-check,.todo-mobile-column,.todo-mobile-card,.todo-check,.todo-mobile-actions button,.todo-mobile-actions select,.todo-mobile-column-head > div > button,.todo-add-column,.todo-fab,.todo-chip),.mobile-calendar-screen :is(.mobile-calendar-actions button,.mobile-calendar-nav button,.mobile-calendar-day,.mobile-calendar-event,.mobile-calendar-agenda > p,.calendar-new input:not([type="color"])) {
+  --oct-img:linear-gradient(to bottom right, var(--oct-lc, var(--oct-edge)) calc(50% + var(--oct-lw, 1px)), transparent 0),
+    linear-gradient(to bottom left, var(--oct-edge) calc(50% + 1px), transparent 0),
+    linear-gradient(to top left, var(--oct-edge) calc(50% + 1px), transparent 0),
+    linear-gradient(to top right, var(--oct-lc, var(--oct-edge)) calc(50% + var(--oct-lw, 1px)), transparent 0);
+  border-radius:0; box-shadow:none; border-color:var(--oct-edge); border-left-color:var(--oct-lc, var(--oct-edge));
+  background-image:var(--oct-img),var(--oct-extra, none);
+  background-position:top left,top right,bottom right,bottom left,var(--oct-extra-at, center);
+  background-size:var(--oct) var(--oct),var(--oct) var(--oct),var(--oct) var(--oct),var(--oct) var(--oct),var(--oct-extra-size, auto);
+  background-repeat:no-repeat; background-origin:border-box;
+  clip-path:polygon(var(--oct) 0,calc(100% - var(--oct)) 0,100% var(--oct),100% calc(100% - var(--oct)),calc(100% - var(--oct)) 100%,var(--oct) 100%,0 calc(100% - var(--oct)),0 var(--oct));
+}
+:where(:is(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(.notice:not(.todo-mobile-note),.error),.mail-mobile-screen :is(.mail-mobile-message-meta,.mail-mobile-warning,.mail-mobile-sent,.mail-mobile-reply-confirm,.mail-mobile-attachments div),.todo-screen .todo-column-count,.mobile-calendar-screen :is(.mobile-calendar-warning,.mobile-calendar-day.today > span,.mobile-calendar-event > i,.mobile-calendar-manage-row > i)) { --oct:10px; }
+:is(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(.notice:not(.todo-mobile-note),.error),.mail-mobile-screen :is(.mail-mobile-message-meta,.mail-mobile-warning,.mail-mobile-sent,.mail-mobile-reply-confirm,.mail-mobile-attachments div),.todo-screen .todo-column-count,.mobile-calendar-screen :is(.mobile-calendar-warning,.mobile-calendar-day.today > span,.mobile-calendar-event > i,.mobile-calendar-manage-row > i) {
+  border-radius:0;
+  clip-path:polygon(var(--oct) 0,calc(100% - var(--oct)) 0,100% var(--oct),100% calc(100% - var(--oct)),calc(100% - var(--oct)) 100%,var(--oct) 100%,0 calc(100% - var(--oct)),0 var(--oct));
+}
+/* Sizes and edges, per piece. Inputs, dropdowns and text areas keep the input
+   border; a primary button its brighter one. */
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(input,select,textarea) { --oct:8px; --oct-edge:#3a3e50; }
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) .primary { --oct-edge:#8c7df4; }
+/* The clip would cut a focus outline away entirely, so focus retints the edge. */
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(input,select,textarea):focus { --oct-edge:#7c6cff; outline:0; }
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(.mail-mobile-folders button,.mail-mobile-pager button,.mail-mobile-actions button,.mail-mobile-reply button,.mail-mobile-warning,.mail-mobile-sent,.mail-mobile-reply-confirm,.mail-mobile-attachments div,.todo-editor :is(button,fieldset),.todo-mobile-filters .todo-inline-check,.mobile-calendar-actions button,.mobile-calendar-nav button,.mobile-calendar-warning) { --oct:8px; }
+:where(.mail-mobile-screen,.todo-screen,.mobile-calendar-screen) :is(.mail-mobile-account,.mail-mobile-message pre,.mail-mobile-reply,.todo-add-column) { --oct:12px; }
+.mail-mobile-row.unread { --oct-lc:#8c7df4; --oct-lw:4px; }
+.todo-screen .todo-mobile-search { --oct:10px; }
+.todo-mobile-column { --oct:14px; }
+.todo-mobile-card { --oct-edge:#272c3a; }
+.todo-check { --oct:6px; --oct-edge:#776db4; }
+.todo-mobile-actions button,.todo-mobile-actions select { --oct:7px; }
+.todo-mobile-actions button { --oct-edge:#2f3444; }
+.todo-mobile-actions select { --oct-extra-at:right 9px center; }
+.todo-mobile-column-head > div > button { --oct:6px; --oct-edge:transparent; }
+.todo-fab { --oct:17px; }
+.todo-chip,.todo-column-count,.todo-editor .todo-tag-list button { --oct:6px; }
+.todo-chip { --oct-edge:transparent; }
+.todo-chip.due.overdue { --oct-edge:#65323d; }
+.todo-chip.due.today { --oct-edge:#66522a; }
+.todo-chip.due.soon { --oct-edge:#2f4658; }
+.todo-tag-list button { --oct-edge:#3d3860; }
+.todo-editor { --oct:14px; --oct-edge:#524a78; }
+.mobile-calendar-day { --oct:6px; --oct-edge:#303545; }
+.mobile-calendar-day.today > span { --oct:6px; }
+.mobile-calendar-event > i,.mobile-calendar-manage-row > i { --oct:3px; }
+/* The shared `.selected` paints the picked day with `!important`, which would
+   wipe the corner layers; the day repaints them the same way, in its own
+   colours, and drops the outline the clip would only cut off. */
+.mobile-calendar-screen .mobile-calendar-day.selected { --oct-edge:#9c8cff; outline:0; border-color:var(--oct-edge) !important; background-color:#282248 !important; background-image:var(--oct-img) !important; background-position:top left,top right,bottom right,bottom left !important; background-size:var(--oct) var(--oct) !important; background-repeat:no-repeat !important; background-origin:border-box !important; }
 @media (max-width:480px) { .mail-mobile-row > div { display:grid; gap:3px; } .mail-mobile-pager button { padding-inline:9px; } }
 @media (max-width:360px) { .projects-row { margin-top:14px; } .mobile-calendar-day { min-height:48px; } .mobile-tab { font-size:.68rem; } }
 /* While the full-bleed terminal is up: no document scroll to lose the header
@@ -818,6 +962,9 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-prefix { flex:0 0 auto; height:30px; padding:0 11px; border:1px solid #3a3f55; border-radius:15px; background:transparent; color:#c8cdda; font:inherit; font-size:.8rem; }
 .composer-prefix.active { border-color:#8c7df4; background:rgba(120,104,217,.28); color:#fff; }
 .composer-prefix:disabled { opacity:.5; }
+/* Commit: an icon chip, so a fourth chip still fits a narrow phone. */
+.composer-prefix.composer-commit { display:grid; place-items:center; width:30px; padding:0; }
+.composer-bar .composer-commit svg { width:17px; height:17px; }
 .composer-untested { color:#ffd36b; font-size:.7rem; font-style:normal; }
 /* The draft row: the textarea, while there is a draft a ✕ that empties it —
    a phone keyboard has no select-all, and a long dictated draft was otherwise
@@ -1018,6 +1165,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .brand-screen input:not(.code) { text-align:center; }
 .brand-screen .error { text-align:left; }
 .brand-screen > .primary { min-height:48px; }
+.pair .pair-lock-hint { margin-top:2px; font-size:.88rem; }
 /* The lock's fingerprint is a round target rather than a full-width bar; its
    only motion is the waiting pulse, which animates transform/opacity on a
    pseudo-element, never a blur. */

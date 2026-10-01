@@ -213,6 +213,7 @@ export function AgentContinueHost() {
         {
           tabLabel: binding.tab.label,
           sessionId: binding.tab.sessionId,
+          tabId: binding.scheduleTargetId,
           agent: binding.tab.cmd,
           result,
           scheduledFor: localOccurrenceKey(new Date(armedAt)),

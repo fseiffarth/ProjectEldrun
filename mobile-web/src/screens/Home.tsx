@@ -12,6 +12,7 @@ import { isUntested } from "../../../src/lib/untested";
 import { useT } from "../../../src/lib/i18n";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
 import { SendToDesktop } from "../components/SendToDesktop";
+import { GitMark } from "../components/GitMark";
 import { readSpeechLang, type SpeechLang } from "../speechLang";
 import { NotificationsSheet, pushSummary } from "../components/NotificationsSheet";
 import { getPushState, pushSupport, type HostPushState } from "../push";
@@ -295,7 +296,7 @@ export function Home({ open, openTab, todo, mail }: {
         ref={drag.rowRef(project.id)}
       >
         <div className="tab-card-head">
-          <button className="card" onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{scopeCaption(project)}</small></span><span className="count">{project.live_sessions}</span></button>
+          <button className="card" onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{scopeCaption(project)}{project.git && <GitMark state={project.git} />}</small></span><span className="count">{project.live_sessions}</span></button>
           {canReorder && <button
             className="tab-card-grip"
             aria-label={`Move ${project.label}`}

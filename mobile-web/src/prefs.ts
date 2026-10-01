@@ -57,8 +57,10 @@ export function writeFlag(name: MobileFlag, value: boolean, storage?: FlagStorag
  * looking at the list for the same reason. `projectTabsSort` is the same choice
  * for one project screen's tab list, kept apart from it because the two lists
  * are read for different things: the cross-project Agents list is triage, while
- * a project's own tabs are a place the reader arranges by hand. */
-export type MobileChoice = "agentsSort" | "projectTabsSort" | "speechLang";
+ * a project's own tabs are a place the reader arranges by hand. `mailAccount`
+ * is the mail account the Mail tab opens on: an id the desktop handed out,
+ * checked against the accounts it lists before it is used. */
+export type MobileChoice = "agentsSort" | "projectTabsSort" | "speechLang" | "mailAccount";
 
 export function readChoice<T extends string>(name: MobileChoice, accept: (value: unknown) => value is T, fallback: T, storage?: FlagStorage): T {
   try {

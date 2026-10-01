@@ -103,12 +103,25 @@ record their live ID without editing the host hook registration.
 
 ### The phone send hint
 
-An accepted Claude `SessionStart` prints a one-line `eldrun-send <file>` hint
-when `ELDRUN_PROJECT_DIR` is set. The existing continuity check runs first, so
-a nested startup cannot print it; `Stop` and Codex never print it. Claude adds
-SessionStart stdout to context. The PowerShell hook mirrors it; other agents
-learn the command from the project's scaffold `AGENTS.md`. See
-the third-party update checklist.
+An accepted Claude or Codex `SessionStart` prints a one-line
+`eldrun-send <file>` hint when `ELDRUN_PROJECT_DIR` is set. The existing
+continuity check runs first, so a nested startup cannot print it; `Stop` never
+prints it. Both CLIs add SessionStart stdout to context. The PowerShell hook
+mirrors it. The hint lives here, not in the project scaffold's `AGENTS.md`:
+that file is the user's, committed and never rewritten, so Eldrun runtime text
+in it froze in every project and reached collaborators' agents where the
+command doesn't exist.
+
+The other CLIs get the same line from `services::agent_hint`: a SessionStart
+hook where the CLI has one that feeds the model (Gemini, Qwen, Auggie,
+CodeBuddy, Droid, Cursor, Copilot — one script in `<state_dir>/hooks/`, one
+output shape per CLI, silent outside an Eldrun project tab). Vibe and
+OpenCode have no such hook: Vibe gets a marker-delimited block in its
+user-level `AGENTS.md`, OpenCode a hint file in its `opencode.json`
+`instructions` — not its user-level `AGENTS.md`, which would replace the
+`~/.claude/CLAUDE.md` fallback carrying the user's global instructions. All of
+it is written into the agent home at each spawn, after the global layer. CLIs with neither (Aider, Goose, Crush, …) get no
+hint. See the third-party update checklist.
 
 ### Where Codex keeps a session, and why resume died
 

@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { ApiError, MAX_TAB_LABEL, renameTab, type TabRow } from "../api";
+import { useT } from "../../../src/lib/i18n";
+import { isUntested } from "../../../src/lib/untested";
 
 /** Rename one agent tab from the phone. The label is the only thing that
  * crosses: the tab is named by its opaque id, and the desktop resolves that
@@ -10,6 +12,7 @@ export function RenameSheet({ tab, onClose, onRenamed }: {
   onClose: () => void;
   onRenamed: (label: string) => void;
 }) {
+  const t = useT();
   const [label, setLabel] = useState(tab.label);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -38,7 +41,7 @@ export function RenameSheet({ tab, onClose, onRenamed }: {
   return <div className="sheet-backdrop" role="presentation" onClick={onClose}>
     <section className="option-sheet schedule-sheet" role="dialog" aria-modal="true" aria-label={`Rename ${tab.label}`} onClick={(event) => event.stopPropagation()}>
       <span className="sheet-grip" aria-hidden="true" />
-      <header><button className="sheet-close" onClick={onClose} aria-label="Close">✕</button><h2>Rename tab <small>Untested</small></h2><span className="sheet-close" aria-hidden="true" /></header>
+      <header><button className="sheet-close" onClick={onClose} aria-label="Close">✕</button><h2>Rename tab {isUntested("mobile.sheet.rename") && <small>{t("mobile.newTab.untested")}</small>}</h2><span className="sheet-close" aria-hidden="true" /></header>
       <p className="sheet-note">The name is the desktop's own tab label — renaming here renames it in the Eldrun window too.</p>
       {error && <p className="sheet-note error" role="alert">{error}</p>}
       <div className="mobile-schedule-form">

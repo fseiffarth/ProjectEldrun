@@ -945,6 +945,28 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
      composer shows only in the Terminal view.
   Windows PowerShell and macOS runtime behavior also require platform QA.
 
+- [ ] **31bs — Every agent CLI learns `eldrun-send` from Eldrun, not the
+  project** (2026-10-01; implemented, never live; the backend needs a restart).
+  The hint left the scaffold's `AGENTS.md`. Codex now gets it from the session
+  hook like Claude; `services::agent_hint` registers a SessionStart hook for
+  Gemini, Qwen, Auggie, CodeBuddy, Droid, Cursor and Copilot, a managed
+  block in Vibe's user `AGENTS.md`, and a hint file in OpenCode's
+  `opencode.json` `instructions`, all in the agent home. Copilot's
+  hook shape was probed against Copilot CLI 1.0.88 in a fenced tab (the model
+  read the context); the rest is from each CLI's hook docs.
+  - [ ] 🖐️ In a fresh project tab of each installed CLI, ask "How do you show
+    me a file on my phone?" — it should name `eldrun-send <file>` without
+    reading any file. Codex needs its `/hooks` trust first; Cursor is known
+    upstream to drop session-start context now and then.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 - [~] **31ac — "Set up in terminal" opens in the root console** (2026-09-14;
   ✅ code-complete, tests passing, ⚠️ live QA pending). The Tailscale Serve
   guide's button switched the whole window to the root scope and opened a tab
@@ -3158,6 +3180,9 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     notice goes. Then a Codex tab signed out → "Sign in with ChatGPT" →
     open page, approve → copy the failed localhost address → Finish
     sign-in → Codex continues.
+    - 2026-10-01: Claude sign-in from the phone confirmed working by the
+      user (`mobile.signIn`, `mobile.signIn.tab` stamped tested); the
+      Codex half is still open, so the boxes stay unticked.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -3418,6 +3443,10 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     menu no longer offers Edit. Try Edit right as the turn ends → "already
     took this prompt", your words stay in the composer. Send while the agent
     is idle → typed at once as before (no Edit). Repeat once with Codex.
+    Leave the tab (back to the project) while the prompt still waits, open it
+    again → the bubble is still there, below the working row, and still
+    offers Edit (fix 2026-09-30: the phone keeps held prompts per tab in
+    `heldPrompts.ts` and re-checks them against the tab's schedules).
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -3430,19 +3459,22 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
 - [~] **31br — Moving status glyphs and an Interrupted state on the phone** (2026-09-30;
   ✅ code-complete, automated tests passing — `MobileAgentTurnEdges.test.ts`;
   ⚠️ never seen live). The project screen's card discs and the Agents list's
-  pills animate their glyph: ▶ drifts forward (and the disc sends out a ping
-  ring), ? tips now and then, ✓ and ■ land once when they appear. Reduced
-  motion turns it all off. New fourth state `interrupted` (■, red): the desktop
-  bridge reports the desktop's own `interrupted` lamp (`mobileAgentState`), held
-  until the agent's next turn — no push notice for it. Untested id
+  pills show motion: the card keeps ▶ still while a small arc rotates around
+  its disc, and the Agents pill pulses gently; ? tips now and then, ✓ and ■
+  land once when they appear. Reduced motion turns it all off. New fourth
+  state `interrupted` (■, red): the desktop bridge reports the desktop's own
+  `interrupted` lamp (`mobileAgentState`), held until the agent's next turn —
+  no push notice for it. Untested id
   `mobile.tabs.statusMotion`.
   - Needs the PWA rebuilt (`npm run mobile:bundle`); the sidecar only passes the
     string through, so the desktop's hot reload + a rebuilt PWA are enough.
-  - [ ] 🖐️ Manual phone QA — give an agent tab a long task: its card's ▶ disc
-    drifts and rings. Leave it at a permission prompt: ? wobbles every few
-    seconds. Let a turn finish: ✓ pops in once, then holds still. Start a turn
-    and press Esc on the desktop (or the phone's Esc key): the card shows a red
-    ■ that stamps in once, the Agents list pill reads "Interrupted", the status
+  - [ ] 🖐️ Manual phone QA — give an agent tab a long task: its card's ▶ stays
+    still while a small arc rotates without reaching neighbouring cards, and
+    its Agents-list glyph pulses gently. Leave it at a permission prompt: ?
+    wobbles every few seconds. Let a turn finish: ✓ pops in once, then holds
+    still. Start a turn and press Esc on the desktop (or the phone's Esc key):
+    the card shows a red ■ that stamps in once, the Agents list pill reads
+    "Interrupted", the status
     sheet says "Interrupted"; no push notice arrives. Send a new prompt → back
     to ▶. With the phone's reduce-motion setting on, nothing moves.
     - [ ] ✅ Works on Linux (X11)

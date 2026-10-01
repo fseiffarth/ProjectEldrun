@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useT } from "../../lib/i18n";
@@ -10,22 +10,30 @@ import {
   type SessionTranscript,
 } from "../../lib/agents/agentReader";
 import { NO_LIVE, STOP_KEY, answerKeys, readReaderLive, sameReaderLive, type ReaderLive } from "../../lib/agents/readerLive";
+import { onSentPrompt } from "../../lib/agents/sentPrompts";
 import { sendSteeringPrompt } from "../../lib/shortcuts/steeringAgent";
 import { writePtyInput } from "../../lib/terminal/terminalInput";
 import { terminalFor } from "../../lib/terminal/terminalRegistry";
 import { isInterruptInput, noteUserInput } from "../../stores/activity";
-import { agentTabLabel } from "../../stores/agents/agentModels";
+import { useUse24h } from "../../lib/timeFormat";
+import { agentTabLabel, agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
+import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useTabsStore } from "../../stores/tabs";
 import { SIGN_IN_CARD_CLASS } from "./TerminalSignInCard";
+import { TerminalReaderFacts } from "./TerminalReaderFacts";
+import { UntestedTag } from "../common/UntestedTag";
 import { answerHtml } from "../../../mobile-web/src/terminal/answerMarkdown";
 import { chatDayLabel, chatMoment, chatTime, dayOpeners } from "../../../mobile-web/src/terminal/chatTimes";
+import { openSubagent, siblingPosition, stepSibling, type SubagentStep } from "../../../mobile-web/src/terminal/subagents";
 import { commandArgsInline, transcriptTurns, type TranscriptTurn } from "../../../mobile-web/src/terminal/transcriptTurns";
 
 /** How often a shown Reader asks for the transcript again. The backend
  * answers an unchanged file by its fingerprint, without a parse. */
 const POLL_MS = 2000;
 /** How long a sent prompt shows as sending while the transcript has not
- * recorded it yet. */
+ * recorded it yet — counted from the send, or from the last moment the agent
+ * was seen working (a prompt queued behind a long turn is recorded only once
+ * the CLI takes it up). */
 const PENDING_MS = 60_000;
 /** How soon after the pane's output the live screen is read again, and how
  * often regardless (the busy row's timer, a pane not created yet). */
@@ -116,21 +124,32 @@ const AnswerText = memo(function AnswerText({ text }: { text: string }) {
   return <div className="markdown-body terminal-reader-md" dangerouslySetInnerHTML={{ __html: html }} />;
 });
 
-function Turn({ turn, cutLabel, planLabel, agentLabel }: {
+/** What a subagent's card or list row opens: its handle and what it says. */
+type SubagentPick = Pick<TranscriptTurn, "subagent" | "text" | "role">;
+
+function Turn({ turn, cutLabel, planLabel, agentLabel, use24h, onOpenAgent }: {
   turn: TranscriptTurn;
   cutLabel: string;
   planLabel: string;
   agentLabel: string;
+  use24h: boolean;
+  onOpenAgent: (turn: SubagentPick) => void;
 }) {
   const moment = chatMoment(turn.stamp);
-  const time = moment && <small className="terminal-reader-time">{chatTime(moment)}</small>;
+  const time = moment && <small className="terminal-reader-time">{chatTime(moment, use24h)}</small>;
   const cut = turn.cut && <small className="terminal-reader-cut">{cutLabel}</small>;
   if (turn.kind === "agent") {
+    // The phone's `SubagentCard`: a click opens its own conversation. One whose
+    // CLI has not yet recorded where that lives cannot be opened yet.
+    const openable = !!turn.subagent;
     return (
-      <div className="terminal-reader-subagent">
-        <small>{turn.role ?? agentLabel}</small>
-        <span>{turn.text}{turn.cut && "…"}</span>
-      </div>
+      <button type="button" className="terminal-reader-subagent" disabled={!openable} onClick={() => onOpenAgent(turn)}>
+        <span className="terminal-reader-subagent-body">
+          <small>{turn.role ?? agentLabel} <UntestedTag id="terminal.reader.subagents" /></small>
+          <span>{turn.text}{turn.cut && "…"}</span>
+        </span>
+        {openable && <span className="terminal-reader-subagent-chevron" aria-hidden="true">›</span>}
+      </button>
     );
   }
   if (turn.command) {
@@ -164,6 +183,12 @@ function Turn({ turn, cutLabel, planLabel, agentLabel }: {
  * over the terminal, which keeps running and taking the PTY's output
  * underneath; the pane's own mouse handling leaves it alone
  * (`SIGN_IN_CARD_CLASS`). Reads only while the pane is shown.
+ *
+ * A subagent the agent spawned opens into its own conversation, as on the
+ * phone (`mobile-web` `subagents.ts`): a bar above the chat goes back up (Esc
+ * in the composer too) and steps between the subagents beside it, and a
+ * "Subagents" list over the session names them all. Prompts always go to the
+ * session, and sending one goes back to it.
  */
 export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, focused, onShowTerminal }: {
   host: HTMLElement;
@@ -174,8 +199,8 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
   cwd: string | undefined;
   visible: boolean;
   focused: boolean;
-  /** Back to the terminal, keyboard included (Esc in the composer; the
-   * prompt strip's switch is the other way). */
+  /** Back to the terminal, keyboard included (Esc in the composer, once no
+   * subagent is open; the prompt strip's switch is the other way). */
   onShowTerminal: () => void;
 }) {
   const t = useT();
@@ -193,10 +218,38 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
   const keepFromBottom = useRef<number | null>(null);
   const version = useRef<string | undefined>();
   const pendingId = useRef(0);
+  /** The subagents walked into from the session, outermost first; empty
+   * while the session itself is shown. */
+  const [subagentPath, setSubagentPath] = useState<readonly SubagentStep[]>([]);
+  const [subagentListOpen, setSubagentListOpen] = useState(false);
+  const subagentListId = useId();
+  const openStep = subagentPath[subagentPath.length - 1];
+  const subToken = openStep?.token;
+  /** The last read of a subagent's conversation, and whose it is — a read
+   * that belongs to another subagent is never drawn under this one's bar. */
+  const [subRead, setSubRead] = useState<{ token: string; transcript: SessionTranscript } | null>(null);
+  const [subLimit, setSubLimit] = useState(READER_STEP);
+  /** Where to scroll once the conversation just gone back up to is drawn. */
+  const restoreScroll = useRef<number | null>(null);
 
   const [live, setLive] = useState<ReaderLive>(NO_LIVE);
+  /** When a read last saw the agent at work: a sent prompt waits from then. */
+  const workingSeenAt = useRef(0);
   const [answered, setAnswered] = useState("");
+  const [picking, setPicking] = useState(false);
+  /** Steering holds the keyboard (or its prompt box does): a composer on show
+   * would take typing that goes to steering, so it stands aside — the Prompt
+   * key (I) is how a prompt goes in then. */
+  const steering = useKeyboardSteeringStore((state) => state.active || state.handedTo !== null);
   const agentLabel = tab ? agentTabLabel(tab) : "";
+  const use24h = useUse24h();
+  const modelsByTab = useAgentModelsStore((state) => state.byTab);
+  const screenModels = useAgentModelsStore((state) => state.screenByTab);
+  const modelTag = tab ? agentTabModelTag(scope, tab, modelsByTab, screenModels) : undefined;
+  /** The working row's name for the agent, as the phone's says it: the model
+   * the session prints, its first word (`Opus is working…`). */
+  const workingModel = (live.status?.model ?? modelTag)?.trim().split(/\s+/)[0];
+  const typeIntoPane = useCallback((keys: string[]) => typeKeys(ptyId, keys), [ptyId]);
 
   // The live screen: read on the pane's output (settled), and on a slow
   // clock for the busy row's timer and a terminal not created yet.
@@ -209,7 +262,8 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
       const term = terminalFor(ptyId);
       if (!term) return;
       if (!subscribed) subscribed = term.onWriteParsed(() => { settle ??= setTimeout(read, LIVE_SETTLE_MS); });
-      const next = readReaderLive(term.buffer.active, agentLabel);
+      const next = readReaderLive(term.buffer.active, agentLabel, term.cols);
+      if (next.working) workingSeenAt.current = Date.now();
       setLive((previous) => (sameReaderLive(previous, next) ? previous : next));
     };
     read();
@@ -242,14 +296,18 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
     void typeKeys(ptyId, answerKeys(question, option)).catch(() => setAnswered(""));
   };
   const stop = () => void typeKeys(ptyId, [STOP_KEY]).catch(() => {});
+  const shownLive = picking ? NO_LIVE : live;
 
   const tabRef = useRef(tab);
   tabRef.current = tab;
   const sessionId = tab?.sessionId;
-  // A new session (a restart, a `/clear` the hook followed) is a new chat.
+  // A new session (a restart, a `/clear` the hook followed) is a new chat,
+  // with subagents of its own.
   useEffect(() => {
     version.current = undefined;
     setTranscript(null);
+    setSubagentPath([]);
+    setSubagentListOpen(false);
   }, [sessionId]);
 
   useEffect(() => {
@@ -280,20 +338,84 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
     };
   }, [visible, scope, cwd, limit, sessionId, readTick]);
 
+  // The open subagent's conversation, read as the session is: at once, then
+  // every POLL_MS while shown — a subagent still at work keeps writing.
+  useEffect(() => {
+    if (!visible || !subToken) return;
+    let cancelled = false;
+    let busy = false;
+    let subVersion: string | undefined;
+    const read = async () => {
+      const current = tabRef.current;
+      if (busy || !current) return;
+      const args = readerRequest(scope, current, cwd, subVersion, subLimit, subToken);
+      if (!args) return;
+      busy = true;
+      const next = await invoke<SessionTranscript>("agent_tab_transcript", args)
+        .catch((): SessionTranscript => ({ available: false, reason: "read_failed", entries: [], truncated: false }));
+      busy = false;
+      if (cancelled) return;
+      if (!next.unchanged) subVersion = next.version;
+      setSubRead((previous) => ({
+        token: subToken,
+        transcript: mergeTranscript(previous?.token === subToken ? previous.transcript : null, next),
+      }));
+    };
+    void read();
+    const timer = setInterval(() => void read(), POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [visible, scope, cwd, subToken, subLimit, sessionId]);
+
   const entries = useMemo(() => (transcript?.available ? transcript.entries : []), [transcript]);
-  const turns = useMemo(() => transcriptTurns(entries), [entries]);
+  /** The open subagent's conversation, once read. */
+  const subTranscript = subRead && subRead.token === subToken ? subRead.transcript : null;
+  /** The conversation on screen — the session's, or the open subagent's —
+   * which is where a card clicked in it was opened from. */
+  const shownTranscript = openStep ? subTranscript : transcript;
+  const levelEntries = useMemo(() => (shownTranscript?.available ? shownTranscript.entries : []), [shownTranscript]);
+  const levelEntriesRef = useRef(levelEntries);
+  levelEntriesRef.current = levelEntries;
+  const turns = useMemo(() => transcriptTurns(levelEntries), [levelEntries]);
   const openers = useMemo(() => dayOpeners(turns.map((turn) => turn.stamp)), [turns]);
+  const sessionAgents = useMemo(() => entries.filter((entry) => entry.kind === "agent"), [entries]);
+
+  // Every prompt sent to this tab — this composer's or steering's prompt box —
+  // shows as sending at once, the agent idle or at work (the CLI queues it).
+  const sendTarget = tab?.scheduleTargetId;
+  useEffect(() => {
+    if (!sendTarget) return;
+    return onSentPrompt(sendTarget, ({ text, sentAt }) => {
+      pendingId.current += 1;
+      const id = pendingId.current;
+      setPending((items) => [...items, { id, text, sentAt }]);
+      stuck.current = true;
+      setReadTick((tick) => tick + 1);
+      // It went to the session, never to a subagent: back to where it lands.
+      setSubagentPath([]);
+    });
+  }, [sendTarget]);
 
   // A sent prompt shows until the transcript records it (by its words, at or
   // after the moment it went) or it has waited long enough to be let go.
   useEffect(() => {
     if (pending.length === 0) return;
     const now = Date.now();
+    const waitingSince = (item: PendingPrompt) => Math.max(item.sentAt, workingSeenAt.current);
     const recorded = (item: PendingPrompt) => entries.some((entry) =>
       entry.kind === "prompt" && entry.text.trim() === item.text.trim()
       && (!entry.at || Date.parse(entry.at) >= item.sentAt - 5_000));
-    const left = pending.filter((item) => now - item.sentAt < PENDING_MS && !recorded(item));
-    if (left.length !== pending.length) setPending(left);
+    const left = pending.filter((item) => now - waitingSince(item) < PENDING_MS && !recorded(item));
+    if (left.length !== pending.length) {
+      setPending(left);
+      return;
+    }
+    // Nothing new may come in to look again: let the first one go on time.
+    const due = Math.min(...left.map(waitingSince)) + PENDING_MS - now;
+    const timer = setTimeout(() => setPending((items) => [...items]), due);
+    return () => clearTimeout(timer);
   }, [entries, pending]);
 
   const onScroll = () => {
@@ -304,26 +426,64 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
   useLayoutEffect(() => {
     const list = listRef.current;
     if (!list) return;
-    if (keepFromBottom.current !== null) {
+    if (restoreScroll.current !== null) {
+      // Back up a level: where it was scrolled, once it is drawn again.
+      if (!shownTranscript) return;
+      list.scrollTop = restoreScroll.current;
+      restoreScroll.current = null;
+    } else if (keepFromBottom.current !== null) {
       // Earlier turns came in above: the ones being read stay where they were.
       list.scrollTop = list.scrollHeight - list.clientHeight - keepFromBottom.current;
       keepFromBottom.current = null;
     } else if (stuck.current) {
       list.scrollTop = list.scrollHeight;
     }
-  }, [turns, pending, live]);
+  }, [turns, pending, live, shownTranscript]);
 
   const showEarlier = () => {
     const list = listRef.current;
     if (list) keepFromBottom.current = list.scrollHeight - list.scrollTop - list.clientHeight;
+    if (openStep) {
+      setSubLimit((current) => current + READER_STEP);
+      return;
+    }
     version.current = undefined;
     setLimit((current) => current + READER_STEP);
   };
 
-  // The keyboard goes to the composer whenever this pane is the focused one.
+  /** Opens a subagent from the conversation on screen, which it goes back up
+   * to where it was scrolled. One opened from the list keeps the list open
+   * for the way back. Its conversation opens on its newest turn. */
+  const openAgent = useCallback((turn: SubagentPick, fromList = false) => {
+    const token = turn.subagent;
+    if (!token) return;
+    const top = listRef.current?.scrollTop ?? 0;
+    setSubagentPath((path) => openSubagent(path, { token, task: turn.text, role: turn.role }, levelEntriesRef.current, top));
+    if (!fromList) setSubagentListOpen(false);
+    setSubLimit(READER_STEP);
+    keepFromBottom.current = null;
+    stuck.current = true;
+  }, []);
+  const subagentUp = () => {
+    if (!openStep) return;
+    restoreScroll.current = openStep.scrollTop;
+    keepFromBottom.current = null;
+    stuck.current = false;
+    setSubLimit(READER_STEP);
+    setSubagentPath((path) => path.slice(0, -1));
+  };
+  const subagentSibling = (delta: number) => {
+    keepFromBottom.current = null;
+    stuck.current = true;
+    setSubLimit(READER_STEP);
+    setSubagentPath((path) => stepSibling(path, delta));
+  };
+
+  // The keyboard goes to the composer whenever this pane is the focused one,
+  // and back to it when steering lets go.
   useEffect(() => {
-    if (focused && visible) composerRef.current?.focus();
-  }, [focused, visible]);
+    if (focused && visible && !steering) composerRef.current?.focus();
+  }, [focused, visible, steering]);
 
   const send = useCallback(async () => {
     const current = tabRef.current;
@@ -332,12 +492,9 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
     setSending(true);
     setSendError("");
     try {
+      // Shown as sending by the `onSentPrompt` listener above.
       await sendSteeringPrompt(current, text);
-      pendingId.current += 1;
-      setPending((items) => [...items, { id: pendingId.current, text, sentAt: Date.now() }]);
       setDraft("");
-      stuck.current = true;
-      setReadTick((tick) => tick + 1);
     } catch {
       setSendError(t("terminal.reader.sendFailed"));
     } finally {
@@ -351,7 +508,8 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
       void send();
     } else if (e.key === "Escape") {
       e.preventDefault();
-      onShowTerminal();
+      if (openStep) subagentUp();
+      else onShowTerminal();
     }
   };
 
@@ -361,19 +519,85 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
   const planLabel = t("mobile.transcript.plan");
   const subagentLabel = t("terminal.reader.subagent");
   const empty = transcript?.available && turns.length === 0 && pending.length === 0 && !live.question && !live.working;
+  /** Where the open subagent stands among its siblings, and the conversation
+   * the bar goes back up to. */
+  const position = openStep ? siblingPosition(openStep) : { index: -1, count: 0 };
+  const backLabel = t("mobile.subagent.back", {
+    name: subagentPath.length > 1 ? subagentPath[subagentPath.length - 2].task : t("mobile.subagent.main"),
+  });
+  const moreEarlier = !!transcript?.available && transcript.truncated;
 
   return createPortal(
     <div className={`terminal-reader ${SIGN_IN_CARD_CLASS}`} role="region" aria-label={t("terminal.reader.title")}>
+      {openStep ? (
+        <nav className="terminal-reader-subagent-bar" aria-label={subagentLabel}>
+          <button type="button" className="terminal-reader-subagent-nav" onClick={subagentUp} aria-label={backLabel} title={`${backLabel} (Esc)`}>‹</button>
+          <div className="terminal-reader-subagent-title">
+            <small>{openStep.role ?? subagentLabel} <UntestedTag id="terminal.reader.subagents" /></small>
+            <strong title={openStep.task}>{openStep.task || openStep.role}</strong>
+          </div>
+          {position.count > 1 && (
+            <div className="terminal-reader-subagent-steps">
+              <button type="button" className="terminal-reader-subagent-nav" disabled={position.index <= 0} onClick={() => subagentSibling(-1)} aria-label={t("mobile.subagent.previous")} title={t("mobile.subagent.previous")}>‹</button>
+              <span>{t("mobile.subagent.position", { index: position.index + 1, count: position.count })}</span>
+              <button type="button" className="terminal-reader-subagent-nav" disabled={position.index >= position.count - 1} onClick={() => subagentSibling(1)} aria-label={t("mobile.subagent.next")} title={t("mobile.subagent.next")}>›</button>
+            </div>
+          )}
+        </nav>
+      ) : transcript?.available && (sessionAgents.length > 0 || moreEarlier) && (
+        // Every subagent of the session by name — "+" while earlier turns may
+        // hold more, which the list's last row reads in.
+        <nav className="terminal-reader-subagent-index" aria-label={t("mobile.subagent.indexRegion")}>
+          <button
+            type="button"
+            className="terminal-reader-subagent-toggle"
+            aria-expanded={subagentListOpen}
+            aria-controls={subagentListId}
+            onClick={() => setSubagentListOpen((open) => !open)}
+          >
+            <span>{t("mobile.subagent.index", { count: `${sessionAgents.length}${moreEarlier ? "+" : ""}` })}</span>
+            <UntestedTag id="terminal.reader.subagents" />
+            <span className={subagentListOpen ? "terminal-reader-subagent-caret open" : "terminal-reader-subagent-caret"} aria-hidden="true">▾</span>
+          </button>
+          {subagentListOpen && (
+            <div id={subagentListId} className="terminal-reader-subagent-list">
+              {sessionAgents.map((entry, index) => (
+                <button type="button" key={`${entry.at ?? ""}:${index}`} disabled={!entry.subagent} onClick={() => openAgent(entry, true)}>
+                  <small>{entry.role ?? subagentLabel}</small>
+                  <span>{entry.text}{entry.cut && "…"}</span>
+                </button>
+              ))}
+              {moreEarlier && (
+                <button type="button" className="terminal-reader-subagent-earlier" onClick={showEarlier}>
+                  {t("mobile.subagent.earlier")}
+                </button>
+              )}
+            </div>
+          )}
+        </nav>
+      )}
       <div ref={listRef} className="terminal-reader-list" onScroll={onScroll}>
-        {transcript?.available && transcript.truncated && (
+        {shownTranscript?.available && shownTranscript.truncated && (
           <button type="button" className="terminal-reader-earlier" onClick={showEarlier}>
             {t("terminal.reader.earlier")}
           </button>
         )}
-        {!transcript?.available && (
-          <div className="terminal-reader-empty">{t(readerReasonKey(transcript))}</div>
-        )}
-        {empty && <div className="terminal-reader-empty">{t("terminal.reader.empty")}</div>}
+        {openStep ? (
+          !subTranscript ? <div className="terminal-reader-empty">{t("mobile.subagent.loading")}</div>
+          : !subTranscript.available ? (
+            <div className="terminal-reader-empty">
+              <strong>{t("mobile.subagent.missing")}</strong>
+              <p>{t("mobile.subagent.missingHint")}</p>
+              <button type="button" className="terminal-reader-earlier" onClick={subagentUp}>{backLabel}</button>
+            </div>
+          )
+          : turns.length === 0 && <div className="terminal-reader-empty">{t("mobile.subagent.empty")}</div>
+        ) : <>
+          {!transcript?.available && (
+            <div className="terminal-reader-empty">{t(readerReasonKey(transcript))}</div>
+          )}
+          {empty && <div className="terminal-reader-empty">{t("terminal.reader.empty")}</div>}
+        </>}
         {turns.map((turn, index) => {
           const moment = chatMoment(turn.stamp);
           return (
@@ -383,21 +607,21 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
                   <span>{chatDayLabel(moment, now, dayLabels)}</span>
                 </div>
               )}
-              <Turn turn={turn} cutLabel={cutLabel} planLabel={planLabel} agentLabel={subagentLabel} />
+              <Turn turn={turn} cutLabel={cutLabel} planLabel={planLabel} agentLabel={subagentLabel} use24h={use24h} onOpenAgent={openAgent} />
             </Fragment>
           );
         })}
-        {pending.map((item) => (
+        {!openStep && pending.map((item) => (
           <div key={item.id} className="terminal-reader-turn user pending">
             <p>{item.text}</p>
             <small className="terminal-reader-time">{t("terminal.reader.sending")}</small>
           </div>
         ))}
-        <LiveQuestion live={live} answered={!!answered && answered === live.signature} onAnswer={answer} />
+        <LiveQuestion live={shownLive} answered={!!answered && answered === live.signature} onAnswer={answer} />
         {live.working && (
           <div className="terminal-reader-working" role="status">
             <span className="terminal-reader-working-dots" aria-hidden="true"><i /><i /><i /></span>
-            <span>{t("terminal.reader.working")}</span>
+            <span>{workingModel ? t("terminal.reader.workingModel", { model: workingModel }) : t("terminal.reader.working")}</span>
             {(live.working.elapsed || live.working.tokens) && (
               <small>{[live.working.elapsed, live.working.tokens && t("terminal.reader.workingTokens", { count: live.working.tokens })].filter(Boolean).join(" · ")}</small>
             )}
@@ -407,7 +631,20 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
           </div>
         )}
       </div>
-      <div className="terminal-reader-composer">
+      {tab && (
+        <TerminalReaderFacts
+          tab={tab}
+          ptyId={ptyId}
+          agentLabel={agentLabel}
+          live={live}
+          modelTag={modelTag}
+          usage={transcript?.available ? transcript.usage : undefined}
+          visible={visible}
+          typeKeys={typeIntoPane}
+          onPicking={setPicking}
+        />
+      )}
+      {!steering && <div className="terminal-reader-composer">
         <textarea
           ref={composerRef}
           value={draft}
@@ -420,8 +657,8 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
         <button type="button" className="terminal-reader-send" disabled={!draft.trim() || sending} onClick={() => void send()}>
           {t("terminal.reader.send")}
         </button>
-      </div>
-      {sendError && <div className="terminal-reader-error" role="alert">{sendError}</div>}
+      </div>}
+      {sendError && !steering && <div className="terminal-reader-error" role="alert">{sendError}</div>}
     </div>,
     host,
   );

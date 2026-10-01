@@ -26,7 +26,8 @@ export interface SelectOption {
    * difference between this and `current`, which is why it is not the printed
    * number: a dialog may renumber, but the rows are always in screen order. */
   index: number;
-  /** The number the dialog printed beside the row. */
+  /** The number the dialog printed beside the row — `UNNUMBERED` for the one
+   * row a multi-select question prints none for (`ACTION_ROW`). */
   number: number;
   label: string;
   /** The note the dialog printed in the row's second column, if any. */
@@ -71,7 +72,7 @@ export interface SelectStep {
   options: SelectOption[];
 }
 
-interface SelectLineLike { text: string }
+interface SelectLineLike { text: string; afterRule?: boolean }
 
 /** How far up from the bottom a dialog may sit. Below it the TUI still draws
  * its footer ("Esc to cancel") and, in Codex, the input box — and at phone
@@ -99,6 +100,30 @@ const EDGE = /^[↑↓]$/u;
  * under the run, and nothing but the count and one word. */
 const HIDDEN_ROWS = /^\s*(?:…|\.\.\.)\s*\+(\d{1,2})\s+\p{L}+$/u;
 const RADIO_AGENT = /gemini|qwen/iu;
+/** Claude Code's multi-select question (AskUserQuestion with `multiSelect`,
+ * 2.1.286) ends its checkbox rows with one it prints no number for — `Next`,
+ * or `Submit` on the last question — at the labels' column, with `❯` in the
+ * marker slot while it is highlighted:
+ *
+ *     4. [ ] Type something
+ *        Submit
+ *     5. Chat about this
+ *
+ * Enter on a checkbox row only ticks it, so a phone that read this row as the
+ * last row's note could tick boxes and never send them: the question stayed up
+ * as answered. Read only right under a checkbox row, and only these words. */
+const ACTION_ROW = /^\s*([❯▸▶›>→])?\s*(Submit|Next)$/u;
+const CHECKBOX_LABEL = /^\[[^\]]\]\s/u;
+const CHECKBOX_ROW = /^\s*[❯▸▶›>→]?\s*\d{1,2}[.)]\s+\[[^\]]\]\s/u;
+/** `SelectOption.number` of a row the dialog printed no number beside. */
+export const UNNUMBERED = 0;
+
+/** Whether `lines[index]` is a multi-select question's `Submit`/`Next` row
+ * (`ACTION_ROW`). Highlighted, it opens with the input line's `❯`, and taken
+ * for the input box it cut the question off the screen it was waiting on. */
+export function isActionRow(lines: readonly { text: string }[], index: number): boolean {
+  return index > 0 && ACTION_ROW.test(lines[index].text) && CHECKBOX_ROW.test(lines[index - 1].text);
+}
 
 /** Whether the tab's agent marks a dialog's highlighted row with `●` — and so
  * never opens a message with one. */
@@ -119,7 +144,10 @@ const COLUMN_SPLIT = /\s{2,}/u;
  * A note is text, so a column that starts with a frame is dropped whole
  * rather than read as one. */
 const PANEL_COLUMN = /^[│┃┆┇┊┋┌┏╭╔└┗╰╚├┣┤┫─━═]/u;
-const MAX_LABEL = 80;
+/** Room for Claude Code's longest permission row once its wrap is rejoined
+ * (`Yes, and switch to accept edits (auto-approve file edits and common file
+ * commands) for this session (shift+tab)`). */
+const MAX_LABEL = 160;
 const MAX_DESCRIPTION = 200;
 /** Non-blank rows a heading may occupy above the list: the heading itself and
  * the blurb both CLIs print under it. A longer block above the rows is
@@ -165,16 +193,37 @@ interface ReadRow {
  * — so for a row without a second column the note's column is the label's.
  * A line that is not a row and starts at or past the label's column continues
  * the row above: what sits left of the note's column is more label, the rest
- * more note. Anything shallower is ordinary text and ends the run. */
+ * more note. Anything shallower is ordinary text and ends the run.
+ *
+ * Except where the label itself ran out of room: Claude Code's permission
+ * dialog wraps a long row at the pane's edge onto the label's column too —
+ *
+ *       2. Yes, and switch to accept edits (auto-approve file
+ *          edits and common file commands) for this session
+ *
+ * — the same shape as a note under its label. What tells them apart is the
+ * width: a note starts a line of its own, a wrap is a word that did not fit
+ * on the line above (`wrapsLabel`). */
 function readContinuation(
   text: string,
   labelColumn: number,
   descriptionColumn: number,
+  labelWrap = false,
 ): { label: string; description: string } | null {
   const indent = text.length - text.trimStart().length;
   if (indent < labelColumn) return null;
+  if (labelWrap) return { label: text.trim(), description: "" };
   if (descriptionColumn <= labelColumn || indent >= descriptionColumn) return { label: "", description: text.trim() };
   return { label: text.slice(0, descriptionColumn).trim(), description: text.slice(descriptionColumn).trim() };
+}
+
+/** Whether `next` continues the label on `above` rather than starting the
+ * row's note under it: its first word would not have fit on `above` in a pane
+ * `columns` wide. Unknown width reads every such line as a note, as before. */
+function wrapsLabel(above: string, next: string, columns?: number): boolean {
+  if (!columns) return false;
+  const word = next.trim().split(/\s/u)[0];
+  return above.trimEnd().length + 1 + word.length > columns;
 }
 
 /** Where the dialog's own text ends going up. A `/model` opened mid-turn is
@@ -187,7 +236,11 @@ function dialogText(line: SelectLineLike): boolean {
 
 /** The dialog's heading, read upwards from its first row: past the blank the
  * TUI leaves under the heading, then the contiguous block above it, of which
- * the first line is the heading and the rest its blurb. */
+ * the first line is the heading and the rest its blurb. A dropped rule ends
+ * the block like a blank: Claude Code 2.1.286 fences a permission prompt's
+ * command in dashed rules (`╌╌╌`) with no blank before its question, and
+ * without the stop the command and its description ran into the heading and
+ * left the dialog untitled. */
 function readTitle(lines: readonly SelectLineLike[], start: number): string | undefined {
   let index = start - 1;
   while (index >= 0 && !lines[index].text.trim()) index -= 1;
@@ -195,6 +248,7 @@ function readTitle(lines: readonly SelectLineLike[], start: number): string | un
   while (index >= 0 && dialogText(lines[index])) {
     block.unshift(lines[index].text.trim());
     if (block.length > HEADING_BLOCK) return undefined;
+    if (lines[index].afterRule) break;
     index -= 1;
   }
   const title = block[0];
@@ -233,6 +287,11 @@ function readContext(lines: readonly SelectLineLike[], start: number): { questio
       context = index;
       taken += 1;
       index -= 1;
+      // The question ends at a dropped rule, as its heading does (`readTitle`):
+      // Claude Code 2.1.286 rules the diff of a file it asks to write off from
+      // its question with no blank between, and read through the rule, the
+      // diff's last lines became the question — rejoined into prose.
+      if (block === 0 && lines[index + 1].afterRule) break;
     }
     if (block === 0) question = context;
     // Claude Code's tab row over an agent's question is the question's label,
@@ -268,9 +327,14 @@ function readRow(text: string, option: RegExp): ReadRow | null {
 /**
  * The select dialog the session is showing right now, or `null` when the bottom
  * of the screen does not hold one in the recognized shape. `agentLabel` is the
- * tab's agent, which says whether `●` marks a row (`radioMarkerAgent`).
+ * tab's agent, which says whether `●` marks a row (`radioMarkerAgent`);
+ * `columns` the pane's width, which tells a row's wrapped label from its note.
  */
-export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: string): SelectPrompt | null {
+export function readSelectPrompt(
+  lines: readonly SelectLineLike[],
+  agentLabel?: string,
+  columns?: number,
+): SelectPrompt | null {
   const option = radioMarkerAgent(agentLabel) ? RADIO_OPTION : OPTION;
   const first = Math.max(0, lines.length - SEARCH_WINDOW);
   type Run = {
@@ -294,6 +358,13 @@ export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: 
       run = undefined;
       continue;
     }
+    const tail = run?.options[run.options.length - 1];
+    const action = tail && CHECKBOX_LABEL.test(tail.label) ? ACTION_ROW.exec(text) : null;
+    if (run && action) {
+      if (action[1]) run.marked.push(run.options.length);
+      run.options.push({ index: run.options.length, number: UNNUMBERED, label: action[2] });
+      continue;
+    }
     const row = readRow(text, option);
     const hidden = row ? null : HIDDEN_ROWS.exec(text);
     if (run && hidden) {
@@ -302,8 +373,9 @@ export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: 
       continue;
     }
     if (!row) {
-      const more = run ? readContinuation(text, run.labelColumn, run.column) : null;
       const last = run?.options[run.options.length - 1];
+      const labelWrap = last !== undefined && !last.description && wrapsLabel(lines[index - 1].text, text, columns);
+      const more = run ? readContinuation(text, run.labelColumn, run.column, labelWrap) : null;
       if (more && last) {
         if (more.label && !PANEL_COLUMN.test(more.label)) last.label = `${last.label} ${more.label}`.slice(0, MAX_LABEL);
         if (more.description && !PANEL_COLUMN.test(more.description)) {
@@ -315,9 +387,12 @@ export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: 
       run = undefined;
       continue;
     }
+    // Counted on from the last row that printed a number: `Submit` prints none.
+    const numbered = run ? [...run.options].reverse().find((entry) => entry.number !== UNNUMBERED) : undefined;
     const continues = run !== undefined
+      && numbered !== undefined
       && run.options.length < MAX_OPTIONS
-      && row.option.number === run.options[run.options.length - 1].number + 1;
+      && row.option.number === numbered.number + 1;
     if (!continues || !run) {
       // A run starts at 1 — or wherever a windowed dialog's slice starts,
       // which the final check holds to the window's own marks.

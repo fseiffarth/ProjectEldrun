@@ -15,8 +15,9 @@ import { closeTabInScope } from "../../lib/remote/closeRemoteTab";
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
 import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
-import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
+import { agentTabModelTag, tabModeMarks, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
+import { holdPhonePrompt } from "../../lib/agents/phoneHolds";
 import { queuePromptForTab, sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
 import { undoAgentClear } from "../../stores/agents/agentClearUndo";
@@ -530,7 +531,7 @@ function mobileModelTag(projectId: string, tab: TabEntry): string | undefined {
  * (`TabAgentModeMarks`), onto a phone row — only the ones that are on. Read
  * after `mobileModelTag`, whose screen re-read refreshes them too. */
 function withModeMarks<Row extends { plan?: boolean; goal?: boolean }>(row: Row, ptyId: string): Row {
-  const marks = useAgentModelsStore.getState().modeByTab[ptyId];
+  const marks = tabModeMarks(useAgentModelsStore.getState(), ptyId);
   if (marks?.plan) row.plan = true;
   if (marks?.goal) row.goal = true;
   return row;
@@ -2038,17 +2039,18 @@ async function recordTabPrompt(projectId: string, tmuxSession: string, message: 
   await useAgentPromptsStore.getState().record(scope.id, {
     id: crypto.randomUUID(),
     message: text,
-    sent: { tabLabel: tab.label, sessionId: tab.sessionId, agent: tab.cmd, result: "delivered" },
+    sent: { tabLabel: tab.label, sessionId: tab.sessionId, tabId: tab.scheduleTargetId, agent: tab.cmd, result: "delivered" },
   }).catch(() => []);
   return { status: "seen" };
 }
 
-/** The phone sent a prompt while the agent was at work: rather than the words
- * waiting in the CLI's own queue, where nothing can reach them again, they
- * wait here as a send-now schedule (`queuePromptForTab`) — delivered at the
- * tab's next safe idle point, like the desktop's own Send now — and the phone
- * can rewrite them until then (`editHeldTabPrompt`). The delivery records the
- * prompt in the history, so nothing is recorded here. */
+/** The phone sent a prompt while the agent was at work: it goes in as a
+ * send-now schedule (`queuePromptForTab`) that the scheduler types into the
+ * CLI's own queue at once (`phoneHolds.ts`), with the scheduler's claim as the
+ * at-most-once check and its guard against answering a question. Only while
+ * the pane can't take it does it wait, and the phone can still rewrite it
+ * (`editHeldTabPrompt`). The delivery records the prompt in the history, so
+ * nothing is recorded here. */
 async function holdTabPrompt(projectId: string, tmuxSession: string, message: string): Promise<DesktopResponse> {
   const scope = mobileScope(projectId);
   if (!scope) {
@@ -2060,6 +2062,7 @@ async function holdTabPrompt(projectId: string, tmuxSession: string, message: st
   // A command is the CLI's own and never waits: the phone types those.
   if (!text || isSessionCommand(text)) return { status: "error", code: "invalid_prompt", message: "Only prompts are held" };
   const { id } = await queuePromptForTab(scope.id, tab.scheduleTargetId, text);
+  holdPhonePrompt(id);
   return { status: "held", held_id: id };
 }
 
@@ -2091,6 +2094,8 @@ async function editHeldTabPrompt(projectId: string, tmuxSession: string, heldId:
     if (code.includes("schedule_gone")) return gone;
     throw cause;
   }
+  // Still a phone prompt: it goes in as soon as the pane takes it.
+  holdPhonePrompt(heldId);
   return { status: "held", held_id: heldId };
 }
 

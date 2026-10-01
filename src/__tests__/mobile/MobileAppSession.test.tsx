@@ -10,7 +10,8 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resumeAuth, type ResumeResult } from "../../../mobile-web/src/auth";
+import { hasPairedDevice, resumeAuth, type ResumeResult } from "../../../mobile-web/src/auth";
+import { hasLocalUnlock } from "../../../mobile-web/src/localLock";
 
 vi.mock("../../../mobile-web/src/auth", () => ({
   hasPairedDevice: vi.fn(async () => true),
@@ -24,7 +25,7 @@ vi.mock("../../../mobile-web/src/screens/LocalUnlock", () => ({
     <button onClick={onUnlocked}>{setup ? "Set up the lock" : "Unlock now"}</button>,
 }));
 vi.mock("../../../mobile-web/src/screens/Terminal", () => ({ Terminal: () => <div>terminal</div> }));
-vi.mock("../../../mobile-web/src/screens/Pair", () => ({ Pair: () => <div>Pair this phone</div> }));
+vi.mock("../../../mobile-web/src/screens/Pair", () => ({ Pair: ({ setupLock, onDone }: { setupLock: boolean; onDone: () => void }) => <button onClick={onDone}>{setupLock ? "Connect and secure" : "Pair this phone"}</button> }));
 
 import { App } from "../../../mobile-web/src/App";
 
@@ -49,6 +50,8 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
   vi.mocked(resumeAuth).mockReset();
   vi.mocked(resumeAuth).mockResolvedValue(paired);
+  vi.mocked(hasPairedDevice).mockResolvedValue(true);
+  vi.mocked(hasLocalUnlock).mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -59,6 +62,17 @@ afterEach(() => {
 });
 
 describe("Eldrun Mobile session lifecycle", () => {
+  it("opens the workspace after the combined first connection without another PIN screen", async () => {
+    vi.mocked(hasPairedDevice).mockResolvedValue(false);
+    vi.mocked(hasLocalUnlock).mockResolvedValue(false);
+    answers(ok);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect and secure" }));
+    expect(await screen.findByText("Alpha")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Unlock now" })).toBeNull();
+    expect(resumeAuth).toHaveBeenCalledOnce();
+  });
+
   it("asks for the lock on every cold open, whatever a restored page remembers", async () => {
     // The flag the old shortcut read. It must mean nothing now.
     sessionStorage.setItem("eldrun-mobile-local-unlocked", "1");
@@ -89,6 +103,43 @@ describe("Eldrun Mobile session lifecycle", () => {
     render(<App />);
     await screen.findByRole("button", { name: "Unlock now" });
     expect(resumeAuth).not.toHaveBeenCalled();
+  });
+
+  it("reloads once on a failed connect, carrying the unlock across, and shows the splash the second time", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("location", { ...window.location, reload });
+    vi.mocked(resumeAuth).mockResolvedValue({ kind: "unavailable", reason: "timeout" });
+    answers(ok);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Unlock now" }));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    // The new page signs straight back in: the unlock rides the reload grace.
+    expect(sessionStorage.getItem("eldrun.mobile.reloadGrace")).toMatch(/^\d+$/);
+    cleanup();
+
+    // The reloaded page fails too: no second reload, the splash says why.
+    vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ type: "reload" } as PerformanceNavigationTiming]);
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Unlock now" })).toBeNull();
+    expect(reload).toHaveBeenCalledOnce();
+
+    // A connect that works earns the next failure its reload back.
+    vi.mocked(resumeAuth).mockResolvedValue(paired);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByText("Alpha");
+    expect(sessionStorage.getItem("eldrun.mobile.connectReload")).toBeNull();
+  });
+
+  it("shows the splash without reloading when the desktop app is closed", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("location", { ...window.location, reload });
+    vi.mocked(resumeAuth).mockResolvedValue({ kind: "unavailable", reason: "desktop_down" });
+    answers(ok);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Unlock now" }));
+    await screen.findByRole("button", { name: "Retry" });
+    expect(reload).not.toHaveBeenCalled();
   });
 
   it("renews a lapsed session silently while the reader is active and sends the request again", async () => {

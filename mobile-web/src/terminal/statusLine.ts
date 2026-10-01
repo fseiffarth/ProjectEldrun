@@ -29,6 +29,7 @@ import {
   openCodeStatusRow,
   openCodeTurnFooter,
 } from "./openCodeMini";
+import { isActionRow } from "./selectPrompt";
 
 export interface SessionStatus {
   /** Working directory, as printed (`~/…` or absolute). */
@@ -374,6 +375,13 @@ export function sessionStatus(
     read += 1;
     for (const segment of text.split(SEGMENT_SPLIT)) classify(segment.trim(), status);
   }
+  // Claude Code prints its goal at the right end of its last footer row, under
+  // a custom statusline that can wrap to several rows on a narrow pane — past
+  // the rows read above. The phrase is only ever the footer's, so every row of
+  // the frame is looked through for it.
+  for (let index = inputIndex + 1; !status.goal && index < lines.length; index += 1) {
+    if (lines[index].text.split(SEGMENT_SPLIT).some((segment) => GOAL_ACTIVE.test(segment.trim()))) status.goal = true;
+  }
   if (!status.mode) {
     const mode = geminiIndicatorAbove(lines, inputIndex)?.mode;
     if (mode) status.mode = mode;
@@ -391,7 +399,8 @@ export function shortenPath(path: string): string {
 }
 
 /** A numbered dialog row (`❯ 1. Yes`), which opens with the same marker as the
- * input line. It is a question waiting for an answer, never the composer. */
+ * input line. It is a question waiting for an answer, never the composer —
+ * and so is a multi-select question's unnumbered `❯ Submit` (`isActionRow`). */
 const OPTION_ROW = /^\s*[>›❯*]\s*\d{1,2}[.)]\s/u;
 
 /** The rule an agent draws across the top of its input box, with the project
@@ -432,7 +441,7 @@ export function inputFrameStart(
   for (let index = lines.length - 1; start < 0 && index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
     const text = lines[index].text;
     if (!isInputLine(lines, index)) continue;
-    if (OPTION_ROW.test(text)) return lines.length;
+    if (OPTION_ROW.test(text) || isActionRow(lines, index)) return lines.length;
     start = index;
   }
   if (start < 0) return lines.length;
@@ -550,7 +559,7 @@ export function statusFrameLines(
   for (let index = lines.length - 1; index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
     const text = lines[index].text;
     if (!isInputLine(lines, index)) continue;
-    if (OPTION_ROW.test(text)) return [];
+    if (OPTION_ROW.test(text) || isActionRow(lines, index)) return [];
     inputIndex = index;
     break;
   }

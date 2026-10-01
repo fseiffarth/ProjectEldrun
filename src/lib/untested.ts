@@ -42,6 +42,7 @@ export const UNTESTED = {
   "desktop.intro.localModels": { area: "shell", what: "How to start · Local models page: Ollama install/start, recommended pull, GPU load, use for tabs" },
   "desktop.intro.askEldrun": { area: "shell", what: "How to start · Ask Eldrun page: help-server status, on/off switch, help search box" },
   "settings.vmPrerequisites": { area: "settings", what: "VM page · install missing QEMU prerequisites in a root terminal tab" },
+  "settings.showUntestedTags": { area: "settings", what: "General page · show or hide every untested tag" },
 
   // --- agents — Agent sessions, schedules and the prompt chart ------
   "agentSchedule.title": { area: "agents", what: "AgentScheduleDialog · Scheduled prompts · {tab}" },
@@ -279,17 +280,14 @@ export const UNTESTED = {
   "shortcut.nextTab": { area: "lib", what: "shortcuts · Ctrl+Shift+→ next tab, from a focused terminal too (not the root console's)" },
   "shortcut.shortcutHelp": { area: "lib", what: "shortcuts · Open shortcut help" },
   "shortcut.steeringMode": { area: "lib", what: "shortcuts · Enter keyboard steering mode", tested: "2026-09-30" },
-  "steering.levels": { area: "lib", what: "steering · levels: ←/→ projects, ↓ subwindows (←/→ tabs with one), ↓ tabs, ↑/Esc back; N/M/1–9/+ new tabs (legend names the agents); N new project, M/C/T mail/calendar/to-do, E side panel — ↑/↓ walk the highlight, Enter presses, ←/→ switch panel view", tested: "2026-09-30" },
   "steering.jumpProject": { area: "lib", what: "steering · / on the projects, subwindows or tabs level opens the header project search listing open projects first; Enter switches to the pick (an inactive one is activated) and steering comes back on that level, Esc returns without switching", tested: "2026-09-30" },
   "steering.agentPrompt": { area: "lib", what: "steering · I on the subwindow or tab level opens a text box in the window's middle for the active agent tab; Enter sends it (Shift+Enter new line) and steering comes back on that level, Esc returns without sending", tested: "2026-09-30" },
   "steering.overlays": { area: "lib", what: "steering · every dialog and menu is walked instead of ending steering: a dialog opened by a press, W's confirm, N (New project), ? (cheat sheet: ↑/↓ scroll) or the pointer takes the highlight (↑/↓ rows, ←/→ along a row, Enter presses, Esc closes it as its own Escape does, then back where it was opened); ↑ on the projects level walks the top bar (←/→ buttons, ↓ drops a button's menu, Enter presses — mail/calendar/to-do/settings open on their own regions and Esc comes back to the bar); . (or the Menu key) opens the right-click menu of the current project, the active tab or the highlighted control; A on the tab level walks the card over the active agent tab (Undo clear after K, a sign-in link, an update notice); Shift+Space over any dialog starts steering on it" },
-  "steering.hidePointer": { area: "lib", what: "steering · the mouse pointer hides while steering is on (terminals included); moving the mouse shows it, the next steering key hides it again", tested: "2026-09-30" },
-  "steering.settings": { area: "lib", what: "steering · , opens settings and stays in steering: ←/→ previous/next page of the left-hand list, ↑/↓ walk the page's controls, Enter presses (a dropdown opens, its option picks and returns to it; a text field takes the caret and steering steps aside — Shift+Space over settings comes back to it), / the settings search, Esc closes an open dropdown, then settings", tested: "2026-09-30" },
-  "steering.agentKeys": { area: "lib", what: "steering · M/C/T open mail/calendar/to-do on the subwindow and tab levels too (New monitor moved to O); K /clear, L /plan, G /goal on the active agent tab — Clear submits and offers Undo clear, Plan/Goal lead the prompt and leave steering to type", tested: "2026-09-30" },
-  "steering.legendToggle": { area: "lib", what: "steering · H folds the key legend into a round accent badge bottom-right (the key on its rim) and steering stays on; H again or a click on the badge brings the legend back; the choice survives leaving steering and a restart" },
+  "steering.legendToggle": { area: "lib", what: "steering · H folds the key legend into a round accent badge at the bottom centre (the key on its rim) with an accent ring pulsing out of it and steering stays on; H again or a click on the badge brings the legend back; the choice survives leaving steering and a restart" },
   "steering.scroll": { area: "lib", what: "steering · D on the tab level steps into the active terminal (legend: Inside the terminal): S/F (←/→) scroll it half a screen back/forward like the mouse wheel — tmux copy mode, Claude's fullscreen view, plain scrollback — Shift+S/F a whole screen, D back to the live end, E out to the tabs; leaving it (E, Space, Enter/Esc, a status jump, I) always puts the terminal back at its live end so typing reaches the agent, not tmux's copy mode" },
-  "steering.legendGroups": { area: "lib", what: "steering · the legend has no \"Steering\" title any more (level name pill only) and shows its keys in coloured boxes — Move, New, Act, Agent, Jump to, Open, Mode — each in the theme's code-editor token colour (Open red outside the fancy themes)" },
+  "steering.legendGroups": { area: "lib", what: "steering · the legend has no \"Steering\" title any more (level name pill only) and shows its keys round the steering badge at the bottom centre: one circle per group (Move, New, Act, Agent, Jump to, Open, Mode — no printed names) fanned on an arc above the badge, each on its own spoke and in the theme's code-editor token colour, circles sized to their keys, never overlapping and scaled down to stay inside a small window; the level name pill sits on the badge's rim; a click on the badge folds the circles away (Open red outside the fancy themes); no untested pills on it — they sit on the ? cheat sheet's steering heading" },
   "steering.agentKeysStay": { area: "lib", what: "steering · K /clear, L /plan, G /goal no longer leave steering: K submits /clear and steering stays on the level; L/G open the prompt box (as I does) led with /plan or /goal — write the rest, Enter sends and steering comes back, Esc returns without sending" },
+  "steering.dim": { area: "lib", what: "steering · the level dims what it can't reach: on the subwindow and tab levels the top bar with the project pills fades back; on the tab level the other subwindows are lightly veiled; inside a tab (D) everything but the focused subwindow — other subwindows, the side panel, the top bar — is dimmed; opening a dialog, the side panel (B) or the top bar (↑ on projects) lights everything up again" },
   "steering.handoffLegend": { area: "lib", what: "steering · while / (project jump or a surface's search field) or the prompt box (I, L, G) has the keyboard, the legend stays up showing that box's keys and Esc Back to Eldrun navigation (also when folded with H); Esc in a + menu / settings / mail search field comes back to steering on that surface with the cursor on it; a click elsewhere drops the strip" },
   "shortcut.reopenClosedTab": { area: "lib", what: "shortcuts · Ctrl+Shift+T reopens the last closed agent tab where it sat, resuming its conversation; in a popout (from a focused terminal too) it reopens the newest tab closed there into that popout" },
   "shortcut.texBack": { area: "lib", what: "shortcuts · TeX workspace: back to the previous file" },
@@ -343,9 +341,15 @@ export const UNTESTED = {
   "mailPdfPreview.1": { area: "mail", what: "MailPdfPreview · PDF, {count} pages" },
 
   // --- mobile — The phone PWA ---------------------------------------
+  "mobile.sheet.color": { area: "mobile", what: "Color sheet · tab colour picker" },
+  "mobile.sheet.rename": { area: "mobile", what: "Rename sheet · tab label change" },
+  "mobile.sheet.schedules": { area: "mobile", what: "Schedule sheet · scheduled prompts" },
+  "mobile.sheet.prompts": { area: "mobile", what: "Prompts sheet · collected prompts" },
+  "mobile.sheet.status": { area: "mobile", what: "Status sheet · agent state and usage" },
   "mobile.boxAccess": { area: "mobile", what: "MobileSettings · Box access" },
-  "mobile.signIn": { area: "mobile", what: "Terminal · Agent sign-in from the phone: notice + sheet for the CLI's login link (device code, paste-back code, localhost address relayed by the desktop), Status sheet Sign in button" },
-  "mobile.signIn.tab": { area: "mobile", what: "Project ＋ → Sign in to an agent (each CLI's login state, Sign in / other way in) and an agent tab's \"needs you to sign in\" notice: a sign-in tab running the CLI's own login command (Claude auth login, Codex login --device-auth, Copilot login --device-code, Cursor login, …), a step-by-step sheet with copy-and-open, one-tap Paste, Signed in ✓ and Start again" },
+  "mobile.signIn": { area: "mobile", what: "Terminal · Agent sign-in from the phone: notice + sheet for the CLI's login link (device code, paste-back code, localhost address relayed by the desktop), Status sheet Sign in button", tested: "2026-10-01" },
+  "mobile.pair.singleScreen": { area: "mobile", what: "First phone connection · pairing code and local PIN are entered together; one tap pairs, sets the lock and opens the workspace" },
+  "mobile.signIn.tab": { area: "mobile", what: "Project ＋ → Sign in to an agent (each CLI's login state, Sign in / other way in) and an agent tab's \"needs you to sign in\" notice: a sign-in tab running the CLI's own login command (Claude auth login, Codex login --device-auth, Copilot login --device-code, Cursor login, …), a step-by-step sheet with copy-and-open, one-tap Paste, Signed in ✓ and Start again", tested: "2026-10-01" },
   "mobile.signIn.choice": { area: "mobile", what: "Sign-in tab sheet · a choice the CLI asks before its link (Antigravity's \"Select login method\") listed while the sheet waits; a tap answers it in the session" },
   "mobile.signIn.hiddenLink": { area: "mobile", what: "Terminal · A CLI that opened its sign-in page in the desktop browser without printing the link (Mistral Vibe): notice with Get the link here, which presses the CLI's copy key and catches its OSC 52 clipboard copy into the sign-in sheet" },
   "mobile.composer.autoGrow": { area: "mobile", what: "Terminal · Composer grows line by line with a long draft (up to about a third of the screen, then scrolls) and drops back to one line when emptied or sent", tested: "2026-09-28" },
@@ -359,12 +363,15 @@ export const UNTESTED = {
   "mobile.project.reopenClosed": { area: "mobile", what: "Project · Recently closed row under the tabs lists agent tabs closed on the phone or the desktop; tapping one reopens it on the desktop, resuming its conversation, and the card comes back", tested: "2026-09-28" },
   "terminal.versionDrift": { area: "agents", what: "Terminal · an agent tab whose host CLI is newer than the release Eldrun was verified with (agent_versions) shows a card: × hides it until restart, \"Don't remind me for <version>\" persists until the next release" },
   "terminal.promptStrip": { area: "agents", what: "Agent pane · prompt strip between tab bar and terminal: last prompt (history rows + a CLI-independent keystroke reading, ≈ marks typed-only), ‹ › / drop-down list to step back, copy; decision answers and /commands left out" },
-  "terminal.reader": { area: "agents", what: "Agent pane · Chat / Terminal switch at the right of the prompt strip (the agent conversation as a chat) (Claude, Codex, OpenCode tabs): the stored conversation as the phone's Focus Reader draws it — prompts right, answers left as formatted text, /commands as rules, day chips, Show earlier turns — over the still-running terminal; a permission prompt or question on screen shows as clickable answers, a working row with Stop (Esc) while the agent is busy; its text box sends a prompt (queued by the CLI while the agent works), Esc goes back; the last choice is remembered per agent CLI for new tabs" },
+  "terminal.reader": { area: "agents", what: "Agent pane · Chat / Terminal switch at the right of the prompt strip (the agent conversation as a chat) (Claude, Codex, OpenCode tabs): the stored conversation as the phone's Focus Reader draws it — prompts right, answers left as formatted text, /commands as rules, day chips, Show earlier turns — over the still-running terminal; a permission prompt or question on screen shows as clickable answers, a working row with Stop (Esc) while the agent is busy; its text box sends a prompt (queued by the CLI while the agent works); while keyboard steering is on the text box is hidden (I opens steering's prompt box) and comes back focused when steering ends and it shows as sending at once — so does one sent from steering's prompt box (I), also while the agent is busy — Esc goes back; the last choice is remembered per agent CLI for new tabs" },
+  "terminal.reader.facts": { area: "agents", what: "Agent pane · Chat view · facts row over the text box, as on the phone: the model the session prints (click → the session's own /model picker as a list, a second step like Codex's reasoning level follows in place, ✕/Esc closes it there too), branch, context left, 5h and weekly limits with reset countdowns (Claude's usage panel; Codex's stored figures)" },
+  "terminal.reader.subagents": { area: "agents", what: "Agent pane · Chat view · a subagent card opens that subagent's own conversation (Claude, Codex, OpenCode) under a bar: ‹ (or Esc in the text box) goes back up to where the chat was scrolled, ‹ n of m › steps between the subagents beside it, cards inside open nested ones; the Subagents (n) list above the session names them all (+ and a row that reads earlier turns while more may hold some); sending a prompt goes back to the session" },
   "terminal.undoClear": { area: "agents", what: "Terminal · after /clear or /new on a resumable agent (typed, or Claude/Codex from the phone) a card offers Undo clear: Claude types /resume <id>, Codex and the continue-last agents relaunch onto the cleared conversation; gone on the next prompt or ×", tested: "2026-09-28" },
   "mobile.composer.keysToggle": { area: "mobile", what: "Terminal · keys button in the composer between ＋ and Plan (left of the bar on a shell tab) folds the Ctrl / Esc / Tab / arrows / Interrupt row in and out; the row starts folded" },
-  "mobile.chat.editHeld": { area: "mobile", what: "Terminal · a prompt sent while the agent works waits on the desktop (delivered at its next idle point) instead of the CLI's queue; hold its bubble → Edit rewrites it in the composer until the agent takes it in; until then the bubble waits at the chat's end, below the agent's working row and anything it still says" },
-  "mobile.tabs.statusMotion": { area: "mobile", what: "Project / Agents lists · tab status glyphs move (▶ drifts with a ping ring on the card disc, ? wobbles, ✓ and ■ land once); a turn the user cut off shows ■ Interrupted, as on the desktop strip" },
+  "mobile.chat.editHeld": { area: "mobile", what: "Terminal · a prompt sent while the agent works joins the CLI's own queue at once (waits on the desktop only while the agent is on a question; hold its bubble → Edit rewrites it in the composer until then); until then the bubble waits at the chat's end, below the agent's working row and anything it still says" },
+  "mobile.tabs.statusMotion": { area: "mobile", what: "Project / Agents lists · a working card keeps ▶ still while a small arc rotates around its disc, the Agents pill pulses gently, ? wobbles, ✓ and ■ land once; a turn the user cut off shows ■ Interrupted, as on the desktop strip" },
   "mobile.composer.clearBusy": { area: "mobile", what: "Terminal · new-conversation button on a working Codex says to stop it first; after a clear the Reader starts empty" },
+  "mobile.composer.commit": { area: "mobile", what: "Terminal · Commit chip (icon, after Clear) on an agent tab opens a sheet: Commit your changes only asks the agent to commit just what it changed in this conversation and leave the rest, Commit the current state sends the agent a prompt to make one commit of everything uncommitted, Split into commits a prompt to group the changes into focused commits; neither pushes; the prompt shows as a bubble at once (held while the agent works) and the draft stays" },
   "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Reader on-screen transcript note", tested: "2026-09-23" },
   "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Reader auto-read toggle", tested: "2026-09-23" },
   "mobile.focus.session": { area: "mobile", what: "Terminal · Reader session card", tested: "2026-09-23" },
@@ -384,6 +391,7 @@ export const UNTESTED = {
   "mobile.link.tunnelSteps": { area: "mobile", what: "App · A slow Connecting… and the can't-reach/didn't-answer splash list numbered steps (open Tailscale, force-stop it, airplane mode, desktop asleep) in the phone's language, Open Tailscale beside step 1, then the battery + Always-on VPN tip" },
   "mobile.link.splashVersion": { area: "mobile", what: "App · Connecting… and the failure splash show the phone bundle's version and build time (v0.1.x · dd-mm hh:mm), the same line as Home's header", tested: "2026-09-28" },
   "mobile.link.unlockRetry": { area: "mobile", what: "App · Unlocking after the phone slept connects on the first try (a stale connection or a dropped request is retried inside Connecting…); the failure splash's Retry reconnects without a second fingerprint", tested: "2026-09-27" },
+  "mobile.link.connectReload": { area: "mobile", what: "App · A connect that fails as unreachable or timed out reloads the page once by itself (no second fingerprint if you just unlocked); only a second failure in a row shows the error splash" },
   "mobile.link.silentResume": { area: "mobile", what: "LocalUnlock · A sidecar restart or a lapsed session is renewed silently while the reader is active; a cold open always asks for the PIN", tested: "2026-09-28" },
   "mobile.lock.pinInstead": { area: "mobile", what: "LocalUnlock · While the fingerprint prompt is up, Use PIN instead withdraws it and brings the PIN field back, focused", tested: "2026-09-28" },
   "mobile.lock.reloadGrace": { area: "mobile", what: "LocalUnlock · Pull-to-refresh (dragging down from the top) on an unlocked, in-use phone app reloads straight back into the session, no PIN or fingerprint; opening the app afresh, or reloading after 15 s away, still asks", tested: "2026-09-28" },
@@ -400,6 +408,7 @@ export const UNTESTED = {
   "mobile.headless.calendar": { area: "mobile", what: "Calendar · With the Eldrun window closed the month is expanded off calendar.json by the Mobile host and events/calendars are written there under CAS (H3); a CalDAV-backed calendar still refuses (the window pushes from the write)" },
   "mobile.headless.schedules": { area: "mobile", what: "Schedule sheet · With the Eldrun window closed a tab's schedules are listed off agent_tasks.json and created/edited/deleted there under the file lock (H3); the sidecar's own scheduler fires them" },
   "mobile.headless.prompts": { area: "mobile", what: "Prompts sheet · With the Eldrun window closed the collected prompts are listed off agent_prompts.json and created/edited/deleted/sent-now there (a send is a one-time rule at the current minute the sidecar fires, the prompt retired to the history) (H3)" },
+  "mobile.mail.accountPicker": { area: "mobile", what: "Mail · With more than one account, a dropdown picks whose folders are listed (inbox first, unread inbox count per account), remembered on this phone; inside a folder, account and folder dropdowns switch without going back" },
   "mobile.mailActions": { area: "mobile", what: "MobileSettings · Mark read and star from the phone" },
   "mobile.mailRead": { area: "mobile", what: "MobileSettings · Read mail on the phone" },
   "mobile.mailReply": { area: "mobile", what: "MobileSettings · Reply from the phone" },
@@ -422,7 +431,7 @@ export const UNTESTED = {
   "mobile.newTab.local": { area: "mobile", what: "NewTabSheet · Local model group: start Mistral / Claude Code / Codex / OpenCode / Droid on the desktop's local model; the tab is listed and reattaches after a desktop restart (#31bl)" },
   "mobile.project.sendFile": { area: "mobile", what: "NewTabSheet · ＋ → Send a file from this phone into the project's inbox (.eldrun/inbox/), with a Copy of its @reference" },
   "mobile.project.reorder": { area: "mobile", what: "Project · Drag to reorder the desktop's tabs" },
-  "mobile.project.git": { area: "mobile", what: "Project · The desktop pill's git dot on the phone: the coloured \"not added / not committed / not pushed\" sentence under the project screen's header, and only there (re-probed at most every 10 s while open)" },
+  "mobile.project.git": { area: "mobile", what: "Home · The desktop pill's git dot on the phone: a coloured \"unstaged changes / not committed / not pushed\" in each project row's caption, and only there (the project screen shows none)" },
   "mobile.project.modelTap": { area: "mobile", what: "Project · Tap a tab card's model to open the session with its model picker up", tested: "2026-09-23" },
   "mobile.project.nameMenu": { area: "mobile", what: "Project · Tap the project name for a dropdown with the agent's files (🖼 gallery, moved out of the header row) and the project file drawer" },
   "mobile.project.modeMarks": { area: "mobile", what: "Project/Agents lists · PLAN and GOAL pills and a tinted border on an agent tab card while its session's status line reads plan mode or a running /goal (read by the desktop)" },
@@ -432,6 +441,7 @@ export const UNTESTED = {
   "mobile.setupTitle": { area: "mobile", what: "MobileSetupGuide · Set up Eldrun Mobile" },
   "mobile.speech.language": { area: "mobile", what: "Terminal · Reader voice-language picker", tested: "2026-09-23" },
   "mobile.voice.keepListening": { area: "mobile", what: "Terminal · Dictation keeps listening through pauses, holds the screen awake, shows the mic level", tested: "2026-09-23" },
+  "mobile.voice.spokenSend": { area: "mobile", what: "Terminal · Dictating \"go on\" (German \"los\") last sends the draft without those words; \"was ist los\" stays text" },
   "mobile.voice.remote": { area: "mobile", what: "Terminal · Reader toggle: dictate with the phone's speech service instead of on-device", tested: "2026-09-23" },
   "mobile.windowsTerminalsNote": { area: "mobile", what: "MobileSettings · On Windows the phone cannot open this computer's terminals or agent tabs: they attach thr…" },
 
@@ -519,6 +529,16 @@ export const UNTESTED = {
   "todo.overlayTitle": { area: "todo", what: "TodoOverlay · To-do board" },
 } as const satisfies Record<string, UntestedEntry>;
 
+// The phone shares this register but renders its tags in several shapes. Its
+// status request sets this once connected, and App re-renders when it changes.
+let tagsVisible = true;
+
+export function setUntestedTagsVisible(visible: boolean): boolean {
+  if (tagsVisible === visible) return false;
+  tagsVisible = visible;
+  return true;
+}
+
 /** Every id the register knows. A call site can only pass one of these. */
 export type UntestedId = keyof typeof UNTESTED;
 
@@ -530,7 +550,7 @@ export type UntestedId = keyof typeof UNTESTED;
  * was verified. The registry test catches the case either way.
  */
 export function isUntested(id: UntestedId | string | undefined | null | false): boolean {
-  if (!id) return false;
+  if (!id || !tagsVisible) return false;
   const entry = (UNTESTED as Record<string, UntestedEntry>)[id];
   return entry ? !entry.tested : true;
 }

@@ -386,6 +386,27 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
 
+213f. **Live-QA steering's dimming of what the level can't reach.** ✅
+    Implemented · 🧪 Awaiting live QA (2026-09-30). On the subwindow, tab
+    and inside-a-tab levels the top bar with the project pills fades to 40 %;
+    on the tab level the other subwindows get a light veil; inside a tab (D)
+    the veil darkens and the side panel fades too, so only the focused
+    subwindow stays lit. Regions (dialogs, side panel, top bar) show
+    everything undimmed. Verify: Shift+Space on two subwindows → other one
+    lightly veiled, top bar faded; E → subwindow level: veil gone, bar still
+    faded; ↓ D → inside the tab: everything but the focused subwindow dark,
+    the numbered subwindow badges still readable; E E E → projects: all lit.
+    *Files: `src/styles/subwindows.css`.*
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
 215. **Live-QA one-click installs in the root console.** ✅ Implemented · 🧪
     Awaiting live QA. Every one-click install (`runInstallInTab`: Ollama/agent
     CLI installs, the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login,

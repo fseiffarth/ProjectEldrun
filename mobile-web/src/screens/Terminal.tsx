@@ -18,6 +18,7 @@ import {
   closeTab,
   deleteOutboxFile,
   getAgentStatus,
+  getSchedules,
   getTranscript,
   listDesktopImages,
   listOutbox,
@@ -25,6 +26,7 @@ import {
   outboxFileUrl,
   openOutside,
   openSignInTab,
+  pickPhoneFiles,
   recoverSession,
   editHeldPrompt,
   holdPrompt,
@@ -88,6 +90,7 @@ import {
 import { isCursorTab, readCursorPicker } from "../terminal/cursorAgent";
 import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
+import { COMMIT_CHOICES, COMMIT_PROMPTS, type CommitChoice } from "../terminal/commitPrompts";
 import { agentWork } from "../terminal/agentBusy";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { answerHtml } from "../terminal/answerMarkdown";
@@ -97,6 +100,7 @@ import { openSubagent, siblingPosition, stepSibling, type SubagentStep } from ".
 import { MAX_PENDING, arrivedPending, pendingPrompt, reworded, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
 import { outboxPosts, type OutboxPost as ChatPost } from "../terminal/outboxPosts";
 import { afterClear, clearMark, type ClearMark } from "../terminal/clearedSession";
+import { onHeldPatched, patchHeld, readHeld, stillHeld, writeHeld } from "../terminal/heldPrompts";
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
 import { resetCountdown, resetText, StatusSheet } from "./StatusSheet";
 import { SignInSheet } from "./SignInSheet";
@@ -112,6 +116,7 @@ import {
   DICTATION_START,
   dictationPreview,
   readDictation,
+  spokenSend,
   settleDictation,
   type DictationProgress,
 } from "../voiceInput";
@@ -191,6 +196,9 @@ const AGENT_SUBMIT_GAP = 200;
  * "Where should the new conversation run?" picker, which the button's single
  * Enter leaves waiting on the desktop (2026-09-23). */
 const NEW_CONVERSATION_COMMAND = "/clear";
+/** The Commit chip's sheet rows, by the prompt each sends. */
+const COMMIT_LABELS: Record<CommitChoice, TranslationKey> = { own: "mobile.commit.own", state: "mobile.commit.state", split: "mobile.commit.split" };
+const COMMIT_HINTS: Record<CommitChoice, TranslationKey> = { own: "mobile.commit.ownHint", state: "mobile.commit.stateHint", split: "mobile.commit.splitHint" };
 const CLEAR_COMMAND = /^\s*\/clear\b/u;
 const SLASH_COMMAND = /^\s*\//u;
 /** A slash command owns a turn of the agent's own: `/clear` redraws and has
@@ -842,6 +850,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   /** The composer's **+**: a phone file into the project inbox, an image
    * already on the desktop, or an `@`. */
   const [addSheet, setAddSheet] = useState(false);
+  /** The Commit chip's sheet: commit everything, or split it up. */
+  const [commitSheet, setCommitSheet] = useState(false);
   /** The "From the desktop" list: `null` while the desktop is being asked. */
   const [desktopSheet, setDesktopSheet] = useState(false);
   const [desktopImages, setDesktopImages] = useState<DesktopImage[] | null>(null);
@@ -867,8 +877,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * the reader has not switched the view to the screen. */
   const [transcript, setTranscript] = useState<SessionTranscript | null>(null);
   /** Prompts the composer sent that the stored session does not hold yet,
-   * shown as the reader's bubbles at the end of the session chat. */
-  const [pending, setPending] = useState<PendingPrompt[]>([]);
+   * shown as the reader's bubbles at the end of the session chat. Those the
+   * desktop still holds come back with the tab (`heldPrompts.ts`). */
+  const [pending, setPending] = useState<PendingPrompt[]>(() => readHeld(tab.id));
   const pendingId = useRef(0);
   /** Where the stored session stood when this phone cleared it
    * (`clearedSession.ts`): until the new chat has a transcript of its own, what
@@ -992,7 +1003,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     // message, which is nothing at all for most of them (`drafts.ts`).
     setDraft(readDraft(tab.id));
     setTranscript(null);
-    setPending([]);
+    // What the desktop still holds for this tab is still the reader's.
+    const held = readHeld(tab.id);
+    pendingId.current = held.reduce((last, prompt) => Math.max(last, prompt.id), pendingId.current);
+    setPending(held);
     setEditing(null);
     setEditNote("");
     setClearedAt(null);
@@ -2167,50 +2181,58 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     setVoicePreview("");
     setVoiceStatus(null);
   };
-  const submitDraft = () => {
-    if (editing) {
-      submitEdit(editing);
+  /** `fromComposer` false: words that are not the draft (the Commit chip's
+   * prompts) — sent as a prompt like any other, the draft and an edit left
+   * alone. */
+  const submitDraft = (text = draft, fromComposer = true) => {
+    if (editing && fromComposer) {
+      submitEdit(editing, text);
       return;
     }
-    if (!connected || !draft.trim()) return;
+    if (!connected || !text.trim()) return;
     // Only confirm what actually left the device. `readyState === OPEN` on a
     // half-open cellular link silently buffers, and "Sent" was shown regardless.
     if (tab.kind !== "agent") {
       // A shell has no soft newline: each line is its own command line.
-      if (!type(`${draft.replace(/\r?\n/g, "\r")}\r`)) return;
-      setLastSent(draft);
+      if (!type(`${text.replace(/\r?\n/g, "\r")}\r`)) return;
+      setLastSent(text);
       setDraft("");
       return;
     }
     // A slash command is the CLI's, not a turn: the session never records it,
     // so a bubble for it would wait forever. `/clear` also ends the chat the
     // earlier bubbles were waiting in.
-    const id = /^\s*\//u.test(draft) ? undefined : ++pendingId.current;
+    const id = /^\s*\//u.test(text) ? undefined : ++pendingId.current;
     if (id !== undefined && agentAtWork) {
-      holdDraft(id);
+      holdDraft(id, text, fromComposer);
       return;
     }
-    if (!sendAgentText(draft, id)) return;
-    setLastSent(draft);
+    if (!sendAgentText(text, id)) return;
+    setLastSent(text);
     setEditNote("");
     if (id === undefined) {
-      if (CLEAR_COMMAND.test(draft)) startedOver();
-      rememberSlashCommand(slashCliKey, draft);
+      if (CLEAR_COMMAND.test(text)) startedOver();
+      rememberSlashCommand(slashCliKey, text);
       setUsedSlash(readSlashCommands(slashCliKey));
     } else {
       // The new chat has a prompt now: resuming the old one would leave it.
       setUndoable(false);
       setUndoNote("");
-      const sent = pendingPrompt(id, draft, storedEntries);
+      const sent = pendingPrompt(id, text, storedEntries);
       setPending((current) => [...current, sent].slice(-MAX_PENDING));
       // The phone knows the words before they leave; the desktop records them
       // as this tab's prompt — the only record of it for an agent whose
       // transcript is not read (OpenCode's cards list these).
-      void reportSentPrompt(tab.id, draft).catch(() => {});
+      void reportSentPrompt(tab.id, text).catch(() => {});
     }
+    if (!fromComposer) return;
     setDraft("");
     endDictation();
   };
+  /** For dictation's spoken send: the session's handlers outlive the render
+   * that started them. */
+  const submitDraftRef = useRef(submitDraft);
+  submitDraftRef.current = submitDraft;
   /** Send while the agent works: the desktop holds the prompt for the tab's
    * next idle point (`holdPrompt`) instead of it going into the CLI's own
    * queue, where nothing can reach it again — so until the agent takes it in,
@@ -2218,25 +2240,28 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * prompt's does. A desktop that cannot hold it (no window, an older build)
    * costs nothing: the words are typed as they always were. The delivery
    * records the prompt in the desktop's history, so it is not reported here. */
-  const holdDraft = (id: number) => {
-    const text = draft;
+  const holdDraft = (id: number, text: string, fromComposer = true) => {
     setLastSent(text);
     setUndoable(false);
     setUndoNote("");
     setEditNote("mobile.composer.heldNote");
     // `held: ""` — asked for, id not known yet: waiting, not yet editable.
     setPending((current) => [...current, { ...pendingPrompt(id, text, storedEntries), held: "" }].slice(-MAX_PENDING));
-    setDraft("");
-    endDictation();
+    if (fromComposer) {
+      setDraft("");
+      endDictation();
+    }
+    // The answer may come after the reader left the tab, or came back to it:
+    // `patchHeld` hands it to the chat showing the tab then (`onHeldPatched`).
     holdPrompt(tab.id, text).then(
-      (held) => setPending((current) => current.map((entry) => entry.id === id ? { ...entry, held } : entry)),
+      (held) => patchHeld(tab.id, id, { held }),
       () => {
-        setPending((current) => current.map((entry) => entry.id === id ? { ...entry, held: undefined } : entry));
         setEditNote("");
         if (!sendAgentText(text, id)) {
-          setPending((current) => current.map((entry) => entry.id === id ? { ...entry, failed: true, retrying: false } : entry));
+          patchHeld(tab.id, id, { held: undefined, failed: true, retrying: false });
           return;
         }
+        patchHeld(tab.id, id, { held: undefined });
         void reportSentPrompt(tab.id, text).catch(() => {});
       },
     );
@@ -2264,9 +2289,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * it says so does the bubble take the new words — it keeps its place. An
    * agent that took the prompt first keeps the old words: the new ones stay
    * in the composer, now an ordinary draft, to be sent or dropped. */
-  const submitEdit = (target: { id: number; before: string }) => {
+  const submitEdit = (target: { id: number; before: string }, words = draft) => {
     const prompt = pending.find((entry) => entry.id === target.id);
-    const text = draft.trim();
+    const text = words.trim();
     if (!connected || !text || editSending || !prompt?.held) return;
     if (text === prompt.text) {
       cancelEdit();
@@ -2291,6 +2316,36 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       })
       .finally(() => setEditSending(false));
   };
+  useEffect(() => onHeldPatched((tabId, id, patch) => {
+    if (tabId === tab.id) setPending((current) => current.map((entry) => entry.id === id ? { ...entry, ...patch } : entry));
+  }), [tab.id]);
+  // What the desktop holds outlives this view; what the session recorded is
+  // the record's.
+  useEffect(() => {
+    const arrived = arrivedPending(storedEntries, pending);
+    writeHeld(tab.id, pending.filter((entry) => !arrived.has(entry.id)));
+  }, [tab.id, storedEntries, pending]);
+  // Back on the tab: a prompt held when the reader left may have been
+  // delivered, or dropped on the desktop, meanwhile.
+  useEffect(() => {
+    // Only what was held before this view: a prompt held since may be newer
+    // than the list read.
+    const restored = new Set(readHeld(tab.id).map((entry) => entry.id));
+    if (!restored.size) return;
+    let live = true;
+    getSchedules(tab.id).then(({ schedules }) => {
+      if (!live || !Array.isArray(schedules)) return;
+      setPending((current) => {
+        const kept = stillHeld(current.filter((entry) => restored.has(entry.id) && entry.held !== undefined), schedules);
+        return current.flatMap((entry) => {
+          if (!restored.has(entry.id) || entry.held === undefined) return [entry];
+          const now = kept.find((prompt) => prompt.id === entry.id);
+          return now ? [now] : [];
+        });
+      });
+    }, () => {});
+    return () => { live = false; };
+  }, [tab.id]);
   /** Some prompt sent from here still waits on the desktop. */
   const heldWaiting = useMemo(() => {
     const arrived = arrivedPending(storedEntries, pending);
@@ -2385,6 +2440,18 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     }
     setClearRefused(false);
     if (sendAgentText(NEW_CONVERSATION_COMMAND)) startedOver();
+  };
+  /** The Commit chip's pick: its prompt goes as the reader's own would —
+   * a bubble at once, held while the agent works — and the draft stays. */
+  const commitOptions: SheetOption[] = COMMIT_CHOICES.map((choice) => ({
+    key: choice,
+    label: t(COMMIT_LABELS[choice]),
+    description: t(COMMIT_HINTS[choice]),
+    current: false,
+  }));
+  const pickCommit = (key: string) => {
+    setCommitSheet(false);
+    submitDraft(COMMIT_PROMPTS[key as CommitChoice], false);
   };
   /** The composer's `/` menu: the commands that continue the draft, the
    * reader's own first. Picking one only fills the field — the reader still
@@ -2823,7 +2890,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   /** Sends the picked files into the project inbox one by one and writes each
    * one's `@` reference into the draft as it lands. The reference is the
    * desktop's — the phone never composes a path. */
-  const attachFromPhone = (files: FileList | null) => {
+  const attachFromPhone = (files: ArrayLike<File> | null) => {
     if (!files || files.length === 0) return;
     const run = uploadRun.current;
     for (const file of Array.from(files)) {
@@ -2897,7 +2964,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   const pickAdd = (key: string) => {
     setAddSheet(false);
     if (key === "phone") {
-      fileInput.current?.click();
+      pickPhoneFiles(fileInput.current, attachFromPhone);
     } else if (key === "gallery") {
       galleryInput.current?.click();
     } else if (key === "desktop") {
@@ -2985,7 +3052,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * itself — its rows, and where on the tail they start — not just that there
    * is one. */
   const liveQuestion = useMemo(
-    () => (liveTail.length > 0 ? readSelectPrompt(liveTail, agentLabel) : null),
+    () => (liveTail.length > 0 ? readSelectPrompt(liveTail, agentLabel, paneColumns.current) : null),
     [liveTail, agentLabel],
   );
   /** The dialog's own question — the block right above its rows, which the
@@ -3118,9 +3185,22 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
         const reading = readDictation(event);
         const step = advanceDictation(voiceProgress.current, reading.heard);
         voiceProgress.current = step.progress;
-        // Speech is inserted into the current prompt but deliberately not
-        // submitted. The user can review/edit it before pressing Enter.
-        if (step.insert) setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${step.insert}`);
+        // Speech is inserted into the current prompt, not submitted: the user
+        // reviews it and presses Send — or says "go on" / "los" last, which
+        // leaves the draft and sends the rest (`spokenSend`). The ref, not
+        // the state, is read and moved: two results can land in one render.
+        if (step.insert) {
+          const current = draftRef.current;
+          const next = `${current}${current && !current.endsWith(" ") ? " " : ""}${step.insert}`;
+          const spoken = spokenSend(next);
+          draftRef.current = spoken ?? next;
+          setDraft(spoken ?? next);
+          if (spoken !== null) {
+            forgetDictation();
+            submitDraftRef.current(spoken);
+            return;
+          }
+        }
         setVoicePreview(dictationPreview(step.progress, reading.interim));
       },
       // A new recognizer's result list starts empty: everything the last one
@@ -3402,7 +3482,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       </>}
     </div>
     <div className="terminal-controls">
-      {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}{listening && !voiceProblem && !voicePreview && isUntested("mobile.voice.keepListening") && <em>{t("mobile.focus.untested")}</em>}</div>}
+      {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}{listening && !voiceProblem && !voicePreview && (isUntested("mobile.voice.keepListening") || isUntested("mobile.voice.spokenSend")) && <em>{t("mobile.focus.untested")}</em>}</div>}
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}{isUntested("mobile.link.failureText") && <em> · {t("mobile.focus.untested")}</em>}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. Send it again once it is back.</div>}
       {undoNote && <div className="voice-feedback" role="status">{t(undoNote)}</div>}
@@ -3499,13 +3579,15 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
               ? <button className="composer-prefix" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={undoClearConversation} aria-label={t("mobile.composer.undoClearHint")} title={t("mobile.composer.undoClearHint")}>{t("mobile.composer.undoClear")}</button>
               : <button className="composer-prefix" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={clearConversation} aria-label={t("mobile.composer.clearChat")} title={t("mobile.composer.clearChat")}>{t("mobile.composer.clearChip")}</button>}
             {undoable && isUntested("mobile.composer.undoClear") && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
+            {/* Commit opens its sheet: one commit, or split into several. */}
+            <button className="composer-prefix composer-commit" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={() => setCommitSheet(true)} aria-label={t("mobile.commit.open")} aria-haspopup="dialog" aria-expanded={commitSheet} title={t("mobile.commit.open")}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5" /><path d="M2 12h6.5M15.5 12H22" /></svg></button>
             </div>
           </>}
           {tab.kind !== "agent" && <>
             <button className={`composer-keys${keysShown ? " open" : ""}`} onPointerDown={(event) => event.preventDefault()} onClick={toggleKeys} aria-label={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")} aria-expanded={keysShown} aria-controls="terminal-keys" title={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8" /></svg></button>
             <span className="composer-spacer" />
           </>}
-          <button className="send-icon" disabled={!connected || !draft.trim() || editSending} onClick={submitDraft} aria-label={editing ? t("mobile.composer.editSave") : "Send"} title={editing ? t("mobile.composer.editSave") : "Send"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
+          <button className="send-icon" disabled={!connected || !draft.trim() || editSending} onClick={() => submitDraft()} aria-label={editing ? t("mobile.composer.editSave") : "Send"} title={editing ? t("mobile.composer.editSave") : "Send"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
         </div>
       </div>
       {keysShown && <div className="keys" id="terminal-keys">
@@ -3544,6 +3626,15 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       busy={false}
       onPick={pickAdd}
       onClose={() => setAddSheet(false)}
+    />}
+    {commitSheet && <OptionSheet
+      title={t("mobile.commit.title")}
+      note={isUntested("mobile.composer.commit") ? { text: t("mobile.focus.untested") } : undefined}
+      options={commitOptions}
+      waiting=""
+      busy={!connected}
+      onPick={pickCommit}
+      onClose={() => setCommitSheet(false)}
     />}
     {desktopSheet && <OptionSheet
       title="From the desktop"

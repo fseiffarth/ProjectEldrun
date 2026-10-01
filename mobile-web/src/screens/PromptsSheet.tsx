@@ -107,7 +107,7 @@ export function PromptsSheet({ projectId, tabs, onClose, onSchedule }: {
   return <div className="sheet-backdrop" role="presentation" onClick={onClose}>
     <section className="option-sheet schedule-sheet" role="dialog" aria-modal="true" aria-label="Collected prompts" onClick={(event) => event.stopPropagation()}>
       <span className="sheet-grip" aria-hidden="true" />
-      <header><button className="sheet-close" onClick={onClose} aria-label="Close">✕</button><h2>Collected prompts <small>Untested</small></h2><span className="sheet-close" aria-hidden="true" /></header>
+      <header><button className="sheet-close" onClick={onClose} aria-label="Close">✕</button><h2>Collected prompts {isUntested("mobile.sheet.prompts") && <small>{t("mobile.newTab.untested")}</small>}</h2><span className="sheet-close" aria-hidden="true" /></header>
       <p className="sheet-note">Prompts kept for this project without a tab. Send one to an agent tab now, or turn it into a schedule.</p>
       {agentTabs.length > 0
         ? <label className="mobile-prompt-target">Target tab<select value={target?.id ?? ""} disabled={held} onChange={(event) => setTargetId(event.target.value)}>{agentTabs.map((tab) => <option key={tab.id} value={tab.id}>{tab.label}</option>)}</select></label>

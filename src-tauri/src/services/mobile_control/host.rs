@@ -580,10 +580,15 @@ async fn status(State(state): State<HostState>, headers: HeaderMap) -> impl Into
     // (and every crash), and on Windows the nominal path is never a file.
     let desktop_available =
         admin::desktop_reachable(&state.config.control_dir.join("desktop-control.sock")).await;
+    let show_untested_tags = std::fs::read(state.config.state_dir.join("settings.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|settings| settings.get("show_untested_tags").and_then(|value| value.as_bool()))
+        .unwrap_or(false);
     (
         StatusCode::OK,
         Json(
-            json!({ "desktop_available": desktop_available, "host": state.config.host.display_name }),
+            json!({ "desktop_available": desktop_available, "host": state.config.host.display_name, "show_untested_tags": show_untested_tags }),
         ),
     )
 }
@@ -7319,6 +7324,22 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "answered: {body}");
         assert_eq!(json(&body)["desktop_available"], true, "{body}");
         drop(listener);
+    }
+
+    #[tokio::test]
+    async fn status_tracks_the_untested_tag_display_preference() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(91)).await.0;
+        let settings = host.state.config.state_dir.join("settings.json");
+
+        let (status, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json(&body)["show_untested_tags"], false);
+
+        std::fs::write(&settings, br#"{"show_untested_tags":true}"#).expect("settings");
+        let (status, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json(&body)["show_untested_tags"], true);
     }
 
     /// The desktop pill's git dot reaches the list row and the project screen

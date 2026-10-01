@@ -85,6 +85,10 @@ export interface SentPromptFacts {
   /** The tab's `sessionId` — its launch id. The backend files the row under
    *  the live session the hook recorded for it and keeps this as `tab_id`. */
   sessionId?: string;
+  /** The tab's schedule target id, the `tab_id` of a tab without a
+   *  `sessionId` (`prompt/adopt.historyTabId`) — without it that tab's rows
+   *  could only be told apart by a label other tabs share. */
+  tabId?: string;
   preface?: string[];
   agent?: string;
   result?: SentAgentPrompt["result"];
@@ -99,6 +103,8 @@ function sentPayload(sent: SentPromptFacts) {
     ...(sent.scheduleOrigin ? { schedule_origin: sent.scheduleOrigin } : {}),
     tab_label: sent.tabLabel,
     session_id: sent.sessionId ?? null,
+    // With a session id the backend keeps the launch id as the tab id.
+    ...(!sent.sessionId && sent.tabId ? { tab_id: sent.tabId } : {}),
     preface: sent.preface ?? [],
     agent: sent.agent ?? null,
     result: sent.result ?? null,
@@ -335,6 +341,7 @@ export async function sendCollectedPrompt(
     .archive(projectId, prompt.id, {
       tabLabel: target.label,
       sessionId: target.sessionId,
+      tabId: target.scheduleTargetId,
       preface,
       agent: target.agent,
     })

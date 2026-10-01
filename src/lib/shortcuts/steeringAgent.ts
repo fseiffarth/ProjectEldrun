@@ -24,6 +24,7 @@ import {
   submitScheduledAgentCommand,
   submitScheduledAgentMessage,
 } from "../agents/scheduledAgentInput";
+import { noteSentPrompt } from "../agents/sentPrompts";
 import { useActivityStore } from "../../stores/activity";
 import { agentTabLabel } from "../../stores/agents/agentModels";
 import { noteTypedClear } from "../../stores/agents/agentClearUndo";
@@ -143,4 +144,5 @@ export async function sendSteeringPrompt(tab: TabEntry, text: string): Promise<v
     await new Promise((resolve) => setTimeout(resolve, START_POLL_MS));
   }
   await submitScheduledAgentMessage(target, text, { whileBusy: true });
+  noteSentPrompt(target, text);
 }
