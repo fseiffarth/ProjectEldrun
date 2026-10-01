@@ -1975,6 +1975,73 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
 .terminal-reader-turn.agent.plan {
   border-color: #8b5cf6;
 }
+/* Plain Dark / Plain Light draw the bubbles as octagons: 45° cut corners,
+   the tail corner left square so it still says whose it is. A clip-path
+   would cut the border and shadow off the diagonals, so the bubble itself
+   paints the rim (rim over fill, as a border over its own background) and a
+   1px-inset `::before` the fill, cut 0.59px less (1px perpendicular inset of
+   a 45° edge, minus the 1px shift) so the rim stays 1px on the diagonals too. */
+[data-theme="dark"] .terminal-reader-turn,
+[data-theme="light"] .terminal-reader-turn {
+  --oct-tl: 10px;
+  --oct-tr: 10px;
+  --oct-br: 10px;
+  --oct-bl: 10px;
+  --cut-tl: var(--oct-tl);
+  --cut-tr: var(--oct-tr);
+  --cut-br: var(--oct-br);
+  --cut-bl: var(--oct-bl);
+  isolation: isolate;
+  padding: 9px 13px 19px;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: linear-gradient(var(--turn-rim), var(--turn-rim)), var(--turn-fill);
+}
+/* Declared on both so each resolves its own `--cut-*`. */
+[data-theme="dark"] .terminal-reader-turn,
+[data-theme="light"] .terminal-reader-turn,
+[data-theme="dark"] .terminal-reader-turn::before,
+[data-theme="light"] .terminal-reader-turn::before {
+  clip-path: polygon(
+    var(--cut-tl) 0,
+    calc(100% - var(--cut-tr)) 0,
+    100% var(--cut-tr),
+    100% calc(100% - var(--cut-br)),
+    calc(100% - var(--cut-br)) 100%,
+    var(--cut-bl) 100%,
+    0 calc(100% - var(--cut-bl)),
+    0 var(--cut-tl)
+  );
+}
+[data-theme="dark"] .terminal-reader-turn::before,
+[data-theme="light"] .terminal-reader-turn::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  z-index: -1;
+  background: var(--turn-fill);
+  --cut-tl: max(0px, calc(var(--oct-tl) - 0.59px));
+  --cut-tr: max(0px, calc(var(--oct-tr) - 0.59px));
+  --cut-br: max(0px, calc(var(--oct-br) - 0.59px));
+  --cut-bl: max(0px, calc(var(--oct-bl) - 0.59px));
+}
+[data-theme="dark"] .terminal-reader-turn.user,
+[data-theme="light"] .terminal-reader-turn.user {
+  --oct-br: 0px;
+  --turn-fill: color-mix(in srgb, var(--accent) 24%, var(--bg-main));
+  --turn-rim: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+[data-theme="dark"] .terminal-reader-turn.agent,
+[data-theme="light"] .terminal-reader-turn.agent {
+  --oct-bl: 0px;
+  --turn-fill: color-mix(in srgb, var(--text-primary) 9%, var(--bg-main));
+  --turn-rim: color-mix(in srgb, var(--text-primary) 18%, transparent);
+}
+[data-theme="dark"] .terminal-reader-turn.agent.plan,
+[data-theme="light"] .terminal-reader-turn.agent.plan {
+  --turn-rim: #8b5cf6;
+}
 .terminal-reader-plan-head {
   display: block;
   margin-bottom: 4px;
