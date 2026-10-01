@@ -26,7 +26,8 @@ export interface SelectOption {
    * difference between this and `current`, which is why it is not the printed
    * number: a dialog may renumber, but the rows are always in screen order. */
   index: number;
-  /** The number the dialog printed beside the row. */
+  /** The number the dialog printed beside the row — `UNNUMBERED` for the one
+   * row a multi-select question prints none for (`ACTION_ROW`). */
   number: number;
   label: string;
   /** The note the dialog printed in the row's second column, if any. */
@@ -99,6 +100,30 @@ const EDGE = /^[↑↓]$/u;
  * under the run, and nothing but the count and one word. */
 const HIDDEN_ROWS = /^\s*(?:…|\.\.\.)\s*\+(\d{1,2})\s+\p{L}+$/u;
 const RADIO_AGENT = /gemini|qwen/iu;
+/** Claude Code's multi-select question (AskUserQuestion with `multiSelect`,
+ * 2.1.286) ends its checkbox rows with one it prints no number for — `Next`,
+ * or `Submit` on the last question — at the labels' column, with `❯` in the
+ * marker slot while it is highlighted:
+ *
+ *     4. [ ] Type something
+ *        Submit
+ *     5. Chat about this
+ *
+ * Enter on a checkbox row only ticks it, so a phone that read this row as the
+ * last row's note could tick boxes and never send them: the question stayed up
+ * as answered. Read only right under a checkbox row, and only these words. */
+const ACTION_ROW = /^\s*([❯▸▶›>→])?\s*(Submit|Next)$/u;
+const CHECKBOX_LABEL = /^\[[^\]]\]\s/u;
+const CHECKBOX_ROW = /^\s*[❯▸▶›>→]?\s*\d{1,2}[.)]\s+\[[^\]]\]\s/u;
+/** `SelectOption.number` of a row the dialog printed no number beside. */
+export const UNNUMBERED = 0;
+
+/** Whether `lines[index]` is a multi-select question's `Submit`/`Next` row
+ * (`ACTION_ROW`). Highlighted, it opens with the input line's `❯`, and taken
+ * for the input box it cut the question off the screen it was waiting on. */
+export function isActionRow(lines: readonly { text: string }[], index: number): boolean {
+  return index > 0 && ACTION_ROW.test(lines[index].text) && CHECKBOX_ROW.test(lines[index - 1].text);
+}
 
 /** Whether the tab's agent marks a dialog's highlighted row with `●` — and so
  * never opens a message with one. */
@@ -299,6 +324,13 @@ export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: 
       run = undefined;
       continue;
     }
+    const tail = run?.options[run.options.length - 1];
+    const action = tail && CHECKBOX_LABEL.test(tail.label) ? ACTION_ROW.exec(text) : null;
+    if (run && action) {
+      if (action[1]) run.marked.push(run.options.length);
+      run.options.push({ index: run.options.length, number: UNNUMBERED, label: action[2] });
+      continue;
+    }
     const row = readRow(text, option);
     const hidden = row ? null : HIDDEN_ROWS.exec(text);
     if (run && hidden) {
@@ -320,9 +352,12 @@ export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: 
       run = undefined;
       continue;
     }
+    // Counted on from the last row that printed a number: `Submit` prints none.
+    const numbered = run ? [...run.options].reverse().find((entry) => entry.number !== UNNUMBERED) : undefined;
     const continues = run !== undefined
+      && numbered !== undefined
       && run.options.length < MAX_OPTIONS
-      && row.option.number === run.options[run.options.length - 1].number + 1;
+      && row.option.number === numbered.number + 1;
     if (!continues || !run) {
       // A run starts at 1 — or wherever a windowed dialog's slice starts,
       // which the final check holds to the window's own marks.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeSelectRows, missingSelectRow, readQuestionTabs, readSelectPrompt, sameSelectStep, selectKeys, selectMoveKeys, selectSignature } from "../../../mobile-web/src/terminal/selectPrompt";
+import { mergeSelectRows, missingSelectRow, readQuestionTabs, readSelectPrompt, sameSelectStep, selectKeys, selectMoveKeys, selectSignature, UNNUMBERED } from "../../../mobile-web/src/terminal/selectPrompt";
 import { currentMode, modeChoices } from "../../../mobile-web/src/terminal/agentModes";
 import { inputFrameStart, sessionStatus } from "../../../mobile-web/src/terminal/statusLine";
 
@@ -229,6 +229,53 @@ describe("Eldrun Mobile select dialog", () => {
       { index: 0, number: 1, label: "Restore it too", description: undefined },
       { index: 1, number: 2, label: "Just the question", description: undefined },
     ]);
+  });
+
+  it("offers a multi-select question's unnumbered Submit row", () => {
+    // Claude Code 2.1.286's AskUserQuestion with `multiSelect`, captured off a
+    // 46×30 pane through the phone's own attach and `readableScreen`. Enter on
+    // a checkbox row only ticks it; the question is sent from `Submit`, a row
+    // with no number that used to be read as the row above's note — so the
+    // phone ticked boxes and the question stayed up as answered.
+    const screen = (highlight: number) => {
+      const marker = (row: number) => (row === highlight ? "❯" : " ");
+      return lines(
+        "←  ☒ Colours  ✔ Submit  →",
+        "",
+        "Which colours do you like?",
+        "",
+        `${marker(0)} 1. [✔] Red`,
+        "         A warm, vibrant colour",
+        `${marker(1)} 2. [ ] Green`,
+        "         A cool, natural colour",
+        `${marker(2)} 3. [ ] Blue`,
+        `${marker(3)} 4. [ ] Type something`,
+        `${marker(4)}    Submit`,
+        `${marker(5)} 5. Chat about this`,
+        "",
+        "Enter to select · ↑/↓ to navigate · Esc to cancel",
+      );
+    };
+    const prompt = readSelectPrompt(screen(0), "Claude Code");
+    expect(prompt?.options).toEqual([
+      { index: 0, number: 1, label: "[✔] Red", description: "A warm, vibrant colour" },
+      { index: 1, number: 2, label: "[ ] Green", description: "A cool, natural colour" },
+      { index: 2, number: 3, label: "[ ] Blue", description: undefined },
+      { index: 3, number: 4, label: "[ ] Type something", description: undefined },
+      { index: 4, number: UNNUMBERED, label: "Submit" },
+      { index: 5, number: 5, label: "Chat about this", description: undefined },
+    ]);
+    // The highlight walks onto it in screen order, so a tap reaches it.
+    expect(selectKeys(prompt!.current, 4)).toEqual(["\u001b[B", "\u001b[B", "\u001b[B", "\u001b[B", "\r"]);
+    // Highlighted, it is still the dialog's row — not the input box's `❯`.
+    const onSubmit = screen(4);
+    expect(readSelectPrompt(onSubmit, "Claude Code")?.current).toBe(4);
+    expect(inputFrameStart(onSubmit, "Claude Code")).toBe(onSubmit.length);
+    // A question with more to come says `Next` there instead.
+    const next = screen(4).map((line) => ({ text: line.text.replace("Submit", "Next") }));
+    expect(readSelectPrompt(next, "Claude Code")?.options[4].label).toBe("Next");
+    // Only under a checkbox row: an ordinary list's `Submit` line is not a row.
+    expect(readSelectPrompt(lines("❯ 1. Red", "  2. Green", "   Submit"))?.options).toHaveLength(2);
   });
 
   it("keeps reading a Codex question whose label wraps beside its note", () => {
