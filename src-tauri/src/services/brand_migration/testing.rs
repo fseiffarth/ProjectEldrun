@@ -37,7 +37,7 @@ impl World for RecordingWorld {
 /// A machine in a temp dir: a home with the Linux layout on every OS (the
 /// steps only ever see the paths they are given).
 pub struct Machine {
-    _tmp: tempfile::TempDir,
+    _tmp: Option<tempfile::TempDir>,
     pub home: PathBuf,
     pub world: RecordingWorld,
 }
@@ -53,7 +53,13 @@ impl Machine {
         // temp dir is itself behind a link on macOS).
         let home = tmp.path().canonicalize().expect("canonicalize").join("home");
         fs::create_dir_all(&home).expect("home");
-        Self { _tmp: tmp, home, world: RecordingWorld::default() }
+        Self { _tmp: Some(tmp), home, world: RecordingWorld::default() }
+    }
+
+    /// A machine whose home is a folder that already exists and is kept
+    /// afterwards: the copy of a real install (`copy_run`).
+    pub fn at(home: PathBuf) -> Self {
+        Self { _tmp: None, home, world: RecordingWorld::default() }
     }
 
     pub fn share(&self) -> PathBuf {

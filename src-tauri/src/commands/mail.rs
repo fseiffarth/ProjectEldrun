@@ -4505,10 +4505,7 @@ pub async fn mail_attachment_save_to_project(
         // folder existed would otherwise stage somebody's mail on the next
         // `git add -A`. Best-effort: a project with no git and no writable
         // `.gitignore` still gets its attachment.
-        let _ = crate::commands::projects::ensure_generated_dir_ignored(
-            &root,
-            crate::commands::projects::EMAILS_DIR,
-        );
+        let _ = crate::commands::projects::ensure_generated_dir_ignored(&root, &emails_dir_name(&root));
         let emails = emails_dir_in(&root)?;
 
         // The filename is the message's, so it is sanitized (no path component,
@@ -4526,6 +4523,12 @@ pub async fn mail_attachment_save_to_project(
     .map_err(|e| e.to_string())?
 }
 
+/// The emails folder's name in the project at `root`: a project that already
+/// has the folder under the app's old name keeps it.
+fn emails_dir_name(root: &Path) -> String {
+    crate::commands::projects::generated_dir_name(root, crate::brand::Name::EMAILS_DIR)
+}
+
 /// `<root>/eldrun-emails`, created if missing, and **refused unless it is a real
 /// directory directly inside the project**.
 ///
@@ -4535,13 +4538,13 @@ pub async fn mail_attachment_save_to_project(
 /// attachment" into a file dropped wherever the link points, and for a fenced
 /// agent that is a way out of its fence.
 fn emails_dir_in(root: &Path) -> Result<PathBuf, String> {
-    let emails = root.join(crate::commands::projects::EMAILS_DIR);
+    let name = emails_dir_name(root);
+    let emails = root.join(&name);
     match std::fs::symlink_metadata(&emails) {
         Ok(meta) if meta.file_type().is_dir() => {}
         Ok(_) => {
             return Err(format!(
-                "{} in this project is not a plain folder, so nothing was saved into it",
-                crate::commands::projects::EMAILS_DIR
+                "{name} in this project is not a plain folder, so nothing was saved into it"
             ))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

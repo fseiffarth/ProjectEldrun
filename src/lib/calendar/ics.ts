@@ -29,7 +29,7 @@ import type {
 } from "../../types";
 import { addDays, addMinutes, datePart, minutesBetween, parseStamp } from "./calendarTime";
 import { stripFormatControls } from "../textSafety";
-import { BRAND, LEGACY_BRAND } from "../brand";
+import { BRAND, PINNED_ICS_UID_DOMAIN } from "../brand";
 
 const ICS_WEEKDAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 
@@ -665,14 +665,13 @@ function shiftedEnd(event: CalendarEvent, occurrenceStart: string, newStart: str
 
 /**
  * The UID of a row that carries none: `<row id>@<domain>`. The domain is
- * pinned to the name the app had when these UIDs were first handed out
- * (`LEGACY_BRAND`): the UID is what an importer and a CalDAV server know the
- * event by, so a UID that followed a rename would make every such event a new
- * one on the next export or push.
+ * pinned (`PINNED_ICS_UID_DOMAIN`): the UID is what an importer and a CalDAV
+ * server know the event by, so a UID that followed a rename would make every
+ * such event a new one on the next export or push.
  */
 export function icsUid(row: { id: string; uid?: string }): string {
   const uid = (row.uid ?? "").trim();
-  return uid || `${row.id}@${LEGACY_BRAND.slug}`;
+  return uid || `${row.id}@${PINNED_ICS_UID_DOMAIN}`;
 }
 
 /**

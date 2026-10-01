@@ -456,4 +456,6 @@ pub fn status() -> Status {
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]
+mod copy_run;
+#[cfg(test)]
 mod tests;

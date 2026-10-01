@@ -297,6 +297,18 @@ pub fn set_legacy_hit_sink(sink: fn(&str)) {
     let _ = LEGACY_HIT_SINK.set(sink);
 }
 
+// ── Pinned ids ──────────────────────────────────────────────────────────────
+// Inputs of ids that are stored or handed out and can never be recomputed
+// under another value. They are literals on purpose: they belong to no brand,
+// follow no rename, and are never shown or written anywhere.
+
+/// Hashed with a gateway's MAC into the id a remembered network carries. A
+/// different value would forget every remembered network.
+pub const PINNED_GATEWAY_ID_CONTEXT: &str = "eldrun-gateway:";
+/// Hashed with a subagent's id into the handle the phone sees. A different
+/// value would stop matching the handles a phone already holds.
+pub const PINNED_SUBAGENT_TOKEN_CONTEXT: &str = "eldrun-subagent:";
+
 /// Declare a current name and its `LEGACY_*` twin from one pattern. `slug`,
 /// `name` and `upper` stand for the brand's three forms; every other piece is
 /// a literal.
@@ -480,10 +492,6 @@ names! {
     /// Associated data of the mail store's wrapped master key; a key input
     /// like the labels.
     MAIL_WRAP_AAD / LEGACY_MAIL_WRAP_AAD = [slug, "/mail/v1/master"];
-    /// Hashed with a gateway's MAC into the id a remembered network carries.
-    GATEWAY_ID_CONTEXT / LEGACY_GATEWAY_ID_CONTEXT = [slug, "-gateway:"];
-    /// Hashed with a subagent's id into the handle the phone sees.
-    SUBAGENT_TOKEN_CONTEXT / LEGACY_SUBAGENT_TOKEN_CONTEXT = [slug, "-subagent:"];
 
     // ── Phone host ──────────────────────────────────────────────────────────
     /// The phone host's binary (no `.exe`).
@@ -667,8 +675,6 @@ mod tests {
             (LEGACY_MOBILE_FILES_SALT, "eldrun-mobile-files"),
             (LEGACY_MAIL_LABEL_ROOT, "eldrun/mail/v1/"),
             (LEGACY_MAIL_WRAP_AAD, "eldrun/mail/v1/master"),
-            (LEGACY_GATEWAY_ID_CONTEXT, "eldrun-gateway:"),
-            (LEGACY_SUBAGENT_TOKEN_CONTEXT, "eldrun-subagent:"),
             (LEGACY_MOBILE_HOST_BIN, "eldrun-mobile-host"),
             (LEGACY_MOBILE_HOST_EXE, "eldrun-mobile-host.exe"),
             (LEGACY_MOBILE_HOST_UNIT, "eldrun-mobile-host.service"),

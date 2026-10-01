@@ -15,7 +15,6 @@ import {
   mailAttachmentSaveToProject,
   mailBody,
   mailReplies,
-  APP_EMAILS_DIR,
   mailAuthDmarcCarried,
   mailAuthPanelTone,
   mailAuthShown,
@@ -26,6 +25,7 @@ import {
   openMailLink,
   stripFormatControls,
 } from "../../lib/mail";
+import { useGeneratedDirName } from "../../lib/generatedDir";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useMailStore } from "../../stores/mail";
 import { findContactByEmail } from "../../lib/mailContacts";
@@ -776,8 +776,9 @@ function AttachmentSaveDialog({
   // is treated as "no eldrun-emails folder": only the pick-a-location path is
   // offered. The folder name mirrors the backend's; this is a label, not the
   // path the write uses (that stays the backend's, resolved from an opaque id).
+  const emailsDir = useGeneratedDirName(project?.directory ?? "", "emails");
   const emailsFolder = project?.directory
-    ? `${project.directory.replace(/[/\\]+$/, "")}/${APP_EMAILS_DIR}`
+    ? `${project.directory.replace(/[/\\]+$/, "")}/${emailsDir}`
     : "";
 
   return createPortal(

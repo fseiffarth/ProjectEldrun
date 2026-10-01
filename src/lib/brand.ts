@@ -36,6 +36,13 @@ export const LEGACY_BRAND = {
   envPrefix: "ELDRUN_",
 } as const;
 
+/** The domain of the UID a calendar row without one is exported under
+ *  (`<row id>@<domain>`). Pinned for good, a literal that belongs to no brand:
+ *  the UID is what an importer and a CalDAV server know the event by, so a
+ *  different domain would make every such event a new one on the next export
+ *  or push. */
+export const PINNED_ICS_UID_DOMAIN = "eldrun";
+
 interface BrandForms {
   readonly display: string;
   readonly slug: string;

@@ -7,6 +7,7 @@ import { useScreenshotPendingStore } from "../../stores/screenshotPending";
 import { resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
 import { APP_SCREENSHOTS_DIR } from "../../lib/window/screenshot";
+import { useGeneratedDirName } from "../../lib/generatedDir";
 import { UntestedTag } from "../common/UntestedTag";
 import { ErrorNote } from "../common/ErrorNote";
 
@@ -119,6 +120,18 @@ export function ScreenshotSaveOverlay() {
   }, [pending]);
 
   const dir = savable.find((p) => p.id === projectId)?.dir ?? "";
+
+  // The folder defaults to the one the chosen project already has: a project
+  // filed into before a rename keeps its old-named folder. A name the user
+  // typed is theirs and is left alone.
+  const projectFolder = useGeneratedDirName(pending ? dir : "", "screenshots");
+  const [typedFolder, setTypedFolder] = useState(false);
+  useEffect(() => {
+    setTypedFolder(false);
+  }, [pending]);
+  useEffect(() => {
+    if (pending && !typedFolder) setFolder(projectFolder);
+  }, [pending, typedFolder, projectFolder]);
   const relPath = [folder.trim().replace(/^\/+|\/+$/g, ""), name.trim()]
     .filter(Boolean)
     .join("/");
@@ -214,7 +227,10 @@ export function ScreenshotSaveOverlay() {
                 value={folder}
                 disabled={busy}
                 spellCheck={false}
-                onChange={(e) => setFolder(e.target.value)}
+                onChange={(e) => {
+                  setTypedFolder(true);
+                  setFolder(e.target.value);
+                }}
                 onKeyDown={(e) => e.key === "Enter" && void save()}
               />
             </label>

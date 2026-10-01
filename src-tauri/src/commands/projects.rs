@@ -2930,6 +2930,46 @@ pub const SCREENSHOTS_DIR: &str = crate::brand::SCREENSHOTS_DIR;
 /// on the same rule as [`SCREENSHOTS_DIR`].
 pub const EMAILS_DIR: &str = crate::brand::EMAILS_DIR;
 
+/// The name one of those folders (`Name::SCREENSHOTS_DIR`, `Name::EMAILS_DIR`)
+/// goes by in the project at `root`: the name an older build gave it where the
+/// project already has that folder and not the current one, the current name
+/// otherwise — so a project filed into before a rename keeps its one folder
+/// instead of growing a second. The old folder is the user's and stays for
+/// good, which is why this is not counted as a legacy hit. Only a real
+/// directory counts (a project tree is attacker-controlled; a link is not a
+/// folder the app made). While the name is unchanged this never looks at the
+/// disk.
+pub fn generated_dir_name_for(pair: &crate::brand::Pair, root: &Path, name: crate::brand::Name) -> String {
+    let current = pair.cur(name);
+    let Some(old) = pair.legacy(name) else {
+        return current;
+    };
+    let old_is_dir = fs::symlink_metadata(root.join(&old)).is_ok_and(|meta| meta.file_type().is_dir());
+    if old_is_dir && fs::symlink_metadata(root.join(&current)).is_err() {
+        old
+    } else {
+        current
+    }
+}
+
+/// [`generated_dir_name_for`] under the running app's brand.
+pub fn generated_dir_name(root: &Path, name: crate::brand::Name) -> String {
+    generated_dir_name_for(&crate::brand::PAIR, root, name)
+}
+
+/// The folder a save into the project at `project_dir` defaults to, for the
+/// dialogs that show it: `kind` is `"screenshots"` or `"emails"`. A directory
+/// that is not on this machine (a remote project's) answers the current name.
+#[tauri::command]
+pub fn project_generated_dir(project_dir: String, kind: String) -> Result<String, String> {
+    let name = match kind.as_str() {
+        "screenshots" => crate::brand::Name::SCREENSHOTS_DIR,
+        "emails" => crate::brand::Name::EMAILS_DIR,
+        _ => return Err("unknown folder kind".into()),
+    };
+    Ok(generated_dir_name(Path::new(&project_dir), name))
+}
+
 // `eldrun-screenshots/` is ignored by default because a screen grab holds
 // whatever happened to be on the screen — mail, tokens, another project's
 // window — and a project with a public remote is one `git add -A` away from
@@ -3135,7 +3175,15 @@ fn ensure_gitignore_defaults(dir: &Path) -> std::io::Result<Vec<String>> {
 /// with no `.gitignore` at all gets one holding just this pattern — a full
 /// scaffold is `scaffold_project`'s job, not a side effect of saving a file.
 pub fn ensure_generated_dir_ignored(dir: &Path, folder: &str) -> std::io::Result<bool> {
-    if folder != SCREENSHOTS_DIR && folder != EMAILS_DIR {
+    // The old names too: a project that keeps its old folder
+    // (`generated_dir_name`) is saved into under that name.
+    let ours = [
+        SCREENSHOTS_DIR,
+        EMAILS_DIR,
+        crate::brand::LEGACY_SCREENSHOTS_DIR,
+        crate::brand::LEGACY_EMAILS_DIR,
+    ];
+    if !ours.contains(&folder) {
         return Ok(false);
     }
     let pattern = format!("{folder}/");
@@ -5722,6 +5770,39 @@ mod tests {
     /// The write paths cannot wait for a scaffold repair that may never be run:
     /// a project whose `.gitignore` predates the folder gets the pattern before
     /// the first file lands in it.
+    #[test]
+    fn a_project_keeps_the_generated_folder_it_already_has() {
+        use crate::brand::{Name, PAIR};
+        use crate::services::brand_migration::testing::RENAMED;
+        let name = Name::SCREENSHOTS_DIR;
+        let (cur, old) = (RENAMED.cur(name), RENAMED.legacy(name).unwrap());
+
+        // Nothing there yet: the current name.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(generated_dir_name_for(&RENAMED, dir.path(), name), cur);
+        // Only the old folder: it is kept.
+        fs::create_dir(dir.path().join(&old)).unwrap();
+        assert_eq!(generated_dir_name_for(&RENAMED, dir.path(), name), old);
+        // Both: the current one.
+        fs::create_dir(dir.path().join(&cur)).unwrap();
+        assert_eq!(generated_dir_name_for(&RENAMED, dir.path(), name), cur);
+
+        // A link under the old name is not a folder the app made.
+        #[cfg(unix)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), dir.path().join(&old)).unwrap();
+            assert_eq!(generated_dir_name_for(&RENAMED, dir.path(), name), cur);
+        }
+
+        // An unchanged name is answered without a second lookup.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(generated_dir_name_for(&PAIR, dir.path(), name), PAIR.cur(name));
+        assert_eq!(project_generated_dir(dir.path().to_string_lossy().into_owned(), "emails".into()).unwrap(), EMAILS_DIR);
+        assert!(project_generated_dir(String::new(), "other".into()).is_err());
+    }
+
     #[test]
     fn ensure_generated_dir_ignored_appends_once_and_only_for_app_folders() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,8 +1,9 @@
 # Rename phase 2 — the migration engine (2026-10-01); handoff to phase 3
 
 Branch `rename`, worktree `.claude/worktrees/rename`. The plan is the untracked
-`docs/rename_plan.md` (never `git add` it; the new name is secret and must not
-appear in any tracked file or commit message). Read
+`docs/rename_plan.md` (never `git add` it). The new name is no longer secret
+(the user removed its denylist entry on purpose): it may appear in tracked
+files and commit messages. Read
 `docs/rename_phase1_handoff.md` first for the brand modules' conventions, and
 `docs/context/brand_migration.md` for why the engine is shaped as it is.
 
@@ -67,36 +68,51 @@ the thing is present; prepared = the pieces exist, the flip must finish it.
 | Crate name | done in phase 1 | |
 | deb / NSIS replacement | **not built** | See "Flip points". |
 
-## Left for the user to decide
+## Decided by the user (2026-10-01)
 
-Each keeps its old value for existing data today.
+1. **Mail: the old label set stays for good.** No re-key is built. A store
+   opens under the label set its `key.json` records; a new store uses the
+   current set.
+2. **`<slug>-screenshots` / `<slug>-emails`: a project keeps the folder it
+   has.** `commands::projects::generated_dir_name` answers the old name where
+   a project has that folder and not the current one (a real directory only),
+   else the current name. The mail save uses it; the two dialogs ask through
+   `project_generated_dir` (`src/lib/generatedDir.ts`). Not a legacy hit: the
+   folder is the user's. A remote project's host is not asked — it gets the
+   current name.
+3. **Pinned ids are literals that belong to no brand:**
+   `brand::PINNED_GATEWAY_ID_CONTEXT`, `brand::PINNED_SUBAGENT_TOKEN_CONTEXT`
+   (out of the `names!` table, so there is no `Name::` for them) and
+   `PINNED_ICS_UID_DOMAIN` in `src/lib/brand.ts`.
+4. **Careful/HPC hosts: accepted.** The remote side is never migrated there.
+5. **Ref moves stay out of `local_loss`: accepted.**
+6. **The `AGENTS.md` additions stay** (gate line, context entry, brand rule).
+7. **The copy run comes before the flip** — see the next section.
 
-1. **Mail re-encryption.** Not attempted: `seal_existing` shows what a re-key
-   has to cover — seven sealed tables with per-row AAD, keyed digests that are
-   also row keys (`mail_remote_allow.addr_key`), `reply_key` and
-   `agent_marks.mid_key` which cannot be recomputed from sealed data, blob
-   files named by a keyed digest and referenced from two cleartext columns,
-   staged attachments, the three sealed JSON files and the OpenPGP keyring.
-   Proposed: build it as a store-to-store copy (`MailStore` opened with the old
-   keys → a new directory under the new keys → every value decrypted from the
-   new store and compared → directories swapped, old one kept), driven from
-   `open_with_keys` when `MailKeys::on_legacy_labels()`. Or keep the old label
-   set for good: it is never visible, and `LabelSet` already makes that free.
-2. **`<slug>-screenshots` / `<slug>-emails` folders** in user projects. New
-   saves go to the current name after the flip; existing folders are the
-   user's files and are left. Alternative: keep using the old folder where it
-   exists.
-3. **Pinned for good**: `GATEWAY_ID_CONTEXT`, `SUBAGENT_TOKEN_CONTEXT` and the
-   ICS UID domain now use the `LEGACY_*` value deliberately (a flip would
-   forget every remembered network, and re-create every UID-less event on the
-   next CalDAV push). Proposed: rename those constants to something neutral
-   and keep them.
-4. **Careful/HPC hosts**: the remote side of a project is never migrated
-   there; the old folder stays beside the new one.
-5. **Dev tooling state** (per developer): git config `<slug>.autoDevBuild`,
-   `~/.local/share/<slug>-dev`, `dev-builds/<slug>-<commit>`, the desktop
-   entries, `~/.config/<slug>-release-signing`, `~/.config/<slug>/privacy-denylist`,
-   `.git/<slug>-release-signing-secret-ok`. Untouched.
+Dev tooling state (per developer) is untouched: git config
+`<slug>.autoDevBuild`, `~/.local/share/<slug>-dev`, `dev-builds/<slug>-<commit>`,
+the desktop entries, `~/.config/<slug>-release-signing`,
+`~/.config/<slug>/privacy-denylist`, `.git/<slug>-release-signing-secret-ok`.
+
+## The copy run (the gate before phase 3)
+
+`scripts/brand-copy-run.sh [NewName] [--keep]`, from the user's own terminal
+(a fenced agent tab sees a stand-in for the state dir). It copies the state
+dir, the webview data and the archive entries into a private temp home,
+re-points the stored absolute paths at the copy, and runs the ignored test
+`services::brand_migration::copy_run::copy_run` over it: the real
+`run_startup` with the test `Machine` at that home, the machine-wide side
+recorded instead of done. It prints the steps done and pending, the record,
+a second launch, and every file that still holds a path under the old state
+dir or the old hook script's name. The report lands in the git dir
+(`brand-copy-run-report.txt`); the copy is deleted unless `--keep`.
+
+Not the plan's recipe (state-dir override on a copy + a local flip): an
+overridden state dir marks the instance sandboxed, and a sandboxed instance
+skips the state-dir move — the step most worth running.
+
+**Status: built, run only against an invented install here; the run against
+the real one is the user's and is still owed.**
 
 ## Flip points phase 3 must handle
 
@@ -118,6 +134,10 @@ Each keeps its old value for existing data today.
   move is pending they report "settings are unavailable". Proposed: let
   `mobile_prepare_phone_install_script` write the resolved state dir into the
   script.
+- `GITIGNORE_DEFAULT` (`commands/projects.rs`) builds its `<slug>-screenshots/`
+  and `<slug>-emails/` lines from the current slug. Add the old-named lines
+  beside them at the flip: a project that keeps its old folder (decision 2)
+  must not lose the ignore rule when its `.gitignore` is regenerated.
 - `scripts/<slug>-send.*` are static and spell the project folder and the
   variables; the flip rewrites them.
 - Remove `// brand-check: allow` markers that the flip makes unnecessary, and
@@ -143,7 +163,7 @@ Each keeps its old value for existing data today.
 - The plan's gate "phase 2 has been run against a copy of a real state dir"
   is still open: point `<PREFIX>STATE_DIR` and `<PREFIX>HOME` at a copy and
   flip the three macros in `brand.rs` plus `BRAND` in `brand.ts` locally.
-- The privacy denylist holds the new name now (one entry).
+- The privacy denylist no longer holds the new name; do not re-add it.
 
 ## Edits inside non-Linux `cfg` code
 

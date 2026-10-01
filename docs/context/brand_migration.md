@@ -128,3 +128,21 @@ exit), because some dual reads sit on a poll. A fenced agent cannot write the
 state dir, so the old send command leaves a note in the project's outbox and
 the next listing counts it. Settings → Updates shows the summary once the name
 has changed.
+
+## Things that deliberately do not follow the name
+
+- **Pinned ids** (`brand::PINNED_*`, `PINNED_ICS_UID_DOMAIN`): hash contexts
+  and the ICS UID domain. Their values are stored or handed out and cannot be
+  recomputed, so they are literals outside the brand table.
+- **The mail store's labels**: a store keeps the label set it was written
+  under, for good. There is no re-key.
+- **A project's own `-screenshots` / `-emails` folder**: the user's files. A
+  project that has one under the old name keeps saving into it
+  (`generated_dir_name`); nothing is renamed and no hit is counted.
+
+## The copy run
+
+`scripts/brand-copy-run.sh` runs the launch steps over a copy of a real
+install without the app (`brand_migration::copy_run`, an ignored test). It
+builds a home of its own rather than setting the state-dir override, because
+an overridden state dir is a sandboxed instance and skips the move.
