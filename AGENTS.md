@@ -130,7 +130,7 @@ Security / data loss:
 - Agents live only in Tabtivity: every local agent tab's `$HOME` is its scope's
   `<state_dir>/agent-homes/<key>` (`services::agent_home`), never the user's.
   Logins are shared per CLI through `services::agent_auth` (credential files
-  only, hard-linked into every home); config, skills, hooks and MCP entries
+  only, copied into every home and kept in step); config, skills, hooks and MCP entries
   are per scope. What the user wants everywhere lives in the Tabtivity-wide layer
   `<state_dir>/agent-global` (`services::agent_global`), copied/merged into
   each home at every spawn and never mounted into a fence — no agent may be
