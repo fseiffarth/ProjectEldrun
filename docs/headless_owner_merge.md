@@ -1,8 +1,8 @@
 # Headless owner — merging the branch into develop
 
 *The H1–H3 headless owner and the "keep running when closed" switch live on
-branch `worktree-agent-a48b863224fa9d19d` (worktree
-`.claude/worktrees/agent-a48b863224fa9d19d`). Design and live checks:
+branch `headless-owner` (worktree
+`.claude/worktrees/headless-owner`). Design and live checks:
 `docs/headless_owner_handoff.md` on that branch; plan:
 [`headless_owner_plan.md`](headless_owner_plan.md).*
 
@@ -39,7 +39,7 @@ for every user, not only behind the "keep running" switch: session files gain
      --exclude='tabtivity/agent-homes' tabtivity
    ```
 6. **Merge, on develop in the main checkout:**
-   `git merge --ff-only worktree-agent-a48b863224fa9d19d`, then
+   `git merge --ff-only headless-owner`, then
    `npm run backend:stale`. The new frontend hot-reloads into the running
    window on top of the old backend, so expect it to report stale. Merge
    when you are ready to restart Tabtivity yourself right after.
@@ -49,8 +49,8 @@ for every user, not only behind the "keep running" switch: session files gain
    `docs/headless_owner_handoff.md` (H1, H2, H3).
    The untested pills stay until each item is confirmed.
 9. **Clean up:** `git worktree unlock` and `git worktree remove
-   .claude/worktrees/agent-a48b863224fa9d19d`, then
-   `git branch -d worktree-agent-a48b863224fa9d19d`.
+   .claude/worktrees/headless-owner`, then
+   `git branch -d headless-owner`.
 
 **Rollback:** quit Tabtivity, check out the pre-merge develop and rebuild,
 restore the backup, *then* launch. An old build must not read the rewritten
