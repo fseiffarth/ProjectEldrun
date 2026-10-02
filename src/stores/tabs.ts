@@ -4865,6 +4865,16 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           ),
       );
     }
+    // A tab comes back once: a layout written while two syncs raced holds the
+    // same tab twice (see `persistScope`), under two ids and possibly two keys.
+    // The first copy stays; the next sync closes the other.
+    const seen = new Set<string>();
+    layout = layout.filter((t) => {
+      const marks = tabIdentity(t);
+      if (marks.some((m) => seen.has(m))) return false;
+      for (const m of marks) seen.add(m);
+      return true;
+    });
     // Map saved keys → fresh keys. Saved keys are only unique within the
     // session that wrote them — two projects can persist the same key. Keys
     // double as PTY ids, so always mint a fresh one on restore.
@@ -4979,103 +4989,111 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     return created;
   },
 
-  persistScope: async (scope, localFile, options) => {
-    const layout = get().layoutByScope[scope] ?? null;
-    const scopeTabs = get().tabsByScope[scope] ?? [];
-    // Whether an EMPTY layout may erase what's on disk. Saving empty is destructive —
-    // it drops `tab_layout`/`tab_groups` AND overwrites the `.tabtivity` session mirror,
-    // taking a resumable agent tab's `sessionId` (the only handle on its conversation)
-    // with them. So it must mean "the user closed every tab", and only two things here
-    // can distinguish that from a caller with nothing loaded:
-    //
-    //   hydrated            — the scope has been restored from disk this session. An
-    //                         ABSENT key is a scope we know nothing about; its emptiness
-    //                         is ignorance, not intent. (A scope whose restore found no
-    //                         restorable tabs never creates the key — see CenterPanel.)
-    //   scopeTabs.length    — the scope really holds zero tabs. A scope holding tabs that
-    //                         all get filtered out below (non-restorable, or belonging to
-    //                         another scope) yields an empty list that looks identical to
-    //                         a close-all and is nothing of the sort — that is how
-    //                         a live project's four tabs were erased on detach.
-    //
-    // Anything else: the backend keeps what it has. Worst case we persist a layout one
-    // save late; the alternative loses conversations.
-    const hydrated = Object.prototype.hasOwnProperty.call(get().tabsByScope, scope);
-    // The seeded 3D-blob (`projects3d`, root scope only) is Tabtivity's own default
-    // tab, never restorable and never persisted — so a root holding only it IS an
-    // empty root, and must license a clear or a closed-back-to-default root would
-    // resurrect its old tabs on every relaunch. It only ever exists at root, so
-    // excluding it changes nothing for a project scope.
-    const meaningfulCount = scopeTabs.filter((t) => t.kind !== "projects3d").length;
-    const allowClear = hydrated && meaningfulCount === 0;
-    // Order the flat tab union by the tree's stable left-to-right order so the
-    // persisted `tabs` array and `groups` tree agree.
-    const keyOrder = orderedTabKeys(layout);
-    const byKey = new Map(scopeTabs.map((t) => [t.key, t] as const));
-    const ordered = keyOrder
-      .map((k) => byKey.get(k))
-      .filter((t): t is TabEntry => t != null);
-    // Include any tabs missing from the tree at the end (defensive).
-    for (const t of scopeTabs) {
-      if (!keyOrder.includes(t.key)) ordered.push(t);
-    }
-    // Shell/files/network tabs, resumable agent tabs (Claude with a sessionId), and
-    // in-app file-viewer embeds are persisted; other agent/embed tabs (including
-    // external-app embeds) are dropped here and the saved tree is pruned to
-    // match. See isRestorableTab. Defense-in-depth (#55): also drop any tab not
-    // owned by this scope so a foreign tab can never be written into this
-    // project's file — `localFile` belongs to `scope`'s project.
-    const restorable = ordered.filter(
-      (t) => (t.scope == null || t.scope === scope) && (isRestorableTab(t) || isSavedWhileLive(t)),
-    );
-    const keep = new Set(restorable.map((t) => t.key));
-    // Persist the session UUIDs of every open tab that has one (currently
-    // Claude agents). Resumable agent tabs also carry their sessionId in
-    // `tabLayout`; this separate array keeps UUIDs durable redundantly.
-    const sessions = ordered
-      .filter((t) => t.sessionId)
-      .map((t) => ({ sessionId: t.sessionId, cmd: t.cmd, label: t.label }));
-    try {
-      // The persisted per-tab shape lives in ONE place (`toSavedTabEntry`), so
-      // this save and the project-switch snapshot cannot drift field-by-field.
-      const tabLayout = restorable.map(toSavedTabEntry);
-      // #42: re-dock detached groups into the persisted tree so disk reflects a
-      // restart-as-docked layout (their tabs are already in the flat list above
-      // via get().tabs). Prune AFTER merging so dropped (non-restorable) tabs in
-      // a detached group are pruned consistently.
-      const detached = get().detachedGroupsByScope[scope];
-      const merged = withDetachedDocked(serializeTree(layout), detached);
-      const groups = pruneSavedTree(merged, keep);
-      // The layout is keyed by PROJECT ID now, not by the path to a
-      // project.json: it lives in the state dir, because the host reads it back
-      // as commands to run and its old home was inside the container's
-      // writable mount. `scope` IS the project id — or the literal `"root"`,
-      // which now persists too (under `<state_dir>/sessions/root/`), so the
-      // root scope's shells/files/viewers survive a relaunch like a project's.
-      // `project_key("root")` is `"root"`, and the root scope has no
-      // project.json, so `localFile` is empty and the backend simply skips the
-      // export copy for it.
+  persistScope: (scope, localFile, options) =>
+    // One sync per scope at a time: a tab this window opened is id-less until
+    // its sync answer hands it the id the service minted. A second sync sent
+    // before that answer lands carries the tab id-less again, the service
+    // mints it a second id, and that answer brings the copy back as a tab
+    // another client opened — the tab then shows twice (a tab detached right
+    // after opening stayed in the main window). Each queued run reads the
+    // store when it starts, so it sends the ids the earlier answer adopted.
+    serializeScopeSync(scope, async () => {
+      const layout = get().layoutByScope[scope] ?? null;
+      const scopeTabs = get().tabsByScope[scope] ?? [];
+      // Whether an EMPTY layout may erase what's on disk. Saving empty is destructive —
+      // it drops `tab_layout`/`tab_groups` AND overwrites the `.tabtivity` session mirror,
+      // taking a resumable agent tab's `sessionId` (the only handle on its conversation)
+      // with them. So it must mean "the user closed every tab", and only two things here
+      // can distinguish that from a caller with nothing loaded:
       //
-      // This is no longer a whole-snapshot save (headless owner plan, H1): the
-      // service merges what changed since `baseVersion` — the version this
-      // window last received — onto the shared set, so a tab another client
-      // opened meanwhile survives, and one it closed stays closed. The answer
-      // carries the ids of the tabs this window created.
-      const payload = {
-        projectId: scope,
-        localFile,
-        tabs: tabLayout,
-        groups,
-        sessions,
-        allowClear,
-      };
-      const outcome = await syncWorkspace({ ...payload, baseVersion: get().workspaceVersionByScope[scope] });
-      if (outcome) adoptSyncOutcome(scope, outcome, keep);
-    } catch (error) {
-      if (options?.strict) throw error;
-      // tab layout is non-critical
-    }
-  },
+      //   hydrated            — the scope has been restored from disk this session. An
+      //                         ABSENT key is a scope we know nothing about; its emptiness
+      //                         is ignorance, not intent. (A scope whose restore found no
+      //                         restorable tabs never creates the key — see CenterPanel.)
+      //   scopeTabs.length    — the scope really holds zero tabs. A scope holding tabs that
+      //                         all get filtered out below (non-restorable, or belonging to
+      //                         another scope) yields an empty list that looks identical to
+      //                         a close-all and is nothing of the sort — that is how
+      //                         a live project's four tabs were erased on detach.
+      //
+      // Anything else: the backend keeps what it has. Worst case we persist a layout one
+      // save late; the alternative loses conversations.
+      const hydrated = Object.prototype.hasOwnProperty.call(get().tabsByScope, scope);
+      // The seeded 3D-blob (`projects3d`, root scope only) is Tabtivity's own default
+      // tab, never restorable and never persisted — so a root holding only it IS an
+      // empty root, and must license a clear or a closed-back-to-default root would
+      // resurrect its old tabs on every relaunch. It only ever exists at root, so
+      // excluding it changes nothing for a project scope.
+      const meaningfulCount = scopeTabs.filter((t) => t.kind !== "projects3d").length;
+      const allowClear = hydrated && meaningfulCount === 0;
+      // Order the flat tab union by the tree's stable left-to-right order so the
+      // persisted `tabs` array and `groups` tree agree.
+      const keyOrder = orderedTabKeys(layout);
+      const byKey = new Map(scopeTabs.map((t) => [t.key, t] as const));
+      const ordered = keyOrder
+        .map((k) => byKey.get(k))
+        .filter((t): t is TabEntry => t != null);
+      // Include any tabs missing from the tree at the end (defensive).
+      for (const t of scopeTabs) {
+        if (!keyOrder.includes(t.key)) ordered.push(t);
+      }
+      // Shell/files/network tabs, resumable agent tabs (Claude with a sessionId), and
+      // in-app file-viewer embeds are persisted; other agent/embed tabs (including
+      // external-app embeds) are dropped here and the saved tree is pruned to
+      // match. See isRestorableTab. Defense-in-depth (#55): also drop any tab not
+      // owned by this scope so a foreign tab can never be written into this
+      // project's file — `localFile` belongs to `scope`'s project.
+      const restorable = ordered.filter(
+        (t) => (t.scope == null || t.scope === scope) && (isRestorableTab(t) || isSavedWhileLive(t)),
+      );
+      const keep = new Set(restorable.map((t) => t.key));
+      // Persist the session UUIDs of every open tab that has one (currently
+      // Claude agents). Resumable agent tabs also carry their sessionId in
+      // `tabLayout`; this separate array keeps UUIDs durable redundantly.
+      const sessions = ordered
+        .filter((t) => t.sessionId)
+        .map((t) => ({ sessionId: t.sessionId, cmd: t.cmd, label: t.label }));
+      try {
+        // The persisted per-tab shape lives in ONE place (`toSavedTabEntry`), so
+        // this save and the project-switch snapshot cannot drift field-by-field.
+        const tabLayout = restorable.map(toSavedTabEntry);
+        // #42: re-dock detached groups into the persisted tree so disk reflects a
+        // restart-as-docked layout (their tabs are already in the flat list above
+        // via get().tabs). Prune AFTER merging so dropped (non-restorable) tabs in
+        // a detached group are pruned consistently.
+        const detached = get().detachedGroupsByScope[scope];
+        const merged = withDetachedDocked(serializeTree(layout), detached);
+        const groups = pruneSavedTree(merged, keep);
+        // The layout is keyed by PROJECT ID now, not by the path to a
+        // project.json: it lives in the state dir, because the host reads it back
+        // as commands to run and its old home was inside the container's
+        // writable mount. `scope` IS the project id — or the literal `"root"`,
+        // which now persists too (under `<state_dir>/sessions/root/`), so the
+        // root scope's shells/files/viewers survive a relaunch like a project's.
+        // `project_key("root")` is `"root"`, and the root scope has no
+        // project.json, so `localFile` is empty and the backend simply skips the
+        // export copy for it.
+        //
+        // This is no longer a whole-snapshot save (headless owner plan, H1): the
+        // service merges what changed since `baseVersion` — the version this
+        // window last received — onto the shared set, so a tab another client
+        // opened meanwhile survives, and one it closed stays closed. The answer
+        // carries the ids of the tabs this window created.
+        const payload = {
+          projectId: scope,
+          localFile,
+          tabs: tabLayout,
+          groups,
+          sessions,
+          allowClear,
+        };
+        const outcome = await syncWorkspace({ ...payload, baseVersion: get().workspaceVersionByScope[scope] });
+        if (outcome) adoptSyncOutcome(scope, outcome, keep);
+      } catch (error) {
+        if (options?.strict) throw error;
+        // tab layout is non-critical
+      }
+    }),
 
   persistScopeStrict: async (scope, localFile) => {
     await get().persistScope(scope, localFile, { strict: true });
@@ -5248,6 +5266,23 @@ function isUnknownCommand(error: unknown): boolean {
 
 /** Sync a scope through the workspace service, or through the whole-snapshot
  * save on a backend without it (which then answers nothing). */
+const scopeSyncTails = new Map<string, Promise<unknown>>();
+
+/** Run `task` once every earlier sync of `scope` has settled (see
+ * `persistScope`). An idle scope runs it at once, so the IPC still leaves in
+ * the caller's tick. The returned promise rejects only with `task`'s own
+ * error; a failed earlier run never blocks a later one. */
+function serializeScopeSync(scope: string, task: () => Promise<void>): Promise<void> {
+  const prior = scopeSyncTails.get(scope);
+  const run = prior ? prior.then(task, task) : task();
+  const tail = run.catch(() => {});
+  scopeSyncTails.set(scope, tail);
+  void tail.then(() => {
+    if (scopeSyncTails.get(scope) === tail) scopeSyncTails.delete(scope);
+  });
+  return run;
+}
+
 export async function syncWorkspace(payload: WorkspaceSyncPayload): Promise<WorkspaceSyncOutcome | undefined> {
   try {
     return (await invoke<WorkspaceSyncOutcome | undefined>("workspace_sync", { ...payload })) ?? undefined;
@@ -5438,6 +5473,25 @@ function restoreSavedTab(
     };
 }
 
+/** What makes two tabs the same tab: its key, the file a viewer shows, the
+ * tmux session a terminal owns, the agent conversation it resumes. A
+ * duplicate (`duplicateSpec`) mints a fresh session and conversation, so no
+ * two tabs of a scope share any of these on purpose. */
+function tabIdentity(t: {
+  key?: string;
+  kind?: TabKind;
+  cmd?: string;
+  embedPath?: string;
+  tmuxSession?: string;
+  sessionId?: string;
+}): string[] {
+  const marks: string[] = t.key ? [`key:${t.key}`] : [];
+  if ((t.kind ?? cmdToKind(t.cmd || "")) === "embed" && t.embedPath) marks.push(`file:${t.embedPath}`);
+  if (t.tmuxSession) marks.push(`tmux:${t.tmuxSession}`);
+  if (t.sessionId) marks.push(`session:${t.sessionId}`);
+  return marks;
+}
+
 export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, sentKeys?: Set<string>): void {
   const idByKey = new Map<string, string>();
   const byId = new Map<string, SavedTabEntry>();
@@ -5455,12 +5509,19 @@ export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, s
   const before = useTabsStore.getState();
   const known = before.workspaceVersionByScope[scope] ?? 0;
   const heldIds = new Set((before.tabsByScope[scope] ?? []).map((t) => t.id).filter((id): id is string => !!id));
-  // A tab this window created is still id-less until this answer hands it
-  // its minted id (`reconcile` below matches it by key): it is this window's
-  // own, never an arrival — or it would open twice on the same tmux session.
-  // The `workspace:patch` echo of this window's own sync can land before the
-  // sync's answer, so the patch path meets the same id-less tab.
-  const pendingKeys = new Set((before.tabsByScope[scope] ?? []).filter((t) => !t.id).map((t) => t.key));
+  // The answer echoes every tab under the key its sender gave it (the owner
+  // keys its own `headless-<uuid>`), so a tab under a key this window holds
+  // is this window's own, never an arrival — or it would open twice on the
+  // same tmux session. That is a tab still id-less until this answer hands it
+  // its minted id (`reconcile` below matches it by key; the `workspace:patch`
+  // echo of this window's sync can land before the answer, so the patch path
+  // meets it too), or one under a second id from a file written while two
+  // syncs raced, before `persistScope` queued them. And one file is one tab:
+  // an arriving viewer of a file this scope already shows — in the window or
+  // in a popout — is not opened again, nor a second tab on a tmux session or
+  // agent conversation one already runs (`tabIdentity`). Whatever is left out
+  // here closes at this window's next sync.
+  const held = new Set((before.tabsByScope[scope] ?? []).flatMap(tabIdentity));
   // The same gates `loadFromLayout` applies to a hydrate: a built-in tab's
   // command under the app's old name is rewritten first, a retired kind and a
   // kind whose experimental flag is off never come back.
@@ -5476,7 +5537,7 @@ export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, s
           (t) =>
             !!t.id &&
             !heldIds.has(t.id) &&
-            !(t.key && pendingKeys.has(t.key)) &&
+            !tabIdentity(t).some((m) => held.has(m)) &&
             (t.createdVersion ?? 0) > known &&
             !RETIRED_TAB_CMDS.has(t.cmd || "") &&
             !withdrawn.has(kindOf(t)) &&
@@ -5524,15 +5585,26 @@ export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, s
     .filter((t) => !!t.id && !byId.has(t.id) && !!sentKeys?.has(t.key))
     .map((t) => t.key);
   for (const key of closedElsewhere) useTabsStore.getState().removeTabInScope(scope, key);
-  useTabsStore.setState((state) => ({
-    workspaceVersionByScope: { ...state.workspaceVersionByScope, [scope]: outcome.version },
-    ...(state.tabsByScope[scope]
-      ? {
-          tabsByScope: { ...state.tabsByScope, [scope]: state.tabsByScope[scope].map(reconcile) },
-          ...(state.scope === scope ? { tabs: state.tabs.map(reconcile) } : {}),
-        }
-      : {}),
-  }));
+  // Arrays are replaced only when a tab changed: CenterPanel saves 300 ms
+  // after any new `tabs` array, so a fresh array from every answer made each
+  // save schedule the next one, for as long as the window stayed open.
+  const reconcileAll = (tabs: TabEntry[]): TabEntry[] => {
+    const next = tabs.map(reconcile);
+    return next.some((t, i) => t !== tabs[i]) ? next : tabs;
+  };
+  useTabsStore.setState((state) => {
+    const held = state.tabsByScope[scope];
+    const next = held ? reconcileAll(held) : held;
+    return {
+      workspaceVersionByScope: { ...state.workspaceVersionByScope, [scope]: outcome.version },
+      ...(held && next !== held
+        ? {
+            tabsByScope: { ...state.tabsByScope, [scope]: next },
+            ...(state.scope === scope ? { tabs: reconcileAll(state.tabs) } : {}),
+          }
+        : {}),
+    };
+  });
 }
 
 /** The `workspace:patch` event's payload (`WORKSPACE_PATCH_EVENT`). */

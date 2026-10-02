@@ -228,3 +228,122 @@ describe("applyWorkspacePatch", () => {
     expect(useTabsStore.getState().tabsByScope.p.map((t) => t.key)).toEqual(["k1", "k2"]);
   });
 });
+
+describe("one tab stays one tab", () => {
+  const embed = (key: string, path: string, id?: string): TabEntry => ({
+    key, id, label: path, cmd: "", cwd: "/tmp", kind: "embed", scope: "p", embedPath: path, viewer: "text",
+  });
+
+  beforeEach(() => {
+    useTabsStore.setState({
+      scope: "p",
+      tabsByScope: { p: [tab("k1", "A", "id-a"), embed("k2", "/w/notes.md", "id-b")] },
+      tabs: [tab("k1", "A", "id-a"), embed("k2", "/w/notes.md", "id-b")],
+      layoutByScope: { p: { type: "group", id: "g", tabKeys: ["k1", "k2"], activeKey: "k1" } },
+      focusedGroupByScope: { p: "g" },
+      detachedGroupsByScope: {},
+      hiddenGroupsByScope: {},
+      workspaceVersionByScope: { p: 3 },
+    });
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("sends a scope's syncs one at a time, so a new tab is never minted a second id", async () => {
+    // k3 is new and id-less; two saves fire before the first answer lands.
+    useTabsStore.setState((s) => ({
+      tabsByScope: { p: [...s.tabsByScope.p, { ...tab("k3", "Shell"), tmuxSession: "t-3" }] },
+      tabs: [...s.tabs, { ...tab("k3", "Shell"), tmuxSession: "t-3" }],
+      layoutByScope: { p: { type: "group", id: "g", tabKeys: ["k1", "k2", "k3"], activeKey: "k3" } },
+    }));
+    let answerFirst: (v: unknown) => void = () => {};
+    const sent: Array<{ baseVersion?: number; tabs: Array<{ key: string; id?: string }> }> = [];
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd !== "workspace_sync") return Promise.resolve(undefined);
+      const payload = args as { baseVersion?: number; tabs: Array<{ key: string; id?: string }> };
+      sent.push(payload);
+      const answer = (version: number) => ({
+        version,
+        stale: false,
+        ops: [],
+        tabs: payload.tabs.map((t) => ({ ...t, id: t.id ?? "id-c", createdVersion: t.id ? 1 : 4 })),
+      });
+      if (sent.length === 1) return new Promise((resolve) => { answerFirst = () => resolve(answer(4)); });
+      return Promise.resolve(answer(5));
+    });
+    const store = useTabsStore.getState();
+    const first = store.persistScope("p", "/p/project.json");
+    const second = store.persistScope("p", "/p/project.json");
+    await Promise.resolve();
+    expect(sent).toHaveLength(1);
+    answerFirst(undefined);
+    await Promise.all([first, second]);
+    expect(sent).toHaveLength(2);
+    expect(sent[1].baseVersion).toBe(4);
+    expect(sent[1].tabs.find((t) => t.key === "k3")?.id).toBe("id-c");
+    expect(useTabsStore.getState().tabsByScope.p.map((t) => t.key)).toEqual(["k1", "k2", "k3"]);
+  });
+
+  it("never opens an arriving copy of a tab this window holds — same key, file, tmux session or conversation", () => {
+    useTabsStore.setState((s) => ({
+      tabsByScope: { p: [...s.tabsByScope.p, { ...tab("k3", "Claude", "id-c"), kind: "agent", cmd: "claude", sessionId: "uid-1", tmuxSession: "t-3" }] },
+    }));
+    adoptSyncOutcome(
+      "p",
+      {
+        version: 6,
+        stale: true,
+        ops: [],
+        tabs: [
+          { key: "k1", id: "id-a", label: "A", cmd: "", cwd: "/tmp", kind: "shell" },
+          { key: "k2", id: "id-b", label: "/w/notes.md", cmd: "", cwd: "/tmp", kind: "embed", embedPath: "/w/notes.md", viewer: "text" },
+          { key: "k3", id: "id-c", label: "Claude", cmd: "claude", cwd: "/tmp", kind: "agent", sessionId: "uid-1", tmuxSession: "t-3" },
+          // The race's second id for k1, and copies of the file and the agent
+          // under another client's keys.
+          { key: "k1", id: "id-a2", label: "A", cmd: "", cwd: "/tmp", kind: "shell", createdVersion: 5 },
+          { key: "headless-1", id: "id-b2", label: "notes", cmd: "", cwd: "/tmp", kind: "embed", embedPath: "/w/notes.md", viewer: "text", createdVersion: 5 },
+          { key: "headless-2", id: "id-c2", label: "Claude", cmd: "claude", cwd: "/tmp", kind: "agent", sessionId: "uid-1", tmuxSession: "t-9", createdVersion: 5 },
+          { key: "headless-3", id: "id-d2", label: "Shell", cmd: "", cwd: "/tmp", kind: "shell", tmuxSession: "t-3", createdVersion: 5 },
+        ],
+      },
+      new Set(["k1", "k2", "k3"]),
+    );
+    expect(useTabsStore.getState().tabsByScope.p.map((t) => t.key)).toEqual(["k1", "k2", "k3"]);
+  });
+
+  it("keeps the tab array when an answer changes nothing, so the answer schedules no further save", () => {
+    const before = useTabsStore.getState();
+    adoptSyncOutcome(
+      "p",
+      {
+        version: 4,
+        stale: false,
+        ops: [],
+        tabs: [
+          { key: "k1", id: "id-a", label: "A", cmd: "", cwd: "/tmp", kind: "shell" },
+          { key: "k2", id: "id-b", label: "/w/notes.md", cmd: "", cwd: "/tmp", kind: "embed", embedPath: "/w/notes.md", viewer: "text" },
+        ],
+      },
+      new Set(["k1", "k2"]),
+    );
+    const after = useTabsStore.getState();
+    expect(after.workspaceVersionByScope.p).toBe(4);
+    expect(after.tabs).toBe(before.tabs);
+    expect(after.tabsByScope.p).toBe(before.tabsByScope.p);
+  });
+
+  it("restores a tab a raced save wrote twice only once", () => {
+    useTabsStore.setState({ tabsByScope: {}, layoutByScope: {}, tabs: [], layout: null });
+    useTabsStore.getState().loadFromLayout(
+      [
+        { key: "a", id: "id-a", label: "notes", cmd: "", cwd: "/w", kind: "embed", embedPath: "/w/notes.md", viewer: "text" },
+        { key: "b", id: "id-b", label: "Claude", cmd: "claude", cwd: "/w", kind: "agent", sessionId: "uid-1", tmuxSession: "t-1" },
+        { key: "c", id: "id-a2", label: "notes", cmd: "", cwd: "/w", kind: "embed", embedPath: "/w/notes.md", viewer: "text" },
+        { key: "d", id: "id-b2", label: "Claude", cmd: "claude", cwd: "/w", kind: "agent", sessionId: "uid-1", tmuxSession: "t-1" },
+        { key: "b", id: "id-b3", label: "Claude", cmd: "claude", cwd: "/w", kind: "agent", sessionId: "uid-2", tmuxSession: "t-2" },
+      ],
+      "/w",
+      "p",
+    );
+    expect(useTabsStore.getState().tabsByScope.p.map((t) => t.id)).toEqual(["id-a", "id-b"]);
+  });
+});
