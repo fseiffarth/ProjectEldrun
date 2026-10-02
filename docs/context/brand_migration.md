@@ -71,6 +71,11 @@ Rules every step follows:
   into the old folder before the rename, so a crash between the rename and the
   link is told apart from a fresh install — which must never get a link, or
   anything else, under the old name.
+- **A rewrite of a live file goes through its lock.** A Mobile host kept
+  running after quit can write the state files while a launch migrates them,
+  so the name rewrite takes the file's `storage::FileLock` and moves the
+  counter the other writers check (`workspaceVersion`, `rev`); a file with
+  nothing to rename is left alone and gets no lock file.
 - **Nothing outside the file system without `World`.** The service manager and
   the phone host's admin socket are reached through a trait the tests replace.
 

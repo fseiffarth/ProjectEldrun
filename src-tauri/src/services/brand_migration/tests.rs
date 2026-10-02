@@ -90,7 +90,9 @@ fn an_upgrade_moves_the_state_dir_and_leaves_a_link() {
     for path in seeded.keys().filter(|path| !path.contains(LEGACY.slug)) {
         assert!(moved.contains_key(path), "{path} is missing after the move");
     }
-    assert_eq!(moved.len(), seeded.len() - 1 + 1, "only the old host's copy went, and the record came");
+    // The name rewrite locks each file it changes, beside it (`<file>.lock`).
+    let moved_files = moved.keys().filter(|path| !path.ends_with(".lock")).count();
+    assert_eq!(moved_files, seeded.len() - 1 + 1, "only the old host's copy went, and the record came");
     // The old host was retired first, from the folder it ran in, and its
     // old-named copy is gone.
     assert_eq!(

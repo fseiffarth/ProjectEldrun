@@ -116,6 +116,36 @@ impl Renames {
     }
 }
 
+/// Rewrite one state file if it carries an old name. A Mobile host kept
+/// running after quit may be writing the same file while the window's launch
+/// runs this step, so the rewrite holds the file's lock — the one every
+/// cross-process writer takes (`storage::FileLock`) — and moves the counter
+/// those writers check: a tab set's `workspaceVersion` (a window re-syncs),
+/// a document's `rev` (a compare-and-swap writer that read before the rewrite
+/// retries instead of writing the old names back). A file with nothing to
+/// rename is not locked, so no lock file appears beside it.
+fn rewrite_file(file: &std::path::Path, renames: &Renames) -> Result<bool, String> {
+    let Ok(mut probe) = crate::storage::read_json::<Value>(file) else {
+        return Ok(false);
+    };
+    if !renames.apply(&mut probe) {
+        return Ok(false);
+    }
+    let _lock = crate::storage::FileLock::exclusive(file).map_err(|e| format!("lock {}: {e}", file.display()))?;
+    let Ok(mut value) = crate::storage::read_json::<Value>(file) else {
+        return Ok(false);
+    };
+    if !renames.apply(&mut value) {
+        return Ok(false);
+    }
+    crate::services::workspace::bump_raw_version(&mut value);
+    if let Some(rev) = value.get("rev").and_then(Value::as_u64) {
+        value["rev"] = Value::from(rev + 1);
+    }
+    crate::storage::write_json_atomic(file, &value).map_err(|e| format!("rewrite {}: {e}", file.display()))?;
+    Ok(true)
+}
+
 /// Step `persisted-names`.
 pub fn rewrite_persisted_names(env: &Env) -> StepResult {
     let renames = Renames::new(&env.pair);
@@ -125,11 +155,7 @@ pub fn rewrite_persisted_names(env: &Env) -> StepResult {
     let mut rewritten = 0usize;
     for file in super::state_dir::state_json_files(&env.live_state_dir()) {
         env.checkpoint("names:before-file")?;
-        let Ok(mut value) = crate::storage::read_json::<Value>(&file) else {
-            continue;
-        };
-        if renames.apply(&mut value) {
-            crate::storage::write_json_atomic(&file, &value).map_err(|e| format!("rewrite {}: {e}", file.display()))?;
+        if rewrite_file(&file, &renames)? {
             rewritten += 1;
         }
     }
@@ -211,6 +237,32 @@ mod tests {
         let mut entries = json!([{ "project_id": old_id, "duration_s": 3 }]);
         assert!(renames.apply(&mut entries));
         assert_eq!(entries[0]["project_id"], "__newname__");
+    }
+
+    #[test]
+    fn a_rewritten_file_moves_the_counters_concurrent_writers_check() {
+        let renames = Renames::new(&RENAMED);
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path().join("terminals.json");
+        let old_cmd = format!("{}mail__", LEGACY.name(Name::TAB_COMMAND_PREFIX));
+        crate::storage::write_json_atomic(&session, &json!({ "workspaceVersion": 4, "tab_layout": [{ "cmd": old_cmd }] })).unwrap();
+        let settings = dir.path().join("settings.json");
+        crate::storage::write_json_atomic(&settings, &json!({ "rev": 7, LEGACY.name(Name::MOBILE_HOST_KEY): { "enabled": true } })).unwrap();
+        let untouched = dir.path().join("calendar.json");
+        crate::storage::write_json_atomic(&untouched, &json!({ "rev": 2 })).unwrap();
+
+        assert!(rewrite_file(&session, &renames).unwrap());
+        assert!(rewrite_file(&settings, &renames).unwrap());
+        assert!(!rewrite_file(&untouched, &renames).unwrap());
+
+        let session: Value = crate::storage::read_json(&session).unwrap();
+        assert_eq!(session["workspaceVersion"], 5);
+        assert_eq!(session["tab_layout"][0]["cmd"], "__newname_mail__");
+        let settings: Value = crate::storage::read_json(&settings).unwrap();
+        assert_eq!(settings["rev"], 8);
+        assert_eq!(settings["newname_mobile_host"]["enabled"], true);
+        assert_eq!(crate::storage::read_json::<Value>(&untouched).unwrap()["rev"], 2);
+        assert!(!dir.path().join("calendar.json.lock").exists(), "nothing to rename, nothing locked");
     }
 
     #[test]
