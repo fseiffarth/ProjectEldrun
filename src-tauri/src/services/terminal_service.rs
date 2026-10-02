@@ -214,7 +214,19 @@ fn write_export_copy(local_file: &str, session: &TerminalSession) {
     // history; a folder copy adopted elsewhere starts its own.
     exported.extra.remove(crate::services::workspace::VERSION_KEY);
     exported.extra.remove(crate::services::workspace::CLOSED_KEY);
-    if let Err(e) = storage::write_json_atomic(&sessions_dir.join(TERMINALS_FILE), &exported) {
+    // Every tab-store change saves the layout, and most change nothing in it.
+    // This copy sits in the project tree, where a watcher, an agent or a
+    // byte-sync sees each rewrite, so a copy that already says the same is left
+    // alone. Compared as JSON values, not bytes: the `extra` maps are
+    // `HashMap`s, whose keys serialize in a different order every time.
+    let path = sessions_dir.join(TERMINALS_FILE);
+    let unchanged = serde_json::to_value(&exported).is_ok_and(|fresh| {
+        storage::read_json::<Value>(&path).is_ok_and(|on_disk| on_disk == fresh)
+    });
+    if unchanged {
+        return;
+    }
+    if let Err(e) = storage::write_json_atomic(&path, &exported) {
         eprintln!("terminal_service: write .{SLUG} export copy: {e}");
     }
 }
@@ -948,5 +960,38 @@ mod tests {
         assert!(session.tab_layout[0]
             .extra
             .contains_key(SCHEDULE_TARGET_KEY));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_tree_export_is_not_rewritten_when_unchanged() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().expect("temp project");
+        let local_file = dir.path().join("project.json");
+        let path = dir
+            .path()
+            .join(concat!(".", crate::app_slug!(), "/sessions"))
+            .join(TERMINALS_FILE);
+        // A fresh `entry` per save, as each save arrives from the renderer: its
+        // `extra` map hashes its several keys into a different order.
+        let session = |active_tab_index| TerminalSession {
+            tab_layout: vec![entry("claude")],
+            active_tab_index,
+            ..TerminalSession::default()
+        };
+
+        write_export_copy(&local_file.to_string_lossy(), &session(0));
+        let first = std::fs::metadata(&path).expect("export written").ino();
+        // The atomic write renames a fresh file into place, so a rewrite
+        // shows as a new inode.
+        for _ in 0..8 {
+            write_export_copy(&local_file.to_string_lossy(), &session(0));
+        }
+        assert_eq!(std::fs::metadata(&path).expect("export").ino(), first);
+
+        write_export_copy(&local_file.to_string_lossy(), &session(1));
+        assert_ne!(std::fs::metadata(&path).expect("export").ino(), first);
+        let exported: TerminalSession = storage::read_json(&path).expect("read export");
+        assert_eq!(exported.active_tab_index, 1);
     }
 }

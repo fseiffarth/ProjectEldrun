@@ -178,9 +178,18 @@ Claude's `/fast` — different thing.
   UserPromptSubmit `permission_mode`, `session_id` equal to the
   `--session-id` passed, SessionEnd `reason`; the transcript at the path
   below, `--resume <uuid>` reopening it); re-checked against 2.1.286
-  (2026-09-30, live, the same `-p` dump: identical keys and values); the turn
+  (2026-09-30, live, the same `-p` dump: identical keys and values); re-checked
+  against 2.1.287 (2026-10-02, live, the same dump: identical keys — Stop now
+  also carries `effort`, `last_assistant_message`, `background_tasks`, a
+  resume start `seconds_since_last_response` and `context_tokens`, none read).
+  That run, a `claude -p --resume <id>` from the tab's Bash tool, took the
+  tab's record over: every hook, the tab's own included, gets `CLAUDECODE=1`,
+  `CLAUDE_CODE_CHILD_SESSION=1` and its own `CLAUDE_CODE_SESSION_ID`, so the
+  env cannot tell a nested CLI from the tab's; the hook now refuses a foreign
+  `clear`/`resume` start sent by a `claude` with another `claude` above it
+  among the processes carrying the tab's id (`/proc`, POSIX only). The turn
   events against 2.1.272 by
-  reading the binary's strings, not live — 2.1.286 still carries
+  reading the binary's strings, not live — 2.1.287 still carries
   `permission_prompt`, `elicitation_dialog`, `idle_prompt` and the same six
   permission modes.
 - Session logs: `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; `--resume` is
@@ -199,7 +208,8 @@ Claude's `/fast` — different thing.
 - `/usage` in print mode returns a JSON envelope with `result` (panel text),
   `is_error`, `num_turns: 0` (re-checked live against 2.1.286, 2026-09-30,
   its panel fed through `parseUsageReport`: three meters, the
-  "What's contributing" lines kept as notes). The
+  "What's contributing" lines kept as notes; 2.1.287, 2026-10-02, prints the
+  same layout plus a `Last 7d` block of the same shape). The
   panel text is parsed by `shared/usageReport.ts` for the phone's bars, the
   prompt chart's reset lines and auto-continue (five-hour / weekly windows,
   per-model lines) — a re-layout may cost figures. `resolveResetAt` places the
@@ -251,7 +261,7 @@ Claude's `/fast` — different thing.
   Anthropic-compatible endpoint is stood up for Claude (Ollama ≥ 0.15).
 - Mobile: mode family `default | accept edits | plan | auto | bypass
   permissions` — the cycle's labels `accept edits on`, `plan mode on`, `auto
-  mode on` read out of the 2.1.272 bundle — `default` draws `⏸ manual mode on`
+  mode on` read out of the 2.1.272 bundle (unchanged in 2.1.287) — `default` draws `⏸ manual mode on`
   (seen live on 2.1.284 and 2.1.286; older builds drew nothing), which no mode
   pattern names, so it reads as the silent default. Shift+Tab is the legacy
   backtab `ESC [ Z`.
@@ -259,7 +269,10 @@ Claude's `/fast` — different thing.
   `╌` rules with no blank line before `Do you want to proceed?`.
   `readableScreen` drops the rules as frame; the line under one carries
   `afterRule`, and `selectPrompt`'s heading stops there — without that the
-  phone dialog went untitled. Desktop lamp unaffected (`❯ 1.` rows).
+  phone dialog went untitled. Desktop lamp unaffected (`❯ 1.` rows). 2.1.287
+  draws MCP/other tool prompts and a held message from another session the
+  same way (changelog); the rule handling is not Bash-specific, but no such
+  prompt has been captured live yet.
 
 **Verify**
 

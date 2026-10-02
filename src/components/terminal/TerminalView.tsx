@@ -2077,7 +2077,6 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         cwd={cwd}
         visible={visible}
         focused={focused}
-        onShowTerminal={() => setReader(false)}
       />
     )}
     {signIn && host && (

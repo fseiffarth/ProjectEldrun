@@ -3630,7 +3630,7 @@ export const dict: Dict = {
   "terminal.reader.showReader": "Chat",
   "terminal.reader.showReaderHint": "Habla con este agente como en un chat — su conversación como mensajes, sobre el terminal",
   "terminal.reader.showTerminal": "Terminal",
-  "terminal.reader.showTerminalHint": "Volver al terminal (Esc en el cuadro de texto del chat)",
+  "terminal.reader.showTerminalHint": "Volver al terminal",
   "terminal.reader.changes": "Diffs",
   "terminal.reader.changesHint": "Mostrar los archivos que cambió este agente, como diffs, junto al chat",
   "terminal.reader.changesHideHint": "Ocultar los diffs junto al chat",
