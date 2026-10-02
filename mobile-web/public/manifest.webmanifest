@@ -4,8 +4,8 @@
   "description": "Private project agent and shell control for Eldrun",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#000000",
-  "theme_color": "#000000",
+  "background_color": "#fcfbff",
+  "theme_color": "#fcfbff",
   "icons": [
     {
       "src": "/icons/icon.svg",

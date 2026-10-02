@@ -1171,7 +1171,7 @@ export function SettingsDialog({
   const modalRef = useModalFocus(onClose, !showCustomizer);
   const t = useT();
 
-  const currentTheme = (settings?.color_scheme ?? "dark") as Theme;
+  const currentTheme = (settings?.color_scheme ?? "light_lavender") as Theme;
   const currentLang = (settings?.language ?? "en") as Language;
   // Through the hook, never off `settings`: unset means "not chosen", and only
   // `resolveUse24h` knows that it then follows the OS. Reading the raw key with a

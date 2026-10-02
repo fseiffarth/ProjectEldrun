@@ -15,7 +15,7 @@ export const PHONE_THEMES: readonly PhoneTheme[] = ["desktop", ...DESKTOP_THEMES
 
 /** The desktop's default (`Settings::color_scheme`), for a desktop that has
  * never said what it uses. */
-const DESKTOP_DEFAULT: DesktopTheme = "dark";
+const DESKTOP_DEFAULT: DesktopTheme = "light_lavender";
 const DESKTOP_DEFAULT_PAINT = "dark" as const;
 
 const isDesktopTheme = (value: unknown): value is DesktopTheme => typeof value === "string" && (DESKTOP_THEMES as readonly string[]).includes(value);

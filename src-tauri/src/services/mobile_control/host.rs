@@ -507,7 +507,7 @@ async fn status(State(state): State<HostState>, headers: HeaderMap) -> impl Into
         .as_ref()
         .and_then(|settings| settings.get("color_scheme").and_then(|value| value.as_str()))
         .filter(|scheme| scheme.len() <= 32 && scheme.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
-        .unwrap_or("dark")
+        .unwrap_or("light_lavender")
         .to_string();
     (
         StatusCode::OK,
@@ -6376,7 +6376,7 @@ mod tests {
 
         // Unset is the desktop's own default.
         let (_, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
-        assert_eq!(json(&body)["color_scheme"], "dark");
+        assert_eq!(json(&body)["color_scheme"], "light_lavender");
 
         std::fs::write(&settings, br#"{"color_scheme":"light_lavender"}"#).expect("settings");
         let (_, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
@@ -6385,7 +6385,7 @@ mod tests {
         // Anything that is not a plain theme name never crosses.
         std::fs::write(&settings, br#"{"color_scheme":"<b>/etc/passwd</b>"}"#).expect("settings");
         let (_, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
-        assert_eq!(json(&body)["color_scheme"], "dark");
+        assert_eq!(json(&body)["color_scheme"], "light_lavender");
     }
 
     /// The desktop pill's git dot reaches the list row and the project screen

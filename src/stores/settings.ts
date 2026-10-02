@@ -88,7 +88,7 @@ export function resolveTheme(scheme: string): string {
   if (scheme !== "system") return scheme;
   try {
     const media = window.matchMedia?.("(prefers-color-scheme: light)");
-    // Unreadable OS preference — fall back to the app default (Plain Dark).
+    // Unreadable OS preference — fall back to Plain Dark.
     if (!media) return "dark";
     return media.matches ? "fancy_light" : "fancy_dark";
   } catch {
@@ -566,7 +566,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const settings = await invoke<Settings>("get_settings");
     // The default clock when `time_format_24h` is unset (`lib/timeFormat.ts`).
     probeOsClock();
-    applyTheme(settings.color_scheme ?? "dark");
+    applyTheme(settings.color_scheme ?? "light_lavender");
     applyAccent(settings.ui_accent);
     applyThemeVars(settings.ui_theme_vars);
     applyCorners(settings.ui_corners);

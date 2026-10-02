@@ -105,8 +105,8 @@ describe("system theme", () => {
     expect(resolveTheme("light_lavender")).toBe("light_lavender");
   });
 
-  it("resolves to the default (Plain Dark) when the OS preference is unreadable", () => {
-    // jsdom has no matchMedia — the honest default is the app's default theme.
+  it("resolves to Plain Dark when the OS preference is unreadable", () => {
+    // jsdom has no matchMedia — "system" is a light/dark pick, so it falls back dark.
     expect(resolveTheme("system")).toBe("dark");
   });
 
