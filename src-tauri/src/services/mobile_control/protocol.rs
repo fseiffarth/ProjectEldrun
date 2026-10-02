@@ -4,7 +4,18 @@ use crate::schema::{
 };
 use serde::{Deserialize, Serialize};
 
+/// The cap on one control frame: every request on both local planes, every
+/// admin answer, and anything read from a peer that has not yet been answered.
 pub const MAX_CONTROL_MESSAGE: usize = 64 * 1024;
+/// The cap on one desktop → sidecar *answer*, the only direction that carries
+/// content rather than an instruction. At 64 KiB an ordinary answer did not
+/// fit — a default 120-entry transcript, a board with long notes, a busy
+/// calendar month — and the dropped frame read as a closed desktop. 16 MiB
+/// holds the largest transcript the desktop will build (`MAX_LIMIT` 1000
+/// entries of up to 12,000 characters, about 12 MB as ASCII) with room for the
+/// JSON around it. The sidecar reads this much only from the desktop's own
+/// same-user socket, on a connection it opened itself.
+pub const MAX_DESKTOP_RESPONSE: usize = 16 * 1024 * 1024;
 pub const MIN_COLS: u16 = 20;
 pub const MAX_COLS: u16 = 400;
 pub const MIN_ROWS: u16 = 5;
@@ -1117,6 +1128,54 @@ impl DesktopRequest {
             _ => 8,
         })
     }
+
+    /// Whether the desktop changes its own state to answer this — the requests
+    /// the window queues per domain (`mutationDomain` in
+    /// `MobileBridgeHost.tsx`; `MobileMutationList.test.ts` holds the two
+    /// lists in step). Once the window has answered one of these the change is
+    /// made, so an answer that cannot be relayed must not read as a failed
+    /// write (`admin::write_desktop_response`). No wildcard arm: a new request
+    /// has to be placed on one side or the other.
+    pub fn is_mutation(&self) -> bool {
+        match self {
+            Self::Activate { .. }
+            | Self::Create { .. }
+            | Self::AlertResolve { .. }
+            | Self::CalendarMutate { .. }
+            | Self::TodoMutate { .. }
+            | Self::MailMark { .. }
+            | Self::MailReply { .. }
+            | Self::ScheduleMutate { .. }
+            | Self::RenameTab { .. }
+            | Self::ColorTab { .. }
+            | Self::ReorderTab { .. }
+            | Self::CloseTab { .. }
+            | Self::ReopenTab { .. }
+            | Self::PromptMutate { .. }
+            | Self::HoldPrompt { .. }
+            | Self::EditHeldPrompt { .. } => true,
+            Self::Catalog { .. }
+            | Self::Activity { .. }
+            | Self::GitStates { .. }
+            | Self::LaunchOptions { .. }
+            | Self::Todo { .. }
+            | Self::Alerts { .. }
+            | Self::Calendar { .. }
+            | Self::MailOverview { .. }
+            | Self::MailFolder { .. }
+            | Self::MailMessage { .. }
+            | Self::Schedules { .. }
+            | Self::Prompts { .. }
+            | Self::TabSeen { .. }
+            | Self::TabInput { .. }
+            | Self::TabPrompt { .. }
+            | Self::UndoClear { .. }
+            | Self::AgentStatus { .. }
+            | Self::AgentTranscript { .. }
+            | Self::DesktopImages { .. }
+            | Self::AttachDesktopImage { .. } => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1558,6 +1617,14 @@ pub enum TerminalControl {
     Resize { cols: u16, rows: u16 },
     Ping,
     Detached,
+    /// Whether the phone's page is in front of someone. A pocketed phone keeps
+    /// its socket — closing it would cost a full history replay on every app
+    /// switch — so the socket being open says nothing about anyone watching;
+    /// this does, and agent notices are held back only for a viewer that is
+    /// (`TerminalRegistry::is_watched`). Sent only to a bridge that announced
+    /// it (`TerminalEvent::Features`): an older one closes the socket on a
+    /// control it does not know.
+    Visibility { visible: bool },
 }
 
 /// Server → client control frames. The phone needs four things it cannot infer
@@ -1571,6 +1638,12 @@ pub enum TerminalControl {
 /// link keeps a socket OPEN while every byte sent into it is lost; the phone
 /// marks a prompt whose frames were never acked as not delivered instead of
 /// showing it as sent forever.
+///
+/// `Features` is how the vocabulary grows without breaking a phone bundle of
+/// another age (in dev the bundle can be newer than the installed sidecar, and
+/// a cached one older): the bridge says which optional controls it accepts in
+/// its opening frames, and the phone sends one only after reading its name
+/// there. A phone ignores an event type it does not know.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TerminalEvent {
@@ -1579,6 +1652,8 @@ pub enum TerminalEvent {
     Replay,
     Closing { reason: String, retry: bool },
     Ack { seq: u64 },
+    /// `visibility`: this bridge accepts `TerminalControl::Visibility`.
+    Features { visibility: bool },
 }
 
 impl TerminalEvent {
@@ -2132,6 +2207,10 @@ mod tests {
             control(r#"{"type":"resize","cols":80,"rows":24}"#),
             Ok(TerminalControl::Resize { cols: 80, rows: 24 })
         ));
+        assert!(matches!(
+            control(r#"{"type":"visibility","visible":false}"#),
+            Ok(TerminalControl::Visibility { visible: false })
+        ));
         // Anything the protocol does not name is refused, never guessed at.
         // The one gap is serde's, and documented here so nobody relies on the
         // `deny_unknown_fields` on the enum for it: an internally tagged enum
@@ -2147,6 +2226,8 @@ mod tests {
             r#"{"type":"resize","cols":-1,"rows":24}"#,
             r#"{"type":"resize","cols":80,"rows":24,"pixel_width":1}"#,
             r#"{"type":"exec","cmd":"id"}"#,
+            r#"{"type":"visibility"}"#,
+            r#"{"type":"visibility","visible":"no"}"#,
             r#"{}"#,
             "[]",
             "",
@@ -2164,6 +2245,7 @@ mod tests {
                 reason: "replaced".into(),
                 retry: false,
             },
+            TerminalEvent::Features { visibility: true },
         ] {
             let restored: TerminalEvent =
                 serde_json::from_str(&event.to_frame()).expect("server frame round trip");

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, resolveAlert, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow, type TabPlace } from "../api";
-import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
+import { api, resolveAlert, wasApplied, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow, type TabPlace } from "../api";
+import { classifyUnavailable, describeFailure, describeUnavailable, type UnavailableReason } from "../connection";
 import { readFlag, readOrder, writeFlag, writeOrder } from "../prefs";
 import { arrangeProjects, mergeProjectOrder, scopeCaption } from "../projectOrder";
 import { useRowDrag } from "../rowDrag";
@@ -74,8 +74,9 @@ function AlertRows({ alerts, onAlerts, todo, mail }: {
       // to decide, and a card that reappears because it was only 90% done is a
       // truth the phone should show rather than hide.
       onAlerts((await resolveAlert(alertId)).alerts);
-    } catch {
-      setError("That alert could not be completed. Eldrun on the desktop owns it.");
+    } catch (reason) {
+      // Done on the desktop with a feed too large to show is not a failed ✓.
+      setError(wasApplied(reason) ? describeFailure(reason) : "That alert could not be completed. Eldrun on the desktop owns it.");
     } finally {
       setFinishing(null);
     }

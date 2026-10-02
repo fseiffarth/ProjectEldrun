@@ -57,6 +57,7 @@ import {
   type HistoryChunk,
 } from "../terminal/readableHistory";
 import { type TerminalEvent } from "../terminal/protocol";
+import { createVisibilityReporter } from "../terminal/visibility";
 import { installTerminalTouchScroll } from "../terminal/touchScroll";
 import { installWideOutputHint, type WideOutputHint } from "../terminal/wideOutput";
 import { inputFrameStart, sessionStatus, statusFrameLines, type SessionStatus } from "../terminal/statusLine";
@@ -1486,6 +1487,74 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
      * connect renews it first — the device key signs a fresh challenge, no
      * PIN — since the upgrade would only meet a 401 otherwise. */
     let relogin = false;
+    const visibility = createVisibilityReporter(() => document.visibilityState === "visible");
+    /** The link is down: the composer stops looking live, whatever the
+     * socket still owed an ack for is marked not delivered, and dictation —
+     * which types into this link — ends. Shared by a close, a closing frame
+     * that ends the session, and a link this code judged dead itself. */
+    const dropLink = () => {
+      connectedRef.current = false;
+      voiceRequest.current += 1;
+      // Whatever this socket still owed an ack for is gone with it.
+      failUnacked(Number.POSITIVE_INFINITY, true);
+      setConnected(false);
+      setPreparingVoice(false);
+      const activeRecognition = recognition.current;
+      if (activeRecognition) {
+        recognition.current = undefined;
+        activeRecognition.abort();
+        paintMicLevel(dictateButton.current, null);
+        setListening(false);
+        setVoiceStatus(null);
+        setVoiceFailure({ key: "mobile.voice.disconnected" });
+      }
+    };
+    /** The next attempt, on the backoff. The server attaches to the persisted
+     * tmux session again on reconnect, so its screen/history is replayed. Do
+     * not clear the local screen: it keeps the last rendered state useful
+     * while a phone wakes or switches between Wi-Fi and cellular. */
+    const reconnectLater = () => {
+      // Once per outage: a long one used to print this on every attempt,
+      // which walked the screen away from what the reader was reading.
+      if (!interrupted) {
+        interrupted = true;
+        term.write("\r\n\x1b[33m[Connection interrupted; reconnecting…]\x1b[0m\r\n");
+      }
+      const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
+      reconnectAttempt += 1;
+      // A session that ended on the desktop refuses the upgrade at the HTTP
+      // layer, so no `closing` frame can ever say why — the phone would show
+      // "reconnecting…" forever. After two straight failures, ask the tab
+      // endpoint; a transient network failure keeps the reconnect loop.
+      if (reconnectAttempt >= 2) {
+        void api<{ tab: TabRow }>(`/api/v1/tabs/${tab.id}`)
+          .then((body) => { if (!body.tab.available) throw new ApiError(410, "session_gone"); })
+          .catch((reason) => {
+            if (stopped || !(reason instanceof ApiError)) return;
+            if (reason.status !== 404 && reason.status !== 410) return;
+            stopped = true;
+            clearTimeout(reconnectTimer);
+            setStoppedReason(describeFailure("session_gone"));
+          });
+      }
+      clearTimeout(reconnectTimer);
+      reconnectTimer = window.setTimeout(connect, delay);
+    };
+    /** A link this code judged dead — no pong, a send buffer not draining —
+     * is let go of at once. `close()` alone left it to `onclose`, which on a
+     * silent link the browser fires only once the closing handshake times
+     * out; until then `readyState` read CLOSING, the screen still said
+     * connected, and neither the ping tick nor `resume` would act on it.
+     * Detached here, its late `onclose` and anything it still delivers are
+     * ignored (`ws !== next`); the desktop evicts the old viewer when the new
+     * socket attaches. */
+    const abandon = (socket: WebSocket) => {
+      if (stopped || ws !== socket) return;
+      ws = null;
+      socket.close();
+      dropLink();
+      reconnectLater();
+    };
     const connect = () => {
       if (stopped) return;
       if (relogin) {
@@ -1519,55 +1588,12 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       next.onerror = () => {
         if (ws === next) connectedRef.current = false;
       };
+      // A closing frame that ends the session tore the link down already
+      // (below), and an unmount must not set state: both leave `stopped`.
       next.onclose = () => {
         if (stopped || ws !== next) return;
-        connectedRef.current = false;
-        voiceRequest.current += 1;
-        // Whatever this socket still owed an ack for is gone with it.
-        failUnacked(Number.POSITIVE_INFINITY, true);
-        setConnected(false);
-        setPreparingVoice(false);
-        const activeRecognition = recognition.current;
-        if (activeRecognition) {
-          recognition.current = undefined;
-          activeRecognition.abort();
-          paintMicLevel(dictateButton.current, null);
-          setListening(false);
-          setVoiceStatus(null);
-          setVoiceFailure({ key: "mobile.voice.disconnected" });
-        }
-        // The server attaches to the persisted tmux session again on reconnect,
-        // so its screen/history is replayed. Do not clear the local screen: it
-        // keeps the last rendered state useful while a phone wakes or switches
-        // between Wi-Fi and cellular.
-        if (stopped) {
-          term.write("\r\n\x1b[31m[Session closed by the desktop.]\x1b[0m\r\n");
-          return;
-        }
-        // Once per outage: a long one used to print this on every attempt,
-        // which walked the screen away from what the reader was reading.
-        if (!interrupted) {
-          interrupted = true;
-          term.write("\r\n\x1b[33m[Connection interrupted; reconnecting…]\x1b[0m\r\n");
-        }
-        const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
-        reconnectAttempt += 1;
-        // A session that ended on the desktop refuses the upgrade at the HTTP
-        // layer, so no `closing` frame can ever say why — the phone would show
-        // "reconnecting…" forever. After two straight failures, ask the tab
-        // endpoint; a transient network failure keeps the reconnect loop.
-        if (reconnectAttempt >= 2) {
-          void api<{ tab: TabRow }>(`/api/v1/tabs/${tab.id}`)
-            .then((body) => { if (!body.tab.available) throw new ApiError(410, "session_gone"); })
-            .catch((reason) => {
-              if (stopped || !(reason instanceof ApiError)) return;
-              if (reason.status !== 404 && reason.status !== 410) return;
-              stopped = true;
-              clearTimeout(reconnectTimer);
-              setStoppedReason(describeFailure("session_gone"));
-            });
-        }
-        reconnectTimer = window.setTimeout(connect, delay);
+        dropLink();
+        reconnectLater();
       };
       next.onmessage = (event) => {
         if (ws !== next) return;
@@ -1609,15 +1635,27 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
           setLines([]);
           return;
         }
+        if (control.type === "features") {
+          // This desktop takes visibility reports: say so if the page is
+          // already hidden, and from here on at every change.
+          if (control.visibility) visibility.supported(next);
+          return;
+        }
         if (control.type === "window") {
           windowSize = { cols: control.cols, rows: control.rows };
           applySize();
           return;
         }
         if (control.type === "closing") {
-          if (!control.retry) {
+          // An end the desktop chose (`replaced`, `access_revoked`, …) is
+          // torn down here, on its frame: `stopped` makes the `onclose` that
+          // follows a no-op, so leaving it to that left the composer live and
+          // the unacked prompts pending under the sentence below. That
+          // sentence is the whole explanation; nothing goes on the screen.
+          if (!control.retry && !stopped) {
             stopped = true;
             clearTimeout(reconnectTimer);
+            dropLink();
           }
           // The session lapsed, not the tab: renew it and come back.
           if (control.reason === "session_expired") relogin = true;
@@ -1668,6 +1706,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "detached" }));
     };
     window.addEventListener("pagehide", release);
+    // Hidden is not gone: the socket stays (no replay on the way back), and
+    // the desktop is told nobody is looking, so an agent's notice is not held
+    // back for a phone in a pocket (`terminal/visibility.ts`).
+    document.addEventListener("visibilitychange", visibility.changed);
     window.addEventListener("resize", resize);
     window.visualViewport?.addEventListener("resize", resize);
     // A phone can change the terminal's usable width without firing a window
@@ -1681,11 +1723,11 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     const ping = window.setInterval(() => {
       if (ws?.readyState !== WebSocket.OPEN) return;
       // The server answers every ping. Silence past the grace window means the
-      // link is gone even though the browser still reports OPEN, so force the
-      // close that drives the normal reconnect. So does a send buffer the
-      // socket is not draining — the earlier tell of the same dead link.
+      // link is gone even though the browser still reports OPEN, so let go of
+      // it and reconnect. So does a send buffer the socket is not draining —
+      // the earlier tell of the same dead link.
       if ((lastPong && Date.now() - lastPong > PONG_GRACE) || ws.bufferedAmount > STALLED_BYTES) {
-        ws.close();
+        abandon(ws);
         return;
       }
       sendPing(ws);
@@ -1694,9 +1736,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     // to. A socket that closed while it was away has its reconnect waiting on
     // a backoff timer that was frozen with the page: run it now. One the
     // browser still reports OPEN is asked for a pong within RESUME_GRACE and
-    // closed otherwise, which is what drives the ordinary reconnect; before
-    // this the composer stayed enabled on a dead link until PONG_GRACE ran
-    // out, and typing went nowhere.
+    // abandoned otherwise, which starts the ordinary reconnect without waiting
+    // for the browser's close; before this the composer stayed enabled on a
+    // dead link until PONG_GRACE ran out, and typing went nowhere.
     let resumeTimer = 0;
     const resume = () => {
       if (stopped || document.visibilityState !== "visible") return;
@@ -1715,7 +1757,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
         if (stopped || ws !== current || current.readyState !== WebSocket.OPEN) return;
         if (pongs === seen) {
           reconnectAttempt = 0;
-          current.close();
+          abandon(current);
         }
       }, RESUME_GRACE);
       updateReadable();
@@ -1747,6 +1789,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       cancelAnimationFrame(readableScrollFrame);
       cancelAnimationFrame(anchorFrame);
       window.removeEventListener("pagehide", release);
+      document.removeEventListener("visibilitychange", visibility.changed);
       window.removeEventListener("resize", resize);
       window.visualViewport?.removeEventListener("resize", resize);
       resizeObserver?.disconnect();

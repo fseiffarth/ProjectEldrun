@@ -212,6 +212,14 @@ const FAILURE_TEXT: Record<string, string> = {
   empty_reply: "The reply is empty.",
   // The desktop bridge's refusals (`MobileBridgeHost.tsx`).
   desktop_error: "Eldrun on the desktop hit an error handling that.",
+  unknown_request: "Eldrun on the desktop does not know that request.",
+  response_too_large: "That is too large for the desktop to send to the phone.",
+  // A write the desktop made whose refreshed list did not come back
+  // (`reloadIfApplied` in `api.ts`): never worded as a refusal, so the reader
+  // does not send it again.
+  applied_response_too_large: "The change was made, but the updated list is too large to send to the phone.",
+  applied_list_too_large: "The change was made, but the list is now too large to show on the phone.",
+  applied_reload_failed: "The change was made, but the list could not be reloaded.",
   launch_failed: "The desktop could not open that tab.",
   unknown_agent: "The desktop does not know that agent.",
   unsupported_sign_in: "The desktop cannot sign that agent in from the phone.",

@@ -1326,6 +1326,7 @@ where
     // own deadline so a slow answer is stated, not lost; every other control
     // request keeps its short SLA.
     let response_timeout = request.desktop_timeout();
+    let mutation = request.is_mutation();
     let (tx, rx) = oneshot::channel();
     state.pending.lock().unwrap().insert(id.clone(), tx);
     if app.emit_to("main", MOBILE_DESKTOP_EVENT, request).is_err() {
@@ -1349,8 +1350,16 @@ where
             message: "Desktop did not answer".into(),
         });
     state.pending.lock().unwrap().remove(&id);
-    let _ = write_frame(&mut stream, &response).await;
+    // Under the response cap, not the request one; an answer too large even
+    // for that is stated to the sidecar rather than dropped — and for a
+    // mutation, stated as applied: the window has made the change by now, so
+    // the phone must reload rather than be invited to send it again.
+    let _ = admin::write_desktop_response(&mut stream, &response, mutation).await;
 }
+
+/// Binds of the desktop bridge's socket before it gives up, a second apart.
+#[cfg(unix)]
+const DESKTOP_BRIDGE_BIND_TRIES: u32 = 5;
 
 #[cfg(unix)]
 pub fn start_desktop_bridge(app: AppHandle, state: MobileDesktopState) {
@@ -1361,9 +1370,29 @@ pub fn start_desktop_bridge(app: AppHandle, state: MobileDesktopState) {
             let _ = std::fs::create_dir_all(parent);
             let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
         }
-        let _ = std::fs::remove_file(&socket);
-        let Ok(listener) = tokio::net::UnixListener::bind(&socket) else {
-            return;
+        // A bridge that never listens leaves every phone request that needs
+        // the desktop reading `desktop_unavailable` for the whole session, and
+        // it used to give up on the first failed bind without a word. A few
+        // tries a second apart ride out a state dir or a stale socket file
+        // that is still settling — the `remove_file` goes before each one —
+        // and a bind that still fails is said on stderr.
+        let mut tries = 0;
+        let listener = loop {
+            let _ = std::fs::remove_file(&socket);
+            match tokio::net::UnixListener::bind(&socket) {
+                Ok(listener) => break listener,
+                Err(error) => {
+                    tries += 1;
+                    if tries >= DESKTOP_BRIDGE_BIND_TRIES {
+                        eprintln!(
+                            "mobile host: desktop bridge cannot listen on {} after {tries} tries: {error}",
+                            socket.display()
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
         };
         let _ = std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600));
         loop {
@@ -1396,11 +1425,21 @@ pub fn start_desktop_bridge(app: AppHandle, state: MobileDesktopState) {
     tauri::async_runtime::spawn(async move {
         use tokio::net::windows::named_pipe::ServerOptions;
         let name = pipe::pipe_name(&socket);
-        let Ok(token) = pipe::create_token(&socket) else {
-            return;
+        // Either failure leaves every phone request that needs the desktop
+        // reading `desktop_unavailable` for the whole session; say why.
+        let token = match pipe::create_token(&socket) {
+            Ok(token) => token,
+            Err(error) => {
+                eprintln!("mobile host: desktop bridge cannot write its pipe token: {error}");
+                return;
+            }
         };
-        let Ok(mut server) = ServerOptions::new().first_pipe_instance(true).create(&name) else {
-            return;
+        let mut server = match ServerOptions::new().first_pipe_instance(true).create(&name) {
+            Ok(server) => server,
+            Err(error) => {
+                eprintln!("mobile host: desktop bridge cannot create its pipe: {error}");
+                return;
+            }
         };
         loop {
             if server.connect().await.is_err() {

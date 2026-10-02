@@ -3016,6 +3016,42 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   tmux `prefix None` on Eldrun sessions (decision 5). Not done from the plan:
   the optional `calendar_writes`/`todo_writes` desktop switches (6, "consider")
   — a CalDAV delete from the phone is still guarded by the confirm sheet alone.
+  - [ ] 🖐️ Manual phone QA — slow answers are waited for, and a wedged tmux costs no terminal (2026-10-01; `api.ts` `TAB_CREATE_TIMEOUT` / `MAIL_MESSAGE_TIMEOUT` / `SIGN_IN_CALLBACK_TIMEOUT`, `discovery.rs` `TMUX_LS_TIMEOUT` + carried-forward live map, `pty_bridge.rs` `catalog_unavailable`; ⚠️ never run on a phone; sidecar + PWA rebuild first): (a) open a large mail message for the first time on a slow IMAP account, and ＋ a new agent tab while the desktop is busy → each lands, or fails with its own reason — never "Your desktop didn't answer" followed by the thing having happened anyway. (b) With a terminal open on the phone, `kill -STOP "$(tmux display-message -p '#{pid}')"` for ~20 s, then `kill -CONT` the same pid: the phone's project list keeps its tabs as they were, the open terminal is not closed with "access was withdrawn", and everything resumes. Switching the project's phone access off during the stop still closes the terminal within ~5 s.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — a dead terminal link lets go at once, and a final close looks closed (2026-10-01; `Terminal.tsx` `abandon` / `dropLink` / `reconnectLater`; ⚠️ never run on a phone; PWA rebuild first): (a) with a terminal open, make the link silent without closing it (switch Tailscale off on the phone, or change networks) → within about a minute the composer disables and shows "Reconnecting…", and the session reconnects once the path is back. Lock the phone during such an outage, unlock: within ~5 s the link reconnects rather than the screen staying "connected" with typing going nowhere. (b) Open the same tab from a second phone or browser → the first shows "This session was opened on another device or tab.", its composer is disabled, a prompt still waiting for its ack reads "Not delivered", and it does not reconnect. Known leftover: the disabled composer's placeholder still reads "Reconnecting…" under that sentence.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — a closed desktop is named quickly, and a sidecar restart mid sign-in is ridden out (2026-10-01; `auth.ts` `PROXY_DOWN_RETRIES` / `STALE_CHALLENGE_RETRIES`, `start_desktop_bridge` bind retry + log; ⚠️ never run on a phone; PWA + backend rebuild first): (a) quit desktop Eldrun, then open or unlock Eldrun Mobile → "Eldrun Mobile isn't running on your desktop" after about 3 s, not about 10. (b) Hard to provoke: switch Mobile off and on in Settings while the phone is unlocking on a slow link → the sign-in still lands, no "Your desktop reported an error"; the connect trace on the slow splash shows `session 401 invalid_challenge` followed by a second challenge. (c) With `mobile-control/` made read-only before launch, Eldrun's stderr says `mobile host: desktop bridge cannot listen on …` after about 5 s (Windows: the block only needs to compile — never compile-checked).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — large desktop answers arrive, and a slow upload is not cut (2026-10-01; `protocol.rs` `MAX_DESKTOP_RESPONSE`, `admin.rs` `write_desktop_response`, `limits.rs` `BODY_TIMEOUT`; ⚠️ never run on a phone; backend rebuild + sidecar update first): (a) with the desktop open, open an agent tab with a long session in Focus → the chat loads; open a large To-do board and a busy Calendar month → no "read-only" notice, and adding a card answers with the board rather than "Eldrun isn't running on your desktop" (no duplicate card). (b) On mobile data, ＋ → From this phone → a photo of 10 MB or more → it arrives instead of failing after about 15 s with "Eldrun Mobile isn't running on your desktop".
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - [ ] 🖐️ Manual phone QA — "every second unlock fails, Retry works" (2026-09-27, `mobile.link.unlockRetry`): leave the PWA past the 3-minute lock with the screen off for a few minutes, come back, unlock ten times in a row: each one connects (Connecting… may run ~10 s on a dead connection, then lands) and none shows the failure splash; when a splash does show, Retry connects without asking for the fingerprint again. Phone-bundle-only change: commit, let the dev build publish, pull to refresh.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
@@ -3331,6 +3367,16 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+  - [ ] 🖐️ Manual phone QA — a lapsed subscription comes back by itself (2026-10-01; `push.rs` lapsed records, `refreshPush`; ⚠️ never run on a phone; sidecar + PWA rebuild first): with Reminders on, drop the browser's subscription behind Eldrun's back — in the phone's site settings for Eldrun Mobile switch Notifications off and on again (permission is granted again, the subscription is gone) — then trigger one reminder: nothing arrives, and `mobile-control/push.json` shows the row with `"lapsed": true` and empty keys. Reopen Eldrun Mobile and sign in — no prompt — and the next reminder arrives with the same details choice as before. Reminders → Off still removes the row whole.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 - [~] **31bn — Agent questions and finished turns as push notifications** (2026-09-28;
   ✅ code-complete, automated tests passing — `push.rs` (per-phone choices,
   decrypted payloads carry only opaque ids when details are off, per-tab
@@ -3354,6 +3400,16 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     Needs your answer" within seconds; tap → unlock → that tab. With the tab
     open on the phone, the next question does not notify. Switch to "Also when
     one finishes a turn" → a finished turn notifies. Revoke → nothing.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+  - [ ] 🖐️ Manual phone QA — a pocketed phone still gets the notice (2026-10-01; `TerminalControl::Visibility` / `TerminalEvent::Features`, `TerminalRegistry::is_watched`; ⚠️ never run on a phone; sidecar + PWA rebuild first): Agents → "Also when one finishes a turn". Open an agent tab on the phone, send a prompt, switch to another app (or lock the screen) before the turn ends → the "Finished …" notice arrives, and the tab's row still reads unread/done on the desktop until the phone is looked at again. Back in the tab, with the page in front: the next finished turn does not notify. Coming back from the other app must not replay the history (the socket was kept).
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)

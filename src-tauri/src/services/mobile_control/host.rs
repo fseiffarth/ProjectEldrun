@@ -272,26 +272,47 @@ async fn open_ticket(
     }
 }
 
+/// Run a catalog read without holding an async worker for it. A read past the
+/// TTL forks `tmux ls` (bounded by `discovery::TMUX_LS_TIMEOUT`, but seconds
+/// against a hung tmux server) and every other read waits on the catalog mutex
+/// behind it; done inline on the workers, a few such requests parked all of
+/// them and the sidecar stopped answering anything — pings and terminal output
+/// included. `block_in_place` hands this worker's other tasks to a fresh one
+/// first. It is only legal on the multi-threaded runtime the sidecar runs on;
+/// anywhere else (the current-thread runtime of a test) the read runs inline.
+fn off_worker<T>(read: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(read)
+        }
+        _ => read(),
+    }
+}
+
 fn catalog(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::Value>)> {
     let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
-    state
-        .catalog
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .load(&state.config.state_dir, &key)
-        .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
+    off_worker(|| {
+        state
+            .catalog
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .load(&state.config.state_dir, &key)
+    })
+    .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
 }
 
 /// The create-tab poll is waiting for a tab the desktop has just been asked to
 /// open, so by definition it is not in the cached snapshot yet.
 fn catalog_fresh(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::Value>)> {
     let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
-    state
-        .catalog
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .load_fresh(&state.config.state_dir, &key)
-        .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
+    off_worker(|| {
+        state
+            .catalog
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .load_fresh(&state.config.state_dir, &key)
+    })
+    .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
 }
 
 /// The host key the desktop mints its opaque ids with — the same
@@ -1209,6 +1230,12 @@ async fn alerts_resolve(
 /// This device's push state and the key it must subscribe with. The endpoint
 /// goes back only to the device that registered it, so the phone can tell a
 /// browser-rotated subscription from the one on file.
+///
+/// A row the push service declared gone is `lapsed`, not `subscribed`: nothing
+/// is sent to it, but its choices and the dead endpoint are still answered, so
+/// the phone's silent refresh re-subscribes with them (`refreshPush`) instead
+/// of leaving notices off. A phone bundle that predates the field reads
+/// `subscribed: false` and behaves as it always did.
 fn push_state(state: &HostState, device_id: &str) -> (StatusCode, Json<serde_json::Value>) {
     let auth = state.auth.lock().unwrap_or_else(PoisonError::into_inner);
     let push = auth.push();
@@ -1217,7 +1244,8 @@ fn push_state(state: &HostState, device_id: &str) -> (StatusCode, Json<serde_jso
         StatusCode::OK,
         Json(json!({
             "vapid_public_key": push.public_key(),
-            "subscribed": subscription.is_some(),
+            "subscribed": subscription.is_some_and(|s| !s.lapsed),
+            "lapsed": subscription.is_some_and(|s| s.lapsed),
             "details": subscription.is_some_and(|s| s.details),
             "calendar": subscription.is_some_and(|s| s.calendar),
             "agents": subscription.map(|s| s.agents).unwrap_or_default(),
@@ -1297,7 +1325,7 @@ fn agent_tab_ref(state: &HostState, tmux_session: &str) -> Option<AgentTabRef> {
                 project_label: project.public.label.clone(),
                 tab_id: tab.public.id.clone(),
                 tab_label: tab.public.label.clone(),
-                attached: state.terminal_registry.is_busy(tmux_session),
+                attached: state.terminal_registry.is_watched(tmux_session),
             })
     })
 }
@@ -3049,7 +3077,12 @@ async fn terminal(
             // last moment the screen was in front of somebody. Both edges are
             // stamped, so a turn that finished while the phone was watching
             // does not come back as an unread `done` the moment it detaches.
-            mark_tab_seen(&desktop_socket, seen_project.clone(), seen_tmux.clone());
+            // A page going hidden and coming back are the same two edges with
+            // the socket left open, and the bridge stamps those (and the
+            // detach, unless the page was hidden by then): a turn that
+            // finishes in a pocket is still unread when the phone comes out.
+            let seen = move || mark_tab_seen(&desktop_socket, seen_project.clone(), seen_tmux.clone());
+            seen();
             let _ = pty_bridge::attach(
                 socket,
                 tmux,
@@ -3062,9 +3095,9 @@ async fn terminal(
                 move || {
                     mark_tab_input(&input_socket, input_project.clone(), input_tmux.clone());
                 },
+                seen,
             )
             .await;
-            mark_tab_seen(&desktop_socket, seen_project, seen_tmux);
         })
 }
 
@@ -4400,6 +4433,48 @@ mod tests {
         assert_eq!(json(&body)["subscribed"], true);
         assert_eq!(json(&body)["details"], true);
         assert_eq!(json(&body)["agents"], "questions");
+        assert_eq!(json(&body)["lapsed"], false);
+
+        // The push service says the endpoint is gone: the phone is told it
+        // lapsed, with the choices it made and the endpoint that died — what
+        // its silent refresh re-subscribes from.
+        host.state
+            .auth
+            .lock()
+            .unwrap()
+            .push_lapse_endpoint("https://fcm.googleapis.com/fcm/send/phone");
+        let (_, _, body) = host.send(get_as("/api/v1/push", &cookie)).await;
+        let lapsed = json(&body);
+        assert_eq!(lapsed["subscribed"], false);
+        assert_eq!(lapsed["lapsed"], true);
+        assert_eq!(lapsed["agents"], "questions");
+        assert_eq!(lapsed["details"], true);
+        assert_eq!(lapsed["endpoint"], "https://fcm.googleapis.com/fcm/send/phone");
+        // Registering a fresh subscription brings it back…
+        let fresh = subscription("https://fcm.googleapis.com/fcm/send/phone-2");
+        let (status, _, body) = host.send(push_request("PUT", ORIGIN, &cookie, &fresh)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(json(&body)["subscribed"], true);
+        assert_eq!(json(&body)["lapsed"], false);
+        // …and an explicit unsubscribe removes even a lapsed record.
+        host.state
+            .auth
+            .lock()
+            .unwrap()
+            .push_lapse_endpoint("https://fcm.googleapis.com/fcm/send/phone-2");
+        let (status, _, body) = host
+            .send(push_request("DELETE", ORIGIN, &cookie, &serde_json::json!({})))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(json(&body)["subscribed"], false);
+        assert_eq!(json(&body)["lapsed"], false);
+        let (status, _, _) = host.send(push_request("PUT", ORIGIN, &cookie, &good)).await;
+        assert_eq!(status, StatusCode::OK);
+        host.state
+            .auth
+            .lock()
+            .unwrap()
+            .push_lapse_endpoint("https://fcm.googleapis.com/fcm/send/phone");
 
         host.state.auth.lock().unwrap().revoke(&device_id).expect("revoke");
         assert!(host.state.auth.lock().unwrap().push().subscription(&device_id).is_none());
@@ -6462,6 +6537,79 @@ mod tests {
             .await;
         assert_eq!(status, StatusCode::OK, "answered: {body}");
         assert!(json(&body)["project"].get("git").is_none(), "unknown level dropped: {body}");
+        desktop.await.expect("fake desktop");
+    }
+
+    /// A write the desktop applied, whose refreshed list was too large to
+    /// relay, reaches the phone under its own code on every list-answering
+    /// write route. Not a 2xx: the body has no list, and a phone bundle that
+    /// does not know the code must land in its error path rather than read a
+    /// board out of nothing. Not a 503 either, which the phone reads as a
+    /// closed desktop. The phone tells it from a failed write by the code and
+    /// reloads through the read route (`reloadIfApplied` in `api.ts`).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_applied_write_with_an_unrelayable_answer_keeps_its_own_code() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(55)).await.0;
+        let (_, _, body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project = json(&body)["projects"][0]["id"].as_str().unwrap().to_string();
+        let writes: Vec<(String, Value)> = vec![
+            ("/api/v1/todo".into(), json!({ "type": "toggle", "task_id": "t1" })),
+            ("/api/v1/alerts".into(), json!({ "alert_id": "row" })),
+            (
+                "/api/v1/calendar?month=2026-09".into(),
+                json!({ "type": "delete_event", "event_id": "e1" }),
+            ),
+            (
+                "/api/v1/mail/folders/f1/messages/m1/mark".into(),
+                json!({ "action": "seen" }),
+            ),
+            (
+                "/api/v1/mail/folders/f1/messages/m1/reply".into(),
+                json!({ "body": "Thanks" }),
+            ),
+            (format!("/api/v1/projects/{project}/prompts"), json!({ "message": "Review" })),
+        ];
+
+        let socket = host.state.config.control_dir.join("desktop-control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let expected = writes.len();
+        let desktop = tokio::spawn(async move {
+            let mut answered = 0;
+            while answered < expected {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                // A reachability probe connects and sends nothing.
+                let Ok(request) = admin::read_frame::<DesktopRequest>(&mut stream).await else {
+                    continue;
+                };
+                assert!(request.is_mutation(), "not a mutation: {request:?}");
+                let response = DesktopResponse::Error {
+                    code: admin::APPLIED_RESPONSE_TOO_LARGE.into(),
+                    message: String::new(),
+                };
+                admin::write_frame(&mut stream, &response).await.expect("answer");
+                answered += 1;
+            }
+        });
+
+        for (uri, body) in &writes {
+            let request = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(body).expect("body")))
+                .expect("request");
+            let (status, _, answer) = host.send(request).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} answered: {answer}");
+            assert_eq!(
+                json(&answer)["error"],
+                admin::APPLIED_RESPONSE_TOO_LARGE,
+                "{uri} answered: {answer}"
+            );
+        }
         desktop.await.expect("fake desktop");
     }
 }

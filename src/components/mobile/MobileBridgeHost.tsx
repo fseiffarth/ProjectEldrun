@@ -2281,7 +2281,17 @@ async function handleRequest(
     case "undo_clear": return undoTabClear(request.project_id, request.tmux_session);
     case "desktop_images": return desktopImagesFor(request.project_id);
     case "attach_desktop_image": return attachDesktopImage(request.project_id, request.image_id);
+    // A sidecar newer than this window can ask for a kind it does not know.
+    // Answered at once and by name: `undefined` failed to deserialize in
+    // `mobile_desktop_respond`, and the phone sat out the whole desktop
+    // timeout before reading "desktop unavailable". Typed `never`, so a kind
+    // added to `DesktopRequest` without a case here still fails the build.
+    default: return unknownRequest(request);
   }
+}
+
+function unknownRequest(_request: never): DesktopResponse {
+  return { status: "error", code: "unknown_request", message: "This desktop does not know that request" };
 }
 
 /** Desktop mutations run one at a time — but per domain, not on one chain.
@@ -2292,7 +2302,11 @@ async function handleRequest(
  * their own order; nothing in one waits on another. */
 const mutationQueues = new Map<string, Promise<unknown>>();
 
-function mutationDomain(type: DesktopRequest["type"]): string | null {
+/** Which queue a request waits in, or `null` for a read. The sidecar's
+ * `DesktopRequest::is_mutation` (`protocol.rs`) is the same list — it decides
+ * which over-large answers are reported as "applied" — and
+ * `MobileMutationList.test.ts` holds the two in step (exported for it). */
+export function mutationDomain(type: DesktopRequest["type"]): string | null {
   switch (type) {
     case "create": case "activate": case "rename_tab": case "close_tab": case "reopen_tab": case "color_tab": case "reorder_tab": return "tabs";
     case "todo_mutate": case "alert_resolve": case "calendar_mutate": return "board";

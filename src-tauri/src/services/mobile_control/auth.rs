@@ -555,8 +555,10 @@ impl AuthStore {
         self.push.deliveries(notice, &tag, &paired)
     }
 
-    pub fn push_forget_endpoint(&mut self, endpoint: &str) {
-        self.push.forget_endpoint(endpoint);
+    /// The push service said `endpoint` is gone: its row lapses, keeping the
+    /// phone's choices for its next sign-in (`PushStore::lapse_endpoint`).
+    pub fn push_lapse_endpoint(&mut self, endpoint: &str) {
+        self.push.lapse_endpoint(endpoint);
     }
 
     fn audit(&self, event: &str, device_id: Option<&str>) {

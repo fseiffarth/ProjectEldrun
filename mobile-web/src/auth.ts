@@ -115,30 +115,70 @@ const AUTH_REQUEST_TIMEOUT = 5_000;
  * attempt opens a fresh connection and goes through. That was "every second
  * unlock fails, Retry works", with the Retry press as the second attempt. The
  * browser also drops what is in flight when the network changes under it,
- * which is what the Tailscale app bringing its tunnel back looks like. A 5xx
- * the proxy wrote itself (see `classifyUnavailable`) is the sidecar
- * restarting behind Tailscale Serve, which also clears within a second or two.
+ * which is what the Tailscale app bringing its tunnel back looks like.
  */
 function transient(reason: unknown): boolean {
-  if (!(reason instanceof ApiError)) return false;
-  if (reason.status === 0) return true;
-  return reason.status >= 502 && reason.status <= 504 && reason.code === "request_failed";
+  return reason instanceof ApiError && reason.status === 0;
 }
+
+/**
+ * A 5xx the proxy wrote itself (see `classifyUnavailable`): Tailscale Serve
+ * reached the machine but nothing listens behind it. That is the sidecar
+ * restarting, which clears within a second or two — or, far more often, the
+ * desktop app closed, which stops the sidecar and clears never. Riding it out
+ * with the rest kept "Connecting…" up for the whole retry schedule, about
+ * 9 s, before the splash said the desktop app isn't running.
+ */
+function proxyDown(reason: unknown): boolean {
+  return reason instanceof ApiError && reason.status >= 502 && reason.status <= 504 && reason.code === "request_failed";
+}
+/** Further attempts after a proxy-written 5xx. Three ride the schedule's first
+ * pauses, 300 + 800 + 1,500 ms: the last goes out about 2.6 s after the
+ * first, past a sidecar restart, and a closed desktop reaches its splash
+ * then instead of after the whole window. */
+const PROXY_DOWN_RETRIES = 3;
+
+/**
+ * The sidecar keeps its challenges in memory, so one that restarted between
+ * the challenge and the session post answers `invalid_challenge`. The retry
+ * repeats the whole exchange with a fresh nonce, which the new sidecar has.
+ * Two at most: every try costs two of the device's sign-in attempts per
+ * minute (`AUTH_ATTEMPT_BUDGET`, 30), and a challenge that keeps failing is
+ * not a restart. A rejected device (`unknown_device`, `invalid_signature`)
+ * is never retried — it goes to pairing at once.
+ */
+function staleChallenge(reason: unknown): boolean {
+  return reason instanceof ApiError && reason.status === 401 && reason.code === "invalid_challenge";
+}
+const STALE_CHALLENGE_RETRIES = 2;
 
 const pause = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
 
-/** `login`, tried again while the failure is `transient` and the window lasts.
- * The whole exchange repeats, never just its second half: a nonce the host may
- * already have spent cannot be sent twice. */
+/** `login`, tried again while the failure is `transient` and the window lasts,
+ * or a `proxyDown`/`staleChallenge` one within its own smaller budget. Every
+ * try counts against the one schedule, so there are never more than its
+ * length plus one. The whole exchange repeats, never just its second half: a
+ * nonce the host may already have spent cannot be sent twice. */
 async function loginWithRetry(record: AuthRecord): Promise<void> {
   const started = Date.now();
+  let proxyRetries = 0;
+  let challengeRetries = 0;
   for (let attempt = 0; ; attempt += 1) {
     try {
       await login(record);
       return;
     } catch (reason) {
       const delay = RESUME_RETRY_DELAYS[attempt];
-      if (delay === undefined || !transient(reason) || Date.now() - started >= RESUME_RETRY_WINDOW) throw reason;
+      if (delay === undefined || Date.now() - started >= RESUME_RETRY_WINDOW) throw reason;
+      if (proxyDown(reason)) {
+        proxyRetries += 1;
+        if (proxyRetries > PROXY_DOWN_RETRIES) throw reason;
+      } else if (staleChallenge(reason)) {
+        challengeRetries += 1;
+        if (challengeRetries > STALE_CHALLENGE_RETRIES) throw reason;
+      } else if (!transient(reason)) {
+        throw reason;
+      }
       await pause(delay);
     }
   }

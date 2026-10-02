@@ -27,6 +27,11 @@ export interface PushPrefs {
 export interface HostPushState extends PushPrefs {
   vapid_public_key: string;
   subscribed: boolean;
+  /** The push service told the host this phone's endpoint is gone. The host
+   * sends it nothing, but still answers the choices it made and the endpoint
+   * that died, for `refreshPush` to re-subscribe from. Absent from a host
+   * that predates lapsed records. */
+  lapsed?: boolean;
   endpoint: string | null;
 }
 
@@ -69,13 +74,15 @@ function sameKey(a: ArrayBuffer | null | undefined, b: Uint8Array): boolean {
 /**
  * This browser's subscription under the host's current key, made if missing.
  * One made under another key (the desktop forgot all phones, which rotates it)
- * would never be woken again, so it is replaced rather than reused.
+ * would never be woken again, so it is replaced rather than reused. So is one
+ * whose endpoint is `dead` — the one the push service told the host is gone,
+ * which a browser can go on handing out as if it were live.
  */
-async function browserSubscription(vapidKey: string): Promise<PushSubscription> {
+async function browserSubscription(vapidKey: string, dead?: string | null): Promise<PushSubscription> {
   const registration = await navigator.serviceWorker.ready;
   const key = decodeKey(vapidKey);
   const existing = await registration.pushManager.getSubscription();
-  if (existing && sameKey(existing.options.applicationServerKey, key)) return existing;
+  if (existing && existing.endpoint !== dead && sameKey(existing.options.applicationServerKey, key)) return existing;
   if (existing) await existing.unsubscribe().catch(() => false);
   return registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
 }
@@ -126,11 +133,17 @@ export async function disablePush(): Promise<HostPushState> {
  * endpoint now and then; with nobody signed in to report the new one, the
  * host would go on posting to the dead one. Silent: nothing here prompts, and
  * a phone that never switched reminders on is left alone.
+ *
+ * A subscription the push service dropped (`lapsed`) comes back here too: the
+ * host kept this phone's choices when it stopped posting, and a fresh
+ * subscription is registered under them. Before, the host forgot the phone
+ * outright and notices stayed off until someone re-enabled them by hand.
  */
 export async function refreshPush(): Promise<void> {
   if (pushSupport() !== "supported" || notificationPermission() !== "granted") return;
   const host = await getPushState();
-  if (!host.subscribed) return;
-  const subscription = await browserSubscription(host.vapid_public_key);
-  if (subscription.endpoint !== host.endpoint) await register(subscription, host);
+  const lapsed = host.lapsed === true;
+  if (!host.subscribed && !lapsed) return;
+  const subscription = await browserSubscription(host.vapid_public_key, lapsed ? host.endpoint : undefined);
+  if (lapsed || subscription.endpoint !== host.endpoint) await register(subscription, host);
 }

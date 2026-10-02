@@ -125,4 +125,14 @@ describe("Mobile bridge — a phone that looked at an agent tab", () => {
     expect(response.status).toBe("error");
     expect(useActivityStore.getState().attentionByTab["p-mobile:agent-1"]).toBe("done");
   });
+
+  it("answers a request kind this window does not know, at once and by name", async () => {
+    // A sidecar newer than the window. No answer at all left the phone waiting
+    // out the whole desktop timeout before it read "desktop unavailable".
+    expect(await ask({ type: "kind_from_a_newer_sidecar", request_id: "r7" })).toEqual({
+      status: "error",
+      code: "unknown_request",
+      message: expect.any(String),
+    });
+  });
 });
