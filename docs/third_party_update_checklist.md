@@ -295,6 +295,19 @@ aliases, and anything about where or how credentials are stored.
 
 **Assumes**
 
+- **0.159.3 (2026-10-01), binary and rollout check** — the installed standalone
+  CLI prints `codex-cli 0.159.3`. Its help still accepts `resume [SESSION_ID]`,
+  `exec --skip-git-repo-check`, `--no-daemon`, `--oss`, `-m` and `-c`.
+  The binary retains the model-sheet headings, mode names, `Action Required`,
+  numbered approval choice text, `active writer` / `thread-writer-locks`, hook
+  events, and `session_meta` / `turn_context` / `user_message` records. Recent
+  rollouts written by 0.159.3 still start with `session_meta` carrying
+  `session_id`. The parser regression tests below pass; the 0.159.3 TUI
+  screens were inspected as binary markers rather than captured live.
+  This was not a live approval, mode-cycle, model-picker or two-writer test;
+  the latest live UI check remains 0.159.2 and the writer-lock lifecycle's
+  offline probe remains 0.154.0. The four `VERIFIED` rows record this checked
+  patch release with those limits, as 0.157.0 did for its binary check.
 - **0.159.2 (2026-09-30), live but outside Eldrun** — the npm linux-x64 build
   run in a private tmux with its own `CODEX_HOME`, inside a fenced agent tab.
   Verified live: the approval menu (labels below) and its title frames, the
