@@ -372,9 +372,31 @@ describe(`${BRAND.display} Mobile Reader opens the subagents an agent spawned`, 
     within(bar()).getByText("Map the backend");
   });
 
-  it("goes back to the session when a prompt is sent from a subagent's conversation", async () => {
+  it("sends a Claude subagent's words to it alone, and keeps them when its list is not on screen", async () => {
     vi.stubGlobal("fetch", subagentFetch());
     render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Subagent: Explore · Map the backend" }));
+    await settle();
+    const field = screen.getByRole("textbox", { name: /message/i });
+    expect(field.getAttribute("placeholder")).toBe("Message this subagent…");
+    const typed = FakeWebSocket.instances.flatMap((socket) => socket.sent).length;
+    fireEvent.change(field, { target: { value: "and the frontend?" } });
+    fireEvent.click(screen.getByRole("button", { name: /^send/i }));
+    await settle();
+    await settle();
+    // No Claude agent list on this screen: nothing is typed, the Reader
+    // stays on the subagent, and the words come back with the reason.
+    expect(FakeWebSocket.instances.flatMap((socket) => socket.sent).length).toBe(typed);
+    screen.getByRole("navigation", { name: "Subagent" });
+    expect((field as HTMLTextAreaElement).value).toBe("and the frontend?");
+    screen.getByText(/Not sent — Claude's agent list did not open this subagent/);
+    expect(within(screen.getByTestId("subagent-transcript")).queryByText("and the frontend?")).toBeNull();
+  });
+
+  it("goes back to the session when a prompt is sent from a subagent's conversation on another CLI", async () => {
+    vi.stubGlobal("fetch", subagentFetch());
+    render(<Terminal tab={{ ...TAB, label: "Codex", agent_label: "Codex" }} back={() => {}} />);
     await settle();
     fireEvent.click(screen.getByRole("button", { name: "Subagent: Explore · Map the backend" }));
     await settle();

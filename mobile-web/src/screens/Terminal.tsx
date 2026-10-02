@@ -95,13 +95,14 @@ import {
 } from "../terminal/antigravity";
 import { isCursorTab, readCursorPicker } from "../terminal/cursorAgent";
 import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../terminal/agentModes";
-import { agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
+import { agentFamily, agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
 import { COMMIT_CHOICES, COMMIT_PROMPTS, type CommitChoice } from "../terminal/commitPrompts";
 import { agentWork } from "../terminal/agentBusy";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { answerHtml, promptHtml } from "../terminal/answerMarkdown";
 import { chatDayLabel, chatMoment, chatTime, dayOpeners } from "../terminal/chatTimes";
 import { commandArgsInline, slashCommand, transcriptTurns, type SlashCommand, type TranscriptTurn } from "../terminal/transcriptTurns";
+import { bufferRows, sendToSubagent, type SubagentSendFailure } from "../terminal/subagentInput";
 import { compactTokens, openSubagent, openSubagentRunning, siblingPosition, stepSibling, workingElapsed, workingModelName, type SubagentStep } from "../terminal/subagents";
 import { MAX_PENDING, arrivedPending, pendingPrompt, reworded, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
 import { outboxPosts, type OutboxPost as ChatPost } from "../terminal/outboxPosts";
@@ -195,6 +196,16 @@ const FILES_SWIPE_ZONE = 1 / 3;
  * only still carry sessions whose pane has the mode off. */
 const AGENT_KEY_GAP = 80;
 const AGENT_SUBMIT_GAP = 200;
+/** How long a key walking Claude's agent list is given to show on the phone's
+ * screen, which redraws only once the desktop's frames have crossed the link. */
+const SUBAGENT_WALK = { waitMs: 3000, pollMs: 80 };
+/** Why a message to a subagent did not go, said under the composer. */
+const SUBAGENT_SEND_FAILED: Record<SubagentSendFailure, TranslationKey> = {
+  not_listed: "mobile.subagent.notListed",
+  ambiguous: "mobile.subagent.ambiguous",
+  not_opened: "mobile.subagent.noWay",
+  send_failed: "mobile.subagent.noWay",
+};
 /** The key every supported agent CLI reads as "stop this turn" (its spinner
  * row says `esc to interrupt`), and how long the message held back behind it
  * waits: a lone Esc followed at once by text is read as Alt+key, and the turn
@@ -742,6 +753,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * DECSET 2004 to every client, so the phone knows what the agent supports
    * without asking the desktop. */
   const bracketedPaste = useRef<() => boolean>(() => false);
+  /** The bottom rows of the attached screen as drawn: Claude's agent list
+   * is walked by them (`subagentInput`). */
+  const screenRows = useRef<() => string[]>(() => []);
   const [viewportHeight, setViewportHeight] = useState<number>();
   const [connected, setConnected] = useState(false);
   const [stoppedReason, setStoppedReason] = useState("");
@@ -1007,6 +1021,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   const [undoable, setUndoable] = useState(false);
   /** What became of the last edit of a held prompt, shown under the composer. */
   const [editNote, setEditNote] = useState<TranslationKey | "">("");
+  /** A message on its way to the open subagent, and why the last one did not
+   * get there. */
+  const [subagentSending, setSubagentSending] = useState(false);
+  const [subagentNote, setSubagentNote] = useState<TranslationKey | "">("");
   /** Why the last Undo did nothing, shown under the composer. */
   const [undoNote, setUndoNote] = useState<TranslationKey | "">("");
   /** An Undo on its way: "asking" until the desktop takes it, then the
@@ -1257,6 +1275,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       return true;
     });
     bracketedPaste.current = () => term.modes.bracketedPasteMode === true;
+    screenRows.current = () => bufferRows(term.buffer.active);
     // The history log needs to know when xterm trims scrollback (row indices
     // shift), and xterm has no public event for it — so this rides the internal
     // buffer list's own trim emitter, guarded: when a future xterm renames it,
@@ -1822,6 +1841,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       refreshReadable.current = () => {};
       write.current = () => false;
       bracketedPaste.current = () => false;
+      screenRows.current = () => [];
       clearTimeout(reconnectTimer);
       clearTimeout(ackTimer);
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "detached" }));
@@ -2007,6 +2027,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   // Another tab is another session, with subagents of its own.
   useEffect(() => { setSubagentPath([]); }, [tab.id]);
   useEffect(() => { setSubagentListOpen(false); }, [tab.id]);
+  useEffect(() => { setSubagentNote(""); }, [tab.id, subToken]);
   useEffect(() => { setSubLimit(TRANSCRIPT_STEP); }, [subToken]);
   /** Reads the open subagent's conversation as the session itself is read: at
    * once, then every TRANSCRIPT_POLL while the page is visible — a subagent
@@ -2074,8 +2095,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     setAtBottom(true);
     setSubagentPath((path) => stepSibling(path, delta));
   };
-  // A prompt sent from here goes to the session, never to a subagent: the
-  // Reader goes back to the chat it lands in.
+  // A prompt that went to the session (a Claude subagent's own words never
+  // join `pending`): the Reader goes back to the chat it lands in.
   const pendingCount = useRef(pending.length);
   useEffect(() => {
     if (pending.length > pendingCount.current) {
@@ -2378,6 +2399,41 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     setVoicePreview("");
     setVoiceStatus(null);
   };
+  /** The open subagent the composer writes to: Claude's only, the one CLI
+   * whose own TUI takes words for a subagent. */
+  const subagentTarget = openStep && agentFamily(tab.agent_label ?? tab.label) === "claude" ? openStep : undefined;
+  /** Words for the open subagent, delivered through Claude's agent list
+   * (`subagentInput`); the Reader stays on the subagent, whose conversation
+   * shows them once it has taken them. Words that did not get there go back
+   * into an empty composer, with the reason under it. */
+  /** Types `words` as the composer would, once its last write is out. */
+  const typeOut = async (words: string) => {
+    const writes = agentInputWrites(words, bracketsAgentMessage(tab.agent_label ?? tab.label, bracketedPaste.current()));
+    if (!deliver(writes)) return false;
+    await new Promise((resolve) => window.setTimeout(resolve, writesSpan(writes) + AGENT_SUBMIT_GAP));
+    return true;
+  };
+  const sendToOpenSubagent = (text: string, target: SubagentStep, fromComposer: boolean) => {
+    setSubagentNote("");
+    setSubagentSending(true);
+    if (fromComposer) {
+      setDraft("");
+      endDictation();
+    }
+    void sendToSubagent({
+      rows: () => screenRows.current(),
+      key: async (key) => type(key),
+      command: (command) => typeOut(command),
+      type: () => typeOut(text),
+    }, target, SUBAGENT_WALK).then((result) => {
+      if (result.ok) {
+        setLastSent(text);
+        return;
+      }
+      setSubagentNote(SUBAGENT_SEND_FAILED[result.reason]);
+      if (fromComposer) setDraft((current) => current || text);
+    }).finally(() => setSubagentSending(false));
+  };
   /** `fromComposer` false: words that are not the draft (the Commit chip's
    * prompts) — sent as a prompt like any other, the draft and an edit left
    * alone. */
@@ -2403,7 +2459,14 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     // A slash command is the CLI's, not a turn: the session never records it,
     // so a bubble for it would wait forever. `/clear` also ends the chat the
     // earlier bubbles were waiting in.
-    const id = /^\s*\//u.test(text) ? undefined : ++pendingId.current;
+    const slash = /^\s*\//u.test(text);
+    // Words go to the open subagent; a command stays the session's.
+    if (subagentTarget && !slash) {
+      if (subagentSending) return false;
+      sendToOpenSubagent(text, subagentTarget, fromComposer);
+      return true;
+    }
+    const id = slash ? undefined : ++pendingId.current;
     if (id !== undefined && agentAtWork && !interrupt) {
       holdDraft(id, text, fromComposer);
       return true;
@@ -3827,6 +3890,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}{isUntested("mobile.link.failureText") && <em> · {t("mobile.focus.untested")}</em>}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. Send it again once it is back.</div>}
       {undoNote && <div className="voice-feedback" role="status">{t(undoNote)}</div>}
+      {subagentTarget && (subagentSending || subagentNote) && <div className={subagentNote ? "voice-feedback error" : "voice-feedback"} role={subagentNote ? "alert" : "status"}>{t(subagentNote || "mobile.subagent.sending")}{isUntested("mobile.subagent.input") && <em> · {t("mobile.focus.untested")}</em>}</div>}
       {editNote && !editing && <div className={editNote === "mobile.composer.heldEditFailed" ? "voice-feedback error" : "voice-feedback"} role="status">{t(editNote)}{editNote === "mobile.composer.heldNote" && <> {t("mobile.composer.holdToInterrupt")}{isUntested("mobile.composer.sendHold") && <> · <em>{t("mobile.focus.untested")}</em></>}</>}{isUntested("mobile.chat.editHeld") && <> · <em>{t("mobile.focus.untested")}</em></>}</div>}
       {editing && <div className="sign-in-notice" role="status">
         <span>{t(editNote === "mobile.composer.heldEditFailed" ? "mobile.composer.heldEditFailed" : "mobile.composer.editingHeld")}{isUntested("mobile.chat.editHeld") && <> · <em>{t("mobile.focus.untested")}</em></>}</span>
@@ -3891,7 +3955,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
           </div>)}
         </div>}
         <div className="composer-field">
-          <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onFocus={() => setComposerTyping(true)} onBlur={typingStopped} onKeyDown={(event) => {
+          <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? (subagentTarget ? t("mobile.subagent.placeholder") : "Message the agent…") : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onFocus={() => setComposerTyping(true)} onBlur={typingStopped} onKeyDown={(event) => {
             if (event.key !== "Enter" || event.shiftKey) return;
             // Enter confirms a candidate inside an IME composition (CJK keyboards,
             // and 229 is what Android keyboards report mid-composition); that
