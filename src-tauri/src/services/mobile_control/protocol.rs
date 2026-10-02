@@ -1198,6 +1198,12 @@ pub struct AgentCatalogEntry {
     pub id: String,
     pub label: String,
     pub modes: Vec<String>,
+    /// The agent `default_agent_cmd` names ("claude" when unset): what the
+    /// phone starts when it needs one agent on its own, as Mark up's Submit
+    /// does from a screen with no agent tab. Sent only when true; an older
+    /// desktop flags none and the phone takes the first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
 }
 
 /// A status already classified by the desktop activity store. This is an

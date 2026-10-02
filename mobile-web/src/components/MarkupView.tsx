@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
-import { ApiError, MAX_INBOX_FILE, sentName, submitMarkup, uploadToInbox, viewerFileUrl, type MarkupSource, type OutboxFile, type ViewerScope } from "../api";
+import { ApiError, holdPrompt, MAX_INBOX_FILE, sentName, submitMarkup, uploadToInbox, viewerFileUrl, type MarkupSource, type OutboxFile, type TabRow, type ViewerScope } from "../api";
 import { acceptFrameMessage, MAX_FRAME_PAGES, MAX_RENDER_WIDTH, type FrameFailure } from "../markup/frameProtocol";
 import {
   addMark, canAdd, canReplace, clampToPage, clearPage, clearSent, commit, eraseAt, finishStroke, hasSent, inkWidth, isEmpty, MARK_COLORS, markedPages,
@@ -9,12 +9,13 @@ import {
   type BoxMark, type History, type InkMark, type Layer, type Mark, type MarkColor, type PageLayer, type TextMark,
 } from "../markup/layer";
 import { composedPng, drawMark, drawPage, INK, layerPng, type Paint } from "../markup/rasterize";
+import { openMarkupTab } from "../markup/newTab";
 import { layerKey, loadLayer, moveLayer, saveLayer, stale, type Fingerprint } from "../markup/store";
 import { canApply, followRound, nextCheck, startRound, stepRound, type AgentSignal, type Round, type RoundPhase } from "../markup/submitState";
 import { DEFAULT_MARKUP_APPLY, readMarkupApply, readMarkupInstruction } from "../markupInstruction";
 import { sizeLabel } from "../terminal/fileLabels";
 import { AGENT_STATUS_GLYPH } from "./AgentStatusPill";
-import type { MarkupSend } from "./OutboxViewer";
+import type { MarkupNewTab, MarkupSend } from "./OutboxViewer";
 import { storageDashKey } from "../../../src/lib/brand";
 
 type Tool = "ink" | "box" | "text" | "eraser";
@@ -76,6 +77,8 @@ const REASON_KEYS: Record<string, TranslationKey> = {
   file_not_found: "mobile.markup.reason.gone",
   tab_not_found: "mobile.markup.reason.gone",
   project_unavailable: "mobile.markup.reason.project",
+  no_agent: "mobile.markup.reason.noAgent",
+  desktop_unavailable: "mobile.markup.reason.desktop",
 };
 
 /** `none`: no pen has drawn here, so a finger draws. `pen`: only the pen
@@ -244,7 +247,7 @@ type NoteDraft = { n: number; at: [number, number]; index: number | null; text: 
  * the new marks. Once the agent has finished, **Reload PDF** draws the file
  * as it is now (or its newer copy, `refresh`) under the same layer.
  */
-export function MarkupView({ tabId = "", projectId = "", scope, file: givenFile, place, onSend, agent = "idle", refresh, onClose, reader }: {
+export function MarkupView({ tabId: givenTabId = "", projectId = "", scope, file: givenFile, place, onSend, newTab, agent = "idle", refresh, onClose, reader }: {
   tabId?: string;
   /** The project the file belongs to — the phone-side layer's key. */
   projectId?: string;
@@ -255,8 +258,11 @@ export function MarkupView({ tabId = "", projectId = "", scope, file: givenFile,
   place?: string;
   /** Sends the desktop's prompt into the chat: `"queued"` behind the
    * agent's current step, `"sent"` straight in, `false` when it could not.
-   * Absent, nothing can be marked. */
+   * Absent, nothing can be marked — unless `newTab` is given. */
   onSend?: (text: string) => MarkupSend;
+  /** No agent tab to send to: Submit opens one of the default agent, hands
+   * it the prompt, and shows it (`markup/newTab.ts`). */
+  newTab?: MarkupNewTab;
   /** What the agent is doing now, for the round's pill. */
   agent?: AgentSignal;
   /** The file as it is now, for Reload — its fresh row or a newer copy; the
@@ -272,7 +278,7 @@ export function MarkupView({ tabId = "", projectId = "", scope, file: givenFile,
   const [file, setFile] = useState(givenFile);
   const isPdf = file.kind === "application/pdf";
   const reading = reader !== undefined;
-  const canMark = onSend !== undefined;
+  const canMark = onSend !== undefined || newTab !== undefined;
   const url = viewerFileUrl(scope, file);
   const source = useMemo<MarkupSource>(() => ("files" in scope ? { files: file.ref ?? "" } : { outbox: file.name }), [scope, file.ref, file.name]);
   const keyOf = useCallback(
@@ -313,6 +319,10 @@ export function MarkupView({ tabId = "", projectId = "", scope, file: givenFile,
   /** The last Submit's round, as the agent has taken it; `null` until one
    * went out from this view, or the agent is seen at work over sent marks. */
   const [submitted, setSubmitted] = useState<Round | null>(null);
+  /** The tab a `newTab` Submit opened, and the key its create went out with:
+   * a retry after a later step failed sends to that tab, not a second one. */
+  const markupTab = useRef<TabRow | null>(null);
+  const markupTabKey = useRef(crypto.randomUUID());
   const [roundTick, setRoundTick] = useState(0);
   /** What the look at the file found when the agent finished. */
   const [check, setCheck] = useState<"changed" | "unchanged" | null>(null);
@@ -856,6 +866,21 @@ export function MarkupView({ tabId = "", projectId = "", scope, file: givenFile,
     const marked = sendable;
     if (!marked.length || sending) return;
     setSendFailure(null);
+    let tabId = givenTabId;
+    if (!onSend) {
+      if (!newTab) return;
+      if (!markupTab.current) {
+        setSending(t("mobile.markup.openingTab"));
+        try {
+          markupTab.current = await openMarkupTab(newTab.projectId, markupTabKey.current);
+        } catch (error) {
+          setSending(null);
+          setSendFailure(t("mobile.markup.sendFailed.tab", { reason: reason(error) }));
+          return;
+        }
+      }
+      tabId = markupTab.current.id;
+    }
     const refs = new Map<number, string>();
     for (const n of marked) {
       setSending(t("mobile.markup.sendingPage", { n }));
@@ -894,6 +919,23 @@ export function MarkupView({ tabId = "", projectId = "", scope, file: givenFile,
     } catch (error) {
       setSending(null);
       setSendFailure(t("mobile.markup.sendFailed.marks", { reason: reason(error) }));
+      return;
+    }
+    if (!onSend && newTab && markupTab.current) {
+      // Held, not typed: the new CLI may still be starting, and the desktop
+      // types a held prompt at the tab's first idle point.
+      const opened = markupTab.current;
+      try {
+        await holdPrompt(opened.id, prompt);
+      } catch (error) {
+        setSending(null);
+        setSendFailure(t("mobile.markup.sendFailed.newTab", { reason: reason(error) }));
+        return;
+      }
+      // Written now: the view goes away with the jump, before its save effect.
+      await saveLayer(key, markSent(history.present, marked), fingerprint).catch(() => false);
+      setSending(null);
+      newTab.show(opened);
       return;
     }
     const sent = onSend?.(prompt) ?? false;
@@ -1084,6 +1126,7 @@ export function MarkupView({ tabId = "", projectId = "", scope, file: givenFile,
       {reloadNote && <p role="status">{t(reloadNote)}</p>}
       {storage === "unsaved" && <p role="status">{t("mobile.markup.unsaved")}</p>}
       {changed && <p role="status">{t("mobile.markup.changed")}</p>}
+      {marking && !onSend && newTab && <p role="status">{t("mobile.markup.newTabNote")}{isUntested("mobile.markup.newTab") && <span className="untested">{t("mobile.outbox.untested")}</span>}</p>}
       {marking && leftOut > 0 && <p role="status">{t(leftOut === 1 ? "mobile.markup.leftOutOne" : "mobile.markup.leftOut", { count: leftOut })}</p>}
       {limitHit && <p role="alert">{t("mobile.markup.limit")}</p>}
       {sending && <p role="status">{sending}</p>}

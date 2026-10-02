@@ -15,7 +15,7 @@ import { ScheduleSheet } from "./ScheduleSheet";
 import { AgentStatusMark } from "../components/AgentStatusPill";
 import { AgentModeMarks, agentModeClass } from "../components/AgentModeMarks";
 import { OutboxGallery } from "../components/OutboxGallery";
-import { OutboxViewer } from "../components/OutboxViewer";
+import { OutboxViewer, type MarkupNewTab } from "../components/OutboxViewer";
 import { ProjectFiles } from "../components/ProjectFiles";
 import { tabColorCss } from "../tabColors";
 import { useT } from "../../../src/lib/i18n";
@@ -298,6 +298,12 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     });
     setFileOpen((open) => open?.name === file.name ? null : open);
   }, [id]);
+  /** Mark up from here has no chat to send to: its Submit opens a new tab of
+   * the desktop's default agent and shows it — offered once there is one. */
+  const markupNewTab = useMemo<MarkupNewTab | undefined>(
+    () => detail?.agents.length ? { projectId: id, show: (tab: TabRow) => terminal(tab) } : undefined,
+    [detail?.agents.length, id, terminal],
+  );
   const create = async (kind: "shell" | "agent", agent?: AgentRow, mode?: string, launch?: NewTabLaunch) => {
     setCreating(true); setError("");
     const action = `${kind}:${agent?.id ?? ""}:${mode ?? ""}:${launch?.worktree ?? ""}:${launch?.cloud ?? ""}:${launch?.task ?? ""}:${launch?.sign_in ?? ""}:${launch?.local ?? ""}`;
@@ -587,7 +593,9 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {/* The viewer covers the phone; the gallery stays open behind it, so
         closing the file comes back to the list it was opened from. */}
     {galleryOpen && !fileOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openFile} onDetails={setFileOpen} onDelete={removeFile} onClose={() => setGalleryOpen(false)} />}
-    {filesOpen && detail?.files && <ProjectFiles key={id} projectId={id} label={detail.project.label} onClose={() => setFilesOpen(false)} />}
-    {fileOpen && <OutboxViewer key={`${id}/${fileOpen.name}`} scope={outboxScope} file={fileOpen} pictures={outboxPictures} onStep={setFileOpen} onClose={() => setFileOpen(null)} />}
+    {filesOpen && detail?.files && <ProjectFiles key={id} projectId={id} label={detail.project.label} onClose={() => setFilesOpen(false)}
+      showTab={markupNewTab?.show} />}
+    {fileOpen && <OutboxViewer key={`${id}/${fileOpen.name}`} scope={outboxScope} file={fileOpen} pictures={outboxPictures} onStep={setFileOpen} onClose={() => setFileOpen(null)}
+      newTab={markupNewTab} />}
   </main>;
 }

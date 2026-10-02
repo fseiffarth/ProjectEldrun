@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { useT } from "../../../src/lib/i18n";
-import { openOutside, sentName, viewerFileUrl, type OutboxFile, type ViewerScope } from "../api";
+import { openOutside, sentName, viewerFileUrl, type OutboxFile, type TabRow, type ViewerScope } from "../api";
 import { shareAs, useOutboxShare } from "../outboxShare";
 import { sizeLabel } from "../terminal/fileLabels";
 import { isUntested } from "../../../src/lib/untested";
@@ -25,6 +25,17 @@ export type MarkupTarget = {
   agent?: AgentSignal;
   /** The file as it is now — a fresh listing row, or a newer copy — or
    * `null` when it is gone. */
+  refresh?: (file: OutboxFile) => Promise<OutboxFile | null>;
+};
+
+/** **Mark up** where no agent tab is open to send to (the project screen, a
+ * shell tab): Submit opens a new tab of the desktop's default agent in
+ * `projectId`, hands it the prompt, and `show`s it (`markup/newTab.ts`).
+ * `place` and `refresh` are a project file's, as in `MarkupTarget`. */
+export type MarkupNewTab = {
+  projectId: string;
+  place?: string;
+  show: (tab: TabRow) => void;
   refresh?: (file: OutboxFile) => Promise<OutboxFile | null>;
 };
 
@@ -109,7 +120,7 @@ function shownSize(img: HTMLImageElement | null, stage: Size): Size {
  * zooms the whole page and then cannot pan it. A swipe steps only while the
  * picture is at its fitted size; zoomed in, a drag moves the picture.
  */
-export function OutboxViewer({ scope, file, pictures, onStep, onClose, markup }: {
+export function OutboxViewer({ scope, file, pictures, onStep, onClose, markup, newTab }: {
   /** Where the bytes come from: the outbox, or the project's own tree (the
    * read-only file browser, `ProjectFiles`) — the same viewer for both. */
   scope: ViewerScope;
@@ -122,6 +133,8 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose, markup }:
   onClose: () => void;
   /** Given, a PDF or a picture carries **Mark up** (`MarkupView`). */
   markup?: MarkupTarget;
+  /** With no `markup`: Mark up still shows, and Submit opens a new agent tab. */
+  newTab?: MarkupNewTab;
 }) {
   const t = useT();
   const [marking, setMarking] = useState(false);
@@ -279,10 +292,12 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose, markup }:
   const zoomed = view.scale > 1;
   const stepping = index >= 0 && steps.length > 1;
   const isPdf = file.kind === "application/pdf";
-  const markable = markup && isImage && file.kind !== "image/gif";
-  if (marking && markup) {
-    return <MarkupView tabId={markup.tabId} projectId={markup.projectId} scope={scope} file={file} place={markup.place}
-      onSend={markup.onSend} agent={markup.agent} refresh={markup.refresh} onClose={() => setMarking(false)} />;
+  /** Without an agent tab, the new-tab Submit (`newTab`). */
+  const fresh = markup ? undefined : newTab;
+  const markable = (markup || fresh) && isImage && file.kind !== "image/gif";
+  if (marking && (markup || fresh)) {
+    return <MarkupView tabId={markup?.tabId} projectId={markup?.projectId ?? fresh?.projectId} scope={scope} file={file} place={markup?.place ?? fresh?.place}
+      onSend={markup?.onSend} newTab={fresh} agent={markup?.agent} refresh={markup?.refresh ?? fresh?.refresh} onClose={() => setMarking(false)} />;
   }
   const actions = <>
     {markable && <button className="outbox-action" onClick={() => setMarking(true)} aria-label={t("mobile.markup.openFile", { name: sentName(file) })}>{t("mobile.markup.open")}</button>}
@@ -295,8 +310,8 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose, markup }:
   // A PDF's pages are drawn here, by the sealed pdf.js frame, and Mark up
   // switches on in that same view.
   if (isPdf) {
-    return <MarkupView tabId={markup?.tabId} projectId={markup?.projectId} place={markup?.place} onSend={markup?.onSend} agent={markup?.agent}
-      refresh={markup?.refresh} scope={scope} file={file} onClose={onClose} reader={{ actions, alert: sharing.failed === file.name ? t("mobile.outbox.shareError") : undefined }} />;
+    return <MarkupView tabId={markup?.tabId} projectId={markup?.projectId ?? fresh?.projectId} place={markup?.place ?? fresh?.place} onSend={markup?.onSend}
+      newTab={fresh} agent={markup?.agent} refresh={markup?.refresh ?? fresh?.refresh} scope={scope} file={file} onClose={onClose} reader={{ actions, alert: sharing.failed === file.name ? t("mobile.outbox.shareError") : undefined }} />;
   }
   return <div className={`outbox-viewer${isText ? " outbox-text-sheet" : ""}`} role="dialog" aria-modal="true" aria-label={sentName(file)}>
     <div className="outbox-viewer-head">

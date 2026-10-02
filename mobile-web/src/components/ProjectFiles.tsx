@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
-import { ApiError, listProjectFiles, type OutboxFile, type ProjectFileEntry, type ProjectFileListing, type ViewerScope } from "../api";
+import { ApiError, listProjectFiles, type OutboxFile, type ProjectFileEntry, type ProjectFileListing, type TabRow, type ViewerScope } from "../api";
 import { shareAs, useOutboxShare } from "../outboxShare";
 import { sizeLabel } from "../terminal/fileLabels";
 import { installFocusSwipe } from "../terminal/focusSwipe";
@@ -57,7 +57,7 @@ function failureKey(reason: unknown): TranslationKey {
  * A drawer from the left edge: the project screen opens it on a left→right
  * swipe, and a right→left swipe over it (or a tap beside it) puts it away.
  */
-export function ProjectFiles({ projectId, label, onClose, markup }: {
+export function ProjectFiles({ projectId, label, onClose, markup, showTab }: {
   projectId: string;
   /** The project's name, the trail's first crumb. */
   label: string;
@@ -66,6 +66,9 @@ export function ProjectFiles({ projectId, label, onClose, markup }: {
    * project screen's passes none (it has no chat). The drawer finds a
    * file's newest version itself (`refresh`). */
   markup?: Omit<MarkupTarget, "projectId" | "place" | "refresh">;
+  /** With no `markup`, Mark up's Submit opens a new agent tab and this
+   * shows it (`MarkupNewTab`). */
+  showTab?: (tab: TabRow) => void;
 }) {
   const t = useT();
   const [trail, setTrail] = useState<Crumb[]>([{ name: label }]);
@@ -135,7 +138,7 @@ export function ProjectFiles({ projectId, label, onClose, markup }: {
     // The folder trail names the file's layer on the phone; its token cannot.
     const place = trail.slice(1).map((crumb) => crumb.name).join("/");
     return <OutboxViewer key={fileOpen.ref} scope={scope} file={fileOpen} pictures={pictures} onStep={setFileOpen} onClose={() => setFileOpen(null)}
-      markup={markup && { ...markup, projectId, place, refresh }} />;
+      markup={markup && { ...markup, projectId, place, refresh }} newTab={showTab && { projectId, place, refresh, show: showTab }} />;
   }
   return <div className="sheet-backdrop files-drawer-backdrop" role="presentation" onClick={onClose}>
     <section ref={drawer} className="option-sheet project-files" role="dialog" aria-modal="true" aria-label={t("mobile.files.title")} onClick={(event) => event.stopPropagation()}>

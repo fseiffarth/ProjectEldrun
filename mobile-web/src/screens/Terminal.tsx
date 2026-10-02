@@ -4,7 +4,7 @@ import { useMessageMenu, type HoldHandlers } from "../components/MessageMenu";
 import { OptionSheet, type SheetOption } from "../components/OptionSheet";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
 import { OutboxGallery } from "../components/OutboxGallery";
-import { OutboxViewer, type MarkupSend, type MarkupTarget } from "../components/OutboxViewer";
+import { OutboxViewer, type MarkupNewTab, type MarkupSend, type MarkupTarget } from "../components/OutboxViewer";
 import type { AgentSignal } from "../markup/submitState";
 import { OutboxPost } from "../components/OutboxPost";
 import { ProjectFiles } from "../components/ProjectFiles";
@@ -3409,6 +3409,12 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       : undefined),
     [tab.kind, tab.id, project, sendMarkup, markupAgent, refreshOutboxFile],
   );
+  /** A shell tab has no chat to send marks to: Mark up's Submit opens a new
+   * tab of the desktop's default agent and shows it in place of this one. */
+  const markupNewTab = useMemo<MarkupNewTab | undefined>(
+    () => (tab.kind !== "agent" && project && openTab ? { projectId: project, show: (row: TabRow) => openTab(row) } : undefined),
+    [tab.kind, project, openTab],
+  );
   /** The dialog's own question — the block right above its rows, which the
    * list below shows as its heading — and the screen it was drawn onto, which
    * stays as the session drew it. Blank rows at either seam are the dialog's
@@ -4104,9 +4110,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     {/* The viewer covers the phone; the gallery stays chosen behind it, so
         closing the file lands back on the grid. */}
     {gallery && !outboxOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openOutbox} onDetails={setOutboxOpen} onDelete={removeOutbox} onClose={() => setGallery(false)} />}
-    {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} scope={outboxScope} file={outboxOpen} pictures={outboxPictures} onStep={setOutboxOpen} onClose={() => setOutboxOpen(null)} markup={markupTarget} />}
+    {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} scope={outboxScope} file={outboxOpen} pictures={outboxPictures} onStep={setOutboxOpen} onClose={() => setOutboxOpen(null)} markup={markupTarget}
+      newTab={markupNewTab} />}
     {filesOpen && project && filesLabel !== null && <ProjectFiles key={project} projectId={project} label={filesLabel} onClose={closeFiles}
-      markup={markupTarget && { tabId: markupTarget.tabId, onSend: markupTarget.onSend, agent: markupTarget.agent }} />}
+      markup={markupTarget && { tabId: markupTarget.tabId, onSend: markupTarget.onSend, agent: markupTarget.agent }} showTab={markupNewTab?.show} />}
 
   </main>;
 }

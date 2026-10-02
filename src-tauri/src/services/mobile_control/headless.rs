@@ -357,12 +357,24 @@ fn disabled_agents(state_dir: &Path) -> HashSet<String> {
         .unwrap_or_default()
 }
 
+/// `default_agent_cmd` of `settings.json` — a registry id or a binary, as
+/// the desktop's readers take it — "claude" when unset.
+fn default_agent(state_dir: &Path) -> String {
+    std::fs::read(state_dir.join("settings.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|settings| settings.get("default_agent_cmd")?.as_str().map(|cmd| cmd.trim().to_string()))
+        .filter(|cmd| !cmd.is_empty())
+        .unwrap_or_else(|| "claude".to_string())
+}
+
 /// `agentChoices` with no window: the resumable built-ins that are installed
 /// (`installed`, the registry probe in production) and not switched off in
 /// the settings. Custom agents need the desktop's own probe and are not
 /// offered here; `modes` is empty, as the desktop sends it.
 pub fn agents(state_dir: &Path, host_key: &[u8], installed: &dyn Fn(&str) -> bool) -> Vec<AgentChoice> {
     let disabled = disabled_agents(state_dir);
+    let default = default_agent(state_dir);
     super::discovery::RESUMABLE_BUILTINS
         .iter()
         .filter_map(|bin| {
@@ -376,6 +388,7 @@ pub fn agents(state_dir: &Path, host_key: &[u8], installed: &dyn Fn(&str) -> boo
                     id: key_id(host_key, "agent", &[bin]),
                     label: label.to_string(),
                     modes: Vec::new(),
+                    default: default == *bin || default == id,
                 },
                 bin,
             })
@@ -1580,12 +1593,33 @@ mod tests {
         }
     }
 
+    /// The phone's Mark up starts the agent `default_agent_cmd` names — an id
+    /// or a binary, Claude when unset — so exactly that one row is flagged.
+    #[test]
+    fn the_default_agent_is_flagged() {
+        let dir = state_dir();
+        let flagged = |dir: &Path| {
+            agents(dir, b"k", &|_| true)
+                .into_iter()
+                .filter(|choice| choice.public.default)
+                .map(|choice| choice.bin)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(flagged(dir.path()), vec!["claude"]);
+        std::fs::write(dir.path().join("settings.json"), r#"{"default_agent_cmd":"antigravity"}"#).unwrap();
+        assert_eq!(flagged(dir.path()), vec!["agy"]);
+        std::fs::write(dir.path().join("settings.json"), r#"{"default_agent_cmd":"codex"}"#).unwrap();
+        assert_eq!(flagged(dir.path()), vec!["codex"]);
+        std::fs::write(dir.path().join("settings.json"), r#"{"default_agent_cmd":"codex","disabled_agents":["codex"]}"#).unwrap();
+        assert!(flagged(dir.path()).is_empty());
+    }
+
     /// A created agent tab carries its launch moment, so its OpenCode reads
     /// a new chat rather than the folder's last session; a shell has none.
     #[test]
     fn a_created_agent_tab_is_stamped_with_its_launch() {
         let agent = AgentChoice {
-            public: AgentCatalogEntry { id: "a".into(), label: "OpenCode".into(), modes: Vec::new() },
+            public: AgentCatalogEntry { id: "a".into(), label: "OpenCode".into(), modes: Vec::new(), default: false },
             bin: "opencode",
         };
         let before = epoch_ms_now();

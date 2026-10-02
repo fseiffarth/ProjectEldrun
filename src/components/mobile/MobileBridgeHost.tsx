@@ -82,8 +82,10 @@ import { BRAND, MOBILE_ACCESS_KEY, MOBILE_HOST_KEY, NAMES, envName } from "../..
 
 const MOBILE_DESKTOP_EVENT = NAMES.mobileDesktopEvent;
 
-interface AgentInfo { bin: string; installed: boolean }
-interface CatalogAgent { id: string; label: string; modes: string[] }
+interface AgentInfo { id: string; bin: string; installed: boolean }
+/** `default`: the agent `default_agent_cmd` names, what the phone's Mark up
+ * starts from a screen with no agent tab; sent only on that one row. */
+interface CatalogAgent { id: string; label: string; modes: string[]; default?: boolean }
 interface AgentTabStatus { tmux_session: string; status: "working" | "question" | "interrupted" | "done"; model?: string; plan?: boolean; goal?: boolean; working_at?: number; done_at?: number }
 /** The same readings for an agent tab with no status: a finished turn stays
  * sorted among the finished ones on the phone after it has been read. */
@@ -310,11 +312,11 @@ interface CatalogChoice { public: CatalogAgent; item: StaticMenuItem }
 
 async function agentChoices(): Promise<CatalogChoice[]> {
   const settings = useSettingsStore.getState().settings;
-  const installed = new Set(
-    (await invoke<AgentInfo[]>("list_agents"))
-      .filter((entry) => entry.installed)
-      .map((entry) => entry.bin),
-  );
+  const agents = await invoke<AgentInfo[]>("list_agents");
+  const installed = new Set(agents.filter((entry) => entry.installed).map((entry) => entry.bin));
+  // A registry id or a binary, as the "+" menu reads it; Claude when unset.
+  const defaultCmd = settings?.default_agent_cmd || "claude";
+  const defaultBin = agents.find((entry) => entry.id === defaultCmd)?.bin ?? defaultCmd;
   const disabled = new Set(settings?.disabled_agents ?? []);
   const builtins = AGENT_ITEMS.filter(
     (item) =>
@@ -341,6 +343,7 @@ async function agentChoices(): Promise<CatalogChoice[]> {
         // person would — pressing Shift+Tab and reading the TUI's own status
         // line back (`mobile-web/src/terminal/agentModes.ts`).
         modes: [] as string[],
+        ...(item.cmd === defaultBin ? { default: true } : {}),
       },
     })),
   );
