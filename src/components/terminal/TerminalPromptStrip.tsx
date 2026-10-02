@@ -59,8 +59,9 @@ export function TerminalPromptStrip({
   /** Hand the keyboard back to the terminal (the drop-down closed). */
   onReturnFocus: () => void;
   /** The Reader switch (`TerminalReaderView`), for an agent whose stored
-   * conversation Tabtivity reads; absent for any other. */
-  reader?: { open: boolean; onToggle: () => void };
+   * conversation Tabtivity reads; absent for any other. `changes` is the
+   * Reader's Diffs switch (`TerminalReaderChanges`), shown while it is open. */
+  reader?: { open: boolean; onToggle: () => void; changes?: { open: boolean; onToggle: () => void } };
 }) {
   const t = useT();
   const use24h = useUse24h();
@@ -207,6 +208,19 @@ export function TerminalPromptStrip({
             {open ? "▴" : "▾"}
           </button>
         </>
+      )}
+      {reader?.open && reader.changes && (
+        <button
+          type="button"
+          className={reader.changes.open ? "prompt-strip-reader active" : "prompt-strip-reader"}
+          onMouseDown={keepFocus}
+          onClick={reader.changes.onToggle}
+          aria-pressed={reader.changes.open}
+          title={t(reader.changes.open ? "terminal.reader.changesHideHint" : "terminal.reader.changesHint")}
+        >
+          {t("terminal.reader.changes")}
+          <UntestedTag id="terminal.reader.changes" />
+        </button>
       )}
       {reader && (
         <button

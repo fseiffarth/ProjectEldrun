@@ -20,10 +20,12 @@ import { isInterruptInput, noteUserInput } from "../../stores/activity";
 import { useUse24h } from "../../lib/timeFormat";
 import { agentTabLabel, agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
+import { useAgentReaderStore, useReaderChangesOpen } from "../../stores/agents/agentReader";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { SIGN_IN_CARD_CLASS } from "./TerminalSignInCard";
 import { TerminalReaderFacts } from "./TerminalReaderFacts";
+import { TerminalReaderChanges, changesWidthStyle } from "./TerminalReaderChanges";
 import { UntestedTag } from "../common/UntestedTag";
 import { TabStatusMark } from "../tabs/TabLocalityBadges";
 import { answerHtml, promptHtml } from "../../../mobile-web/src/terminal/answerMarkdown";
@@ -473,6 +475,9 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
    * the session prints, its first word (`Opus is working…`). */
   const workingModel = (live.status?.model ?? modelTag)?.trim().split(/\s+/)[0];
   const typeIntoPane = useCallback((keys: string[]) => typeKeys(ptyId, keys), [ptyId]);
+  /** The Changes panel beside the chat (the prompt strip's Diffs switch). */
+  const changesOpen = useReaderChangesOpen(tab?.cmd ?? "");
+  const changesWidth = useAgentReaderStore((state) => state.changesWidth);
   /** The reasoning effort the busy row last named: Claude Code prints it only
    * there, so the facts row keeps it once the turn is over. */
   const [seenEffort, setSeenEffort] = useState<string | undefined>();
@@ -786,8 +791,13 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
     ? (shownTranscript.shells ?? []).filter((shell) => shell.background || shellsWaited)
     : [];
 
-  return createPortal(
-    <div className={`terminal-reader ${SIGN_IN_CARD_CLASS}`} role="region" aria-label={t("terminal.reader.title")}>
+  return createPortal(<>
+    <div
+      className={`terminal-reader ${SIGN_IN_CARD_CLASS}${changesOpen && tab ? " with-changes" : ""}`}
+      role="region"
+      aria-label={t("terminal.reader.title")}
+      style={changesOpen && tab ? changesWidthStyle(changesWidth) : undefined}
+    >
       {openStep ? (
         <nav className="terminal-reader-subagent-bar" aria-label={subagentLabel}>
           <button type="button" className="terminal-reader-subagent-nav" onClick={subagentUp} aria-label={backLabel} title={`${backLabel} (Esc)`}>‹</button>
@@ -964,7 +974,17 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
         onEscape={statusOpen ? closeStatus : openStep ? subagentUp : onShowTerminal}
         onStatus={requestStatus}
       />
-    </div>,
-    host,
-  );
+    </div>
+    {changesOpen && tab && (
+      <TerminalReaderChanges
+        scope={scope}
+        tab={tab}
+        cwd={cwd}
+        visible={visible}
+        subagent={subToken}
+        subagentTitle={openStep ? openStep.task || openStep.role : undefined}
+        onClose={() => useAgentReaderStore.getState().setChanges(tab.cmd, false)}
+      />
+    )}
+  </>, host);
 }

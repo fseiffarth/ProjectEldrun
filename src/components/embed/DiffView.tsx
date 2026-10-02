@@ -27,7 +27,7 @@ function lineBackground(type: DiffLine["type"]): string | undefined {
 
 /** A single rendered diff line: two line-number gutter columns then the text.
  *  Text is rendered as React children, which auto-escapes — no raw HTML. */
-function DiffLineRow({ line }: { line: DiffLine }) {
+export function DiffLineRow({ line }: { line: DiffLine }) {
   const muted = line.type === "hunk" || line.type === "meta" || line.type === "nonewline";
   const marker =
     line.type === "add" ? "+" : line.type === "del" ? "-" : line.type === "context" ? " " : "";

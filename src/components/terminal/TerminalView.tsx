@@ -40,7 +40,7 @@ import { SIGN_IN_CARD_CLASS, TerminalSignInCard } from "./TerminalSignInCard";
 import { TerminalPromptStrip } from "./TerminalPromptStrip";
 import { TerminalReaderView } from "./TerminalReaderView";
 import { readerOffered } from "../../lib/agents/agentReader";
-import { useAgentReaderStore, useReaderOpen } from "../../stores/agents/agentReader";
+import { useAgentReaderStore, useReaderChangesOpen, useReaderOpen } from "../../stores/agents/agentReader";
 import { useTabsStore } from "../../stores/tabs";
 import { TerminalUndoClearCard } from "./TerminalUndoClearCard";
 import { TerminalVersionCard } from "./TerminalVersionCard";
@@ -2007,6 +2007,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const readerAvailable = readerOffered(readerTab) && !attachOnly;
   const readerAgent = readerTab?.cmd ?? cmd;
   const readerOn = useReaderOpen(readerAgent, readerAvailable);
+  const changesOn = useReaderChangesOpen(readerAgent);
   const setReader = (on: boolean) => {
     useAgentReaderStore.getState().set(readerAgent, on);
     if (!on) setTimeout(() => termRef.current?.focus(), 0);
@@ -2060,7 +2061,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         background={terminalTheme(colorScheme).background}
         foreground={terminalTheme(colorScheme).foreground ?? "inherit"}
         onReturnFocus={() => termRef.current?.focus()}
-        reader={readerAvailable ? { open: readerOn, onToggle: () => setReader(!readerOn) } : undefined}
+        reader={readerAvailable ? {
+          open: readerOn,
+          onToggle: () => setReader(!readerOn),
+          changes: { open: changesOn, onToggle: () => useAgentReaderStore.getState().setChanges(readerAgent, !changesOn) },
+        } : undefined}
       />
     )}
     {readerOn && splitId && host && (
