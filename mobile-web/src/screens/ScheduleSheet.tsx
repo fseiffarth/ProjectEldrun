@@ -28,6 +28,38 @@ function mobileLocalDateTime(): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+/** "In … h … min": whole minutes ahead, or null for what the boxes must not
+ * accept (blank both, negative, fractional, zero). */
+function delayMinutes(hours: string, minutes: string): number | null {
+  const h = hours.trim() === "" ? 0 : Number(hours);
+  const m = minutes.trim() === "" ? 0 : Number(minutes);
+  if (!Number.isInteger(h) || !Number.isInteger(m) || h < 0 || m < 0) return null;
+  const total = h * 60 + m;
+  return total > 0 ? total : null;
+}
+
+/** An instant as the desktop's wall clock (`YYYY-MM-DDTHH:MM`), which is what a
+ * one-time rule stores: the phone may sit in another zone than the desktop.
+ * Falls back to the phone's own clock when the zone is unknown. */
+function desktopMinute(at: Date, timeZone: string): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  if (timeZone) {
+    try {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+        timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+      }).formatToParts(at).map((part) => [part.type, part.value]));
+      return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+    } catch {
+      // An unknown zone name: the phone's clock below.
+    }
+  }
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
+/** The form's kinds: the stored rule types plus "in", a one-time rule whose
+ * instant is taken from the clock at Save and stored as `once`. */
+type FormKind = ScheduleRule["type"] | "in";
+
 function scheduleRuleLabel(rule: ScheduleRule): string {
   if (rule.type === "once") return rule.at.replace("T", " ");
   if (rule.type === "daily") return `Daily · ${rule.time}`;
@@ -45,9 +77,11 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [message, setMessage] = useState(initialMessage ?? "");
-  const [kind, setKind] = useState<ScheduleRule["type"]>("once");
+  const [kind, setKind] = useState<FormKind>("once");
   const [time, setTime] = useState("09:00");
   const [once, setOnce] = useState(mobileLocalDateTime);
+  const [inHours, setInHours] = useState("1");
+  const [inMinutes, setInMinutes] = useState("0");
   const [weekdays, setWeekdays] = useState([1, 2, 3, 4, 5]);
 
   const apply = useCallback((value: { schedules: ScheduledPrompt[]; time_zone: string; next_runs: Record<string, string>; desktop_available?: boolean }) => {
@@ -99,6 +133,8 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
     setKind("once");
     setTime("09:00");
     setOnce(mobileLocalDateTime());
+    setInHours("1");
+    setInMinutes("0");
     setWeekdays([1, 2, 3, 4, 5]);
   };
   const edit = (schedule: ScheduledPrompt) => {
@@ -112,7 +148,9 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
   const input = (): ScheduledPromptInput => ({
     enabled: schedules.find((schedule) => schedule.id === editing)?.enabled ?? true,
     message,
-    rule: kind === "once"
+    rule: kind === "in"
+      ? { type: "once", at: desktopMinute(new Date(Date.now() + (delayMinutes(inHours, inMinutes) ?? 0) * 60_000), timeZone) }
+      : kind === "once"
       ? { type: "once", at: once }
       : kind === "daily"
         ? { type: "daily", time }
@@ -121,6 +159,10 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
   const save = async () => {
     if (!message.trim() || (kind === "weekdays" && weekdays.length === 0)) {
       setError("Enter a prompt and choose at least one weekday.");
+      return;
+    }
+    if (kind === "in" && delayMinutes(inHours, inMinutes) === null) {
+      setError(t("agentSchedule.invalidRule"));
       return;
     }
     setBusy(true);
@@ -158,8 +200,11 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
       <div className="mobile-schedule-form" aria-disabled={held}>
         <h3>{editing ? "Edit schedule" : "Add schedule"}</h3>
         <label>Prompt<textarea rows={4} value={message} disabled={held} onChange={(event) => setMessage(event.target.value)} /></label>
-        <label>Recurrence<select value={kind} disabled={held} onChange={(event) => setKind(event.target.value as ScheduleRule["type"])}><option value="once">One time</option><option value="daily">Daily</option><option value="weekdays">Selected weekdays</option></select></label>
-        {kind === "once" ? <label>Desktop-local date and time<input type="datetime-local" value={once} disabled={held} onChange={(event) => setOnce(event.target.value)} /></label> : <label>Desktop-local time<input type="time" value={time} disabled={held} onChange={(event) => setTime(event.target.value)} /></label>}
+        <label>Recurrence<select value={kind} disabled={held} onChange={(event) => setKind(event.target.value as FormKind)}><option value="once">One time</option><option value="in">{t("agentSchedule.in")}</option><option value="daily">Daily</option><option value="weekdays">Selected weekdays</option></select></label>
+        {kind === "in" ? <div className="mobile-schedule-in">
+          <span>{t("agentSchedule.inDelay")} {isUntested("mobile.sheet.scheduleIn") && <span className="untested">{t("mobile.newTab.untested")}</span>}</span>
+          <div><input type="number" inputMode="numeric" min={0} step={1} value={inHours} disabled={held} aria-label={t("agentSchedule.inHours")} onChange={(event) => setInHours(event.target.value)} /><span>{t("agentSchedule.inHoursUnit")}</span><input type="number" inputMode="numeric" min={0} step={1} value={inMinutes} disabled={held} aria-label={t("agentSchedule.inMinutes")} onChange={(event) => setInMinutes(event.target.value)} /><span>{t("agentSchedule.inMinutesUnit")}</span></div>
+        </div> : kind === "once" ? <label>Desktop-local date and time<input type="datetime-local" value={once} disabled={held} onChange={(event) => setOnce(event.target.value)} /></label> : <label>Desktop-local time<input type="time" value={time} disabled={held} onChange={(event) => setTime(event.target.value)} /></label>}
         {kind === "weekdays" && <div className="mobile-schedule-weekdays">{MOBILE_WEEKDAYS.map((name, index) => <label key={name}><input type="checkbox" disabled={held} checked={weekdays.includes(index + 1)} onChange={() => setWeekdays((current) => current.includes(index + 1) ? current.filter((day) => day !== index + 1) : [...current, index + 1])} />{name}</label>)}</div>}
         <div className="mobile-schedule-actions">{editing && <button disabled={busy} onClick={reset}>Cancel</button>}<button className="primary" disabled={busy || held} onClick={() => void save()}>{busy ? "Saving…" : "Save"}</button></div>
       </div>

@@ -1092,6 +1092,9 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .mobile-schedule-weekdays { display:flex; flex-wrap:wrap; gap:7px; }
 .mobile-schedule-weekdays label { display:flex; gap:4px; align-items:center; padding:6px 8px; border:1px solid #383c4d; border-radius:999px; }
 .mobile-schedule-weekdays input { width:auto; }
+.mobile-schedule-in { display:grid; gap:5px; color:#b8bed0; font-size:.82rem; }
+.mobile-schedule-in > div { display:flex; gap:8px; align-items:center; }
+.mobile-schedule-in input { width:5.5em; }
 .mobile-schedule-actions { display:flex; justify-content:flex-end; gap:8px; }
 .sheet-close { width:42px; flex:0 0 auto; padding:7px 0; border:0; border-radius:10px; background:transparent; color:#c9cddb; font-size:1.05rem; }
 .sheet-note { margin:0; padding:2px 6px 4px; color:#9da3b6; font-size:.84rem; overflow-wrap:anywhere; }

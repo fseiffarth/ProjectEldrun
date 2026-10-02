@@ -9,6 +9,7 @@ import {
 import { isFinishedOneTime } from "../../lib/agents/prompt/send";
 import {
   desktopTimeZone,
+  localOccurrenceKey,
   normalizedSchedulePreface,
   nextScheduleOccurrence,
   normalizedScheduleMessage,
@@ -60,9 +61,24 @@ function pad(value: number): string {
 }
 
 function defaultOnce(): string {
-  const date = new Date(Date.now() + 60 * 60 * 1000);
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return localOccurrenceKey(new Date(Date.now() + 60 * 60 * 1000));
 }
+
+/** The form's "In … h … min": whole minutes ahead, or null for anything the
+ *  two boxes should not accept (blank both, negative, fractional, zero). */
+function delayMinutes(hours: string, minutes: string): number | null {
+  const h = hours.trim() === "" ? 0 : Number(hours);
+  const m = minutes.trim() === "" ? 0 : Number(minutes);
+  if (!Number.isInteger(h) || !Number.isInteger(m) || h < 0 || m < 0) return null;
+  const total = h * 60 + m;
+  return total > 0 ? total : null;
+}
+
+/** The kinds the form offers: the stored rule types, plus "in", which is a
+ *  one-time rule whose instant is taken from the clock at Save — it is never
+ *  stored as anything but `once`, so the scheduler, the sidecar and the phone
+ *  see nothing new. */
+type FormKind = ScheduleRule["type"] | "in";
 
 export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initialPromptId }: Props) {
   const t = useT();
@@ -89,9 +105,11 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
   const [promptId, setPromptId] = useState(initialPromptId);
   // One-time is the default: the common case is "run this prompt once, in a
   // while", and a rule that repeats forever is the one worth picking on purpose.
-  const [kind, setKind] = useState<ScheduleRule["type"]>("once");
+  const [kind, setKind] = useState<FormKind>("once");
   const [time, setTime] = useState("09:00");
   const [once, setOnce] = useState(defaultOnce);
+  const [inHours, setInHours] = useState("1");
+  const [inMinutes, setInMinutes] = useState("0");
   const [weekdays, setWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -161,6 +179,8 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
     setKind("once");
     setTime("09:00");
     setOnce(defaultOnce());
+    setInHours("1");
+    setInMinutes("0");
     setWeekdays([1, 2, 3, 4, 5]);
     setSelected([]);
     setModel("");
@@ -185,11 +205,21 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
 
   const save = async () => {
     if (!targetId) return;
-    const rule: ScheduleRule = kind === "once"
-      ? { type: "once", at: once }
-      : kind === "daily"
-        ? { type: "daily", time }
-        : { type: "weekdays", weekdays: [...weekdays].sort(), time };
+    let rule: ScheduleRule;
+    if (kind === "in") {
+      const delay = delayMinutes(inHours, inMinutes);
+      if (delay === null) {
+        setError(t("agentSchedule.invalidRule"));
+        return;
+      }
+      rule = { type: "once", at: localOccurrenceKey(new Date(Date.now() + delay * 60_000)) };
+    } else {
+      rule = kind === "once"
+        ? { type: "once", at: once }
+        : kind === "daily"
+          ? { type: "daily", time }
+          : { type: "weekdays", weekdays: [...weekdays].sort(), time };
+    }
     const ruleError = validateScheduleRule(rule);
     if (ruleError) {
       setError(t("agentSchedule.invalidRule"));
@@ -240,6 +270,12 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
   // set order (the host delivers whichever minute comes first and holds the
   // other). The chart refuses such a tab for a draft outright; here, where a
   // tab's own menu manages its rules, it is said rather than forbidden.
+  // What "In … h … min" comes to, read off the dialog's own clock so it moves
+  // with the countdowns; Save takes the clock again, so a form left open still
+  // means "from now".
+  const inDelay = kind === "in" ? delayMinutes(inHours, inMinutes) : null;
+  const inAt = inDelay !== null ? new Date(now.getTime() + inDelay * 60_000) : null;
+
   const otherLive = editing ? [] : schedules.filter((item) => item.enabled && item.id !== promptId);
 
   const summary = scheduleSummary(schedules, now);
@@ -424,13 +460,45 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
               )}
               <label>
                 <span>{t("agentSchedule.recurrence")}</span>
-                <select value={kind} onChange={(event) => setKind(event.target.value as ScheduleRule["type"])}>
+                <select value={kind} onChange={(event) => setKind(event.target.value as FormKind)}>
                   <option value="once">{t("agentSchedule.once")}</option>
+                  <option value="in">{t("agentSchedule.in")}</option>
                   <option value="daily">{t("agentSchedule.daily")}</option>
                   <option value="weekdays">{t("agentSchedule.weekdays")}</option>
                 </select>
               </label>
-              {kind === "once" ? (
+              {kind === "in" ? (
+                <div className="agent-schedule-field">
+                  <span>{t("agentSchedule.inDelay")} <UntestedTag id="agentSchedule.in" /></span>
+                  <div className="agent-schedule-in">
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      className="cal-input cal-input-num"
+                      value={inHours}
+                      onChange={(event) => setInHours(event.target.value)}
+                      aria-label={t("agentSchedule.inHours")}
+                    />
+                    <span>{t("agentSchedule.inHoursUnit")}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      className="cal-input cal-input-num"
+                      value={inMinutes}
+                      onChange={(event) => setInMinutes(event.target.value)}
+                      aria-label={t("agentSchedule.inMinutes")}
+                    />
+                    <span>{t("agentSchedule.inMinutesUnit")}</span>
+                  </div>
+                  {inAt && (
+                    <small className="settings-help" data-testid="agent-schedule-in-at">
+                      {t("agentSchedule.inAt", { value: whenLabel(inAt) })}
+                    </small>
+                  )}
+                </div>
+              ) : kind === "once" ? (
                 // A <div>, not a <label>: a <button> is a labelable element, so
                 // wrapping the picker in one would make a click on the word
                 // "Local date and time" pop the calendar open.

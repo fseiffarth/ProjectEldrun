@@ -46,6 +46,7 @@ export const UNTESTED = {
 
   // --- agents — Agent sessions, schedules and the prompt chart ------
   "agentSchedule.title": { area: "agents", what: "AgentScheduleDialog · Scheduled prompts · {tab}" },
+  "agentSchedule.in": { area: "agents", what: "AgentScheduleDialog · Recurrence In … : hours + minutes boxes send the prompt once that long after Save (stored as an ordinary one-time rule; the line under the boxes shows the resulting time)" },
   "agentSchedule.headless": { area: "agents", what: "AgentScheduleDialog · delivery note: with no window open the Mobile sidecar fires scheduled prompts (tmux send-keys into the tab, restarting a stopped session first) while no window holds the timer lease; two windows plus the sidecar fire each occurrence once (claim under the file lock)" },
   "calendar.alarms.headless": { area: "agents", what: "AgentScheduleDialog · note that calendar reminders reach a subscribed phone with no window open; the mechanism: reminders are claimed in `calendar-alarms-fired.json` before they show (window and sidecar), the sidecar pushes due ones through Web Push while no window holds the timer lease" },
   "agentSchedule.leaseElsewhere": { area: "agents", what: "AgentScheduleDialog · note that another Tabtivity window holds the timer lease (schedules, auto-continue, reminders, CalDAV sync fire there); the lease itself: one window per state dir fires timers, heartbeat-renewed, 30 s TTL" },
@@ -352,6 +353,7 @@ export const UNTESTED = {
   "mobile.sheet.color": { area: "mobile", what: "Color sheet · tab colour picker" },
   "mobile.sheet.rename": { area: "mobile", what: "Rename sheet · tab label change" },
   "mobile.sheet.schedules": { area: "mobile", what: "Schedule sheet · scheduled prompts" },
+  "mobile.sheet.scheduleIn": { area: "mobile", what: "Schedule sheet · Recurrence In … : hours + minutes boxes send the prompt once that long after Save (an ordinary one-time rule at the desktop-local time it comes to)" },
   "mobile.sheet.prompts": { area: "mobile", what: "Prompts sheet · collected prompts" },
   "mobile.sheet.status": { area: "mobile", what: "Status sheet · agent state and usage" },
   "mobile.boxAccess": { area: "mobile", what: "MobileSettings · Box access" },

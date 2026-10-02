@@ -3309,6 +3309,15 @@ html:not(.show-untested-tags) .untested-tag {
 
 .agent-schedule-form-actions { justify-content: flex-end; }
 
+/* "In … h … min": two short number boxes, each followed by its unit. */
+.agent-schedule-in {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .tab-schedule-indicator {
   color: var(--accent);
   font-size: 11px;
