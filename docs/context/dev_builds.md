@@ -138,7 +138,13 @@ change was not run live.
   declines every queue — the hook's and `queue_if_behind`'s — and makes a
   running pass cancel itself like a superseded one (not recorded as a failure,
   and an install already under way still finishes). `--resume` removes it and
-  queues HEAD if the snapshot fell behind meanwhile;
+  queues HEAD if the snapshot fell behind meanwhile. **Build now** (user,
+  2026-10-02; `--build-now`, the chip's button while paused, `dev_build_now`)
+  builds HEAD once without resuming: nothing when the stamp already is HEAD,
+  otherwise it skips the settle wait and leaves `package-dev-auto.once`, which
+  only the running loop reads (never `queue()`, so a stale one cannot let
+  commits build while paused) and drops after one pass; pausing again removes
+  it and cancels the pass;
   `scripts/package-dev-auto.sh --status` says what it is doing and
   `~/.local/share/tabtivity/package-dev-auto.log` holds the last build's output.
   The header's dev-build chip (`header/DevBuildIndicator.tsx`,

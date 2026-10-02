@@ -96,6 +96,16 @@ pub async fn dev_build_set_paused(paused: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
+/// Build HEAD once while the background "Tabtivity (dev)" auto-builds stay
+/// paused, from the dev-build chip's "Build now"; a no-op when the installed
+/// snapshot already is HEAD. User-clicked only.
+#[tauri::command]
+pub async fn dev_build_now() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(crate::services::dev_build::build_now)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Close this frozen "Tabtivity (dev)" window and reopen it on the newest
 /// snapshot: a detached helper waits for the exit and runs the launcher, which
 /// adopts the snapshot. The close goes through the main window, so the quit is

@@ -4,8 +4,9 @@
 //! The build is `scripts/package-dev-auto.sh`'s, queued by the `post-commit`
 //! hook (see `docs/context/dev_builds.md`). This module never starts one
 //! itself; it asks the script to `--queue` a commit the hook could not queue
-//! itself (`queue_if_behind`), and to `--pause`/`--resume` when the user
-//! clicks the chip's switch (`set_paused`). Otherwise it
+//! itself (`queue_if_behind`), to `--pause`/`--resume` when the user
+//! clicks the chip's switch (`set_paused`), and to `--build-now` when they
+//! click its "Build now" while paused (`build_now`). Otherwise it
 //! reads the files that script already keeps for `--status`:
 //! the lock directory and its pid, the pending marker, the installed-commit
 //! stamp, the last failure, and the tail of the log, whose own lines say which
@@ -406,13 +407,32 @@ pub fn queue_if_behind() {
 /// to hand the machine back; resuming queues HEAD if the snapshot is behind.
 /// User-clicked only.
 pub fn set_paused(paused: bool) -> Result<(), String> {
+    run_script(if paused { "--pause" } else { "--resume" })?;
+    if !paused {
+        // The script queued what the pause skipped; forget any HEAD this
+        // process asked for meanwhile so a later poll may ask again.
+        *LAST_QUEUED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+    Ok(())
+}
+
+/// Build HEAD once while auto-builds stay paused, from the chip's "Build now".
+/// The script does nothing when the installed snapshot already is HEAD, and
+/// detaches the build otherwise. User-clicked only.
+pub fn build_now() -> Result<(), String> {
+    run_script("--build-now")
+}
+
+/// Run `package-dev-auto.sh <arg>` in this binary's checkout and wait for it;
+/// its stderr is the error.
+fn run_script(arg: &str) -> Result<(), String> {
     let root = SOURCE_ROOT.ok_or("not a dev build")?;
     let script = Path::new(root).join("scripts/package-dev-auto.sh");
     if !script.is_file() {
         return Err(format!("{} is missing", script.display()));
     }
     let out = crate::paths::command_no_window(&script)
-        .arg(if paused { "--pause" } else { "--resume" })
+        .arg(arg)
         .current_dir(root)
         .stdin(std::process::Stdio::null())
         .output()
@@ -420,11 +440,6 @@ pub fn set_paused(paused: bool) -> Result<(), String> {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(format!("{} exited with {}: {}", script.display(), out.status, err.trim()));
-    }
-    if !paused {
-        // The script queued what the pause skipped; forget any HEAD this
-        // process asked for meanwhile so a later poll may ask again.
-        *LAST_QUEUED.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
     Ok(())
 }

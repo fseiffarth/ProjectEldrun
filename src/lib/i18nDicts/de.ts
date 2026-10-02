@@ -3832,6 +3832,9 @@ export const dict: Dict = {
   "devBuild.pauseHint": "{app} (dev) nicht mehr bei jedem Commit neu bauen und einen laufenden Build abbrechen, um den Rechner zu entlasten. Bleibt pausiert, bis du fortsetzt.",
   "devBuild.resume": "Auto-Builds fortsetzen",
   "devBuild.resumeHint": "Bei Commits wieder neu bauen, beginnend mit HEAD, falls der installierte Stand zurückliegt.",
+  "devBuild.buildNow": "Jetzt bauen",
+  "devBuild.buildNowHint": "HEAD einmal jetzt bauen, ohne Auto-Builds fortzusetzen. Erneutes Pausieren bricht den Build ab.",
+  "devBuild.startingBuild": "Startet…",
   "devBuild.logTab": "Dev-Build-Log",
   "statusCluster.settingLabel": "Statusanzeigen in der Kopfleiste einklappen",
   "statusCluster.settingHelp":

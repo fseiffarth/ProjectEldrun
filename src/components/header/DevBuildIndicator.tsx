@@ -21,8 +21,9 @@ import { ErrorNote } from "../common/ErrorNote";
  * a root-console tab tailing its log. The only build control is the user's
  * pause switch (`dev_build_set_paused`): pausing hands the machine back —
  * nothing queues and a running compile is cancelled — and resuming queues
- * HEAD if the snapshot fell behind meanwhile. The other action is the user's
- * own relaunch:
+ * HEAD if the snapshot fell behind meanwhile. While paused, "Build now"
+ * (`dev_build_now`) builds HEAD once when it is newer than the snapshot and
+ * stays paused. The other action is the user's own relaunch:
  * in the frozen window, once a newer snapshot is installed or built, "Relaunch
  * now" quits through the ordinary close and reopens via the launcher
  * (`dev_build_relaunch`).
@@ -115,7 +116,9 @@ export function DevBuildIndicator() {
   const [relaunchError, setRelaunchError] = useState<string | null>(null);
   const [pausing, setPausing] = useState(false);
   const [pauseError, setPauseError] = useState<string | null>(null);
-  // Bumped after a pause/resume so the poll re-reads at once.
+  const [startingBuild, setStartingBuild] = useState(false);
+  const [buildNowError, setBuildNowError] = useState<string | null>(null);
+  // Bumped after a pause/resume/build-now so the poll re-reads at once.
   const [refresh, setRefresh] = useState(0);
   const closeTimer = useRef<number | undefined>(undefined);
 
@@ -231,6 +234,20 @@ export function DevBuildIndicator() {
       });
   };
 
+  const buildNow = () => {
+    setStartingBuild(true);
+    setBuildNowError(null);
+    invoke("dev_build_now")
+      .catch((e: unknown) => setBuildNowError(String(e)))
+      .finally(() => {
+        setStartingBuild(false);
+        setRefresh((n) => n + 1);
+      });
+  };
+  // Paused and idle with HEAD ahead of the snapshot (or no snapshot to compare
+  // against: the script itself skips a HEAD that is already installed).
+  const canBuildNow = status.paused && !active && status.behind !== 0;
+
   let detail: string | null = null;
   if (building && elapsed !== null) {
     const est = status.estimateSecs;
@@ -301,7 +318,7 @@ export function DevBuildIndicator() {
             )}
             <div className="mobile-indicator-origin">
               {status.installed && <div>{t("devBuild.installed", { commit: status.installed })}</div>}
-              {!!status.behind && building && <div>{t("devBuild.behind", { count: status.behind })}</div>}
+              {!!status.behind && (building || status.paused) && <div>{t("devBuild.behind", { count: status.behind })}</div>}
               {status.queued && building && <div>{t("devBuild.queuedNext")}</div>}
             </div>
             {failed && (
@@ -319,6 +336,7 @@ export function DevBuildIndicator() {
             )}
             {relaunchError && <ErrorNote className="mobile-indicator-error" error={relaunchError} />}
             {pauseError && <ErrorNote className="mobile-indicator-error" error={pauseError} />}
+            {buildNowError && <ErrorNote className="mobile-indicator-error" error={buildNowError} />}
             <div className="mobile-indicator-actions">
               {status.canRelaunch && (
                 <button
@@ -342,6 +360,18 @@ export function DevBuildIndicator() {
               >
                 {t(status.paused ? "devBuild.resume" : "devBuild.pause")} <UntestedTag id="devBuild.pause" />
               </button>
+              {canBuildNow && (
+                <button
+                  type="button"
+                  className="vpn-indicator-connect"
+                  disabled={startingBuild}
+                  title={t("devBuild.buildNowHint")}
+                  onClick={buildNow}
+                >
+                  {startingBuild ? t("devBuild.startingBuild") : t("devBuild.buildNow")}{" "}
+                  <UntestedTag id="devBuild.buildNow" />
+                </button>
+              )}
               <button type="button" className="vpn-indicator-connect" onClick={followLog}>
                 {t("devBuild.openLog")}
               </button>

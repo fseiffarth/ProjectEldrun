@@ -3909,6 +3909,9 @@ export const enSource = {
   "devBuild.pauseHint": "Stop rebuilding {app} (dev) on every commit and cancel a running compile, to free the machine. Stays paused until you resume.",
   "devBuild.resume": "Resume auto-builds",
   "devBuild.resumeHint": "Rebuild on commits again, starting with HEAD if the installed snapshot is behind it.",
+  "devBuild.buildNow": "Build now",
+  "devBuild.buildNowHint": "Build HEAD once now, without resuming auto-builds. Pausing again cancels it.",
+  "devBuild.startingBuild": "Starting…",
   "devBuild.logTab": "Dev build log",
   "statusCluster.settingLabel": "Collapse header status indicators",
   "statusCluster.settingHelp":

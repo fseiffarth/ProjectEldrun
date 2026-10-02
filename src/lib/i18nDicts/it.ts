@@ -3823,6 +3823,9 @@ export const dict: Dict = {
   "devBuild.pauseHint": "Non ricompilare più {app} (dev) a ogni commit e annulla la compilazione in corso, per liberare la macchina. Resta in pausa finché non riprendi.",
   "devBuild.resume": "Riprendi build automatiche",
   "devBuild.resumeHint": "Ricompila di nuovo a ogni commit, partendo da HEAD se lo snapshot installato è indietro.",
+  "devBuild.buildNow": "Compila ora",
+  "devBuild.buildNowHint": "Compila HEAD una volta ora, senza riprendere le build automatiche. Sospendere di nuovo la annulla.",
+  "devBuild.startingBuild": "Avvio…",
   "devBuild.logTab": "Log del build",
   "statusCluster.settingLabel": "Comprimi gli indicatori di stato nell'intestazione",
   "statusCluster.settingHelp":

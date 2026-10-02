@@ -147,4 +147,28 @@ describe("DevBuildIndicator", () => {
     fireEvent.click(await screen.findByText("Resume auto-builds"));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("dev_build_set_paused", { paused: false }));
   });
+
+  it("builds a newer HEAD once while paused", async () => {
+    answer({ ...idle, paused: true, behind: 3 });
+    render(<DevBuildIndicator />);
+    fireEvent.click(await screen.findByLabelText("Dev build: Auto-builds paused", undefined, { timeout: 5000 }));
+    expect(await screen.findByText("Behind HEAD by 3")).toBeTruthy();
+    fireEvent.click(screen.getByText("Build now"));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("dev_build_now"));
+    expect(invokeMock).not.toHaveBeenCalledWith("dev_build_set_paused", expect.anything());
+  });
+
+  it("offers no build now when nothing is newer or auto-builds run", async () => {
+    answer({ ...idle, paused: true, behind: 0 });
+    render(<DevBuildIndicator />);
+    fireEvent.click(await screen.findByLabelText("Dev build: Auto-builds paused", undefined, { timeout: 5000 }));
+    await screen.findByText("Resume auto-builds");
+    expect(screen.queryByText("Build now")).toBeNull();
+    cleanup();
+    answer({ ...idle, behind: 3 });
+    render(<DevBuildIndicator />);
+    fireEvent.click(await screen.findByLabelText("Dev build: Behind HEAD by 3", undefined, { timeout: 5000 }));
+    await screen.findByText("Pause auto-builds");
+    expect(screen.queryByText("Build now")).toBeNull();
+  });
 });
