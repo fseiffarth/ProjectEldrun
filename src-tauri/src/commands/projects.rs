@@ -1660,26 +1660,29 @@ fn rename_project_dir_blocking(project_id: &str, leaf: &str) -> Result<ProjectEn
         eprintln!("rename_project_dir: saved tab layout not updated: {e}");
     }
     if new.join(".git").exists() {
-        // Linked worktrees record absolute paths both ways. The ones that lived
-        // inside the folder (`.tabtivity/worktrees/…`) moved with it, and repair can
-        // only find them when told where they went.
-        let moved_worktrees = moved_linked_worktrees(&new, old_s, new_s);
-        match paths::command_no_window("git")
-            .arg("-C")
-            .arg(&new)
-            .args(["worktree", "repair"])
-            .args(&moved_worktrees)
-            .output()
-        {
-            Ok(out) if !out.status.success() => eprintln!(
-                "rename_project_dir: git worktree repair: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-            Err(e) => eprintln!("rename_project_dir: git worktree repair: {e}"),
-            Ok(_) => {}
+        if let Err(e) = repair_moved_worktrees(&new, old_s, new_s) {
+            eprintln!("rename_project_dir: git worktree repair: {e}");
         }
     }
     Ok(updated)
+}
+
+/// Re-point a repo's linked worktrees after its folder moved from `old` to
+/// `new` (`repo` is the new path). Linked worktrees record absolute paths both
+/// ways. The ones that lived inside the folder (`.tabtivity/worktrees/…`)
+/// moved with it, and repair can only find them when told where they went.
+/// Runs through the hardened git command like every local git spawn.
+fn repair_moved_worktrees(repo: &Path, old: &str, new: &str) -> Result<(), String> {
+    let moved = moved_linked_worktrees(repo, old, new);
+    let out = crate::commands::git::hardened_git_command_in(repo, &["worktree", "repair"])
+        .args(&moved)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
 }
 
 /// The new locations of a repo's linked worktrees that sat under the renamed
@@ -4953,6 +4956,46 @@ mod tests {
         assert_eq!(&a[14..15], "4");
         assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"), "{a}");
         assert_ne!(a, uuid_v4());
+    }
+
+    /// A folder rename re-points the linked worktree that moved inside it, so
+    /// it still works from both ends. Unix only: on Windows git writes the
+    /// worktree's `gitdir` with `/` while the renamed path is matched with `\`,
+    /// so `moved_linked_worktrees` finds nothing there (a known gap).
+    #[cfg(unix)]
+    #[test]
+    fn a_renamed_folder_repairs_the_worktree_inside_it() {
+        fn git(dir: &Path, args: &[&str]) -> String {
+            let out = crate::commands::git::hardened_git_command_in(dir, args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let old = root.join("before");
+        std::fs::create_dir_all(&old).unwrap();
+        git(&old, &["init", "-q", "-b", "main"]);
+        std::fs::write(old.join("a.txt"), b"a\n").unwrap();
+        git(&old, &["add", "a.txt"]);
+        git(&old, &["commit", "-q", "-m", "first"]);
+        let inside = Path::new("wt").join("feature");
+        git(&old, &["worktree", "add", "-q", "-b", "feature", &old.join(&inside).to_string_lossy()]);
+
+        let new = root.join("after");
+        std::fs::rename(&old, &new).unwrap();
+        repair_moved_worktrees(&new, &old.to_string_lossy(), &new.to_string_lossy()).unwrap();
+
+        let worktree = new.join(&inside);
+        assert_eq!(git(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"]), "feature");
+        assert_eq!(git(&worktree, &["status", "--porcelain"]), "");
+        let listed = git(&new, &["worktree", "list", "--porcelain"]);
+        assert!(!listed.contains("prunable"), "{listed}");
     }
 
     /// `forget_project` purges only Tabtivity's state dirs about a project: a dir
