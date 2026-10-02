@@ -917,6 +917,14 @@ export const en = {
   "mobile.indUpdateReady": "The Mobile host is up to date. Refresh the app on your phone to load the new version.",
   "mobile.indUpdateError": "Could not update the Mobile host: {reason}",
   "mobile.indRevokeError": "Could not revoke paired devices",
+  "mobile.indDevicesNone": "No device is paired yet.",
+  "mobile.indDeviceOnline": "Connected now",
+  "mobile.indDeviceLastSeen": "Last connected {when}",
+  "mobile.indDeviceNeverSeen": "Never connected",
+  "mobile.indDisconnect": "Disconnect",
+  "mobile.indDisconnectConfirm": "Disconnect?",
+  "mobile.indDisconnectHint": "Unpairs this device and signs it out within seconds. It needs a new pairing code to come back.",
+  "mobile.indDisconnectError": "Could not disconnect {name}: {reason}",
 
   // Eldrun Mobile — the setup instruction behind the header's phone icon while
   // Mobile is off (mobile/MobileSetupGuide). Same ground as the fold in Mobile

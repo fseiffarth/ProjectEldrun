@@ -470,6 +470,7 @@ impl AuthStore {
     }
 
     pub fn devices(&self) -> Vec<AdminDevice> {
+        let t = now();
         self.devices
             .devices
             .iter()
@@ -478,6 +479,7 @@ impl AuthStore {
                 name: d.name.clone(),
                 created_at: d.created_at,
                 last_seen_at: d.last_seen_at,
+                online: self.sessions.values().any(|s| s.device_id == d.id && s.expires_at >= t),
             })
             .collect()
     }
@@ -608,13 +610,23 @@ mod tests {
         let public = Base64UrlUnpadded::encode_string(public.as_bytes());
         let (code, _) = auth.create_pairing_code().expect("pairing code");
         let device = auth.pair(&code, "Phone", &public).expect("paired");
+        // Paired is not signed in: the desktop's list says which is which.
+        assert!(!auth.devices()[0].online);
         let (nonce, payload, _) = auth.challenge(&device).expect("challenge");
         let signature: Signature = signing.sign(payload.as_bytes());
         let signature = Base64UrlUnpadded::encode_string(&signature.to_bytes());
         let (token, _) = auth.login(&device, &nonce, &signature).expect("login");
         assert_eq!(auth.authenticate(&token).as_deref(), Some(device.as_str()));
+        assert!(auth.devices()[0].online);
+        auth.logout(&token);
+        assert!(!auth.devices()[0].online);
+        let (nonce, payload, _) = auth.challenge(&device).expect("challenge");
+        let signature: Signature = signing.sign(payload.as_bytes());
+        let signature = Base64UrlUnpadded::encode_string(&signature.to_bytes());
+        let (token, _) = auth.login(&device, &nonce, &signature).expect("login");
         auth.revoke(&device).expect("revoke");
         assert!(auth.authenticate(&token).is_none());
+        assert!(auth.devices().is_empty());
     }
 
     #[test]

@@ -400,7 +400,10 @@ running `--mobile-host` — binds to loopback;
 an existing, non-Funnel Tailscale Serve HTTPS root handler must be verified as
 an exact proxy to that port before Eldrun saves or starts it. Each browser pairs
 with a short-lived code and a device-held P-256 key and can be revoked
-individually.
+individually. The header's phone menu lists every paired device — a green
+lamp for one signed in now, otherwise when it last connected — with
+**Disconnect** (click again to confirm): the device is unpaired, signed out
+within seconds, and needs a new pairing code to come back.
 
 Only persistent local shells and resumable configured agents are discoverable.
 The sidecar derives opaque browser ids from trusted Eldrun state and revalidates

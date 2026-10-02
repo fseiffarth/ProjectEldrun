@@ -2187,6 +2187,66 @@
   line-height: 1.4;
   color: var(--text-secondary);
 }
+/* Paired devices: one row each, a lamp for "signed in now", and the inbox
+   tray's armed delete as Disconnect → Disconnect? (`InboxIndicator`). */
+.mobile-indicator-devices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--control-border);
+}
+.mobile-indicator-devices-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.mobile-indicator-devices-empty {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.mobile-indicator-device {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.mobile-indicator-device-lamp {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0.6;
+}
+.mobile-indicator-device-lamp.online {
+  background: var(--success);
+  opacity: 1;
+}
+.mobile-indicator-device-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.mobile-indicator-device-text strong {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-indicator-device-text span {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.mobile-indicator-device-disconnect {
+  font-size: 11px;
+}
 .mobile-indicator-actions {
   display: flex;
   flex-wrap: wrap;

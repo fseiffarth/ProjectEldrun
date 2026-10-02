@@ -447,6 +447,7 @@ export const UNTESTED = {
   "mobile.project.reorder": { area: "mobile", what: "Project · Drag to reorder the desktop's tabs" },
   "mobile.project.git": { area: "mobile", what: "Home · The desktop pill's git dot on the phone: a coloured \"unstaged changes / not committed / not pushed\" in each project row's caption, and only there (the project screen shows none)" },
   "mobile.project.modelTap": { area: "mobile", what: "Project · Tap a tab card's model to open the session with its model picker up", tested: "2026-09-23" },
+  "mobile.indDevices": { area: "mobile", what: "Header phone menu · Paired devices: each with a connected-now lamp or its last connection, and Disconnect → Disconnect? (unpairs it; the phone is signed out within seconds)" },
   "mobile.project.nameMenu": { area: "mobile", what: "Project · Tap the project name for a dropdown with the agent's files (🖼 gallery, moved out of the header row) and the project file drawer" },
   "mobile.project.modeMarks": { area: "mobile", what: "Project/Agents lists · PLAN and GOAL pills and a tinted border on an agent tab card while its session's status line reads plan mode or a running /goal (read by the desktop)" },
   "mobile.project.scheduledInPrompts": { area: "mobile", what: "Project · An agent card lists its upcoming scheduled prompts (◷ + desktop time) above the last prompts; the ◷ button sits right of the model; no \"No scheduled prompts\" line", tested: "2026-09-29" },

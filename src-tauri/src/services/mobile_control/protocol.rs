@@ -1545,6 +1545,10 @@ pub struct AdminDevice {
     pub name: String,
     pub created_at: u64,
     pub last_seen_at: Option<u64>,
+    /// It holds a live session right now: signed in, not locked or timed out.
+    /// Defaulted, so a sidecar from before the field still answers.
+    #[serde(default)]
+    pub online: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
