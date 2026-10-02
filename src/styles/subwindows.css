@@ -900,60 +900,6 @@ html:not([data-theme^="fancy_"]) .steering-legend-orbit .tok-tag {
 button.steering-legend-hub:hover::before {
   background: var(--accent-hover);
 }
-/* The folded badge pulses so "steering is still on" can't be missed: a
-   hexagonal accent ring behind it grows and fades — the hexagon with its
-   2px-inset twin cut out (evenodd). No keyframe animation: an infinite one
-   repaints the clip-path ring every frame, which is expensive on WebKitGTK's
-   software path. `SteeringPulse` steps `data-beat` on a slow timer instead,
-   and each beat is a static frame (0 and 4 are rest). */
-.steering-legend-fab-pulse {
-  position: absolute;
-  inset: 0;
-  z-index: -2;
-  pointer-events: none;
-}
-.steering-legend-fab-pulse::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: var(--accent);
-  clip-path: polygon(
-    evenodd,
-    50% 0,
-    100% 25%,
-    100% 75%,
-    50% 100%,
-    0 75%,
-    0 25%,
-    50% 0,
-    50% 4.4%,
-    4.4% 27.2%,
-    4.4% 72.8%,
-    50% 95.6%,
-    95.6% 72.8%,
-    95.6% 27.2%,
-    50% 4.4%
-  );
-  opacity: 0;
-}
-.steering-legend-fab-pulse[data-beat="1"]::before {
-  transform: scale(1.2);
-  opacity: 0.7;
-}
-.steering-legend-fab-pulse[data-beat="2"]::before {
-  transform: scale(1.5);
-  opacity: 0.4;
-}
-.steering-legend-fab-pulse[data-beat="3"]::before {
-  transform: scale(1.8);
-  opacity: 0.15;
-}
-@media (prefers-reduced-motion: reduce) {
-  .steering-legend-fab-pulse::before {
-    transform: scale(1.25);
-    opacity: 0.6;
-  }
-}
 .steering-legend-fab-button kbd,
 .steering-legend-hub kbd {
   position: absolute;
