@@ -567,14 +567,17 @@ pub async fn prepare(
                     spec.port,
                     crate::services::ssh_common::ambient_intent(&spec.user, &spec.host, spec.port),
                 )?;
+                // Only a remote project needs the pool. A local one has nothing
+                // to dial, and a headless spawn (no window, `pool` is `None`)
+                // must still start it.
+                let Some(pool) = pool else {
+                    return Err(format!(
+                        "terminal: tab '{}' needs a window's remote pool to reach project '{project_id}'",
+                        opts.id
+                    ));
+                };
+                let _ = crate::services::remote::connect_host(pool, &project_id, &host_id, None).await;
             }
-            let Some(pool) = pool else {
-                return Err(format!(
-                    "terminal: tab '{}' needs a window's remote pool to reach project '{project_id}'",
-                    opts.id
-                ));
-            };
-            let _ = crate::services::remote::connect_host(pool, &project_id, &host_id, None).await;
         }
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
     }
