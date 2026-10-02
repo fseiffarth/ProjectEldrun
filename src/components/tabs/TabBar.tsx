@@ -340,6 +340,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // #56: Shift+right-click on a tab enters inline rename mode for that key (no
   // menu, no prompt dialog). The label becomes a focused, text-selected <input>.
   const [editingKey, setEditingKey] = useState<string | null>(null);
+  // Selects the label once, when the input mounts. A stable callback: an
+  // inline one is a new ref every render, so React re-ran it on each re-render
+  // (agent status ticks) and the next keystroke replaced what was typed.
+  const selectOnMount = useCallback((el: HTMLInputElement | null) => {
+    if (el) el.select();
+  }, []);
   // Right-click on a tab-group chip: its own menu (rename / ungroup / close).
   const [stackMenu, setStackMenu] = useState<{ x: number; y: number; name: string } | null>(null);
   // Naming a new tab group, renaming one, or renaming a tab hidden in one.
@@ -1454,9 +1460,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 autoFocus
                 aria-label={t("tabBar.renameAriaLabel")}
                 // Mount focused with the whole label selected for a fast retype.
-                ref={(el) => {
-                  if (el) el.select();
-                }}
+                ref={selectOnMount}
                 // Keep editing keystrokes / clicks out of drag + activation.
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => e.stopPropagation()}
