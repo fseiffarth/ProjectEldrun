@@ -1691,18 +1691,29 @@ fn moved_linked_worktrees(repo: &Path, old: &str, new: &str) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(repo.join(".git").join("worktrees")) else {
         return Vec::new();
     };
+    let (old, new) = (git_path_form(old), git_path_form(new));
     entries
         .flatten()
         .filter_map(|e| fs::read_to_string(e.path().join("gitdir")).ok())
         .filter_map(|gitdir| {
             let mut v = Value::String(gitdir.trim().to_string());
-            if !storage::rewrite_path_prefix(&mut v, old, new) {
+            if !storage::rewrite_path_prefix(&mut v, &old, &new) {
                 return None;
             }
             let moved = PathBuf::from(v.as_str()?);
             moved.parent().map(Path::to_path_buf)
         })
         .collect()
+}
+
+/// A path as git writes it into a `gitdir` file: `/`-separated on every OS,
+/// while a Windows folder path from `projects.json` uses `\`.
+fn git_path_form(path: &str) -> String {
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.to_string()
+    }
 }
 
 /// Whether a currently-detected repo source still needs a user decision:
@@ -4958,11 +4969,27 @@ mod tests {
         assert_ne!(a, uuid_v4());
     }
 
+    /// git writes a worktree's `gitdir` with `/` on every OS; the folder paths
+    /// come from `projects.json` in the OS's own form (`\` on Windows). The
+    /// worktree under the renamed folder is still found.
+    #[test]
+    fn moved_linked_worktrees_matches_gits_slashes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("before");
+        let new = tmp.path().join("after");
+        let (old_s, new_s) = (old.to_string_lossy().to_string(), new.to_string_lossy().to_string());
+        let meta = new.join(".git").join("worktrees").join("feature");
+        std::fs::create_dir_all(&meta).unwrap();
+        let gitdir = format!("{}/wt/feature/.git\n", old_s.replace('\\', "/"));
+        std::fs::write(meta.join("gitdir"), gitdir).unwrap();
+
+        let moved = moved_linked_worktrees(&new, &old_s, &new_s);
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert_eq!(moved[0], new.join("wt").join("feature"));
+    }
+
     /// A folder rename re-points the linked worktree that moved inside it, so
-    /// it still works from both ends. Unix only: on Windows git writes the
-    /// worktree's `gitdir` with `/` while the renamed path is matched with `\`,
-    /// so `moved_linked_worktrees` finds nothing there (a known gap).
-    #[cfg(unix)]
+    /// it still works from both ends.
     #[test]
     fn a_renamed_folder_repairs_the_worktree_inside_it() {
         fn git(dir: &Path, args: &[&str]) -> String {
@@ -4977,7 +5004,8 @@ mod tests {
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         }
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        // Resolved (macOS' /var symlink), without Windows' `\\?\` prefix.
+        let root = PathBuf::from(crate::commands::fs::display_path(&tmp.path().canonicalize().unwrap()));
         let old = root.join("before");
         std::fs::create_dir_all(&old).unwrap();
         git(&old, &["init", "-q", "-b", "main"]);
