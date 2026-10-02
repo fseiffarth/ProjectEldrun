@@ -7,7 +7,7 @@ import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
 import { OutboxPost } from "../components/OutboxPost";
 import { ProjectFiles } from "../components/ProjectFiles";
-import { Fragment, memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -191,6 +191,14 @@ const FILES_SWIPE_ZONE = 1 / 3;
  * only still carry sessions whose pane has the mode off. */
 const AGENT_KEY_GAP = 80;
 const AGENT_SUBMIT_GAP = 200;
+/** The key every supported agent CLI reads as "stop this turn" (its spinner
+ * row says `esc to interrupt`), and how long the message held back behind it
+ * waits: a lone Esc followed at once by text is read as Alt+key, and the turn
+ * needs a moment to wind down before the CLI takes a new prompt. */
+const AGENT_INTERRUPT = "\u001b";
+const AGENT_INTERRUPT_GAP = 400;
+/** How long Send is held before it interrupts the agent instead of queueing. */
+const SEND_HOLD_MS = 450;
 
 /** What the new-conversation button types. Every supported scrollback agent
  * reads `/clear` as "start a new chat" — Codex too, since it grew the command.
@@ -2277,7 +2285,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * alone. */
   /** Whether the words left the phone, or are held for the agent's next idle
    * point — the markup view's Submit keeps its layer otherwise. */
-  const submitDraft = (text = draft, fromComposer = true): boolean => {
+  /** `interrupt`: the Send button's hold — a working agent is stopped and the
+   * words go in at once instead of waiting for its next idle point. */
+  const submitDraft = (text = draft, fromComposer = true, interrupt = false): boolean => {
     if (editing && fromComposer) {
       submitEdit(editing, text);
       return true;
@@ -2296,11 +2306,11 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     // so a bubble for it would wait forever. `/clear` also ends the chat the
     // earlier bubbles were waiting in.
     const id = /^\s*\//u.test(text) ? undefined : ++pendingId.current;
-    if (id !== undefined && agentAtWork) {
+    if (id !== undefined && agentAtWork && !interrupt) {
       holdDraft(id, text, fromComposer);
       return true;
     }
-    if (!sendAgentText(text, id)) return false;
+    if (!(interrupt && agentAtWork ? interruptWith(text, id) : sendAgentText(text, id))) return false;
     setLastSent(text);
     setEditNote("");
     if (id === undefined) {
@@ -2327,6 +2337,43 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * that started them. */
   const submitDraftRef = useRef(submitDraft);
   submitDraftRef.current = submitDraft;
+  /** Esc stops the agent's turn; once the CLI has wound down the message is
+   * typed like any other — not held for an idle point the interrupt has just
+   * made. A failure after the gap marks the bubble, as a dropped piece does. */
+  const interruptWith = (text: string, id?: number) => {
+    clearPending();
+    if (!type(AGENT_INTERRUPT)) return false;
+    later(AGENT_INTERRUPT_GAP, () => {
+      if (sendAgentText(text, id) || id === undefined) return;
+      setPending((current) => current.map((entry) => entry.id === id ? { ...entry, failed: true, retrying: false } : entry));
+    });
+    return true;
+  };
+  /** Send held down: interrupt and send. `fired` swallows the click the
+   * release still delivers, so the words do not go out twice. */
+  const sendHold = useRef({ timer: 0, fired: false });
+  const fireSendHold = () => {
+    window.clearTimeout(sendHold.current.timer);
+    if (sendHold.current.fired) return;
+    sendHold.current.fired = true;
+    submitDraftRef.current(undefined, true, true);
+  };
+  const sendHoldHandlers = {
+    onPointerDown: (event: ReactPointerEvent) => {
+      if (event.button !== 0) return;
+      sendHold.current.fired = false;
+      window.clearTimeout(sendHold.current.timer);
+      sendHold.current.timer = window.setTimeout(fireSendHold, SEND_HOLD_MS);
+    },
+    onPointerUp: () => window.clearTimeout(sendHold.current.timer),
+    onPointerLeave: () => window.clearTimeout(sendHold.current.timer),
+    onPointerCancel: () => window.clearTimeout(sendHold.current.timer),
+    // The browser's own long press (a tooltip, a callout) is this hold.
+    onContextMenu: (event: ReactMouseEvent) => {
+      event.preventDefault();
+      if (tab.kind === "agent" && !editing) fireSendHold();
+    },
+  };
   /** The markup view's Submit: the desktop's prompt goes out like a typed
    * one (held while the agent works), and the viewer and drawer it was
    * opened from close onto the chat. */
@@ -3627,7 +3674,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}{isUntested("mobile.link.failureText") && <em> · {t("mobile.focus.untested")}</em>}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. Send it again once it is back.</div>}
       {undoNote && <div className="voice-feedback" role="status">{t(undoNote)}</div>}
-      {editNote && !editing && <div className={editNote === "mobile.composer.heldEditFailed" ? "voice-feedback error" : "voice-feedback"} role="status">{t(editNote)}{isUntested("mobile.chat.editHeld") && <> · <em>{t("mobile.focus.untested")}</em></>}</div>}
+      {editNote && !editing && <div className={editNote === "mobile.composer.heldEditFailed" ? "voice-feedback error" : "voice-feedback"} role="status">{t(editNote)}{editNote === "mobile.composer.heldNote" && <> {t("mobile.composer.holdToInterrupt")}{isUntested("mobile.composer.sendHold") && <> · <em>{t("mobile.focus.untested")}</em></>}</>}{isUntested("mobile.chat.editHeld") && <> · <em>{t("mobile.focus.untested")}</em></>}</div>}
       {editing && <div className="sign-in-notice" role="status">
         <span>{t(editNote === "mobile.composer.heldEditFailed" ? "mobile.composer.heldEditFailed" : "mobile.composer.editingHeld")}{isUntested("mobile.chat.editHeld") && <> · <em>{t("mobile.focus.untested")}</em></>}</span>
         <button onPointerDown={(event) => event.preventDefault()} onClick={cancelEdit}>{t("mobile.composer.editCancel")}</button>
@@ -3729,7 +3776,13 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
             <button className={`composer-keys${keysShown ? " open" : ""}`} onPointerDown={(event) => event.preventDefault()} onClick={toggleKeys} aria-label={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")} aria-expanded={keysShown} aria-controls="terminal-keys" title={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8" /></svg></button>
             <span className="composer-spacer" />
           </>}
-          <button className="send-icon" disabled={!connected || !draft.trim() || editSending} onClick={() => submitDraft()} aria-label={editing ? t("mobile.composer.editSave") : "Send"} title={editing ? t("mobile.composer.editSave") : "Send"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
+          <button className="send-icon" disabled={!connected || !draft.trim() || editSending} {...(tab.kind === "agent" && !editing ? sendHoldHandlers : {})} onClick={() => {
+            if (sendHold.current.fired) {
+              sendHold.current.fired = false;
+              return;
+            }
+            submitDraft();
+          }} aria-label={editing ? t("mobile.composer.editSave") : "Send"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
         </div>
       </div>
       {keysShown && <div className="keys" id="terminal-keys">

@@ -111,6 +111,7 @@ export const en = {
   "mobile.composer.undoFailed": "The clear could not be undone. Is desktop Eldrun open with this tab?",
   "mobile.composer.undoRemote": "This tab runs on a remote host, where the clear cannot be undone from here.",
   "mobile.composer.heldNote": "The agent is working: your prompt joins its queue and is taken in when the agent gets to it.",
+  "mobile.composer.holdToInterrupt": "Hold Send to interrupt the agent and send at once.",
   "mobile.composer.heldEdited": "Prompt changed — the agent gets the new words.",
   "mobile.composer.heldGone": "The agent already took this prompt, so it can no longer change. Your words stay in the composer.",
   "mobile.composer.heldEditFailed": "The edit did not reach the desktop. Try again, or cancel.",

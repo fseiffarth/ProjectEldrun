@@ -997,7 +997,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 /* The level ring: a static ring scaled by the measured level, never an animated shadow. */
 .composer-dictate { position:relative; flex:0 0 auto; margin-top:1px; }
 .composer-dictate.listening::after { content:""; position:absolute; inset:0; border-radius:inherit; border:2px solid #e36b9a; opacity:calc(.15 + var(--mic-level, 0) * .75); transform:scale(calc(1 + var(--mic-level, 0) * .35)); transition:transform 80ms linear, opacity 80ms linear; pointer-events:none; }
-.send-icon { color:#fff; background:#6c5ce7; }
+.send-icon { color:#fff; background:#6c5ce7; -webkit-touch-callout:none; user-select:none; -webkit-user-select:none; }
 .send-icon svg { fill:currentColor; stroke:#fff; }
 .send-icon svg path:last-child { stroke:#6c5ce7; }
 .keys { display:flex; gap:5px; padding:6px; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; }
