@@ -65,8 +65,51 @@ pub(crate) const AGENT_AUTH_ENV: &[&str] = &[
 /// single shared `cm-%C` master socket here is reused by every remote path —
 /// agent tabs, the pooled SFTP session (`services::remote`/`services::sftp`),
 /// git-over-ssh, and an interactive login — so authentication happens once.
+///
+/// Where that path is too long for a socket (see [`pick_control_dir`]) it is
+/// `$XDG_RUNTIME_DIR/tabtivity-ssh` instead, created here: the runtime dir is
+/// emptied at every login, and not every master spawn creates the dir first.
+/// Fenced agent tabs see neither (`agent_fence` mounts a tmpfs over `/run` and
+/// replaces `$HOME`), so the move hands them no master.
 pub(crate) fn control_dir() -> PathBuf {
-    storage::state_dir().join("ssh-control")
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir());
+    let dir = pick_control_dir(runtime.as_deref(), &storage::state_dir());
+    #[cfg(unix)]
+    if runtime.as_deref().is_some_and(|rt| dir.starts_with(rt)) && !dir.is_dir() {
+        use std::os::unix::fs::DirBuilderExt;
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+    }
+    dir
+}
+
+/// The longest path `bind(2)` accepts for a Unix socket: `sun_path` holds 108
+/// bytes on Linux and 104 on macOS/BSD, the terminating NUL included.
+const SOCKET_PATH_MAX: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
+
+/// What a master adds to the control dir: `/cm-` and the 40 hex digits of `%C`,
+/// and OpenSSH first binds the socket under a temporary `.<16 random chars>`
+/// name beside it. When that bind fails the master exits after logging in, so a
+/// project's connection fails while a plain `ssh` to the same host works.
+const CONTROL_SOCKET_SUFFIX: usize = "/cm-".len() + 40 + ".".len() + 16;
+
+/// `<state_dir>/ssh-control` where the master's socket fits under it, else
+/// `<runtime>/tabtivity-ssh`. The rename made the state dir three bytes longer, which
+/// pushed `/home/<user>/.local/share/<slug>/ssh-control` past the limit for
+/// any user name over five letters (over eight before).
+fn pick_control_dir(runtime: Option<&std::path::Path>, state_dir: &std::path::Path) -> PathBuf {
+    let fits = |dir: &std::path::Path| dir.as_os_str().len() + CONTROL_SOCKET_SUFFIX <= SOCKET_PATH_MAX;
+    let in_state = state_dir.join("ssh-control");
+    if fits(&in_state) {
+        return in_state;
+    }
+    match runtime.filter(|rt| rt.is_absolute()) {
+        Some(rt) if fits(&rt.join(concat!(crate::app_slug!(), "-ssh"))) => {
+            rt.join(concat!(crate::app_slug!(), "-ssh"))
+        }
+        _ => in_state,
+    }
 }
 
 /// The socket path `cm-%C` actually expands to for this target.
@@ -1377,6 +1420,26 @@ mod tests {
         let cmd = remote_command("mytool", &[], &HashMap::new(), "/srv/p", None);
         assert!(!cmd.contains("command -v"));
         assert!(!cmd.contains("exit 127"));
+    }
+
+    /// A master's temporary socket must fit `sun_path`, or ssh logs in and then
+    /// exits: the state dir is kept while it fits, the runtime dir takes over
+    /// when it does not, and with no usable runtime dir nothing changes.
+    #[test]
+    fn the_control_dir_leaves_room_for_the_master_socket() {
+        use std::path::Path;
+        let rt = Path::new("/run/user/1000");
+        let short = Path::new(concat!("/s/", crate::app_slug!()));
+        let long = Path::new(concat!("/home/someone/.local/share/", crate::app_slug!()));
+        assert_eq!(pick_control_dir(Some(rt), short), short.join("ssh-control"));
+        let moved = pick_control_dir(Some(rt), long);
+        assert_eq!(moved, rt.join(concat!(crate::app_slug!(), "-ssh")));
+        assert!(moved.as_os_str().len() + CONTROL_SOCKET_SUFFIX <= SOCKET_PATH_MAX);
+        assert_eq!(pick_control_dir(None, long), long.join("ssh-control"));
+        assert_eq!(pick_control_dir(Some(Path::new("run")), long), long.join("ssh-control"));
+        // The exact bytes OpenSSH binds: `<dir>/cm-<40 hex>.<16 chars>`.
+        let tmp = format!("{}/cm-{}.{}", moved.display(), "0".repeat(40), "x".repeat(16));
+        assert_eq!(tmp.len(), moved.as_os_str().len() + CONTROL_SOCKET_SUFFIX);
     }
 
     /// **G.25's kill predicate.** The sweep signals a pid, so the one thing that
