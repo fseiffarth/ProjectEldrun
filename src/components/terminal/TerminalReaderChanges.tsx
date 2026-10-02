@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
@@ -34,8 +34,6 @@ export function changesWidthStyle(width: number): CSSProperties {
 
 /** As the chat: the backend answers an unchanged store by its fingerprint. */
 const POLL_MS = 2000;
-/** How many of the newest changes open with their diff shown. */
-const OPEN_NEWEST = 6;
 
 export interface FileChange {
   path: string;
@@ -85,16 +83,32 @@ function Counts({ added, removed }: { added: number; removed: number }) {
   );
 }
 
-/** One change: its file, what kind, when, and its diff (folded or not). */
-const ChangeCard = memo(function ChangeCard({ change, base, startOpen, use24h, onOpenFile }: {
+/** Each change's card key, in the store's order: when and which file, with a
+ * count for the same file twice in one moment — stable as newer ones arrive. */
+function changeKeys(list: FileChange[]): string[] {
+  const seen = new Map<string, number>();
+  return list.map((change) => {
+    const base = `${change.at ?? ""}|${change.path}`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return `${base}|${n}`;
+  });
+}
+
+/** One change: its file, what kind, when, and its diff — folded until
+ * clicked, so a change arriving mid-read never unfolds and shoves the list.
+ * One that arrived while the panel was shown is marked new until unfolded. */
+const ChangeCard = memo(function ChangeCard({ change, cardKey, fresh, base, use24h, onOpenFile, onUnfold }: {
   change: FileChange;
+  cardKey: string;
+  fresh: boolean;
   base: string | undefined;
-  startOpen: boolean;
   use24h: boolean;
   onOpenFile: (path: string) => void;
+  onUnfold: (cardKey: string) => void;
 }) {
   const t = useT();
-  const [open, setOpen] = useState(startOpen);
+  const [open, setOpen] = useState(false);
   // Without its final newline, which would parse as one more (empty) row.
   const files = useMemo(() => (open ? parseUnifiedDiff(change.diff.replace(/\n$/u, "")) : []), [open, change.diff]);
   const shown = shownPath(base, change.path);
@@ -103,16 +117,20 @@ const ChangeCard = memo(function ChangeCard({ change, base, startOpen, use24h, o
   const moment = chatMoment(change.at);
   const openable = change.kind !== "delete" && !change.movedTo;
   return (
-    <section className={`terminal-changes-card ${change.kind}`}>
+    <section className={`terminal-changes-card ${change.kind}${fresh ? " fresh" : ""}`}>
       <div className="terminal-changes-card-head">
         <button
           type="button"
           className="terminal-changes-fold"
           aria-expanded={open}
           title={t(open ? "terminal.changes.collapse" : "terminal.changes.expand")}
-          onClick={() => setOpen((shownNow) => !shownNow)}
+          onClick={() => {
+            if (!open) onUnfold(cardKey);
+            setOpen(!open);
+          }}
         >
           <span className={open ? "terminal-reader-subagent-caret open" : "terminal-reader-subagent-caret"} aria-hidden="true">▾</span>
+          {fresh && <span className="terminal-changes-new">{t("terminal.changes.new")}</span>}
           <span className="terminal-changes-kind">{t(KIND_KEY[change.kind])}</span>
           <span className="terminal-changes-path" title={change.path}>
             {folder && <small>{folder}</small>}
@@ -174,6 +192,10 @@ export function TerminalReaderChanges({ scope, tab, cwd, visible, subagent, suba
   /** Whose changes a read belongs to — a read of another conversation is
    * never drawn under this one. */
   const readKey = `${tab.sessionId ?? ""}|${subagent ?? ""}`;
+  /** The cards of the last read, and those that arrived after the panel's
+   * first read of this conversation — what it already held is not new. */
+  const seenRef = useRef<{ key: string; cards: Set<string> } | null>(null);
+  const [fresh, setFresh] = useState<{ key: string; cards: Set<string> } | null>(null);
 
   useEffect(() => {
     if (!visible) return;
@@ -193,6 +215,18 @@ export function TerminalReaderChanges({ scope, tab, cwd, visible, subagent, suba
       busy = false;
       if (cancelled) return;
       if (!next.unchanged) version = next.version;
+      if (!next.unchanged && next.available) {
+        const keys = changeKeys(next.changes);
+        const seen = seenRef.current;
+        const arrived = seen?.key === readKey ? keys.filter((key) => !seen.cards.has(key)) : [];
+        seenRef.current = { key: readKey, cards: new Set(keys) };
+        if (arrived.length) {
+          setFresh((previous) => ({
+            key: readKey,
+            cards: new Set([...(previous?.key === readKey ? previous.cards : []), ...arrived]),
+          }));
+        }
+      }
       setRead((previous) => (next.unchanged && previous?.key === readKey ? previous : { key: readKey, changes: next }));
     };
     void fetchChanges();
@@ -221,15 +255,19 @@ export function TerminalReaderChanges({ scope, tab, cwd, visible, subagent, suba
   /** Newest first, keyed by the change itself so a card keeps its fold as
    * newer ones arrive above it. */
   const cards = useMemo(() => {
-    const seen = new Map<string, number>();
-    const keyed = list.map((change) => {
-      const base = `${change.at ?? ""}|${change.path}`;
-      const n = seen.get(base) ?? 0;
-      seen.set(base, n + 1);
-      return { change, key: `${base}|${n}` };
-    });
+    const keys = changeKeys(list);
+    const keyed = list.map((change, index) => ({ change, key: keys[index] }));
     return keyed.filter(({ change }) => !filter || change.path === filter).reverse();
   }, [list, filter]);
+  const freshCards = fresh?.key === readKey ? fresh.cards : null;
+  const unfold = useCallback((cardKey: string) => {
+    setFresh((previous) => {
+      if (!previous?.cards.has(cardKey)) return previous;
+      const cards = new Set(previous.cards);
+      cards.delete(cardKey);
+      return { key: previous.key, cards };
+    });
+  }, []);
 
   const openFile = (path: string) => {
     const name = basename(path);
@@ -327,8 +365,17 @@ export function TerminalReaderChanges({ scope, tab, cwd, visible, subagent, suba
         ) : list.length === 0 ? (
           <div className="terminal-reader-empty">{t("terminal.changes.empty")}</div>
         ) : (
-          cards.map(({ change, key }, index) => (
-            <ChangeCard key={key} change={change} base={base} startOpen={index < OPEN_NEWEST} use24h={use24h} onOpenFile={openFile} />
+          cards.map(({ change, key }) => (
+            <ChangeCard
+              key={key}
+              change={change}
+              cardKey={key}
+              fresh={!!freshCards?.has(key)}
+              base={base}
+              use24h={use24h}
+              onOpenFile={openFile}
+              onUnfold={unfold}
+            />
           ))
         )}
         {changes?.available && changes.truncated && (

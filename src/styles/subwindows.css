@@ -2347,10 +2347,13 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   padding: 6px 10px 6px 14px;
   border-bottom: 1px solid var(--border-subtle);
 }
+.terminal-pane-with-changes,
 .terminal-changes-head > small { color: var(--text-secondary); }
 .terminal-changes-close {
   margin-left: auto;
   width: 24px;
+/* Terminal mode (`.terminal-pane-with-changes`): the panel over the pane's
+   right edge, which the pane pads by this inset so the fit leaves it free. */
   height: 24px;
   font: inherit;
   color: var(--text-secondary);
@@ -2504,6 +2507,20 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   color: var(--text-muted);
 }
 .terminal-reader-earlier {
+/* Arrived while the panel was shown, not unfolded yet. */
+.terminal-changes-card.fresh {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.terminal-changes-new {
+  flex: none;
+  padding: 0 6px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border-radius: var(--radius-full);
+}
   align-self: center;
   padding: 3px 12px;
   font: inherit;

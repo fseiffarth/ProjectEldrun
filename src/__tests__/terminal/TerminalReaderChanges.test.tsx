@@ -77,6 +77,10 @@ describe("the Reader's Changes panel", () => {
     // Newest first, paths shown relative to the tab's folder.
     expect(cards.map((card) => card.querySelector(".terminal-changes-path")?.textContent)).toEqual(["src/a.rs", "docs/b.md", "src/a.rs"]);
     expect(cards[1].querySelector(".terminal-changes-kind")?.textContent).toBe("Created");
+    // Every diff starts folded; what the panel found on opening is not new.
+    expect(panel.querySelectorAll(".terminal-changes-diff").length).toBe(0);
+    expect(panel.querySelectorAll(".terminal-changes-new").length).toBe(0);
+    fireEvent.click(within(cards[2]).getByRole("button", { expanded: false }));
     // The diff, with the old/new line numbers its hunk names.
     const rows = [...cards[2].querySelectorAll<HTMLElement>(".diff-line")];
     expect(rows.map((row) => row.querySelector(".diff-text")?.textContent)).toEqual(["@@ -9,2 +9,3 @@", " keep", "-old line", "+new line", "+more"]);
@@ -92,6 +96,8 @@ describe("the Reader's Changes panel", () => {
     const panel = host.querySelector<HTMLElement>(".terminal-changes")!;
     expect(panel.querySelectorAll(".terminal-changes-card").length).toBe(1);
     const card = panel.querySelector<HTMLElement>(".terminal-changes-card")!;
+    fireEvent.click(within(card).getByRole("button", { expanded: false }));
+    expect(card.querySelector(".terminal-changes-diff")).not.toBeNull();
     fireEvent.click(within(card).getByRole("button", { expanded: true }));
     expect(card.querySelector(".terminal-changes-diff")).toBeNull();
     fireEvent.click(within(card).getByRole("button", { name: "Open the file" }));
@@ -102,6 +108,41 @@ describe("the Reader's Changes panel", () => {
     }));
     fireEvent.click(within(files).getByText("All files"));
     expect(panel.querySelectorAll(".terminal-changes-card").length).toBe(3);
+  });
+
+  it("marks a change that arrives while it is shown as new, folded, until it is unfolded", async () => {
+    let current = changes;
+    invoke.mockImplementation((command: string) => {
+      if (command === "agent_tab_changes") return Promise.resolve(current);
+      if (command === "agent_tab_transcript") return Promise.resolve({ available: true, version: "v1", truncated: false, entries: [] });
+      return Promise.resolve([]);
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      useAgentReaderStore.getState().setChanges("claude", true);
+      reader(host);
+      await waitFor(() => expect(host.querySelectorAll(".terminal-changes-card").length).toBe(3));
+      current = {
+        ...changes,
+        version: "c2",
+        changes: [...changes.changes, { path: "/p/src/c.ts", kind: "edit", diff: "@@ -1,1 +1,1 @@\n-a\n+b\n", added: 1, removed: 1, at: "2026-10-02T10:03:00Z" }],
+      };
+      await vi.advanceTimersByTimeAsync(2100);
+      const newest = await waitFor(() => {
+        const cards = host.querySelectorAll<HTMLElement>(".terminal-changes-card");
+        expect(cards.length).toBe(4);
+        return cards[0];
+      });
+      expect(newest.classList.contains("fresh")).toBe(true);
+      expect(newest.querySelector(".terminal-changes-new")?.textContent).toBe("New");
+      expect(newest.querySelector(".terminal-changes-diff")).toBeNull();
+      expect(host.querySelectorAll(".terminal-changes-card.fresh").length).toBe(1);
+      fireEvent.click(within(newest).getByRole("button", { expanded: false }));
+      expect(newest.classList.contains("fresh")).toBe(false);
+      expect(newest.querySelector(".terminal-changes-diff")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says so when the conversation changed nothing yet, and closes from its own button", async () => {
@@ -116,7 +157,7 @@ describe("the Reader's Changes panel", () => {
     expect(rememberedChanges()).toEqual({ claude: false });
   });
 
-  it("is switched from the prompt strip while the chat is shown, remembered per agent CLI", () => {
+  it("is switched from the prompt strip, chat shown or not, remembered per agent CLI", () => {
     const onToggle = vi.fn();
     const strip = (readerOpen: boolean) => (
       <TerminalPromptStrip
@@ -130,10 +171,11 @@ describe("the Reader's Changes panel", () => {
       />
     );
     const { rerender } = render(strip(false));
-    expect(screen.queryByRole("button", { name: /Diffs/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Diffs/ }));
+    expect(onToggle).toHaveBeenCalledTimes(1);
     rerender(strip(true));
     fireEvent.click(screen.getByRole("button", { name: /Diffs/ }));
-    expect(onToggle).toHaveBeenCalled();
+    expect(onToggle).toHaveBeenCalledTimes(2);
     useAgentReaderStore.getState().setChanges("codex", true);
     expect(rememberedChanges()).toEqual({ codex: true });
   });

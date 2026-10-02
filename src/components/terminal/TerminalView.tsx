@@ -39,6 +39,7 @@ import { findSignInRequest, findWrappedUrls, type SignInRequest } from "../../li
 import { SIGN_IN_CARD_CLASS, TerminalSignInCard } from "./TerminalSignInCard";
 import { TerminalPromptStrip } from "./TerminalPromptStrip";
 import { TerminalReaderView } from "./TerminalReaderView";
+import { TerminalReaderChanges, changesWidthStyle } from "./TerminalReaderChanges";
 import { readerOffered } from "../../lib/agents/agentReader";
 import { useAgentReaderStore, useReaderChangesOpen, useReaderOpen } from "../../stores/agents/agentReader";
 import { useTabsStore } from "../../stores/tabs";
@@ -2008,6 +2009,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const readerAgent = readerTab?.cmd ?? cmd;
   const readerOn = useReaderOpen(readerAgent, readerAvailable);
   const changesOn = useReaderChangesOpen(readerAgent);
+  /** The Changes panel over the terminal itself while the Reader is off —
+   * the pane pads its right edge by the panel, so the fit leaves it free. */
+  const terminalChanges = changesOn && readerAvailable && !readerOn && !!readerTab;
+  const changesWidth = useAgentReaderStore((state) => state.changesWidth);
   const setReader = (on: boolean) => {
     useAgentReaderStore.getState().set(readerAgent, on);
     if (!on) setTimeout(() => termRef.current?.focus(), 0);
@@ -2031,7 +2036,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     <>
     <div
       ref={containerRef}
+      className={terminalChanges ? "terminal-pane-with-changes" : undefined}
       style={{
+        ...(terminalChanges ? changesWidthStyle(changesWidth) : null),
         flex: 1,
         minHeight: 0,
         minWidth: 0,
@@ -2042,6 +2049,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // on the right (the viewport scrollbar already insets the right edge), so
         // the text margins read as balanced. FitAddon accounts for this padding.
         ...(zoomable ? { paddingLeft: 10, paddingRight: 4 } : null),
+        ...(terminalChanges ? { paddingRight: "var(--reader-changes-inset)" } : null),
         // The ground under xterm's own canvas, which must be the SAME colour the
         // terminal paints — it shows through before the renderer's first frame
         // and in the strip below the last row. So it is read straight off
@@ -2067,6 +2075,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           changes: { open: changesOn, onToggle: () => useAgentReaderStore.getState().setChanges(readerAgent, !changesOn) },
         } : undefined}
       />
+    )}
+    {terminalChanges && readerTab && splitId && host && createPortal(
+      <TerminalReaderChanges
+        scope={splitId.scope}
+        tab={readerTab}
+        cwd={cwd}
+        visible={visible}
+        subagent={undefined}
+        subagentTitle={undefined}
+        onClose={() => useAgentReaderStore.getState().setChanges(readerAgent, false)}
+      />,
+      host,
     )}
     {readerOn && splitId && host && (
       <TerminalReaderView

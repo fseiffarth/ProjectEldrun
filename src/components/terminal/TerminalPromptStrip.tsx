@@ -60,7 +60,7 @@ export function TerminalPromptStrip({
   onReturnFocus: () => void;
   /** The Reader switch (`TerminalReaderView`), for an agent whose stored
    * conversation Tabtivity reads; absent for any other. `changes` is the
-   * Reader's Diffs switch (`TerminalReaderChanges`), shown while it is open. */
+   * Diffs switch (`TerminalReaderChanges`), beside the chat or the terminal. */
   reader?: { open: boolean; onToggle: () => void; changes?: { open: boolean; onToggle: () => void } };
 }) {
   const t = useT();
@@ -209,7 +209,7 @@ export function TerminalPromptStrip({
           </button>
         </>
       )}
-      {reader?.open && reader.changes && (
+      {reader?.changes && (
         <button
           type="button"
           className={reader.changes.open ? "prompt-strip-reader active" : "prompt-strip-reader"}
