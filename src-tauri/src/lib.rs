@@ -1712,6 +1712,7 @@ pub fn run() {
             // Usage counters + daily recap.
             commands::usage_stats::usage_bump,
             commands::usage_stats::usage_summary,
+            commands::usage_stats::usage_token_stats,
             commands::usage_stats::usage_watch_project,
             commands::usage_stats::usage_git_stats,
             commands::monitor::system_monitor_snapshot,

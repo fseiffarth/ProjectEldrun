@@ -2463,3 +2463,37 @@ unchanged; the new agents are additive.
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
+
+- [~] **Token stats in the usage recap** (2026-10-01; ✅ code-complete,
+  automated tests passing — `token_stats` cargo tests, `TokenStats.test.ts`;
+  ❌ never live-verified — pill `stats.sectionTokens`). Plan:
+  `docs/token_stats_plan.md`. The recap's **Tokens** section (under Agents)
+  shows per CLI fresh in · cache write · cache read · output and the output
+  share for the Day/Week/Month window, with a Per model toggle. Derived from
+  Claude transcripts and Codex rollouts in the agent homes
+  (`services::token_stats`, cache `token_stats.json`); other CLIs say "not
+  reported". The first scan of a big history is budgeted, so the recap shows
+  "still counting…" and asks again up to five times.
+  - [x] 🤖 Automated test
+  - [ ] 🖐️ Manual test — Token stats in the recap match `/usage` / `/status`.
+    Backend changed: `npm run backend:stale`, then rebuild/restart the window.
+    In a fresh Claude tab do a turn or two, then click the header clock (the
+    usage recap) → Day: the Claude row's Per model numbers match what `/usage` (Claude)
+    reports for that session; same for a Codex tab against `/status`. A
+    Gemini/OpenCode tab used today shows "Not reported: …", never 0.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [ ] **Token stats for more CLIs** (2026-10-01; follow-up to the item above).
+  `services::token_stats` reads only Claude and Codex; add a source per CLI
+  (and its name to `SOURCES`) as their records allow, with fixtures:
+  - [ ] OpenCode — per-message `tokens` in its storage.
+  - [ ] Gemini CLI — `chats/session-*.json` `tokens`.
+  - [ ] Copilot, Antigravity (`agy`) and others — check what their session
+    records carry before promising a split.

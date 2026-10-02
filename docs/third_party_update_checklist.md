@@ -570,6 +570,50 @@ payload carries `session_id`, and `logs/session/unified/<id>/CURRENT` — what
 only its binary name and `aider.chat/install.sh`, still served. Droid, OpenClaw and OpenCode are also `LOCAL_DRIVERS` (Ollama-backed
 tabs via `ollama launch <agent>`).
 
+### 1.6 Token usage records (Claude, Codex)
+
+**Where** `services/token_stats.rs` (scan + cache), `commands/usage_stats.rs`
+(`usage_token_stats`), `src/lib/tokenStats.ts` (the recap's Tokens section).
+Plan: `docs/token_stats_plan.md`; context: `docs/context/usage_stats.md`.
+
+**Assumes** (checked against live files, 2026-10-01)
+
+- **Claude** — `<home>/.claude/projects/<slug>/<session>.jsonl` and
+  `<slug>/<session>/subagents/agent-<id>.jsonl`. Assistant records carry
+  `message.usage` with `input_tokens` (fresh, **excludes** cache),
+  `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`
+  (thinking included), plus `message.model`, `message.id`, top-level
+  `requestId` and an ISO-UTC `timestamp`. `<synthetic>` models are skipped.
+- **Claude writes one message on several adjacent lines**, one per content
+  block, and they are *not* identical: the first is written mid-stream, so
+  `output_tokens` can **grow** from one line to the next (1727 of 56728
+  duplicate lines on live data). The scan keys a message on
+  `(message.id, requestId)` and keeps the **largest value per field** — not
+  the first line, not the sum. A release that stops repeating lines is
+  harmless; one that spreads a message's lines further apart than the dedupe
+  window (`DEDUPE_WINDOW`) would double-count.
+- **Codex** — `<home>/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`,
+  `event_msg` records with `payload.type == "token_count"` and
+  `payload.info.total_token_usage` {`input_tokens` (**includes** cached),
+  `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`}. Codex
+  repeats a `token_count` without a new turn, so the scan counts **deltas of
+  `total_token_usage`** between events, never `last_token_usage`; a total that
+  goes *down* restarts the baseline (a new thread in the same file). Input is
+  normalized: fresh = `input − cached − cache_write` (floor 0), cache read =
+  `cached_input_tokens`, cache write = `cache_write_input_tokens`. The model
+  comes from the preceding `turn_context`'s `payload.model`.
+- **Codex fallback** — a thread with no rollout counts
+  `threads.tokens_used` from `state_<n>.sqlite` as an unsplit `tokens.total`
+  (shown as "no split reported").
+
+**Verify** after a Claude or Codex update: `cargo test --manifest-path
+src-tauri/Cargo.toml token_stats`; then in a fresh tab do a turn and compare the
+recap's Tokens row with the CLI's own `/usage` (Claude) or `/status` (Codex)
+for that session. Grep a new transcript for the field names above — a renamed
+field reads as zero tokens, not as an error. If a field's meaning changes
+(e.g. Claude's `input_tokens` starts including cache), bump `CACHE_VERSION` in
+`token_stats.rs` so the cache rebuilds.
+
 ---
 
 ## 2. Ollama

@@ -37,6 +37,19 @@ export const METRIC = {
   TAB_OPENED: "tab.opened",
   TAB_CLOSED: "tab.closed",
   APP_LAUNCHED: "app.launched",
+  // `tokens.<kind>.<cli>.<model>` — agent tokens, derived backend-side from the
+  // CLIs' own records (`usage_token_stats`), never counted by the frontend.
+  // `<model>` is everything after the third `.`: model names contain dots.
+  /** Fresh input, not counting cache reads or writes. */
+  TOKENS_IN: "tokens.in",
+  /** Input written to the prompt cache. */
+  TOKENS_CACHE_W: "tokens.cache_w",
+  /** Input read back from the prompt cache. */
+  TOKENS_CACHE_R: "tokens.cache_r",
+  /** Output, thinking/reasoning included. */
+  TOKENS_OUT: "tokens.out",
+  /** A total with no split — only Codex's SQLite fallback reports one. */
+  TOKENS_TOTAL: "tokens.total",
 } as const;
 
 /** Compose `agent.prompt` + `claude` → `agent.prompt.claude`. */

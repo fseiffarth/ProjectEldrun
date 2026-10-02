@@ -235,7 +235,7 @@ stores stay at the top. No `index.ts` barrels.
 | `common/ExecTrustHost.tsx` + `lib/execTrust.ts` + `stores/execTrust.ts` | The ask-once "run this project's hooks / latexmkrc / prettier?" prompt; gated commands go through `invokeTrusted`. Mounted per window (AppShell, DetachedApp). |
 | `common/UnfencedPlatformDialog.tsx` + `stores/unfencedPlatformPrompt.ts` | Windows: the once-per-machine "agents run with your full rights" acceptance a refused agent spawn (`ELDRUN_FENCE_PLATFORM_UNACCEPTED`) asks for; concurrent tabs share one prompt, accepting writes `agent_fence_platform_accepted` before any is released, no host → refuse. Mounted per window. |
 | `common/LocalLossDialog.tsx` | Warns that lockstep or sync **destroyed something in the local mirror** (#28q). Mounted at the shell, like the alarm popup: a background pass can delete a file while the user is three tabs away. It reports, it does not confirm — the write has already happened; the gates that prevent one live upstream. |
-| `stats/StatsRecap.tsx` | Usage recap dialog: agents/models used, prompts asked, autocomplete accept/dismiss by mode/model, file churn, commits, time per project, Day/Week/Month. |
+| `stats/StatsRecap.tsx` | Usage recap dialog: agents/models used, prompts asked, agent tokens per CLI/model (`usage_token_stats`), autocomplete accept/dismiss by mode/model, file churn, commits, time per project, Day/Week/Month. |
 | `stats/StatsRecapHost.tsx` | Decides when the recap is on screen: once per day at launch (anchored on *yesterday*), or on demand via the `eldrun:open-stats` event. Mounted in `AppShell`. |
 
 **Stores (`src/stores/`), hooks, lib**
@@ -355,6 +355,7 @@ stores stay at the top. No `index.ts` barrels.
 | `lib/usageRollup.ts` | Folds UTC day/hour buckets into today/week/month windows. Generic over the payload — shared by `NetworkTrafficPane` (bytes) and the recap (counters). |
 | `lib/gpu.ts` | GPU-memory arithmetic (pure) for header, monitor and model menu: memory = dedicated VRAM + shared pool; `gpuTone` tones by ratio. |
 | `lib/usageMetrics.ts` | The metric keys (mirrors `schema::usage_stats::metric`) + how a tab maps to an agent or a local model. |
+| `lib/tokenStats.ts` | The recap's Tokens section, pure: folds `tokens.<kind>.<cli>.<model>` (model = after the third `.`) into per-CLI/per-model rows, "not reported" vs zero, output share, compact numbers, and the capped refetch while a scan is `partial`. |
 | `lib/agents/promptCount.ts` | "Enter with content pending = one submit" — the prompt/command heuristic, fed from `TerminalView`'s `onData`. |
 | `lib/calendar/conference.ts` | The video-call link verdict every Join button reads: explicit field exact; derived only from a recognized meeting host or a URL-only location. |
 | `lib/calendar/caldavPush.ts` | What bytes a CalDAV resource holds (pure): a resource groups a master + overrides by `caldav_href` (`resourceRows`, master first via `orderComponents`, `resourceIcs`). |

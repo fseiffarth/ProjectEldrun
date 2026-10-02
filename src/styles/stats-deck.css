@@ -131,6 +131,18 @@
   color: var(--text-primary);
 }
 
+/* Tokens: the split line under a bar row, and a CLI's per-model rows nested
+   under it — the same bar rows and help text, only placed. */
+.stats-token-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin: -3px 0 2px;
+}
+.stats-token-models {
+  padding-left: 14px;
+}
+
 /* Hour-of-day sparkline. */
 .stats-spark-wrap {
   display: flex;

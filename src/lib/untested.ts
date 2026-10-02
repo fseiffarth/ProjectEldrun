@@ -47,6 +47,7 @@ export const UNTESTED = {
   // --- agents — Agent sessions, schedules and the prompt chart ------
   "agentSchedule.title": { area: "agents", what: "AgentScheduleDialog · Scheduled prompts · {tab}" },
   "promptChart.heading": { area: "agents", what: "PromptChart · Prompt chart" },
+  "stats.sectionTokens": { area: "agents", what: "StatsRecap · Tokens section: per CLI fresh in / cache write / cache read / output and output share for the period, Per model expands; Codex total-only rows say no split reported; other used CLIs say not reported; a first long scan says still counting and asks again a few times" },
   "terminal.openLink.title": { area: "agents", what: "Terminal link click · asks before opening, showing the URL (plain and OSC 8 links)" },
   "terminal.signIn.title": { area: "agents", what: "Terminal sign-in card · open/copy an agent's login link, paste the code back; wrapped URLs click and copy whole" },
   "terminal.keySelect.title": { area: "agents", what: "Terminal keyboard select (Ctrl+Shift+X) · arrows/hjkl move, Shift/v select, V lines, Enter/y/Ctrl+C copy, Esc leaves; right-click copies a selection; a selection survives hovering an agent TUI; copies go through the backend clipboard" },
