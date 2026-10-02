@@ -16,12 +16,15 @@ const BUSY_WINDOW = 24;
 
 /** The hint as the TUIs print it: inside the spinner's parentheses after a
  * separator (`(9s · esc to interrupt)`, `(0s • esc to interrupt)`), opening
- * them (`(esc to interrupt)`, Gemini's `(esc to cancel, 3s)`), or ending a
- * status row (`⬝⬝■■  esc interrupt`) with no sentence stop after it. A bare
- * "esc to cancel" is a dialog's footer — a question, not work — so the cancel
- * form needs its elapsed time. */
+ * them (`(esc to interrupt)`, Gemini's `(esc to cancel, 3s)`), or as a
+ * status row's column (`⬝⬝■■  esc interrupt`) with no sentence stop after it —
+ * the row's end in `opencode --mini`, the full TUI's context and key hint
+ * further over (`⬝⬝■■ esc interrupt    12.3K (5%)  ctrl+p commands`), and
+ * `esc again to interrupt` after one press. A bare "esc to cancel" is a
+ * dialog's footer — a question, not work — so the cancel form needs its
+ * elapsed time. */
 const BUSY_HINT =
-  /\((?:[^()]*[·•,]\s*)?esc to interrupt\b[^()]*\)|\(esc to cancel, \d+s\)|(?:^|\s)esc (?:to )?interrupt\s*$/iu;
+  /\((?:[^()]*[·•,]\s*)?esc to interrupt\b[^()]*\)|\(esc to cancel, \d+s\)|(?:^|\s)esc (?:again to |to )?interrupt(?:\s*$|\s{2,})/iu;
 
 /** Claude Code's spinner row without the hint: a spinner glyph, the verb with
  * its ellipsis, then the elapsed time opening the parentheses. The finished

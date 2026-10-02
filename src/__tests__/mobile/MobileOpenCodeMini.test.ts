@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { chatTurns } from "../../../mobile-web/src/terminal/chatTurns";
 import { inputFrameStart, sessionStatus, statusFrameLines } from "../../../mobile-web/src/terminal/statusLine";
 import { currentMode, modeChoices, modeFixed } from "../../../mobile-web/src/terminal/agentModes";
+import { agentWorking } from "../../../mobile-web/src/terminal/agentBusy";
 import {
   joinOpenCodeWraps,
   openCodePickKeys,
@@ -38,7 +39,7 @@ describe("Eldrun Mobile OpenCode mini status", () => {
       ...FRAME,
     ), "OpenCode")).toEqual({
       mode: "build",
-      context: "21%",
+      context: "79%",
       model: "Muse Spark 1.3 Free",
     });
   });
@@ -83,6 +84,70 @@ describe("Eldrun Mobile OpenCode mini status", () => {
     );
     expect(inputFrameStart(screen, "OpenCode")).toBe(1);
     expect(statusFrameLines(screen, "OpenCode")).toEqual([" BUILD"]);
+  });
+});
+
+/**
+ * The *full* TUI's composer — a plain `opencode` tab — as `readableScreen`
+ * leaves it: the box's `┃` stripped with one space of its padding, its `╹▀▀`
+ * bottom edge dropped. Built from the 1.18.34 prompt component's source, not
+ * a capture; the model row comes with spans so the provider's muted colour
+ * can mark where the model's name ends.
+ */
+const composerRow = (agent: string, model: string, provider: string, variant?: string): ReadableLine => {
+  const spans = [
+    { text: ` ${agent} · `, color: "#a0a0ff" },
+    { text: model, color: "#eeeeee" },
+    { text: ` ${provider}`, color: "#808080" },
+    ...(variant ? [{ text: " · ", color: "#808080" }, { text: variant, color: "#ffaa00" }] : []),
+  ];
+  return { key: `l${seq += 1}`, text: spans.map((span) => span.text).join(""), spans };
+};
+const fullFrame = (footer: string, row = composerRow("Build", "Muse Spark 1.3 Free", "OpenCode Zen", "high")) => [
+  ...lines("Is there tailscale for ipads?", "", " Ask anything… \"Fix a TODO in the codebase\"", ""),
+  row,
+  line(footer),
+];
+
+describe("Eldrun Mobile OpenCode full TUI composer", () => {
+  it("reads the agent, the model without its provider, the variant and the context", () => {
+    expect(sessionStatus(fullFrame(" ~/projects/app                        12.3K (5%) · $0.02  ctrl+p commands"), "OpenCode"))
+      .toEqual({ mode: "build", model: "Muse Spark 1.3 Free", effort: "high", context: "95%" });
+  });
+
+  it("keeps the whole model phrase where the row's colours are unknown", () => {
+    const screen = lines(
+      "",
+      " Plan auto · Grok 4.5 GitHub Copilot",
+      " ~/projects/app                                   tab agents  ctrl+p commands",
+    );
+    expect(sessionStatus(screen, "OpenCode")).toEqual({ mode: "plan", model: "Grok 4.5 GitHub Copilot" });
+  });
+
+  it("reads the composer while the session works", () => {
+    const screen = fullFrame(" ⬝⬝■■■⬝⬝⬝ esc interrupt                 12.3K (5%)  ctrl+p commands");
+    expect(sessionStatus(screen, "OpenCode")?.model).toBe("Muse Spark 1.3 Free");
+    expect(agentWorking(screen)).toBe(true);
+    expect(agentWorking(fullFrame(" ~/projects/app                 12.3K (5%)  ctrl+p commands"))).toBe(false);
+  });
+
+  it("cuts the box, its placeholder and the footer out of the reading view", () => {
+    const screen = fullFrame(" ~/projects/app                 tab agents  ctrl+p commands");
+    expect(inputFrameStart(screen, "OpenCode")).toBe(1);
+    expect(statusFrameLines(screen, "OpenCode")).toEqual([
+      " Build · Muse Spark 1.3 Free OpenCode Zen · high",
+      " ~/projects/app                 tab agents  ctrl+p commands",
+    ]);
+  });
+
+  it("names no mode in shell mode", () => {
+    const screen = lines("", " Shell", " ~/projects/app                 esc exit shell mode");
+    expect(sessionStatus(screen, "OpenCode")).toEqual({});
+  });
+
+  it("is not found without its footer, or for a tab no label names OpenCode", () => {
+    expect(sessionStatus(lines("", " Build · Muse Spark 1.3 Free", " The tests pass."), "OpenCode")).toBeNull();
+    expect(sessionStatus(fullFrame(" ~/projects/app    ctrl+p commands"), "Claude")).toBeNull();
   });
 });
 

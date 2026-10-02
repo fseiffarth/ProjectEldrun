@@ -3525,6 +3525,35 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31bu — A plain `opencode` tab's chat fills its facts and shows it working** (2026-10-01;
+  ✅ code-complete, automated tests passing — `MobileOpenCodeMini.test.ts`
+  "full TUI composer", `MobileAgentBusy.test.ts`; ⚠️ never run on a phone;
+  untested id `mobile.focus.openCodeComposer`). The phone's chat for a plain
+  (full-screen) OpenCode tab showed `Status Model Mode` placeholders and no
+  working row while it answered: everything read the `--mini` status row
+  only. `openCodeComposer`/`openCodeFullFooter` (`openCodeMini.ts`) now read
+  the full TUI's composer — agent row `Build · <model> <provider> · <variant>`
+  (the provider cut off by its muted colour) and the footer under it
+  (`… esc interrupt …  12.3K (5%)  ctrl+p commands`); `agentBusy` accepts the
+  interrupt hint as a mid-row column. Both OpenCode readers now flip the
+  printed share *used* into context *left*, which the fact button says.
+  Shapes are read from the 1.18.34 source, not a capture (no OpenCode in the
+  fence).
+  - [ ] 🖐️ Manual phone QA (PWA rebuild + restart first) — on a plain
+    `opencode` tab, Chat view: the fact buttons show the model (without its
+    provider), the agent (`build`/`plan`) and, after a first answer, the
+    context left; send a prompt → a "… is working" row shows until the answer
+    lands; the status-line swipe shows the composer's two rows. Tab in the
+    terminal to Plan → the mode follows.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member
