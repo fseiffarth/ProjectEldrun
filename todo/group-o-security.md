@@ -1140,6 +1140,30 @@ Evidence and the focused fixes are in
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+### Threat-model recheck follow-ups (2026-10-01)
+
+- [x] **Close the Windows phone file-browser path race (BUILT 2026-10-01 · 🧪 not run live).**
+  `services::mobile_control::files_windows` now holds the project directory
+  open, opens each child with handle-relative `NtCreateFile` and
+  `FILE_OPEN_REPARSE_POINT`, rejects every reparse type from handle metadata,
+  and enumerates through the held handle. A renamed parent never redirects
+  the subsequent file open or listing. Windows tests cover internal/external
+  junction refusal, a concurrent parent swap after acquiring its handle, and
+  directory enumeration across multiple native batches. The actual helper
+  and tests cross-compile and pass Windows clippy from Linux; executing them
+  on Windows remains pending, as does live verification.
+  - [ ] 🖐️ On Windows, enable phone project files, browse a nested folder and
+    read a text/PDF file; a junction under the project must stay hidden and
+    unresolvable. Run the Windows Rust tests to exercise the scheduled swap.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 ### Safe for everyone — non-expert users (2026-09-24)
 
 Plan: `docs/safe_for_everyone_plan.md`. Goal: every "⚠️ yours" row in

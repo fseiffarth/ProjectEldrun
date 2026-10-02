@@ -284,6 +284,9 @@ gtk = "0.18"
 # `web-process-terminated` hook the Linux build takes from `webkit2gtk`).
 webview2-com = "0.38"
 windows = { version = "0.61", features = [
+    # Handle-relative, no-reparse project file reads for the phone browser.
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
     "Win32_Foundation",
     # The user's regional time picture (`GetLocaleInfoEx`) for the default
     # 12/24-hour clock (`commands/os_clock.rs`).
@@ -295,6 +298,7 @@ windows = { version = "0.61", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Storage_FileSystem",
+    "Win32_Security",
     "Win32_System_Com",
     # SEH unhandled-exception filter → crash.log line (`install_seh_filter`).
     # Debug owns the module; Kernel gates EXCEPTION_POINTERS itself and IO gates

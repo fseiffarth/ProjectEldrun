@@ -183,8 +183,8 @@ fn canonical_root(root: &Path) -> Result<PathBuf, FilesError> {
 /// to the folder before it, and listing and opening a file start from this
 /// descriptor too. Nothing is resolved by path after a check, so a folder on
 /// the way swapped for a link mid-request changes nothing — the walk already
-/// holds the real one. Elsewhere it is the path, proven per request by
-/// canonicalizing (a swap between that proof and the open is not caught there).
+/// holds the real one. Windows uses the same boundary through native
+/// handle-relative opens and handle-based directory enumeration.
 #[cfg(unix)]
 struct ProjectDir(fs::File);
 
@@ -307,52 +307,11 @@ impl ProjectDir {
     }
 }
 
-#[cfg(not(unix))]
-struct ProjectDir(PathBuf);
-
-#[cfg(not(unix))]
-impl ProjectDir {
-    /// `root` + `rel`, proven to be exactly that: canonicalizing it must change
-    /// nothing, so no link anywhere on the way (not just at the leaf) — and a
-    /// link swapped in after the listing is caught here, per request.
-    fn open(root: &Path, rel: &str) -> Result<Self, FilesError> {
-        let root = canonical_root(root)?;
-        if !valid_rel(rel) {
-            return Err(FilesError::NotFound);
-        }
-        let mut expected = root.clone();
-        if !rel.is_empty() {
-            expected.extend(rel.split('/'));
-        }
-        let canonical = expected.canonicalize().map_err(|_| FilesError::NotFound)?;
-        if canonical != expected || !canonical.starts_with(&root) || !canonical.is_dir() {
-            return Err(FilesError::NotFound);
-        }
-        Ok(Self(canonical))
-    }
-
-    fn child_dir_meta(&self, name: &str) -> Option<fs::Metadata> {
-        fs::symlink_metadata(self.0.join(name)).ok().filter(fs::Metadata::is_dir)
-    }
-
-    fn open_file(&self, name: &str) -> Option<(fs::File, fs::Metadata)> {
-        outbox::open_regular(&self.0.join(name))
-    }
-
-    fn entries(&self) -> Result<Vec<(String, bool)>, FilesError> {
-        let mut out = Vec::new();
-        for entry in fs::read_dir(&self.0).map_err(|e| FilesError::Io(e.to_string()))? {
-            let Ok(entry) = entry else { continue };
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
-            // `file_type` does not follow a link.
-            let Ok(kind) = entry.file_type() else { continue };
-            if kind.is_dir() || kind.is_file() {
-                out.push((name, kind.is_dir()));
-            }
-        }
-        Ok(out)
-    }
-}
+#[cfg(windows)]
+#[path = "files_windows.rs"]
+mod windows;
+#[cfg(windows)]
+use windows::ProjectDir;
 
 fn child(rel: &str, name: &str) -> String {
     if rel.is_empty() { name.to_string() } else { format!("{rel}/{name}") }
@@ -579,6 +538,96 @@ mod tests {
         assert!(held.child_dir_meta("deep").is_some());
         // And a fresh request stops at the link.
         assert_eq!(read(dir.path(), "src/main.rs"), Err(FilesError::NotFound));
+    }
+
+    // Junctions need neither Administrator rights nor Developer Mode. These
+    // tests run on Windows CI and must fail if creating the fixture fails.
+    #[cfg(windows)]
+    fn junction(target: &Path, link: &Path) {
+        use std::os::windows::process::CommandExt;
+        let output = std::process::Command::new("cmd")
+            .arg("/D")
+            .raw_arg(format!("/C mklink /J \"{}\" \"{}\"", link.display(), target.display()))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "mklink: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junctions_are_not_listed_or_traversed_even_when_they_point_inside() {
+        let dir = tree();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.txt"), "private").unwrap();
+        junction(outside.path(), &dir.path().join("away"));
+        junction(&dir.path().join("src"), &dir.path().join("alias"));
+        junction(outside.path(), &dir.path().join("src/deep/escape"));
+
+        let listing = list(dir.path(), "", KEY, "p1").unwrap();
+        assert!(!names(&listing).contains(&"away"));
+        assert!(!names(&listing).contains(&"alias"));
+        assert!(!names(&list(dir.path(), "src/deep", KEY, "p1").unwrap()).contains(&"escape"));
+        for path in ["away/secret.txt", "alias/main.rs", "src/deep/escape/secret.txt", "away"] {
+            assert_eq!(read(dir.path(), path), Err(FilesError::NotFound), "{path}");
+        }
+        assert_eq!(list(dir.path(), "away", KEY, "p1"), Err(FilesError::NotFound));
+        assert_eq!(list(dir.path(), "alias", KEY, "p1"), Err(FilesError::NotFound));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn handle_enumeration_continues_across_batches_and_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        // These native directory records total more than the 64 KiB buffer.
+        let count = 800;
+        for i in 0..count {
+            fs::write(dir.path().join(format!("entry-{i:04}-{}", "x".repeat(100))), "ok").unwrap();
+        }
+        let held = ProjectDir::open(dir.path(), "").unwrap();
+        for _ in 0..2 {
+            let entries = held.entries().unwrap();
+            assert_eq!(entries.len(), count);
+            assert_eq!(entries.iter().map(|(name, _)| name).collect::<std::collections::HashSet<_>>().len(), count);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_concurrent_parent_junction_replacement_cannot_redirect_a_held_walk() {
+        let dir = tree();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir(outside.path().join("deep")).unwrap();
+        fs::write(outside.path().join("main.rs"), "private").unwrap();
+        fs::write(outside.path().join("leak.txt"), "private").unwrap();
+        fs::write(outside.path().join("deep/notes.txt"), "private").unwrap();
+
+        // Precisely schedule the attacker between acquiring the parent and
+        // opening/listing its children: the original path implementation
+        // would leak both the file bytes and the outside listing here.
+        let held = ProjectDir::open(dir.path(), "src").unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                fs::rename(dir.path().join("src"), dir.path().join("src-moved")).unwrap();
+                junction(outside.path(), &dir.path().join("src"));
+            }).join().unwrap();
+
+            let (mut file, _) = held.open_file("main.rs").unwrap();
+            let mut text = String::new();
+            file.read_to_string(&mut text).unwrap();
+            assert_eq!(text, "fn main() {}\n");
+            let entries = held.entries().unwrap();
+            assert!(entries.iter().any(|(name, _)| name == "deep"));
+            assert!(!entries.iter().any(|(name, _)| name == "leak.txt"));
+            assert!(held.child_dir_meta("deep").is_some());
+            // A second step of a walk also uses the held parent handle.
+            let deep = held.child_dir("deep").unwrap();
+            let (mut file, _) = deep.open_file("notes.txt").unwrap();
+            text.clear();
+            file.read_to_string(&mut text).unwrap();
+            assert_eq!(text, "deep");
+        });
+        assert_eq!(read(dir.path(), "src/main.rs"), Err(FilesError::NotFound));
+        assert_eq!(list(dir.path(), "src", KEY, "p1"), Err(FilesError::NotFound));
     }
 
     #[test]
