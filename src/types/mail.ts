@@ -590,6 +590,9 @@ export interface MailDraft {
   /** Addresses a root agent suggested. Never in `to` and never read by a send:
    *  the composer offers each as a pill the user adds with a click. */
   suggested_to?: string[];
+  /** An agent draft the user approved in ✓ Approvals, so it sits in the
+   *  "Drafted by agents" folder. An agent's update unsets it again. */
+  filed?: boolean;
 }
 
 export interface MailSendResult {

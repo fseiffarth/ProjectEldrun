@@ -221,6 +221,7 @@ export const UNTESTED = {
   "rootOverlay.viewers": { area: "layout", what: "RootOverlay · viewers, Files tabs and links opened in the console stay in root" },
   "rootOverlay.1": { area: "layout", what: "RootOverlay · ⚿ Tabtivity tools + ✓ Approvals" },
   "rootConsole.installTabTitle": { area: "layout", what: "RootOverlay · a one-click install's tab pulses in the console strip until clicked" },
+  "rootReview.groupApproveAll": { area: "layout", what: "RootReviewStrip · Approve all per MCP group; ✓ on a mail draft files it under Drafted by agents" },
   "rootReview.icsImport": { area: "layout", what: "RootReviewStrip · Calendar file staged by calendar_import_ics" },
   "rootReview.setting": { area: "layout", what: "SettingsPanel · Review root-agent writes" },
   "rootReview.title": { area: "layout", what: "RootReviewStrip · Agent proposals" },

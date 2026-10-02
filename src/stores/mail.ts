@@ -253,9 +253,12 @@ interface MailStore {
   closeAccountDialog: () => void;
 
   /** Drafts an agent wrote through the root MCP (`origin` set) that the user
-   *  has not yet sent, discarded or edited. Read by the pane's strip and by the
-   *  root console's review strip; refreshed on `root-mcp-changed` kind `draft`. */
+   *  has not yet sent, discarded or edited, split by approval: `agentDrafts`
+   *  is the "Drafted by agents" folder (approved, `filed`), `pendingAgentDrafts`
+   *  what still waits in ✓ Approvals. Refreshed on `root-mcp-changed` kind
+   *  `draft`. */
   agentDrafts: MailDraft[];
+  pendingAgentDrafts: MailDraft[];
   loadAgentDrafts: () => Promise<void>;
   /** Open the overlay on an agent draft's account with the composer on it, in
    *  its own tab — never an "approve": the composer's Send stays the only way
@@ -536,10 +539,15 @@ export const useMailStore = create<MailStore>((set, get) => ({
   closeAccountDialog: () => set({ accountDialog: null }),
 
   agentDrafts: [],
+  pendingAgentDrafts: [],
   loadAgentDrafts: async () => {
     // A locked or never-opened store lists nothing; that is not an error here.
-    const drafts = await mailAgentDrafts().catch(() => [] as MailDraft[]);
-    set({ agentDrafts: Array.isArray(drafts) ? drafts : [] });
+    const listed = await mailAgentDrafts().catch(() => [] as MailDraft[]);
+    const drafts = Array.isArray(listed) ? listed : [];
+    set({
+      agentDrafts: drafts.filter((d) => d.filed),
+      pendingAgentDrafts: drafts.filter((d) => !d.filed),
+    });
   },
   openAgentDraft: async (draft) => {
     if (!draft) return;

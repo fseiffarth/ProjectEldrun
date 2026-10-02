@@ -1495,6 +1495,36 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
 .root-review-group.open > .root-review-group-label {
   color: var(--accent);
 }
+/* One open group per MCP group (mail, calendar, to-do), its own Approve all
+   at the label's end. */
+.root-review-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.root-review-group-head > span:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.root-review-panel .root-review-group-head > .settings-btn {
+  flex: 0 0 auto;
+  width: auto;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.root-review-group.open + .root-review-group.open {
+  margin-top: 8px;
+}
+.root-review-draft-body {
+  max-height: 9em;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
 .root-review-group.decided {
   margin-top: 8px;
   padding-top: 10px;

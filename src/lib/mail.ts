@@ -686,6 +686,12 @@ export function mailAgentDrafts(): Promise<MailDraft[]> {
   return invoke<MailDraft[]>("mail_agent_drafts");
 }
 
+/** ✓ Approvals' approve: file these agent drafts, as shown, into the "Drafted
+ *  by agents" folder. Refuses (and files the rest) when one changed since. */
+export function mailAgentDraftsFile(drafts: MailDraft[]): Promise<number> {
+  return invoke<number>("mail_agent_drafts_file", { drafts });
+}
+
 export function mailDraftDiscard(draftId: string): Promise<void> {
   return invoke<void>("mail_draft_discard", { draftId });
 }

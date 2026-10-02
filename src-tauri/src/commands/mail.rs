@@ -3626,6 +3626,19 @@ pub async fn mail_agent_drafts(state: State<'_, MailState>) -> Result<Vec<MailDr
     .map_err(|e| e.to_string())?
 }
 
+/// ✓ Approvals' approve on agent drafts: file each, exactly as the panel
+/// showed it, into the "Drafted by agents" folder. Nothing is sent.
+#[tauri::command]
+pub async fn mail_agent_drafts_file(
+    drafts: Vec<MailDraft>,
+    state: State<'_, MailState>,
+) -> Result<usize, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || store_of(&rt)?.file_agent_drafts(&drafts))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Discard one draft and whatever was staged for it.
 #[tauri::command]
 pub async fn mail_draft_discard(

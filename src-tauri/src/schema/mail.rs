@@ -1127,6 +1127,12 @@ pub struct MailDraft {
     /// by a send: the composer offers each as a pill the user adds by a click.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_to: Option<Vec<String>>,
+    /// An agent draft the user approved in ✓ Approvals: it now sits in the
+    /// "Drafted by agents" folder. Unset until then (and on older drafts, which
+    /// therefore come up for approval once); an agent's update unsets it again,
+    /// so a changed draft is approved again before it is filed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub filed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

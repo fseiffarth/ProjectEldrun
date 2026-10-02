@@ -1635,6 +1635,7 @@ pub fn run() {
             commands::mail::mail_draft_save,
             commands::mail::mail_agent_drafts,
             commands::mail::mail_draft_discard,
+            commands::mail::mail_agent_drafts_file,
             commands::mail::mail_agent_mark,
             commands::mail::mail_agent_mark_folder,
             commands::mail::mail_agent_mark_sender,

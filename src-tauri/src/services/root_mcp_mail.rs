@@ -1072,6 +1072,8 @@ fn mail_draft_update(mail: &ScopedMail, caller: Caller, args: &Value) -> Result<
     // truth and every row agent-origin); no other path adds one.
     draft.staged.retain(|a| a.origin.as_deref() == Some("agent"));
     draft.bcc.clear();
+    // A changed draft leaves the folder for ✓ Approvals until approved again.
+    draft.filed = false;
     let staging = attach_files(mail, caller, args, Some(&before))?;
     let mut reply = json!({ "draft_id": draft.id, "sent": false });
     write_draft(mail, Some(&before), &draft, staging, &mut reply)?;
@@ -1416,6 +1418,26 @@ mod tests {
         assert!(call(&b, "mail_draft_create", &json!({"account_id":"open"})).is_err());
         super::super::root_mcp::revoke_tab(&first.identity.tab);
         super::super::root_mcp::revoke_tab(&second.identity.tab);
+    }
+
+    /// A draft the user approved into "Drafted by agents" goes back to ✓
+    /// Approvals when its agent changes it.
+    #[test]
+    fn an_agent_update_unfiles_an_approved_draft() {
+        let f = fx();
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        std::fs::write(&settings, r#"{"root_mcp_mail":true}"#).unwrap();
+        let (_, session) = super::super::root_mcp::test_session(Caller::Agent);
+        let mut a = stores(Some(&f), Caller::Agent); a.settings = &settings; a.session = Some(&session);
+        let created = call(&a, "mail_draft_create", &json!({"account_id":"open", "subject":"Offer"})).unwrap().0;
+        let id = created["draft_id"].as_str().unwrap().to_string();
+        let filed = |f: &Fx| f.drafts.lock().unwrap().iter().find(|d| d.id == id).unwrap().filed;
+        assert!(!filed(&f), "a new draft waits for approval");
+        f.drafts.lock().unwrap().iter_mut().find(|d| d.id == id).unwrap().filed = true;
+        call(&a, "mail_draft_update", &json!({"draft_id":id, "subject":"Offer v2"})).unwrap();
+        assert!(!filed(&f), "a changed draft is approved again");
+        super::super::root_mcp::revoke_tab(&session.identity.tab);
     }
 
     #[test]
