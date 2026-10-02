@@ -234,6 +234,8 @@ const UNDO_CLEAR_RETRY = 1_200;
 /** When the Reader reads the session again after an Undo: a relaunched agent
  * takes a few seconds to come back onto the conversation it resumes. */
 const UNDO_RELOADS = [2_000, 5_000, 10_000];
+/** The longest the Undo chip shows its progress after the desktop took it. */
+const UNDO_SETTLE_MAX = 12_000;
 const CODEX_AGENT = /codex/iu;
 
 /** Session lines the phone keeps. Matches the desktop sidecar's replay depth
@@ -987,6 +989,12 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   const [editNote, setEditNote] = useState<TranslationKey | "">("");
   /** Why the last Undo did nothing, shown under the composer. */
   const [undoNote, setUndoNote] = useState<TranslationKey | "">("");
+  /** An Undo on its way: "asking" until the desktop takes it, then the
+   * clear's mark it waits to read back (UNDO_SETTLE_MAX at most). Meanwhile
+   * the chip and an empty chat say so. */
+  const [undoing, setUndoing] = useState<false | "asking" | { mark: ClearMark | null }>(false);
+  /** Which Undo the settle timer belongs to, so an old one ends no newer. */
+  const undoRun = useRef(0);
   /** Bumped to make the Reader read the stored session again at once. */
   const [transcriptReload, setTranscriptReload] = useState(0);
   /** The new-conversation button was tapped while Codex worked — Codex refuses
@@ -1958,6 +1966,13 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   /** The new chat's records while the one cleared from here is still what the
    * desktop answers with; `null` once another session is read. */
   const sinceClear = useMemo(() => afterClear(transcript?.entries ?? [], clearedAt), [transcript, clearedAt]);
+  // The Undo is done once the session read holds the cleared conversation's
+  // last record again (at once, when that conversation was empty).
+  useEffect(() => {
+    if (typeof undoing !== "object") return;
+    if (undoing.mark && afterClear(transcript?.entries ?? [], undoing.mark) === null) return;
+    setUndoing(false);
+  }, [undoing, transcript]);
   const storedEntries = useMemo(() => sinceClear ?? transcript?.entries ?? [], [sinceClear, transcript]);
   const sessionEntries = useMemo(() => withPending(storedEntries, pending), [storedEntries, pending]);
   const sessionAgents = useMemo(() => sessionEntries.filter((entry) => entry.kind === "agent"), [sessionEntries]);
@@ -2627,11 +2642,18 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * restart of Tabtivity would. Claude's hook records the clear a moment after the
    * command lands, so a tap that beats it is tried once more. */
   const undoClearConversation = () => {
+    const mark = clearedAt;
+    const run = ++undoRun.current;
     setUndoable(false);
     setUndoNote("");
+    setUndoing("asking");
     const attempt = (retry: boolean): void => {
       undoClear(tab.id)
         .then(() => {
+          setUndoing({ mark });
+          window.setTimeout(() => {
+            if (undoRun.current === run) setUndoing(false);
+          }, UNDO_SETTLE_MAX);
           // The cleared conversation is the session read again, all of it:
           // read it afresh now, and again while a relaunched agent comes up.
           setClearedAt(null);
@@ -2652,6 +2674,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
             window.setTimeout(() => attempt(false), UNDO_CLEAR_RETRY);
             return;
           }
+          setUndoing(false);
           setUndoNote(code === "nothing_to_undo" ? "mobile.composer.undoGone"
             : code === "remote_tab" ? "mobile.composer.undoRemote"
             : "mobile.composer.undoFailed");
@@ -3701,7 +3724,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
             ? subagentView
             : sessionShown
             ? (transcript && sessionEntries.length === 0 && !liveQuestion && !sessionBusy
-              ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
+              ? (undoing
+                ? <div className="readable-empty" role="status" aria-busy="true"><span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span><strong>{t("mobile.transcript.undoing")}</strong></div>
+                : <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>)
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && !sinceClear && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
                   <TranscriptTurns entries={sessionEntries} part="settled" cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} planLabel={t("mobile.transcript.plan")} planUntested={planUntested} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} onResend={resendPrompt} onEdit={startEdit} posts={chatPosts} renderPost={renderPost} />
@@ -3865,10 +3890,12 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
             })}
             {/* Clear sends /clear at once, draft or not; the draft stays. Right
                 after one it reads Undo, until the new chat gets a prompt. */}
-            {undoable
+            {undoing
+              ? <button className="composer-prefix composer-undoing" disabled aria-busy="true" onPointerDown={(event) => event.preventDefault()} aria-label={t("mobile.composer.undoing")} title={t("mobile.composer.undoing")}><span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span>{t("mobile.composer.undoing")}</button>
+              : undoable
               ? <button className="composer-prefix" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={undoClearConversation} aria-label={t("mobile.composer.undoClearHint")} title={t("mobile.composer.undoClearHint")}>{t("mobile.composer.undoClear")}</button>
               : <button className="composer-prefix" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={clearConversation} aria-label={t("mobile.composer.clearChat")} title={t("mobile.composer.clearChat")}>{t("mobile.composer.clearChip")}</button>}
-            {undoable && isUntested("mobile.composer.undoClear") && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
+            {((undoable && isUntested("mobile.composer.undoClear")) || (undoing && isUntested("mobile.composer.undoing"))) && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
             {/* Commit opens its sheet: one commit, or split into several. */}
             <button className="composer-prefix composer-commit" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={() => setCommitSheet(true)} aria-label={t("mobile.commit.open")} aria-haspopup="dialog" aria-expanded={commitSheet} title={t("mobile.commit.open")}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5" /><path d="M2 12h6.5M15.5 12H22" /></svg></button>
             </div>

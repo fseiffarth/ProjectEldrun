@@ -615,11 +615,12 @@ describe(`${BRAND.display} Mobile Focus reads the stored session`, () => {
   it("offers Undo after a Claude clear: the desktop resumes the cleared chat and the Reader shows it again", async () => {
     localStorage.setItem(storageKey("mobile.view.claude"), "focus");
     const undoCalls: string[] = [];
+    let answerUndo = () => {};
     const sidecar = sidecarFetch(() => STORED);
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
       if (url.endsWith("/undo-clear")) {
         undoCalls.push(init?.method ?? "GET");
-        return Promise.resolve(jsonResponse(200, { undone: true }));
+        return new Promise((resolve) => { answerUndo = () => resolve(jsonResponse(200, { undone: true })); });
       }
       return sidecar(url);
     }));
@@ -636,6 +637,14 @@ describe(`${BRAND.display} Mobile Focus reads the stored session`, () => {
     fireEvent.click(undo);
     await settle();
     expect(undoCalls).toEqual(["POST"]);
+    // Until the desktop answers and the conversation is read back, the chip
+    // and the empty chat say the Undo is under way.
+    const undoing = screen.getByRole("button", { name: "Undoing…" });
+    expect(undoing.getAttribute("aria-busy")).toBe("true");
+    expect(screen.getByText("Bringing the conversation back…")).toBeTruthy();
+    answerUndo();
+    await settle();
+    expect(screen.queryByRole("button", { name: "Undoing…" })).toBeNull();
     expect(screen.getByText("add a clear button")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Start a new conversation" }).textContent).toBe("Clear");
   });

@@ -105,6 +105,8 @@ export const dict: Dict = {
   "mobile.composer.clearChip": "Effacer",
   "mobile.composer.undoClear": "Annuler",
   "mobile.composer.undoClearHint": "Récupérer la conversation que vous venez d’effacer",
+  "mobile.composer.undoing": "Annulation…",
+  "mobile.transcript.undoing": "Récupération de la conversation…",
   "mobile.composer.undoGone": "Rien à annuler : la conversation a continué depuis l’effacement.",
   "mobile.composer.undoFailed": "Impossible d’annuler l’effacement. {app} est-il ouvert sur l’ordinateur avec cet onglet ?",
   "mobile.composer.undoRemote": "Cet onglet tourne sur un hôte distant ; l’effacement ne peut pas y être annulé d’ici.",

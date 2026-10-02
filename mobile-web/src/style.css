@@ -990,6 +990,9 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-prefix { flex:0 0 auto; height:30px; padding:0 11px; border:1px solid #3a3f55; border-radius:15px; background:transparent; color:#c8cdda; font:inherit; font-size:.8rem; }
 .composer-prefix.active { border-color:#8c7df4; background:rgba(120,104,217,.28); color:#fff; }
 .composer-prefix:disabled { opacity:.5; }
+/* The Undo chip while the cleared conversation comes back: dots, not dimmed. */
+.composer-prefix.composer-undoing { display:inline-flex; align-items:center; gap:6px; border-color:#8fb8ff; color:#d9dce7; }
+.composer-prefix.composer-undoing:disabled { opacity:1; }
 /* Commit: an icon chip, so a fourth chip still fits a narrow phone. */
 .composer-prefix.composer-commit { display:grid; place-items:center; width:30px; padding:0; }
 .composer-bar .composer-commit svg { width:17px; height:17px; }

@@ -105,6 +105,8 @@ export const dict: Dict = {
   "mobile.composer.clearChip": "Cancella",
   "mobile.composer.undoClear": "Annulla",
   "mobile.composer.undoClearHint": "Recupera la conversazione appena cancellata",
+  "mobile.composer.undoing": "Annullamento…",
+  "mobile.transcript.undoing": "Recupero della conversazione…",
   "mobile.composer.undoGone": "Niente da annullare: la conversazione è andata avanti dopo la cancellazione.",
   "mobile.composer.undoFailed": "Impossibile annullare la cancellazione. {app} è aperto sul desktop con questa scheda?",
   "mobile.composer.undoRemote": "Questa scheda gira su un host remoto; da qui la cancellazione non si può annullare.",

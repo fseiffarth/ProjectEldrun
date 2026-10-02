@@ -105,6 +105,8 @@ export const dict: Dict = {
   "mobile.composer.clearChip": "Leeren",
   "mobile.composer.undoClear": "Rückgängig",
   "mobile.composer.undoClearHint": "Die eben geleerte Unterhaltung zurückholen",
+  "mobile.composer.undoing": "Wird zurückgeholt…",
+  "mobile.transcript.undoing": "Die Unterhaltung wird zurückgeholt…",
   "mobile.composer.undoGone": "Nichts rückgängig zu machen: Die Unterhaltung ist seit dem Leeren weitergegangen.",
   "mobile.composer.undoFailed": "Das Leeren ließ sich nicht rückgängig machen. Ist {app} am Desktop mit diesem Tab offen?",
   "mobile.composer.undoRemote": "Dieser Tab läuft auf einem entfernten Host; dort lässt sich das Leeren von hier nicht rückgängig machen.",

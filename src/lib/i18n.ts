@@ -113,6 +113,8 @@ export const enSource = {
   "mobile.project.menu": "Project menu",
   "mobile.project.files": "Project files",
   "mobile.composer.undoClearHint": "Bring back the conversation you just cleared",
+  "mobile.composer.undoing": "Undoing…",
+  "mobile.transcript.undoing": "Bringing the conversation back…",
   "mobile.composer.undoGone": "Nothing to undo: the conversation has moved on since the clear.",
   "mobile.composer.undoFailed": "The clear could not be undone. Is desktop {app} open with this tab?",
   "mobile.composer.undoRemote": "This tab runs on a remote host, where the clear cannot be undone from here.",

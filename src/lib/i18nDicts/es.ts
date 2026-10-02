@@ -105,6 +105,8 @@ export const dict: Dict = {
   "mobile.composer.clearChip": "Borrar",
   "mobile.composer.undoClear": "Deshacer",
   "mobile.composer.undoClearHint": "Recuperar la conversación que acabas de borrar",
+  "mobile.composer.undoing": "Deshaciendo…",
+  "mobile.transcript.undoing": "Recuperando la conversación…",
   "mobile.composer.undoGone": "Nada que deshacer: la conversación ha seguido desde que se borró.",
   "mobile.composer.undoFailed": "No se pudo deshacer el borrado. ¿Está {app} abierto en el escritorio con esta pestaña?",
   "mobile.composer.undoRemote": "Esta pestaña se ejecuta en un host remoto; desde aquí no se puede deshacer el borrado.",
