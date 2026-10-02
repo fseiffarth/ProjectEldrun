@@ -20,9 +20,7 @@
 #     after one. For the few spellings no constant can reach — a serde key, an
 #     `include_bytes!` path;
 #   * the current name in a comment: comments are prose, like the docs. The
-#     OLD name in a comment is reported (see COMMENTS_ARE_PROSE);
-#   * the release repository's name (`app_repo!` in brand.rs), which carries
-#     the old name until the repository itself is renamed.
+#     OLD name in a comment is reported (see COMMENTS_ARE_PROSE).
 #
 # Runs in CI next to privacy-check.sh, and by hand with the other gates.
 set -euo pipefail
@@ -168,9 +166,6 @@ needle="$APP_LEGACY_SLUG"
 if [ "$APP_SLUG" != "$APP_LEGACY_SLUG" ]; then
   needle="$APP_LEGACY_SLUG|$APP_SLUG"
 fi
-# The release repository's name, lowercase: not a spelling of the app's name.
-repo_name="$(_brand_sh_macro app_repo)"
-repo_name="$(printf '%s' "${repo_name#*/}" | tr '[:upper:]' '[:lower:]')"
 
 # Index of the ALLOW entry covering a path, or nothing.
 allow_index() {
@@ -216,7 +211,7 @@ if [ "${#scan[@]}" -gt 0 ]; then
   # reporting: `//` and `#` open a comment only at the start of a line or
   # after whitespace (not the `//` of a URL in a string, not `$#`), and `/*`
   # only there or after `{` / `(` (not the `/*` of a glob like `**/*.ts`).
-  hits="$(awk -v needle="$needle" -v legacy="$APP_LEGACY_SLUG" -v repo="$repo_name" -v prose="$COMMENTS_ARE_PROSE" '
+  hits="$(awk -v needle="$needle" -v legacy="$APP_LEGACY_SLUG" -v prose="$COMMENTS_ARE_PROSE" '
     function style_of(name,   base, ext) {
       base = name; sub(/^.*\//, "", base)
       if (base !~ /\./ || base ~ /^\.[^.]*$/ || base == "Dockerfile") return "hash"
@@ -275,7 +270,6 @@ if [ "${#scan[@]}" -gt 0 ]; then
       mark = index($0, "brand-check: allow") > 0
       code = tolower(strip($0))
       whole = tolower($0)
-      if (repo != "") { gsub(repo, "", code); gsub(repo, "", whole) }
       # Code may spell neither name; a comment may not spell the old one.
       if (!mark && !marked && (code ~ needle || (!prose && whole ~ legacy))) printf "%s:%d: %s\n", FILENAME, FNR, $0
       marked = mark

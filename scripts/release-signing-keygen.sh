@@ -38,4 +38,4 @@ chmod 644 "$pub"
 
 echo "private key: $key"
 echo "public key:  $pub (commit this)"
-echo "next: gh secret set RELEASE_SIGNING_KEY --repo fseiffarth/tabtivity < \"$key\""
+echo "next: gh secret set RELEASE_SIGNING_KEY --repo $APP_REPO < \"$key\""

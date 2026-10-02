@@ -72,6 +72,8 @@ APP_UPPER="$(_brand_sh_macro app_upper)"
 APP_LEGACY_DISPLAY="$(_brand_sh_macro legacy_name)"
 APP_LEGACY_SLUG="$(_brand_sh_macro legacy_slug)"
 APP_LEGACY_UPPER="$(_brand_sh_macro legacy_upper)"
+# The GitHub repository releases are published from, `<owner>/<name>`.
+APP_REPO="$(_brand_sh_macro app_repo)"
 APP_BIN_NAME="$(_brand_sh_bin_name)"
 
 if [ -z "$APP_DISPLAY" ] || [ -z "$APP_SLUG" ] || [ -z "$APP_UPPER" ] || [ -z "$APP_LEGACY_DISPLAY" ] || [ -z "$APP_LEGACY_SLUG" ] || [ -z "$APP_LEGACY_UPPER" ]; then
