@@ -302,6 +302,8 @@ export const dict: Dict = {
   "mobile.transcript.emptyHint": "La conversation enregistrée s'affiche ici dès que l'agent a répondu.",
   "mobile.transcript.question": "En attente de votre réponse",
   "mobile.transcript.answering": "Envoi…",
+  "mobile.question.typePlaceholder": "Votre réponse…",
+  "mobile.question.typeSend": "Envoyer",
   "mobile.transcript.prompt": "Votre prompt",
   "mobile.transcript.answer": "Réponse",
   "mobile.transcript.plan": "Plan",

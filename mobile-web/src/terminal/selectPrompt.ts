@@ -519,6 +519,29 @@ export function selectKeys(current: number, target: number): string[] {
   return [...selectMoveKeys(current, target), "\r"];
 }
 
+/** Claude Code's free-text row under an agent's question (AskUserQuestion,
+ * 2.1.287): `4. Type something.`, or `4. [ ] Type something` on a multi-select
+ * one. It is a text field, not a choice — Enter on it while empty answers
+ * nothing — so a phone tapping it has to be asked for the words. Once typed,
+ * the row prints them in place of this placeholder. */
+const FREE_TEXT = /^(?:\[[^\]]\]\s+)?Type something\.?$/u;
+
+/** Whether `option` is the question's free-text row (`FREE_TEXT`). */
+export function freeTextRow(option: SelectOption): boolean {
+  return FREE_TEXT.test(option.label);
+}
+
+/** The writes that answer a question's free-text row with `text`: walk the
+ * highlight onto it — which focuses its field — type the words as one line,
+ * and accept. Not on a multi-select question: typing there ticks the row's box
+ * by itself and Enter would untick it, so its Submit row still sends it. */
+export function freeTextWrites(current: number, option: SelectOption, text: string): string[] {
+  const line = text.replace(/\s+/gu, " ").trim();
+  if (!line) return [];
+  const writes = [...selectMoveKeys(current, option.index), line];
+  return CHECKBOX_LABEL.test(option.label) ? writes : [...writes, "\r"];
+}
+
 /** The arrow keys alone: the highlight moves, nothing is accepted. */
 export function selectMoveKeys(current: number, target: number): string[] {
   const distance = Math.abs(target - current);
