@@ -77,6 +77,7 @@ pub fn migrate_project(pair: &Pair, root: &Path) -> ProjectReport {
             repair_worktrees(pair, root, &mut report);
         }
         update_exclude(pair, &git_dir, &mut report);
+        exclude_folder_ignored_under_old_name(pair, root, &git_dir, &mut report);
         move_refs(pair, root, &mut report);
     }
     report
@@ -105,7 +106,7 @@ fn needs_work(pair: &Pair, root: &Path) -> bool {
             }) || old_rule.is_some_and(|rule| {
                 std::fs::read_to_string(git_dir.join("info").join("exclude"))
                     .is_ok_and(|rules| rules.lines().any(|line| line.trim() == rule))
-            })
+            }) || gitignore_names_old_folder_only(pair, root, &git_dir)
         }
         _ => false,
     }
@@ -206,6 +207,63 @@ fn update_exclude(pair: &Pair, git_dir: &Path, report: &mut ProjectReport) {
     }
 }
 
+/// Whether one line of an ignore file names `dir` at the top of the tree
+/// (`.x`, `.x/`, `/.x/`).
+fn names_dir(rules: &str, dir: &str) -> bool {
+    rules
+        .lines()
+        .any(|line| line.trim().trim_start_matches('/').trim_end_matches('/') == dir)
+}
+
+/// The launch sweep's cheap look for what
+/// [`exclude_folder_ignored_under_old_name`] fixes: the project's own
+/// `.gitignore` names the old folder, nothing names the current one, and the
+/// current one is there. No `git`.
+fn gitignore_names_old_folder_only(pair: &Pair, root: &Path, git_dir: &Path) -> bool {
+    let Some(old_dir) = pair.legacy(Name::PROJECT_DIR) else { return false };
+    let new_dir = pair.cur(Name::PROJECT_DIR);
+    if !root.join(&new_dir).is_dir() {
+        return false;
+    }
+    let gitignore = std::fs::read_to_string(root.join(".gitignore")).unwrap_or_default();
+    let exclude = std::fs::read_to_string(git_dir.join("info").join("exclude")).unwrap_or_default();
+    names_dir(&gitignore, &old_dir) && !names_dir(&gitignore, &new_dir) && !names_dir(&exclude, &new_dir)
+}
+
+/// An older scaffold wrote the old folder's name into the project's own
+/// `.gitignore`. That file is never edited, so once the folder is renamed git
+/// sees it, and every tab-layout save shows up in `git status`. When git
+/// ignored the folder under its old name and does not under the current one,
+/// the current rule goes into `info/exclude`, where the app keeps it anyway.
+/// Runs after the rename and again on a project renamed before this existed.
+fn exclude_folder_ignored_under_old_name(pair: &Pair, root: &Path, git_dir: &Path, report: &mut ProjectReport) {
+    let Some(old_dir) = pair.legacy(Name::PROJECT_DIR) else { return };
+    let new_dir = pair.cur(Name::PROJECT_DIR);
+    if !root.join(&new_dir).is_dir() {
+        return;
+    }
+    // A trailing slash makes git match a directory rule against a folder that
+    // no longer exists. Exit 0 = ignored, 1 = not; anything else is an error.
+    let ignored = |dir: &str| {
+        git(root, &["check-ignore", "-q", "--", &format!("{dir}/")]).and_then(|out| out.status.code())
+    };
+    if ignored(&old_dir) != Some(0) || ignored(&new_dir) != Some(1) {
+        return;
+    }
+    let rule = pair.cur(Name::PROJECT_DIR_EXCLUDE_RULE);
+    let info = git_dir.join("info");
+    let file = info.join("exclude");
+    let mut rules = std::fs::read_to_string(&file).unwrap_or_default();
+    if !rules.is_empty() && !rules.ends_with('\n') {
+        rules.push('\n');
+    }
+    rules.push_str(&rule);
+    rules.push('\n');
+    if std::fs::create_dir_all(&info).is_ok() && std::fs::write(&file, rules).is_ok() {
+        report.exclude_updated = true;
+    }
+}
+
 /// `refs/<old>/…` → `refs/<current>/…`: create the new ref at the same
 /// commit, read it back, and only then delete the old one. A new ref that
 /// already exists at another commit is left, and so is its old twin.
@@ -283,6 +341,12 @@ if [ -f "$exclude" ] && grep -qxF '{old_rule}' "$exclude"; then
     sed 's|^{old_rule}$|{new_rule}|' "$exclude" > "$exclude.tmp$$"
   fi
   mv "$exclude.tmp$$" "$exclude" && echo exclude
+fi
+if [ -d '{new_dir}' ] && git check-ignore -q -- '{old_dir}/'; then
+  git check-ignore -q -- '{new_dir}/'
+  if [ $? -eq 1 ] && mkdir -p "${{exclude%/*}}"; then
+    {{ [ -s "$exclude" ] && [ -n "$(tail -c 1 "$exclude")" ] && echo; printf '%s\n' '{new_rule}'; }} >> "$exclude" && echo exclude
+  fi
 fi
 git for-each-ref --format='%(objectname) %(refname)' '{old_ns}/' | while read -r sha ref; do
   new="{new_ns}/${{ref#{old_ns}/}}"
@@ -580,6 +644,92 @@ mod tests {
         assert_eq!(report.refs_moved, 2, "{report:?}");
         assert_eq!(run(&root, &["rev-parse", &new_peer]), second);
         assert_eq!(run(&root, &["rev-parse", &old_peer]), head);
+    }
+
+    /// A repository whose committed `.gitignore` (an older scaffold's) names
+    /// the app's folder as a build named `forms` called it, with a session
+    /// file in that folder, and no exclude rule.
+    fn seed_gitignored_repo(root: &Path, forms: &crate::brand::Forms) {
+        std::fs::create_dir_all(root).expect("mkdir");
+        run(root, &["init", "-q", "-b", "main"]);
+        write(&root.join(".gitignore"), &format!("*.log\n{}\n", forms.name(Name::PROJECT_DIR_EXCLUDE_RULE)));
+        run(root, &["add", ".gitignore"]);
+        run(root, &["commit", "-q", "-m", "first"]);
+        write(&root.join(forms.name(Name::PROJECT_DIR)).join("sessions").join("terminals.json"), "{}\n");
+        assert_eq!(run(root, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn a_folder_the_gitignore_named_under_the_old_name_stays_ignored() {
+        let machine = Machine::new();
+        let root = machine.home.join("alpha");
+        seed_gitignored_repo(&root, &LEGACY);
+        let gitignore = std::fs::read_to_string(root.join(".gitignore")).expect("gitignore");
+
+        let report = migrate_project(&RENAMED, &root);
+        assert!(report.folder_renamed && report.exclude_updated, "{report:?}");
+        assert_eq!(run(&root, &["status", "--porcelain"]), "");
+        // The project's own file is untouched; the rule went into info/exclude.
+        assert_eq!(std::fs::read_to_string(root.join(".gitignore")).expect("gitignore"), gitignore);
+        assert!(!needs_work(&RENAMED, &root));
+        assert_eq!(migrate_project(&RENAMED, &root), ProjectReport::default());
+    }
+
+    /// A project renamed by a build without this step: the folder already
+    /// carries the current name and shows in `git status`.
+    #[test]
+    fn a_project_renamed_before_is_healed() {
+        let machine = Machine::new();
+        let root = machine.home.join("alpha");
+        seed_gitignored_repo(&root, &LEGACY);
+        std::fs::rename(root.join(LEGACY.name(Name::PROJECT_DIR)), root.join(RENAMED.cur(Name::PROJECT_DIR)))
+            .expect("rename");
+        assert_ne!(run(&root, &["status", "--porcelain"]), "");
+        assert!(needs_work(&RENAMED, &root));
+
+        let report = migrate_project(&RENAMED, &root);
+        assert_eq!(report, ProjectReport { exclude_updated: true, ..ProjectReport::default() });
+        assert_eq!(run(&root, &["status", "--porcelain"]), "");
+        assert!(!needs_work(&RENAMED, &root));
+
+        // A `.gitignore` that already names both folders needs nothing.
+        let both = machine.home.join("both");
+        seed_gitignored_repo(&both, &LEGACY);
+        std::fs::rename(both.join(LEGACY.name(Name::PROJECT_DIR)), both.join(RENAMED.cur(Name::PROJECT_DIR)))
+            .expect("rename");
+        let mut rules = std::fs::read_to_string(both.join(".gitignore")).expect("gitignore");
+        rules.push_str(&format!("{}\n", RENAMED.cur(Name::PROJECT_DIR_EXCLUDE_RULE)));
+        write(&both.join(".gitignore"), &rules);
+        assert!(!needs_work(&RENAMED, &both));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_remote_script_keeps_a_gitignored_folder_ignored() {
+        let machine = Machine::new();
+        let root = machine.home.join("remote");
+        seed_gitignored_repo(&root, &LEGACY);
+        // An exclude file without a final newline must not have its last
+        // rule glued to ours.
+        write(&root.join(".git").join("info").join("exclude"), "*.tmp");
+        let script = remote_script(&RENAMED).expect("a script when renamed");
+        let run_script = || {
+            let out = std::process::Command::new("sh")
+                .args(["-c", &script])
+                .current_dir(&root)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .expect("sh runs");
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let said = run_script();
+        assert!(said.contains("renamed") && said.contains("exclude"), "{said}");
+        assert_eq!(run(&root, &["status", "--porcelain"]), "");
+        let rules = std::fs::read_to_string(root.join(".git").join("info").join("exclude")).expect("exclude");
+        assert_eq!(rules, format!("*.tmp\n{}\n", RENAMED.cur(Name::PROJECT_DIR_EXCLUDE_RULE)));
+        assert_eq!(run_script(), "");
     }
 
     /// The remote side runs the shell twin over SSH; here it runs in a local
