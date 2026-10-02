@@ -666,10 +666,72 @@ pub fn color_tab_in(path: &Path, scope: &str, tmux: &str, color: Option<&str>) -
     })
 }
 
+/// The `tabKeys` of every pane (group node) of a saved pane tree
+/// (`tab_groups`), left to right.
+fn pane_keys_mut<'a>(node: &'a mut Value, out: &mut Vec<&'a mut Vec<Value>>) {
+    let Some(obj) = node.as_object_mut() else { return };
+    if obj.get("type").and_then(Value::as_str) == Some("group") {
+        if let Some(Value::Array(keys)) = obj.get_mut("tabKeys") {
+            out.push(keys);
+        }
+        return;
+    }
+    if let Some(Value::Array(children)) = obj.get_mut("children") {
+        for child in children {
+            pane_keys_mut(child, out);
+        }
+    }
+}
+
 /// Move the tab behind `tmux` next to the one behind `anchor`, before or
 /// after it. A refused move (no anchor) changes nothing.
+///
+/// The shared order is the saved pane tree's, left to right (a window saves
+/// its tabs in that order and restores from the tree), so the tree moves
+/// with it: a window that restores later, or that takes this move into its
+/// panes (`followSharedOrder`), shows it rather than sending its own older
+/// order back. A tab the tree does not place is placed first where a restore
+/// puts it — the end of the first pane, in set order. A move between two
+/// panes has no slot to land in, as in the window's own reorder, and leaves
+/// everything as it is.
 pub fn reorder_tab_in(path: &Path, scope: &str, tmux: &str, anchor: &str, after: bool) -> Result<TerminalSession, String> {
-    edit_tab_in(path, scope, tmux, |session, i| {
+    const NO_SLOT: &str = "\u{0}no-slot";
+    let place = |keys: &mut Vec<Value>, key: &str, anchor_key: &str| {
+        let Some(from) = keys.iter().position(|k| k.as_str() == Some(key)) else { return };
+        let moved = keys.remove(from);
+        if let Some(at) = keys.iter().position(|k| k.as_str() == Some(anchor_key)) {
+            keys.insert(if after { at + 1 } else { at }, moved);
+        }
+    };
+    let edited = edit_tab_in(path, scope, tmux, |session, i| {
+        let key = session.tab_layout[i].key.clone();
+        let anchor_key = session
+            .tab_layout
+            .iter()
+            .enumerate()
+            .find(|(j, t)| *j != i && tmux_of(t) == Some(anchor))
+            .map(|(_, t)| t.key.clone())
+            .ok_or_else(|| TAB_NOT_FOUND.to_string())?;
+        if let Some(tree) = session.tab_groups.as_mut() {
+            let mut panes = Vec::new();
+            pane_keys_mut(tree, &mut panes);
+            if !panes.is_empty() {
+                let mut placed: HashSet<String> = panes.iter().flat_map(|p| p.iter().filter_map(Value::as_str).map(str::to_string)).collect();
+                for tab in &session.tab_layout {
+                    if placed.insert(tab.key.clone()) {
+                        panes[0].push(Value::String(tab.key.clone()));
+                    }
+                }
+                let pane_of = |k: &str| panes.iter().position(|p| p.iter().any(|v| v.as_str() == Some(k)));
+                let (from, to) = (pane_of(&key), pane_of(&anchor_key));
+                if from != to {
+                    return Err(NO_SLOT.to_string());
+                }
+                if let Some(pane) = from {
+                    place(panes[pane], &key, &anchor_key);
+                }
+            }
+        }
         let tab = session.tab_layout.remove(i);
         let at = session
             .tab_layout
@@ -678,7 +740,11 @@ pub fn reorder_tab_in(path: &Path, scope: &str, tmux: &str, anchor: &str, after:
             .ok_or_else(|| TAB_NOT_FOUND.to_string())?;
         session.tab_layout.insert(if after { at + 1 } else { at }, tab);
         Ok(())
-    })
+    });
+    match edited {
+        Err(e) if e == NO_SLOT => read_session(path),
+        other => other,
+    }
 }
 
 /// Take the tab behind `tmux` out of the set and hand it back, so the caller
@@ -1143,6 +1209,46 @@ mod tests {
         // a create after its base, not a close it knew of.
         let out = sync_in(&path, "p", client(out.version, out.tabs.clone())).unwrap();
         assert_eq!(labels(&out.tabs), ["From the phone", "Claude"]);
+    }
+
+    /// The owner's reorder moves the saved pane tree with the set, so a
+    /// window restoring from the tree keeps it; a tab the tree did not place
+    /// is placed where a restore puts it, and a move between panes is refused.
+    #[test]
+    fn a_reorder_moves_the_saved_pane_tree_and_never_crosses_panes() {
+        let (_dir, path) = file();
+        let tmux = |n: &str| format!("{}-p--shell-{n}", crate::app_slug!());
+        let groups = serde_json::json!({
+            "type": "split", "dir": "row", "sizes": [0.5, 0.5],
+            "children": [
+                { "type": "group", "tabKeys": ["a", "b"], "activeKey": "a" },
+                { "type": "group", "tabKeys": ["c"], "activeKey": "c" },
+            ],
+        });
+        let tabs = vec![pty_tab("a", "A", &tmux("1")), pty_tab("b", "B", &tmux("2")), pty_tab("c", "C", &tmux("3"))];
+        sync_in(&path, "p", ClientSync { groups: Some(groups), ..client(0, tabs) }).unwrap();
+        let panes = |session: &TerminalSession| -> Vec<Vec<String>> {
+            let mut tree = session.tab_groups.clone().unwrap();
+            let mut out = Vec::new();
+            pane_keys_mut(&mut tree, &mut out);
+            out.iter().map(|p| p.iter().filter_map(Value::as_str).map(str::to_string).collect()).collect()
+        };
+
+        let stored = reorder_tab_in(&path, "p", &tmux("2"), &tmux("1"), false).unwrap();
+        assert_eq!(labels(&stored.tab_layout), ["B", "A", "C"]);
+        assert_eq!(panes(&stored), [vec!["b", "a"], vec!["c"]]);
+
+        let version = version_of(&stored);
+        let refused = reorder_tab_in(&path, "p", &tmux("3"), &tmux("1"), false).unwrap();
+        assert_eq!(labels(&refused.tab_layout), ["B", "A", "C"], "no slot between panes");
+        assert_eq!(panes(&refused), [vec!["b", "a"], vec!["c"]]);
+        assert_eq!(version_of(&refused), version, "a refused move writes nothing");
+
+        // Created by the owner after the window saved its tree: unplaced.
+        create_tab_in(&path, "p", pty_tab("h", "H", &tmux("4")), None).unwrap();
+        let stored = reorder_tab_in(&path, "p", &tmux("4"), &tmux("2"), false).unwrap();
+        assert_eq!(labels(&stored.tab_layout), ["H", "B", "A", "C"]);
+        assert_eq!(panes(&stored), [vec!["h", "b", "a"], vec!["c"]]);
     }
 
     #[test]

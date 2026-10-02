@@ -10,7 +10,11 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) 
 
 import { invoke } from "@tauri-apps/api/core";
 import { LEGACY_NAMES, NAMES } from "../../lib/brand";
-import { MONITOR_TAB_CMD, adoptSyncOutcome, applyWorkspacePatch, refreshWorkspaceScope, useTabsStore, type TabEntry } from "../../stores/tabs";
+import { MONITOR_TAB_CMD, _resetSyncBaseForTest, adoptSyncOutcome, applyWorkspacePatch, hydrateScopeFromDisk, refreshWorkspaceScope, useTabsStore, type TabEntry } from "../../stores/tabs";
+
+// What a window last sent is remembered per scope and tab key, and these
+// cases reuse both.
+beforeEach(() => _resetSyncBaseForTest());
 
 function tab(key: string, label: string, id?: string): TabEntry {
   return { key, id, label, cmd: "", cwd: "/tmp", kind: "shell", scope: "p" };
@@ -345,5 +349,126 @@ describe("one tab stays one tab", () => {
       "p",
     );
     expect(useTabsStore.getState().tabsByScope.p.map((t) => t.id)).toEqual(["id-a", "id-b"]);
+  });
+});
+
+describe("an answer never undoes what this window did since", () => {
+  type Sent = { baseVersion?: number; tabs: Array<{ key: string; id?: string; label: string }> };
+  const shell = (key: string, label: string, id: string) => ({ key, id, label, cmd: "", cwd: "/tmp", kind: "shell" as const });
+
+  const seed = (scope: string) => {
+    const tabs = [{ ...tab("k1", "A", "id-a"), scope }, { ...tab("k2", "B", "id-b"), scope }];
+    useTabsStore.setState({
+      scope,
+      tabsByScope: { [scope]: tabs },
+      tabs,
+      layoutByScope: { [scope]: { type: "group", id: "g", tabKeys: ["k1", "k2"], activeKey: "k1" } },
+      focusedGroupByScope: { [scope]: "g" },
+      detachedGroupsByScope: {},
+      hiddenGroupsByScope: {},
+      workspaceVersionByScope: { [scope]: 3 },
+    });
+  };
+
+  /** `workspace_sync` answers are held until `answer(i, …)` releases them. */
+  const holdSyncs = (snapshot?: unknown) => {
+    const sent: Sent[] = [];
+    const release: Array<(v: unknown) => void> = [];
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === "workspace_snapshot") return Promise.resolve(snapshot);
+      if (cmd !== "workspace_sync") return Promise.resolve(undefined);
+      sent.push(args as Sent);
+      return new Promise((resolve) => release.push(resolve));
+    });
+    const answer = async (i: number, version: number, tabs: unknown[]) => {
+      while (!release[i]) await Promise.resolve();
+      release[i]({ version, stale: false, ops: [], tabs });
+    };
+    return { sent, answer };
+  };
+
+  const order = (scope: string) => {
+    const layout = useTabsStore.getState().layoutByScope[scope];
+    return layout && layout.type === "group" ? layout.tabKeys : [];
+  };
+
+  beforeEach(() => vi.mocked(invoke).mockReset());
+
+  it("keeps a rename made while its save was in flight, and the next save carries it", async () => {
+    seed("s1");
+    const { sent, answer } = holdSyncs();
+    const first = useTabsStore.getState().persistScope("s1", "");
+    useTabsStore.getState().renameTabInScope("s1", "k1", "New name");
+    await answer(0, 4, [shell("k1", "A", "id-a"), shell("k2", "B", "id-b")]);
+    await first;
+    const state = useTabsStore.getState();
+    expect(state.tabsByScope.s1.find((t) => t.key === "k1")?.label).toBe("New name");
+    expect(state.workspaceVersionByScope.s1).toBe(4);
+    const second = state.persistScope("s1", "");
+    await answer(1, 5, [shell("k1", "New name", "id-a"), shell("k2", "B", "id-b")]);
+    await second;
+    expect(sent[1].tabs.find((t) => t.key === "k1")?.label).toBe("New name");
+    expect(sent[1].baseVersion).toBe(4);
+  });
+
+  it("ignores an answer older than a patch it already took: no old fields, no version going back", async () => {
+    seed("s2");
+    const { answer } = holdSyncs({ version: 5, tabLayout: [shell("x", "From the phone", "id-a"), shell("y", "B", "id-b")] });
+    const save = useTabsStore.getState().persistScope("s2", "");
+    await applyWorkspacePatch({ scope: "s2", version: 5, ops: [{ op: "updated", id: "id-a" }] });
+    expect(useTabsStore.getState().tabsByScope.s2[0].label).toBe("From the phone");
+    await answer(0, 4, [shell("k1", "A", "id-a"), shell("k2", "B", "id-b")]);
+    await save;
+    const state = useTabsStore.getState();
+    expect(state.tabsByScope.s2[0].label).toBe("From the phone");
+    expect(state.workspaceVersionByScope.s2).toBe(5);
+  });
+
+  it("takes the owner's reorder into the panes, so the next save sends it rather than the tree's old order", async () => {
+    seed("s3");
+    const { sent, answer } = holdSyncs({ version: 5, tabLayout: [shell("y", "B", "id-b"), shell("x", "A", "id-a")] });
+    const save = useTabsStore.getState().persistScope("s3", "");
+    await answer(0, 4, [shell("k1", "A", "id-a"), shell("k2", "B", "id-b")]);
+    await save;
+    await applyWorkspacePatch({ scope: "s3", version: 5, ops: [{ op: "reordered" }] });
+    expect(order("s3")).toEqual(["k2", "k1"]);
+    expect(useTabsStore.getState().tabsByScope.s3.map((t) => t.key)).toEqual(["k2", "k1"]);
+    const strict = useTabsStore.getState().persistScopeStrict("s3", "");
+    await answer(1, 5, [shell("k2", "B", "id-b"), shell("k1", "A", "id-a")]);
+    await strict;
+    expect(sent[1].tabs.map((t) => t.key)).toEqual(["k2", "k1"]);
+    expect(sent[1].baseVersion).toBe(5);
+  });
+
+  it("keeps a tab-bar reorder made while its save was in flight", async () => {
+    seed("s4");
+    const { sent, answer } = holdSyncs();
+    const first = useTabsStore.getState().persistScope("s4", "");
+    useTabsStore.getState().reorderInGroup("g", 1, 0);
+    await answer(0, 4, [shell("k1", "A", "id-a"), shell("k2", "B", "id-b")]);
+    await first;
+    expect(order("s4")).toEqual(["k2", "k1"]);
+    const second = useTabsStore.getState().persistScope("s4", "");
+    await answer(1, 5, [shell("k2", "B", "id-b"), shell("k1", "A", "id-a")]);
+    await second;
+    expect(sent[1].tabs.map((t) => t.key)).toEqual(["k2", "k1"]);
+  });
+
+  it("restores the owner's order from the tree it moved, and saves that order back", async () => {
+    useTabsStore.setState({ scope: "s5", tabsByScope: {}, layoutByScope: {}, tabs: [], layout: null, workspaceVersionByScope: {} });
+    const { sent, answer } = holdSyncs({
+      version: 5,
+      tabLayout: [shell("b", "B", "id-b"), shell("a", "A", "id-a")],
+      tabGroups: { type: "group", tabKeys: ["b", "a"], activeKey: "a" },
+    });
+    expect(await hydrateScopeFromDisk("s5", "/tmp")).toBe(true);
+    const state = useTabsStore.getState();
+    const labels = (keys: string[]) => keys.map((k) => state.tabsByScope.s5.find((t) => t.key === k)?.label);
+    expect(labels(order("s5"))).toEqual(["B", "A"]);
+    const strict = state.persistScopeStrict("s5", "");
+    await answer(0, 5, [shell("b", "B", "id-b"), shell("a", "A", "id-a")]);
+    await strict;
+    expect(sent[0].tabs.map((t) => t.label)).toEqual(["B", "A"]);
+    expect(sent[0].baseVersion).toBe(5);
   });
 });

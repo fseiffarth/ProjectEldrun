@@ -4752,8 +4752,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const groups = allGroups(layout);
     const focusedGroup = focus ? groups.find((g) => g.id === focus) : undefined;
     const activeKey = focusedGroup?.activeKey ?? groups[0]?.activeKey ?? null;
-    // #55 + restorable filter: keep only scope-owned, restorable tabs.
-    const tabs = (s.tabsByScope[scope] ?? []).filter(
+    // #55 + restorable filter: keep only scope-owned, restorable tabs — in the
+    // order `persistScope` sends, or this save would report the flat list's
+    // order (which a tab-bar drag never moves) as a reorder.
+    const tabs = persistOrder(layout, s.tabsByScope[scope] ?? []).filter(
       (t) => (t.scope == null || t.scope === scope) && (isRestorableTab(t) || isSavedWhileLive(t)),
     );
     const keepKeys = new Set(tabs.map((t) => t.key));
@@ -5028,15 +5030,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const allowClear = hydrated && meaningfulCount === 0;
       // Order the flat tab union by the tree's stable left-to-right order so the
       // persisted `tabs` array and `groups` tree agree.
-      const keyOrder = orderedTabKeys(layout);
-      const byKey = new Map(scopeTabs.map((t) => [t.key, t] as const));
-      const ordered = keyOrder
-        .map((k) => byKey.get(k))
-        .filter((t): t is TabEntry => t != null);
-      // Include any tabs missing from the tree at the end (defensive).
-      for (const t of scopeTabs) {
-        if (!keyOrder.includes(t.key)) ordered.push(t);
-      }
+      const ordered = persistOrder(layout, scopeTabs);
       // Shell/files/network tabs, resumable agent tabs (Claude with a sessionId), and
       // in-app file-viewer embeds are persisted; other agent/embed tabs (including
       // external-app embeds) are dropped here and the saved tree is pruned to
@@ -5053,6 +5047,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const sessions = ordered
         .filter((t) => t.sessionId)
         .map((t) => ({ sessionId: t.sessionId, cmd: t.cmd, label: t.label }));
+      const priorBase = syncBaseByScope.get(scope);
+      const sentBase = syncBaseOf(restorable, ordered);
       try {
         // The persisted per-tab shape lives in ONE place (`toSavedTabEntry`), so
         // this save and the project-switch snapshot cannot drift field-by-field.
@@ -5087,9 +5083,18 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           sessions,
           allowClear,
         };
+        // What is sent is what this window now holds the shared set to be: an
+        // edit made while the answer is in flight differs from it and outlives
+        // that answer (`adoptSyncOutcome`).
+        syncBaseByScope.set(scope, sentBase);
         const outcome = await syncWorkspace({ ...payload, baseVersion: get().workspaceVersionByScope[scope] });
         if (outcome) adoptSyncOutcome(scope, outcome, keep);
       } catch (error) {
+        // A save that failed agreed on nothing.
+        if (syncBaseByScope.get(scope) === sentBase) {
+          if (priorBase) syncBaseByScope.set(scope, priorBase);
+          else syncBaseByScope.delete(scope);
+        }
         if (options?.strict) throw error;
         // tab layout is non-critical
       }
@@ -5229,6 +5234,10 @@ export async function hydrateScopeFromDisk(
     .loadFromLayout(restorable, cwd, scope, (saved.tabGroups as SavedLayoutTree | undefined) ?? undefined, {
       agentRoots: opts.agentRoots,
     });
+  // The restored tabs are the shared set as this window first agrees on it,
+  // in the stored order (restored in that order, so the list holds it).
+  const restored = useTabsStore.getState().tabsByScope[scope] ?? [];
+  syncBaseByScope.set(scope, syncBaseOf(restored, restored));
   return true;
 }
 
@@ -5305,15 +5314,72 @@ async function loadWorkspaceSnapshot(scope: string): Promise<Record<string, unkn
   }
 }
 
-/** Take a sync answer into the store: the scope's new version; the ids the
- * service minted for the tabs this window created (matched by the `key` it
- * sent); and what another client changed meanwhile — a label or colour the
- * service kept over this window's older copy is adopted, and a tab this
- * window sent (`sentKeys`) that the answer no longer holds was closed
- * elsewhere and leaves the store (the session behind it keeps running, as a
- * close from the phone always meant). Order is not reconciled: this window's
- * pane tree is its own. A tab created elsewhere is not added here — it
- * reaches this window at its next hydrate (H3 grows this). */
+/** A scope's shared set as this window last sent or took it. */
+interface SyncBase {
+  /** Label and colour by tab key, as last sent or taken. */
+  fields: Map<string, { label: string; color?: TabColor }>;
+  /** The tab keys in the shared order as last sent or taken. */
+  order: string[];
+}
+
+/** Per scope, what this window and the shared set last agreed on (see
+ * `adoptSyncOutcome`). Absent for a scope never hydrated or saved: an answer
+ * is then taken whole. */
+const syncBaseByScope = new Map<string, SyncBase>();
+
+/** Tests reuse tab keys across cases; a real session never does. */
+export function _resetSyncBaseForTest(): void {
+  syncBaseByScope.clear();
+}
+
+function syncBaseOf(fields: readonly TabEntry[], order: readonly TabEntry[]): SyncBase {
+  return {
+    fields: new Map(fields.map((t) => [t.key, { label: t.label, color: t.color }] as const)),
+    order: order.map((t) => t.key),
+  };
+}
+
+/** The order a scope's tabs are saved in — the shared order as this window
+ * states it: its pane tree left to right, then any tab the tree does not
+ * place (a popout's, a parked group's) in list order. */
+function persistOrder(layout: LayoutNode | null, tabs: readonly TabEntry[]): TabEntry[] {
+  const keyOrder = orderedTabKeys(layout);
+  const byKey = new Map(tabs.map((t) => [t.key, t] as const));
+  const ordered = keyOrder.map((k) => byKey.get(k)).filter((t): t is TabEntry => t != null);
+  const placed = new Set(keyOrder);
+  for (const t of tabs) {
+    if (!placed.has(t.key)) ordered.push(t);
+  }
+  return ordered;
+}
+
+/** `items` with the ones `rank` names put in its order, each into a slot one
+ * of them held; the rest keep theirs. The same array when nothing moved. */
+function inSharedOrder<T>(items: T[], keyOf: (item: T) => string, rank: ReadonlyMap<string, number>): T[] {
+  const ranked = items.filter((item) => rank.has(keyOf(item)));
+  const sorted = [...ranked].sort((a, b) => (rank.get(keyOf(a)) ?? 0) - (rank.get(keyOf(b)) ?? 0));
+  if (sorted.every((item, i) => item === ranked[i])) return items;
+  let next = 0;
+  return items.map((item) => (rank.has(keyOf(item)) ? sorted[next++] : item));
+}
+
+/** The shared order as this window's panes show it: each pane keeps its own
+ * tabs, in the shared order. A move across panes has no slot to land in, as
+ * in `reorderTabInScope`, and the owner refuses one
+ * (`workspace::reorder_tab_in`), so the panes left to right then read as the
+ * shared order again. The same tree when nothing moved. */
+function followSharedOrder(node: LayoutNode, rank: ReadonlyMap<string, number>): LayoutNode {
+  if (node.type === "group") {
+    const tabKeys = inSharedOrder(node.tabKeys, (k) => k, rank);
+    return tabKeys === node.tabKeys ? node : { ...node, tabKeys };
+  }
+  const children = node.children.map((c) => followSharedOrder(c, rank));
+  return children.every((c, i) => c === node.children[i]) ? node : { ...node, children };
+}
+
+function sameKeys(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((k, i) => k === b[i]);
+}
 
 /** The live entry a saved tab restores as — THE one place a `SavedTabEntry`
  * becomes a `TabEntry`: `loadFromLayout` maps every saved tab through it,
@@ -5492,12 +5558,54 @@ function tabIdentity(t: {
   return marks;
 }
 
+/** Take a sync answer into the store: the scope's new version; the ids the
+ * service minted for the tabs this window created (matched by the `key` it
+ * sent); and what another client changed meanwhile — a label or colour the
+ * service kept over this window's older copy is adopted, and a tab this
+ * window sent (`sentKeys`) that the answer no longer holds was closed
+ * elsewhere and leaves the store (the session behind it keeps running, as a
+ * close from the phone always meant).
+ *
+ * "Older copy" is judged against `syncBaseByScope`, what this window last
+ * sent or took: a label, colour or order changed here since then is an edit
+ * the next save carries, and the answer does not undo it. The answer's order
+ * reaches the panes through `followSharedOrder`. An answer older than the
+ * version this window already holds hands over its minted ids and nothing
+ * else. */
 export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, sentKeys?: Set<string>): void {
   const idByKey = new Map<string, string>();
   const byId = new Map<string, SavedTabEntry>();
   for (const tab of outcome.tabs ?? []) {
     if (tab.id && tab.key) idByKey.set(tab.key, tab.id);
     if (tab.id) byId.set(tab.id, tab);
+  }
+  // Arrays are replaced only when a tab changed: CenterPanel saves 300 ms
+  // after any new `tabs` array, so a fresh array from every answer made each
+  // save schedule the next one, for as long as the window stayed open.
+  const mapTabs = (tabs: TabEntry[], fn: (t: TabEntry) => TabEntry): TabEntry[] => {
+    const next = tabs.map(fn);
+    return next.some((t, i) => t !== tabs[i]) ? next : tabs;
+  };
+  const withId = (t: TabEntry): TabEntry => {
+    const id = t.id ?? idByKey.get(t.key);
+    return id && !t.id ? { ...t, id } : t;
+  };
+  // An answer older than the version this window already took (a patch
+  // landed while it was in flight) is older knowledge: its fields, closes
+  // and order would undo that patch, and the version never moves back. Only
+  // the ids it minted for this window's new tabs are news.
+  if (outcome.version < (useTabsStore.getState().workspaceVersionByScope[scope] ?? 0)) {
+    useTabsStore.setState((state) => {
+      const held = state.tabsByScope[scope];
+      const next = held ? mapTabs(held, withId) : held;
+      return held && next !== held
+        ? {
+            tabsByScope: { ...state.tabsByScope, [scope]: next },
+            ...(state.scope === scope ? { tabs: mapTabs(state.tabs, withId) } : {}),
+          }
+        : {};
+    });
+    return;
   }
   // A tab another client created after the version this window knew (a
   // phone's ＋ or reopen through the owner, headless owner plan H3) joins the
@@ -5567,15 +5675,26 @@ export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, s
       return writeScope(s, scope, tabs, next, target.id);
     });
   }
+  // A label or colour this window changed since it last agreed with the
+  // shared set (`syncBaseByScope`) is an edit its next save carries — made
+  // while this answer's save was in flight, or not sent yet — and stays; any
+  // other field takes the answer, which the window now agrees on.
+  const base = syncBaseByScope.get(scope);
+  const fields = new Map(base?.fields);
   const reconcile = (t: TabEntry): TabEntry => {
-    const id = t.id ?? idByKey.get(t.key);
-    if (!id) return t;
-    const held = byId.get(id);
-    let next = t.id ? t : { ...t, id };
+    let next = withId(t);
+    const held = next.id ? byId.get(next.id) : undefined;
     if (held) {
-      if (held.label !== next.label) next = { ...next, label: held.label };
+      const agreed = base?.fields.get(t.key);
       const color = isTabColor(held.color) ? held.color : undefined;
-      if (color !== next.color) next = { ...next, color };
+      const ownLabel = agreed !== undefined && agreed.label !== next.label;
+      const ownColor = agreed !== undefined && agreed.color !== next.color;
+      if (!ownLabel && held.label !== next.label) next = { ...next, label: held.label };
+      if (!ownColor && color !== next.color) next = { ...next, color };
+      fields.set(t.key, {
+        label: ownLabel ? agreed.label : held.label,
+        color: ownColor ? agreed.color : color,
+      });
     }
     return next;
   };
@@ -5585,26 +5704,48 @@ export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, s
     .filter((t) => !!t.id && !byId.has(t.id) && !!sentKeys?.has(t.key))
     .map((t) => t.key);
   for (const key of closedElsewhere) useTabsStore.getState().removeTabInScope(scope, key);
-  // Arrays are replaced only when a tab changed: CenterPanel saves 300 ms
-  // after any new `tabs` array, so a fresh array from every answer made each
-  // save schedule the next one, for as long as the window stayed open.
-  const reconcileAll = (tabs: TabEntry[]): TabEntry[] => {
-    const next = tabs.map(reconcile);
-    return next.some((t, i) => t !== tabs[i]) ? next : tabs;
-  };
   useTabsStore.setState((state) => {
     const held = state.tabsByScope[scope];
-    const next = held ? reconcileAll(held) : held;
+    const next = held ? mapTabs(held, reconcile) : held;
     return {
       workspaceVersionByScope: { ...state.workspaceVersionByScope, [scope]: outcome.version },
       ...(held && next !== held
         ? {
             tabsByScope: { ...state.tabsByScope, [scope]: next },
-            ...(state.scope === scope ? { tabs: reconcileAll(state.tabs) } : {}),
+            ...(state.scope === scope ? { tabs: mapTabs(state.tabs, reconcile) } : {}),
           }
         : {}),
     };
   });
+  // The order: the answer's, as this window's keys. Unless this window
+  // reordered the tabs both know since it last agreed — that order is its
+  // next save's — the panes and the list follow it, so that save does not
+  // send the tree's older order back as a reorder of its own.
+  const after = useTabsStore.getState();
+  const tabs = after.tabsByScope[scope] ?? [];
+  const keyById = new Map(tabs.filter((t) => !!t.id).map((t) => [t.id, t.key] as const));
+  const shared = [...new Set((outcome.tabs ?? []).map((t) => (t.id ? keyById.get(t.id) : undefined)))].filter(
+    (k): k is string => !!k,
+  );
+  const local = persistOrder(after.layoutByScope[scope] ?? null, tabs).map((t) => t.key);
+  const among = (keys: readonly string[], set: readonly string[]) => {
+    const within = new Set(set);
+    return keys.filter((k) => within.has(k));
+  };
+  const localShared = among(local, shared);
+  const ownOrder = !!base && !sameKeys(among(localShared, base.order), among(base.order, localShared));
+  if (!ownOrder && !sameKeys(localShared, shared)) {
+    const rank = new Map(shared.map((k, i) => [k, i] as const));
+    useTabsStore.setState((s) => {
+      const layout = s.layoutByScope[scope] ?? null;
+      const nextLayout = layout ? followSharedOrder(layout, rank) : layout;
+      const held = s.tabsByScope[scope] ?? [];
+      const nextTabs = inSharedOrder(held, (t) => t.key, rank);
+      if (nextLayout === layout && nextTabs === held) return {};
+      return writeScope(s, scope, nextTabs, nextLayout, s.focusedGroupByScope[scope] ?? null);
+    });
+  }
+  syncBaseByScope.set(scope, { fields, order: ownOrder && base ? base.order : shared });
 }
 
 /** The `workspace:patch` event's payload (`WORKSPACE_PATCH_EVENT`). */
