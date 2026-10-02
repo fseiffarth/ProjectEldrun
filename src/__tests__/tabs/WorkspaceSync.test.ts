@@ -94,6 +94,28 @@ describe("adoptSyncOutcome", () => {
     expect(state.workspaceVersionByScope.p).toBe(9);
   });
 
+  it("gives the window's own new tab its minted id instead of opening it a second time", () => {
+    adoptSyncOutcome(
+      "p",
+      {
+        version: 4,
+        stale: false,
+        ops: [{ op: "created", id: "id-c" }],
+        tabs: [
+          { key: "k1", id: "id-a", label: "A", cmd: "", cwd: "/tmp", kind: "shell" },
+          { key: "k2", id: "id-b", label: "B", cmd: "", cwd: "/tmp", kind: "shell" },
+          // k3 is this window's id-less new tab, created at the answer's version.
+          { key: "k3", id: "id-c", label: "C", cmd: "", cwd: "/tmp", kind: "shell", tmuxSession: `${NAMES.tmuxPrefix}p--shell-1`, createdVersion: 4 },
+        ],
+      },
+      new Set(["k1", "k2", "k3"]),
+    );
+    const state = useTabsStore.getState();
+    expect(state.tabsByScope.p.map((t) => [t.key, t.id])).toEqual([["k1", "id-a"], ["k2", "id-b"], ["k3", "id-c"]]);
+    const layout = state.layoutByScope.p;
+    expect(layout && layout.type === "group" ? layout.tabKeys : []).toEqual(["k1", "k2", "k3"]);
+  });
+
   it("restores an arriving built-in tab under its current command and drops a retired one, as a hydrate does", () => {
     adoptSyncOutcome(
       "p",
@@ -177,6 +199,26 @@ describe("applyWorkspacePatch", () => {
     expect(useTabsStore.getState().workspaceVersionByScope.p).toBe(6);
     await refreshWorkspaceScope("other");
     expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not open the window's own new tab twice when its sync's patch echo lands before the answer", async () => {
+    useTabsStore.setState((s) => ({
+      tabsByScope: { p: [...s.tabsByScope.p, tab("k3", "Claude")] },
+      tabs: [...s.tabs, tab("k3", "Claude")],
+      layoutByScope: { p: { type: "group", id: "g", tabKeys: ["k1", "k2", "k3"], activeKey: "k3" } },
+    }));
+    vi.mocked(invoke).mockResolvedValueOnce({
+      version: 4,
+      tabLayout: [
+        { key: "k1", id: "id-a", label: "A", cmd: "", cwd: "/tmp", kind: "shell" },
+        { key: "k2", id: "id-b", label: "B", cmd: "", cwd: "/tmp", kind: "shell" },
+        { key: "k3", id: "id-c", label: "Claude", cmd: "", cwd: "/tmp", kind: "shell", createdVersion: 4 },
+      ],
+    });
+    await applyWorkspacePatch({ scope: "p", version: 4, ops: [{ op: "created", id: "id-c" }] });
+    const state = useTabsStore.getState();
+    expect(state.tabsByScope.p.map((t) => [t.key, t.id])).toEqual([["k1", "id-a"], ["k2", "id-b"], ["k3", "id-c"]]);
+    expect(state.tabs.map((t) => t.key)).toEqual(["k1", "k2", "k3"]);
   });
 
   it("ignores a patch this window already knows, or for a scope it has not loaded", async () => {

@@ -5455,6 +5455,12 @@ export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, s
   const before = useTabsStore.getState();
   const known = before.workspaceVersionByScope[scope] ?? 0;
   const heldIds = new Set((before.tabsByScope[scope] ?? []).map((t) => t.id).filter((id): id is string => !!id));
+  // A tab this window created is still id-less until this answer hands it
+  // its minted id (`reconcile` below matches it by key): it is this window's
+  // own, never an arrival — or it would open twice on the same tmux session.
+  // The `workspace:patch` echo of this window's own sync can land before the
+  // sync's answer, so the patch path meets the same id-less tab.
+  const pendingKeys = new Set((before.tabsByScope[scope] ?? []).filter((t) => !t.id).map((t) => t.key));
   // The same gates `loadFromLayout` applies to a hydrate: a built-in tab's
   // command under the app's old name is rewritten first, a retired kind and a
   // kind whose experimental flag is off never come back.
@@ -5470,6 +5476,7 @@ export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, s
           (t) =>
             !!t.id &&
             !heldIds.has(t.id) &&
+            !(t.key && pendingKeys.has(t.key)) &&
             (t.createdVersion ?? 0) > known &&
             !RETIRED_TAB_CMDS.has(t.cmd || "") &&
             !withdrawn.has(kindOf(t)) &&
