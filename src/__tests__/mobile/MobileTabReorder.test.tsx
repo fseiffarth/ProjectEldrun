@@ -45,6 +45,19 @@ describe("Mobile tab reorder — where a drop lands", () => {
     expect(dropSlot(rows, "b", 150)).toBeNull();
     expect(dropSlot([], "b", 150)).toBeNull();
   });
+
+  it("reads a wide screen's two columns left to right, the side off the card's middle", () => {
+    const card = (id: string, top: number, left: number) => ({ id, top, bottom: top + 90, left, right: left + 400 });
+    // a b / c d / e — the last line holds one card.
+    const grid = [card("a", 0, 0), card("b", 0, 410), card("c", 100, 0), card("d", 100, 410), card("e", 200, 0)];
+    expect(dropSlot(grid, "a", 40, 700)).toEqual({ anchor: "b", place: "after" });
+    expect(dropSlot(grid, "a", 140, 450)).toEqual({ anchor: "d", place: "before" });
+    expect(dropSlot(grid, "a", 140, 100)).toEqual({ anchor: "c", place: "before" });
+    // In the gap between two lines, the line below; past the last card, after it.
+    expect(dropSlot(grid, "a", 95, 300)).toEqual({ anchor: "c", place: "after" });
+    expect(dropSlot(grid, "a", 900, 900)).toEqual({ anchor: "e", place: "after" });
+    expect(dropSlot(grid, "d", 150, 600)).toBeNull();
+  });
 });
 
 describe("Mobile tab reorder — the list surgery", () => {

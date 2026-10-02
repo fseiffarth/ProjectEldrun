@@ -339,6 +339,26 @@ describe(`${BRAND.display} Mobile Focus — the question an agent is waiting on`
     ]);
   });
 
+  it("answers the free-text row with words typed under it, not a bare Enter", async () => {
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await act(async () => {});
+    await paint(AGENT_QUESTION);
+
+    FakeWebSocket.sent = [];
+    // A tap opens the row's field instead of pressing Enter on an empty one.
+    fireEvent.click(within(question()).getByText("Type something."));
+    await settle(400);
+    expect(FakeWebSocket.sent).toEqual([]);
+    const field = within(question()).getByRole("textbox", { name: "Your answer…" });
+    // Nothing to send yet.
+    expect(within(question()).getByRole("button", { name: "Send" })).toHaveProperty("disabled", true);
+    fireEvent.change(field, { target: { value: "  Push only   my fix " } });
+    fireEvent.click(within(question()).getByRole("button", { name: "Send" }));
+    await settle(600);
+    // Two rows down onto the field, the words as one line, then Enter.
+    expect(FakeWebSocket.sent).toEqual([DOWN, DOWN, "Push only my fix", "\r"]);
+  });
+
   it("gives the list back when the answer never lands", async () => {
     render(<Terminal tab={TAB} back={() => {}} />);
     await act(async () => {});

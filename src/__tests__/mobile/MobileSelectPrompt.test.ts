@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeSelectRows, missingSelectRow, readQuestionTabs, readSelectPrompt, sameSelectStep, selectKeys, selectMoveKeys, selectSignature, UNNUMBERED } from "../../../mobile-web/src/terminal/selectPrompt";
+import { freeTextRow, freeTextWrites, mergeSelectRows, missingSelectRow, readQuestionTabs, readSelectPrompt, sameSelectStep, selectKeys, selectMoveKeys, selectSignature, UNNUMBERED } from "../../../mobile-web/src/terminal/selectPrompt";
 import { currentMode, modeChoices } from "../../../mobile-web/src/terminal/agentModes";
 import { inputFrameStart, sessionStatus } from "../../../mobile-web/src/terminal/statusLine";
 import { BRAND } from "../../lib/brand";
@@ -509,6 +509,39 @@ describe(`${BRAND.display} Mobile select dialog`, () => {
     // A short label's note under it stays a note at any width.
     const question = readSelectPrompt(lines("❯ 1. Red", "     Warm and loud", "  2. Green"), "Claude Code", 60);
     expect(question?.options[0]).toMatchObject({ label: "Red", description: "Warm and loud" });
+  });
+
+  it("knows Claude's free-text row and types into it", () => {
+    const single = readSelectPrompt(lines(
+      "Which database?",
+      "",
+      "❯ 1. PostgreSQL",
+      "     Relational",
+      "  2. SQLite",
+      "  3. Type something.",
+      "  4. Chat about this",
+    ), "Claude Code");
+    const other = single!.options[2];
+    expect(freeTextRow(other)).toBe(true);
+    expect(single!.options.filter(freeTextRow)).toHaveLength(1);
+    // Walk onto the field, type the words as one line, Enter.
+    expect(freeTextWrites(single!.current, other, " use\n DuckDB ")).toEqual([`${ESC}[B`, `${ESC}[B`, "use DuckDB", "\r"]);
+    expect(freeTextWrites(single!.current, other, "   ")).toEqual([]);
+
+    // On a multi-select question typing ticks the box; Enter would untick it.
+    const multi = readSelectPrompt(lines(
+      "Pick some",
+      "",
+      "❯ 1. [ ] Red",
+      "  2. [ ] Green",
+      "  3. [ ] Type something",
+      "     Submit",
+    ), "Claude Code");
+    const box = multi!.options[2];
+    expect(freeTextRow(box)).toBe(true);
+    expect(freeTextWrites(multi!.current, box, "Blue")).toEqual([`${ESC}[B`, `${ESC}[B`, "Blue"]);
+    // A row that only mentions it is an ordinary choice.
+    expect(freeTextRow({ index: 0, number: 1, label: "Type something else" })).toBe(false);
   });
 
   it("moves the highlight the way the arrow row does", () => {

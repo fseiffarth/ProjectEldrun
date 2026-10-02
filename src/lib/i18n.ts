@@ -329,6 +329,8 @@ export const enSource = {
   "mobile.transcript.emptyHint": "The stored conversation shows here once the agent has answered.",
   "mobile.transcript.question": "Waiting for your answer",
   "mobile.transcript.answering": "Sending…",
+  "mobile.question.typePlaceholder": "Your answer…",
+  "mobile.question.typeSend": "Send",
   "mobile.transcript.prompt": "Your prompt",
   "mobile.transcript.answer": "Answer",
   "mobile.transcript.plan": "Plan",

@@ -64,6 +64,8 @@ import { inputFrameStart, sessionStatus, statusFrameLines, type SessionStatus } 
 import { sessionLimits } from "../terminal/sessionUsage";
 import { installFocusSwipe } from "../terminal/focusSwipe";
 import {
+  freeTextRow,
+  freeTextWrites,
   mergeSelectRows,
   readSelectPrompt,
   revealSelectRow,
@@ -569,7 +571,7 @@ function noSessionReason(transcript: SessionTranscript | null): TranslationKey {
  * is shown as a tag beside the label rather than as part of it. */
 const RECOMMENDED = /\s+\((Recommended)\)$/u;
 
-function QuestionList({ prompt, tabs, question, sent, sendingLabel, onPick }: {
+function QuestionList({ prompt, tabs, question, sent, sendingLabel, onPick, onType }: {
   prompt: SelectPrompt;
   /** The headers of the questions the dialog asks (`readQuestionTabs`). */
   tabs: readonly QuestionTab[];
@@ -583,7 +585,13 @@ function QuestionList({ prompt, tabs, question, sent, sendingLabel, onPick }: {
   sent?: number;
   sendingLabel: string;
   onPick: (option: SelectOption) => void;
+  /** The free-text row (`freeTextRow`) answered with the words typed under it. */
+  onType: (option: SelectOption, text: string) => void;
 }) {
+  const t = useT();
+  /** The free-text row tapped: its field is open under it until sent. */
+  const [typing, setTyping] = useState<number | null>(null);
+  const [typed, setTyped] = useState("");
   return <>
     {tabs.length > 0 && <div className="question-tabs">
       {tabs.map((tab, index) => <span key={index} className={tab.answered ? "answered" : undefined}>{tab.answered && "✓ "}{tab.label}</span>)}
@@ -594,18 +602,31 @@ function QuestionList({ prompt, tabs, question, sent, sendingLabel, onPick }: {
     <ul className="option-list question-list">{prompt.options.map((option) => {
       const recommended = RECOMMENDED.exec(option.label);
       const label = recommended ? option.label.slice(0, recommended.index) : option.label;
+      const freeText = freeTextRow(option);
+      const send = () => {
+        if (!typed.trim()) return;
+        onType(option, typed);
+        setTyping(null);
+        setTyped("");
+      };
       return <li key={option.number}>
         <button
           className={option.index === prompt.current ? "current" : ""}
           aria-current={option.index === prompt.current || undefined}
+          aria-expanded={freeText ? typing === option.number : undefined}
           disabled={sent !== undefined}
-          onClick={() => onPick(option)}>
+          onClick={() => freeText ? setTyping((open) => open === option.number ? null : option.number) : onPick(option)}>
           <span>
             <strong>{label}{recommended && <em className="question-recommended">{recommended[1]}</em>}</strong>
             {option.description && <small>{option.description}</small>}
           </span>
           {sent === option.number && <span className="sheet-pending" role="status">{sendingLabel}</span>}
         </button>
+        {freeText && typing === option.number && sent === undefined && <form className="question-type" onSubmit={(event) => { event.preventDefault(); send(); }}>
+          <input autoFocus value={typed} placeholder={t("mobile.question.typePlaceholder")} aria-label={t("mobile.question.typePlaceholder")} enterKeyHint="send" onChange={(event) => setTyped(event.target.value)} />
+          <button className="primary" disabled={!typed.trim()}>{t("mobile.question.typeSend")}</button>
+          {isUntested("mobile.question.freeText") && <em>{t("mobile.focus.untested")}</em>}
+        </form>}
       </li>;
     })}</ul>
   </>;
@@ -3314,6 +3335,17 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     if (!deliver(selectKeys(liveQuestion.current, option.index))) return;
     setQuestionSent({ signature: questionSignature, number: option.number });
   };
+  /** Answers the question's free-text row (`freeTextRow`) with what was typed
+   * under it: the highlight walked there, the words, and Enter where Enter
+   * sends them (`freeTextWrites`). */
+  const answerQuestionText = (option: SelectOption, text: string) => {
+    if (!liveQuestion || questionSent) return;
+    const writes = freeTextWrites(liveQuestion.current, option, text);
+    if (writes.length === 0) return;
+    clearPending();
+    if (!deliver(writes)) return;
+    setQuestionSent({ signature: questionSignature, number: option.number });
+  };
   /** The stored session only grows at message boundaries, so a turn busy in
    * tool calls looked finished. The live screen's interrupt hint says it is
    * not; a choice on screen is waiting on the reader instead. */
@@ -3677,7 +3709,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
                         something a phone can do — and the question above them
                         is that list's heading. */}
                     {questionContext.length > 0 && <ReadableTurns lines={questionContext} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />}
-                    <QuestionList prompt={liveQuestion} tabs={questionTabs} question={questionAsk} sent={sentSignature === questionSignature ? questionSent?.number : undefined} sendingLabel={t("mobile.transcript.answering")} onPick={answerQuestion} />
+                    <QuestionList prompt={liveQuestion} tabs={questionTabs} question={questionAsk} sent={sentSignature === questionSignature ? questionSent?.number : undefined} sendingLabel={t("mobile.transcript.answering")} onPick={answerQuestion} onType={answerQuestionText} />
                   </div>}
                   {sessionBusy && <div className="transcript-working" role="status">
                     <span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span>

@@ -233,6 +233,15 @@ small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-
 .project-screen .tab-card.drop-before,.project-screen .tab-card.drop-after,.tab-card.home-project-card.drop-before,.tab-card.home-project-card.drop-after { box-shadow:none; }
 .project-screen .tab-card.drop-before::after,.tab-card.home-project-card.drop-before::after { box-shadow:inset 0 3px 0 0 #7c6cff; }
 .project-screen .tab-card.drop-after::after,.tab-card.home-project-card.drop-after::after { box-shadow:inset 0 -3px 0 0 #7c6cff; }
+/* A wide screen (an iPad, a desktop browser) stands the cards two to a line,
+   read left to right; a drop lands beside a card, so its line is a side. */
+@media (min-width:900px) {
+  .cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .tab-card.drop-before { box-shadow:inset 3px 0 0 0 #7c6cff; }
+  .tab-card.drop-after { box-shadow:inset -3px 0 0 0 #7c6cff; }
+  .project-screen .tab-card.drop-before::after,.tab-card.home-project-card.drop-before::after { box-shadow:inset 3px 0 0 0 #7c6cff; }
+  .project-screen .tab-card.drop-after::after,.tab-card.home-project-card.drop-after::after { box-shadow:inset -3px 0 0 0 #7c6cff; }
+}
 .project-screen .tab-card-open,.project-screen .tab-card-dot,.project-screen .tab-card-grip,.tab-card.one-row.home-project-card .tab-card-grip { border-radius:0; }
 /* On an octagon the grip is no column beside ✕: it sits in the lower-right
    cut, its ⠿ turned 45° so the dots run along the cut. The button is a 36px
@@ -1120,6 +1129,11 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .question-tabs span { color:#e7e9f2; font:600 1.02rem/1.3 Inter,ui-sans-serif,system-ui,sans-serif; }
 .question-tabs span.answered { color:#7d8499; font-size:.84rem; font-weight:500; }
 .question-list button:disabled { opacity:.6; }
+/* The free-text row's field (`freeTextRow`), opened under it by a tap: the
+   to-do editor's add row — a field and its button side by side. */
+.question-type { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding:6px 0 4px; }
+.question-type input { min-width:0; border:1px solid #3a3e50; border-radius:12px; padding:11px 13px; background:#171a24; color:#fff; font-size:1rem; }
+.question-type em { grid-column:1 / -1; color:#98a0b4; font-size:.78rem; }
 /* A question kept in the chat once answered (`AskedCard`): the live card's
    rows, no longer buttons — the ones the answer took lit as the highlighted
    row is, the rest quieted as a sent list's are. */
