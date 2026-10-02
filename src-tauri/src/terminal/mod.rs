@@ -1726,7 +1726,7 @@ mod route_tests {
                 .insert("main-view".to_string(), viewer(false, "main"));
             route
                 .visible_viewers
-                .insert("popout-view".to_string(), viewer(true, "detached-p-g-1"));
+                .insert("popout-view".to_string(), viewer(true, "detached-p-g-2"));
         }
         // While the popout's view is registered the PTY streams…
         assert!(matches!(
@@ -1734,7 +1734,9 @@ mod route_tests {
             Routed::Data(_)
         ));
 
-        assert_eq!(route_drop_window_views("detached-p-g-1"), 1);
+        // Its own window label: the drop sweeps every route, and the other
+        // route tests run in parallel.
+        assert_eq!(route_drop_window_views("detached-p-g-2"), 1);
 
         // …and once its window is gone it goes back to buffering, exactly as it
         // would have if the pane had unmounted properly. The main window's own
@@ -1768,13 +1770,13 @@ mod route_tests {
             route.visible_viewers.insert("main-view".to_string(), viewer(true, "main"));
             route
                 .visible_viewers
-                .insert("pop-a".to_string(), viewer(true, "detached-p-g-1"));
+                .insert("pop-a".to_string(), viewer(true, "detached-p-g-3"));
             route
                 .visible_viewers
-                .insert("pop-b".to_string(), viewer(false, "detached-p-g-1"));
+                .insert("pop-b".to_string(), viewer(false, "detached-p-g-3"));
         }
         match route_chunk_at(id, b"live", Instant::now(), seq) {
-            Routed::Data(slice) => assert_eq!(slice.windows, vec!["detached-p-g-1".to_string()]),
+            Routed::Data(slice) => assert_eq!(slice.windows, vec!["detached-p-g-3".to_string()]),
             other => panic!("expected data, got {other:?}"),
         }
         {
