@@ -93,6 +93,21 @@ describe("phone theme choice", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBe("fancy_light");
   });
 
+  it("links the manifest whose launch splash is the painted theme's page colour", () => {
+    const link = document.createElement("link");
+    link.rel = "manifest";
+    link.href = "/manifest.webmanifest";
+    document.head.append(link);
+    try {
+      setPhoneTheme("fancy_dark");
+      expect(link.getAttribute("href")).toBe("/manifest-fancy_dark.webmanifest");
+      setPhoneTheme("desktop");
+      expect(link.getAttribute("href")).toBe("/manifest-light_lavender.webmanifest");
+    } finally {
+      link.remove();
+    }
+  });
+
   it("ignores a desktop theme it does not know", () => {
     noteDesktopTheme("<script>");
     noteDesktopTheme(42);

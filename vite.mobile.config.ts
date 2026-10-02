@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import autoprefixer from "autoprefixer";
+import { manifestPath, PAGE_COLOR, type PaintedTheme } from "./mobile-web/src/pageColors";
 import { shellAssets } from "./mobile-web/src/shellAssets";
 import { themeColors } from "./mobile-web/src/themeColors";
 
@@ -57,6 +58,32 @@ function stampServiceWorker(): Plugin {
   };
 }
 
+/* One copy of `public/manifest.webmanifest` per theme, its splash and chrome in
+ * that theme's page colour (`pageColors.ts`). An installed app paints its
+ * launch splash from the manifest before any of the page runs, so the page
+ * links the copy for the theme it paints in (`theme.applyPhoneTheme`). The
+ * plain one stays for the default theme's first load. */
+function themedManifests(): Plugin {
+  let publicDir = "";
+  return {
+    name: "app-themed-manifests",
+    apply: "build",
+    configResolved(config) {
+      publicDir = config.publicDir;
+    },
+    generateBundle() {
+      const manifest = JSON.parse(readFileSync(resolve(publicDir, "manifest.webmanifest"), "utf8"));
+      for (const [theme, color] of Object.entries(PAGE_COLOR)) {
+        this.emitFile({
+          type: "asset",
+          fileName: manifestPath(theme as PaintedTheme).slice(1),
+          source: `${JSON.stringify({ ...manifest, background_color: color, theme_color: color }, null, 2)}\n`,
+        });
+      }
+    },
+  };
+}
+
 /** The short commit HEAD points at, or "" outside git — the same hash the
  * desktop's `TABTIVITY_BUILD_COMMIT` bakes in. */
 function headCommit(): string {
@@ -69,7 +96,7 @@ function headCommit(): string {
 
 export default defineConfig({
   root: "mobile-web",
-  plugins: [react(), stampServiceWorker()],
+  plugins: [react(), themedManifests(), stampServiceWorker()],
   base: "/",
   // The phone's own sheets are written in one palette and rebuilt onto the
   // theme anchors in `themes.css` (`themeColors.ts`). Declaring PostCSS here

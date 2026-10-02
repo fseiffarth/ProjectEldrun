@@ -6,6 +6,7 @@
 
 import type { ITheme } from "@xterm/xterm";
 import { terminalPalette } from "../../src/lib/terminal/terminalPalette";
+import { manifestPath, PAGE_COLOR } from "./pageColors";
 import { readChoice, writeChoice } from "./prefs";
 
 /** The desktop's own themes (`src/types` `THEMES`), "system" included. */
@@ -23,16 +24,6 @@ const DESKTOP_DEFAULT_PAINT = "dark" as const;
 const isDesktopTheme = (value: unknown): value is DesktopTheme => typeof value === "string" && (DESKTOP_THEMES as readonly string[]).includes(value);
 const isPhoneTheme = (value: unknown): value is PhoneTheme => value === "desktop" || isDesktopTheme(value);
 
-/** The page colour each theme opens on, for the browser chrome around the app
- * (`theme-color`), which reads a plain colour rather than the theme's tokens. */
-const PAGE_COLOR: Record<Exclude<DesktopTheme, "system">, string> = {
-  dark: "#000000",
-  fancy_dark: "#04070d",
-  soft_dark: "#0c0d10",
-  light: "#ffffff",
-  fancy_light: "#fbfdff",
-  light_lavender: "#fcfbff",
-};
 const LIGHT = new Set<string>(["light", "fancy_light", "light_lavender"]);
 
 export function readPhoneTheme(): PhoneTheme {
@@ -86,6 +77,8 @@ export function applyPhoneTheme(): void {
   else root.removeAttribute("data-theme-pick");
   followOs(system);
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", PAGE_COLOR[theme]);
+  // The launch splash is the manifest's, so it follows the theme too.
+  document.querySelector('link[rel="manifest"]')?.setAttribute("href", manifestPath(theme));
   // iOS reads this at launch only: a light theme needs dark status-bar text,
   // which the translucent black style cannot give it.
   document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.setAttribute("content", LIGHT.has(theme) ? "default" : "black-translucent");
