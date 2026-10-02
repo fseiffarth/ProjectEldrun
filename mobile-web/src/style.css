@@ -233,6 +233,15 @@ small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-
 .project-screen .tab-card.drop-before,.project-screen .tab-card.drop-after,.tab-card.home-project-card.drop-before,.tab-card.home-project-card.drop-after { box-shadow:none; }
 .project-screen .tab-card.drop-before::after,.tab-card.home-project-card.drop-before::after { box-shadow:inset 0 3px 0 0 #7c6cff; }
 .project-screen .tab-card.drop-after::after,.tab-card.home-project-card.drop-after::after { box-shadow:inset 0 -3px 0 0 #7c6cff; }
+/* A wide screen (an iPad, a desktop browser) stands the cards two to a line,
+   read left to right; a drop lands beside a card, so its line is a side. */
+@media (min-width:900px) {
+  .cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .tab-card.drop-before { box-shadow:inset 3px 0 0 0 #7c6cff; }
+  .tab-card.drop-after { box-shadow:inset -3px 0 0 0 #7c6cff; }
+  .project-screen .tab-card.drop-before::after,.tab-card.home-project-card.drop-before::after { box-shadow:inset 3px 0 0 0 #7c6cff; }
+  .project-screen .tab-card.drop-after::after,.tab-card.home-project-card.drop-after::after { box-shadow:inset -3px 0 0 0 #7c6cff; }
+}
 .project-screen .tab-card-open,.project-screen .tab-card-dot,.project-screen .tab-card-grip,.tab-card.one-row.home-project-card .tab-card-grip { border-radius:0; }
 /* On an octagon the grip is no column beside ✕: it sits in the lower-right
    cut, its ⠿ turned 45° so the dots run along the cut. The button is a 36px
