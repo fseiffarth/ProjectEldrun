@@ -5,8 +5,8 @@ keywords: [mobile, phone, files, browse, project files, read-only, tailscale, ta
 ---
 
 Eldrun Mobile is a small companion web app for your phone. It shows the
-projects you opted in, their agent and shell tabs, and one tab at a time as a
-live terminal you can type into — plus a to-do board, read-only mail and a
+projects you opted in, their agent tabs (and shell tabs, if you allow them),
+and one tab at a time as a live terminal you can type into — plus a to-do board, read-only mail and a
 calendar, and — if you allow it — a read-only look at your projects' files.
 It is a remote control, not a phone-sized Eldrun: no editor, git, browser or
 settings.

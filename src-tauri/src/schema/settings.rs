@@ -65,6 +65,12 @@ pub struct EldrunMobileHostSettings {
     /// (`mobile_control::files::files_open`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_files: Option<bool>,
+    /// May a paired phone see and open shell tabs? Default off — Mobile is
+    /// agents-only unless this is set. Read by the sidecar per catalog load
+    /// (`mobile_control::discovery::shells_open`) and repeated by the desktop
+    /// bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_tabs: Option<bool>,
 }
 
 /// Cloud completion authority lives in Eldrun's settings, never project.json.

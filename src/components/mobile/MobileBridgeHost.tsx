@@ -822,6 +822,11 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
     if (!item) return { status: "error", code: "unsupported_sign_in", message: "Sign-in is unavailable for this agent" };
     spec = buildSignInTabSpec(item, signInLaunch(item.cmd, request.sign_in === "alternate"), cwd, t);
   } else if (request.kind === "shell") {
+    // The sidecar's `shells_open` is the perimeter; this repeats it, because
+    // the bridge is reachable without going through it.
+    if (useSettingsStore.getState().settings?.eldrun_mobile_host?.shell_tabs !== true) {
+      return { status: "error", code: "shells_off", message: "Shells are off for the phone" };
+    }
     if (request.agent_id || request.mode) {
       return { status: "error", code: "invalid_request", message: "Shell requests cannot name an agent or mode" };
     }

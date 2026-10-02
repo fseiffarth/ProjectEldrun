@@ -95,7 +95,7 @@ export interface ProjectPromptList { prompts: ProjectPrompt[]; desktop_available
 export interface ClosedTabRow { id: string; label: string; agent: string; closed_at: number }
 /** `files`: whether the read-only file browser answers for this project
  * (the desktop's switch is on, and it is a project, not a box or root). */
-export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[]; closed?: ClosedTabRow[]; files?: boolean }
+export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[]; closed?: ClosedTabRow[]; files?: boolean; /** The phone may open shell tabs (`shell_tabs` on the desktop); absent is off. */ shells?: boolean }
 export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; intake: boolean; overdue: boolean; due_today: boolean; color?: string }
 export interface TodoSubtask { id: string; title: string; done: boolean }
 export interface TodoTaskInput {

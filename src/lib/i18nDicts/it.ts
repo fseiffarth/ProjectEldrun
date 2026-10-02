@@ -914,6 +914,8 @@ export const dict: Dict = {
   "mobile.files.openFolder": "Apri la cartella {name}",
   "mobile.files.openFile": "Apri {name}",
   "mobile.projectFiles": "File del progetto sul telefono",
+  "mobile.noShells": "Nessuna shell sul telefono",
+  "mobile.noShellsHelp": "Un telefono associato vede e apre solo le schede degli agenti. Le schede shell non compaiono nei suoi elenchi e non può avviarne una; disattivandolo può collegarsi alle shell e aprirle, che girano come te senza nulla in mezzo.",
   "mobile.projectFilesHelp": "Un telefono associato può sfogliare le cartelle dei progetti qui sopra e aprire file per leggerli, salvarli o condividerli. Dal telefono non si può modificare nulla. .git, .eldrun e i file .env sono esclusi e i collegamenti simbolici non vengono seguiti.",
   "mobile.rootAccessClosed": "Chiuso al momento: gli agenti root hanno gli strumenti MCP, ma non tutte le loro scritture vengono messe in attesa di revisione dietro la sandbox degli agenti. Imposta «Esamina le scritture degli agenti root» su «Tutte le scritture» e tieni attiva la sandbox per root, oppure disattiva gli strumenti MCP della console root.",
   "mobile.projectAccess": "Accesso per progetto",

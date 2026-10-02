@@ -154,6 +154,10 @@ export interface Settings {
     /** A paired phone may browse and read (never change) its Mobile projects'
      * files. Unset is off; read by the sidecar per request. */
     project_files?: boolean;
+    /** A paired phone may see and open shell tabs. Unset is off (the phone is
+     * agents-only); read by the sidecar per catalog load and repeated by the
+     * desktop bridge. */
+    shell_tabs?: boolean;
   };
   /** Show Eldrun Mobile's host-connection control in the desktop header. This
    * defaults to on when Mobile itself is enabled; an explicit false hides it. */

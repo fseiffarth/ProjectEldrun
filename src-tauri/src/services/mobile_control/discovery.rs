@@ -551,6 +551,20 @@ fn live_tmux() -> HashMap<String, LiveTmux> {
         .collect()
 }
 
+/// Whether a paired phone may see and open shell tabs. Off unless
+/// `eldrun_mobile_host.shell_tabs` is set: a shell is the whole account with
+/// nothing between it and a lost phone, so Mobile is agents-only by default.
+/// Read per catalog load, like `root_open`, so turning it off unlists every
+/// shell and detaches an open one at `pty_bridge`'s next re-check.
+/// Unreadable settings refuse.
+pub fn shells_open(state_dir: &Path) -> bool {
+    fs::read(state_dir.join("settings.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|settings| settings.get("eldrun_mobile_host")?.get("shell_tabs")?.as_bool())
+        .unwrap_or(false)
+}
+
 impl Catalog {
     pub fn load(state_dir: &Path, host_key: &[u8]) -> Result<Self, String> {
         Self::load_with(state_dir, host_key, &RootEnv::live())
@@ -636,9 +650,10 @@ impl Catalog {
                 roots,
             });
         }
+        let shells = shells_open(state_dir);
         let resolved = sources
             .into_iter()
-            .filter_map(|source| resolve_scope(state_dir, host_key, &live, source))
+            .filter_map(|source| resolve_scope(state_dir, host_key, &live, shells, source))
             .collect();
         Ok(Self { projects: resolved })
     }
@@ -660,6 +675,7 @@ fn resolve_scope(
     state_dir: &Path,
     host_key: &[u8],
     live: &HashMap<String, LiveTmux>,
+    shells: bool,
     source: ScopeSource,
 ) -> Option<ResolvedProject> {
     let mut roots: Vec<PathBuf> = Vec::new();
@@ -697,7 +713,7 @@ fn resolve_scope(
         // started with — and while the tmux session lives, both reattach.
         let local_agent = tab.kind == "local_agent";
         let agent = tab.kind == "agent" || local_agent;
-        let eligible_kind = tab.kind == "shell"
+        let eligible_kind = (shells && tab.kind == "shell")
             || (agent && (resumable(&tab) || tab.sign_in || tab.cloud))
             || (local_agent
                 && tab.local_launch.as_ref().is_some_and(|launch| {
@@ -779,6 +795,14 @@ fn resolve_scope(
 mod tests {
     use super::*;
 
+    fn allow_shells(state: &Path) {
+        fs::write(
+            state.join("settings.json"),
+            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "shell_tabs": true } }).to_string(),
+        )
+        .expect("settings");
+    }
+
     #[test]
     fn tmux_ls_runs_through_eldrun_path() {
         let command = tmux_ls_command("#{session_name}");
@@ -823,6 +847,7 @@ mod tests {
     fn one_corrupt_session_file_costs_that_project_its_tabs_not_the_whole_catalog() {
         let dir = tempfile::tempdir().expect("state dir");
         let state = dir.path();
+        allow_shells(state);
         let root_a = state.join("a");
         let root_b = state.join("b");
         fs::create_dir_all(&root_a).expect("root a");
@@ -882,6 +907,7 @@ mod tests {
     fn an_invalidated_cache_re_reads_within_the_ttl() {
         let dir = tempfile::tempdir().expect("state dir");
         let state = dir.path();
+        allow_shells(state);
         let root = state.join("p");
         fs::create_dir_all(&root).expect("root dir");
         fs::write(
@@ -940,6 +966,7 @@ mod tests {
     fn a_tab_publishes_a_palette_colour_and_drops_anything_else() {
         let dir = tempfile::tempdir().expect("state dir");
         let state = dir.path();
+        allow_shells(state);
         let root = state.join("p");
         fs::create_dir_all(&root).expect("root dir");
         fs::write(
@@ -1244,6 +1271,7 @@ mod tests {
     fn a_mobile_enabled_box_is_a_scope_with_the_folder_and_local_member_roots() {
         let dir = tempfile::tempdir().expect("state dir");
         let state = dir.path();
+        allow_shells(state);
         let folder = state.join("boxes").join("paper");
         let member = state.join("lib");
         let remote_mirror = state.join("mirror");

@@ -25,7 +25,7 @@ use super::{
     admin,
     auth::AuthStore,
     config::{verify_tailscale_serve, HostConfig},
-    discovery::{Catalog, CatalogCache, PublicTab, ResolvedTab, ScopeKind, TabPrompt, TabSchedules},
+    discovery::{shells_open, Catalog, CatalogCache, PublicTab, ResolvedTab, ScopeKind, TabPrompt, TabSchedules},
     files,
     headless,
     inbox,
@@ -792,7 +792,9 @@ async fn project(
             json!({ "project": public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents, "closed": closed,
                 // Whether this project's 📁 answers (`files.rs`): the host-wide
                 // switch, and a project rather than a box or the root console.
-                "files": project.public.kind == ScopeKind::Project && files::files_open(&state.config.state_dir) }),
+                "files": project.public.kind == ScopeKind::Project && files::files_open(&state.config.state_dir),
+                // Whether the phone may offer a new shell (`shells_open`).
+                "shells": shells_open(&state.config.state_dir) }),
         ),
     )
 }
@@ -887,6 +889,11 @@ async fn create_tab(
         || !request.launch_shape_ok()
     {
         return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    // The catalog would never list the new shell, so the create would only
+    // time out after leaving an unreachable tab on the desktop.
+    if matches!(request.kind, CreateTabKind::Shell) && !shells_open(&state.config.state_dir) {
+        return api_error(StatusCode::FORBIDDEN, "shells_off");
     }
     let Ok(catalog_snapshot) = catalog(&state) else {
         return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
@@ -4088,6 +4095,12 @@ mod tests {
         fn with_box() -> Self {
             let fixture = Self::bare();
             let state_dir = &fixture.state.config.state_dir;
+            // Shell tabs are off the phone unless switched on.
+            std::fs::write(
+                state_dir.join("settings.json"),
+                serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "shell_tabs": true } }).to_string(),
+            )
+            .expect("write settings");
             let folder = state_dir.join("boxes").join("paper");
             std::fs::create_dir_all(&folder).expect("box folder");
             std::fs::write(
@@ -5679,7 +5692,24 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {answer}");
         assert_eq!(json(&answer)["error"], "invalid_request");
 
+        // A shell, while shells are off the phone (the default), is refused
+        // before the catalog is asked.
+        let (status, _, answer) = host
+            .send(request(serde_json::json!({
+                "project_id": "target",
+                "kind": "shell",
+                "idempotency_key": "0123456789abcdef",
+            })))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {answer}");
+        assert_eq!(json(&answer)["error"], "shells_off");
+
         // An unknown project resolves to nothing rather than to a raw id.
+        std::fs::write(
+            host.state.config.state_dir.join("settings.json"),
+            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "shell_tabs": true } }).to_string(),
+        )
+        .expect("settings");
         let (status, _, answer) = host
             .send(request(serde_json::json!({
                 "project_id": "target",

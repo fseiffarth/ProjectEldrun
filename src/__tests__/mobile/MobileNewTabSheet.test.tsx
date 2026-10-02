@@ -30,6 +30,7 @@ const DETAIL = {
   desktop_available: true,
   tabs: [{ id: "a", label: "claude 1", kind: "agent", available: true, viewer_busy: false }],
   agents: [{ id: "claude", label: "Claude", modes: ["plan", "auto"] }],
+  shells: true,
 };
 
 beforeEach(() => {
@@ -126,5 +127,19 @@ describe("Mobile project screen — the ＋", () => {
     expect(shell.nextElementSibling).toBe(file);
     // A bare input is media-only to Android Chrome: camera and photos, no files.
     expect(screen.getByTestId("project-inbox-input").getAttribute("accept")).toContain("application/*");
+  });
+
+  it("offers no shell while the desktop keeps shells off the phone", async () => {
+    for (const detail of [{ ...DETAIL, shells: false }, { ...DETAIL, shells: undefined }]) {
+      serve(detail);
+      render(<Project id="p" back={() => {}} terminal={() => {}} />);
+      fireEvent.click(await screen.findByRole("button", { name: "New tab" }));
+      const sheet = await screen.findByRole("dialog", { name: "New tab" });
+      expect(screen.queryByRole("button", { name: "New shell" })).toBeNull();
+      // The file row leads the sheet instead, and the agents are untouched.
+      expect(sheet.querySelector(".create")?.firstElementChild?.classList.contains("new-tab-file")).toBe(true);
+      expect(screen.getByRole("button", { name: "Claude" })).toBeTruthy();
+      cleanup();
+    }
   });
 });

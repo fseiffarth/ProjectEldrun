@@ -186,6 +186,7 @@ const FAILURE_TEXT: Record<string, string> = {
   project_not_found: "This project is no longer shared with the phone.",
   project_ineligible: "This project is no longer shared with the phone.",
   tab_not_found: "That tab is no longer available.",
+  shells_off: "Shells are switched off for the phone in the desktop's Mobile settings.",
   // A sign-in address the phone handed back (`sign_in.rs`).
   invalid_callback: "That is not the address the browser ended on. Copy all of it — it starts with http://localhost.",
   callback_not_local: "That address does not lead to the agent waiting on the desktop.",

@@ -42,9 +42,11 @@ export interface NewTabLaunch {
  * new session, and the sheet closes on the tap rather than waiting for the
  * desktop, so a slow create is a screen the reader can still read.
  */
-export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClose }: {
+export function NewTabSheet({ projectId, agents, shells, busy, onPick, onSendFile, onClose }: {
   projectId: string;
   agents: AgentRow[];
+  /** The desktop lets the phone open shells (off by default). */
+  shells: boolean;
   /** A create in flight, or no desktop to answer one; the file row ignores it. */
   busy: boolean;
   onPick: (kind: "shell" | "agent", agent?: AgentRow, mode?: string, launch?: NewTabLaunch) => void;
@@ -88,7 +90,7 @@ export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClo
       </div> : <>
       <p className="sheet-note">{t("mobile.newTab.note")}</p>
       <div className="create">
-        <button className="primary" disabled={busy} onClick={() => onPick("shell")}>{t("mobile.newTab.shell")}</button>
+        {shells && <button className="primary" disabled={busy} onClick={() => onPick("shell")}>{t("mobile.newTab.shell")}</button>}
         {/* Right under the shell, not after the agents: at the foot of a
             project with many agents it sat past the sheet's fold, and the
             reader never found it. No desktop round trip — the sidecar writes

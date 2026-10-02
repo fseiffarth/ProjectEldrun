@@ -425,6 +425,7 @@ export const UNTESTED = {
   "mobile.mailActions": { area: "mobile", what: "MobileSettings · Mark read and star from the phone" },
   "mobile.mailRead": { area: "mobile", what: "MobileSettings · Read mail on the phone" },
   "mobile.mailReply": { area: "mobile", what: "MobileSettings · Reply from the phone" },
+  "mobile.noShells": { area: "mobile", what: "MobileSettings · No shells on the phone (host-wide switch, default on): shell tabs are unlisted, an open one detaches, the new-tab sheet offers no Shell; off lists and opens them again" },
   "mobile.projectFiles": { area: "mobile", what: "MobileSettings · Project files on the phone (host-wide switch, default off; the sidecar reads it per request)" },
   "mobile.files.browse": { area: "mobile", what: "ProjectFiles · left drawer, opened by a left→right swipe on the project screen, left edge included, or from the left third of a tab's Focus view (right→left or a tap beside it closes): walk the project's folders read-only by sealed token, open a picture/text/PDF in the outbox viewer (Save, Share, step through a folder's pictures; a PDF's Open goes on to the browser)" },
   "mobile.markup": { area: "mobile", what: "MarkupView · Mark up a PDF or picture from an agent tab's viewer (files drawer, 🖼 gallery, chat bubble): pen always draws (pressure, palm rejection), fingers scroll/pinch, ✋/✎ on a pen-less phone; highlighter box, typed note, eraser, undo/redo, clear page; the layer is saved on the phone only (IndexedDB) as each stroke ends and survives close/reload" },
