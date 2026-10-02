@@ -2068,6 +2068,7 @@ pub fn run() {
             commands::agents::agent_tab_last_prompt,
             commands::agents::agent_tab_recent_prompts,
             commands::agents::agent_tab_transcript,
+            commands::agents::agent_tab_changes,
             commands::agents::agent_tab_undo_clear,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,

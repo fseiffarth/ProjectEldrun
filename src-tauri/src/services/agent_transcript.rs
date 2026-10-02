@@ -369,6 +369,35 @@ fn claude_transcript(
     }
 }
 
+/// The file a Claude or Codex tab's conversation is stored in — or, with
+/// `subagent`, that subagent's own — resolved as [`claude_transcript`] and
+/// [`codex_transcript`] resolve it (`services::agent_changes` reads it too).
+pub(crate) fn conversation_file(
+    cmd: &str,
+    project_id: Option<&str>,
+    launch_id: &str,
+    subagent: Option<&str>,
+) -> Option<PathBuf> {
+    let main = session_file(cmd, project_id, launch_id)?;
+    let Some(token) = subagent else {
+        return Some(main);
+    };
+    match cmd {
+        "claude" => claude_subagent_file(&main.with_extension("").join("subagents"), token),
+        "codex" => {
+            let thread = agent_session::read_live_session_for(project_id, launch_id)?;
+            let stores = crate::services::codex_store::state_dbs(Some(project_id.unwrap_or("root")));
+            let child = stores.iter().find_map(|db| {
+                crate::services::codex_store::descendant_threads(db, &thread, MAX_SUBAGENT_DEPTH)
+                    .into_iter()
+                    .find(|child| subagent_token(&child.id) == token)
+            })?;
+            codex_rollout(project_id, &child)
+        }
+        _ => None,
+    }
+}
+
 /// The subagent file in `folder` whose handle is `token`.
 fn claude_subagent_file(folder: &Path, token: &str) -> Option<PathBuf> {
     std::fs::read_dir(folder).ok()?.flatten().map(|entry| entry.path()).find(|path| {
@@ -505,7 +534,7 @@ fn opencode_transcript(
 
 /// The file's fingerprint: its length and modification time. Both move on
 /// every append, and neither costs a read.
-fn fingerprint(meta: &std::fs::Metadata) -> String {
+pub(crate) fn fingerprint(meta: &std::fs::Metadata) -> String {
     let stamp = meta
         .modified()
         .ok()

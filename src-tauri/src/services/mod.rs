@@ -7,6 +7,9 @@ pub mod agent_turn;
 // The stored conversation behind an agent tab (Claude's session log, Codex's
 // rollout) as the prompt/answer entries the phone's Focus view lays out.
 pub mod agent_transcript;
+// The files that conversation changed, as the diffs its CLI recorded — the
+// desktop Reader's Changes panel.
+pub mod agent_changes;
 pub mod agent_bin;
 pub mod agent_tasks;
 pub mod schedule_mcp;

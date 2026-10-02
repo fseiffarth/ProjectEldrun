@@ -1453,6 +1453,38 @@ pub async fn agent_tab_transcript(
     .unwrap_or_else(|_| AgentTranscript::unavailable("read_failed"))
 }
 
+/// The files the tab's conversation — or `subagent`'s — changed, as the
+/// diffs its CLI recorded (`services::agent_changes`): the desktop Reader's
+/// Changes panel. Takes `agent_tab_transcript`'s arguments; never reaches
+/// the phone.
+#[tauri::command]
+pub async fn agent_tab_changes(
+    agent: String,
+    project_id: Option<String>,
+    tab_dir: Option<String>,
+    since: Option<i64>,
+    session_id: String,
+    subagent: Option<String>,
+    version: Option<String>,
+    limit: Option<usize>,
+) -> crate::services::agent_changes::AgentChanges {
+    use crate::services::agent_changes::{self, AgentChanges, DEFAULT_LIMIT};
+    tauri::async_runtime::spawn_blocking(move || {
+        agent_changes::agent_session_changes(
+            &agent,
+            project_id.as_deref(),
+            tab_dir.as_deref(),
+            since,
+            &session_id,
+            subagent.as_deref(),
+            version.as_deref(),
+            limit.unwrap_or(DEFAULT_LIMIT),
+        )
+    })
+    .await
+    .unwrap_or_else(|_| AgentChanges::unavailable("read_failed"))
+}
+
 /// How to take back the tab's last `/clear` (`services::agent_session::undo_clear_plan`):
 /// Claude types `/resume <id>` of the conversation it ended; Codex has its
 /// record pointed back at that conversation and is relaunched onto it. `None`
