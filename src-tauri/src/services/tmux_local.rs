@@ -67,11 +67,14 @@ pub fn sessions_to_reap<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<Str
 
 /// Whether a `tmux kill-session` failure means the session was already gone —
 /// which is the desired end state, not an error. A session can exit between
-/// `ls` and `kill-session`, and the server itself goes away with its last one.
+/// `ls` and `kill-session`, and the server itself goes away with its last one —
+/// a kill that reaches it while it is exiting reads "server exited
+/// unexpectedly" (seen on CI's tmux, 2026-10-02).
 pub fn kill_failure_is_already_gone(stderr: &str) -> bool {
     stderr.contains("can't find session")
         || stderr.contains("no server running")
         || stderr.contains("failed to connect to server")
+        || stderr.contains("server exited unexpectedly")
 }
 
 /// End every tmux session Tabtivity created on the local machine — the clean-quit
@@ -1125,6 +1128,7 @@ mod tests {
         assert!(kill_failure_is_already_gone(concat!("can't find session: ", crate::app_slug!(), "-x")));
         assert!(kill_failure_is_already_gone("no server running on /tmp/tmux-1000/default"));
         assert!(kill_failure_is_already_gone("error connecting to /tmp/tmux-1000/default (failed to connect to server)"));
+        assert!(kill_failure_is_already_gone("server exited unexpectedly"));
         assert!(!kill_failure_is_already_gone("permission denied"));
         assert!(!kill_failure_is_already_gone(""));
     }
