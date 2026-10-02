@@ -10,7 +10,7 @@
  * (B3/B4), and the branch list not offering a checkout that cannot happen.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act, within } from "@testing-library/react";
+import { render, screen, act, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 /**
@@ -77,6 +77,7 @@ function setupInvoke(over: Record<string, unknown> = {}) {
       const v = over[cmd];
       return typeof v === "function" ? (v as () => unknown)() : Promise.resolve(v);
     }
+    if (cmd === "git_worktree_selection_supported") return Promise.resolve(true);
     if (cmd === "git_log") return Promise.resolve(COMMITS);
     if (cmd === "git_branches") return Promise.resolve(BRANCHES);
     if (cmd === "git_worktree_list") return Promise.resolve(worktrees);
@@ -356,5 +357,88 @@ describe("#23 git worktrees", () => {
     await renderHistory();
     expect(await screen.findByText("feat: add widget")).toBeTruthy();
     expect(screen.getByText(/boom/)).toBeTruthy();
+  });
+});
+
+
+describe("selected worktree context", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    worktrees = WORKTREES;
+    mockInvoke.mockImplementation((cmd: string, args: Record<string, unknown> = {}) => {
+      const selection = args.worktree as { path: string; site: string } | undefined;
+      if (cmd === "git_worktree_selection_supported") return Promise.resolve(true);
+      if (cmd === "git_worktree_list") return Promise.resolve(worktrees);
+      if (cmd === "git_branches") return Promise.resolve(BRANCHES.map((b) => ({ ...b, is_current: b.name === (selection ? "feature" : "main") })));
+      if (cmd === "git_log") return Promise.resolve(COMMITS.map((c) => ({ ...c, subject: selection ? "feature history" : c.subject })));
+      return Promise.resolve(null);
+    });
+  });
+
+  it("selection updates history and routes checkout, fetch, and the parent action context", async () => {
+    const user = userEvent.setup();
+    const onWorktreeChanged = vi.fn();
+    await act(async () => { render(<GitHistory projectDir="/p" onWorktreeChanged={onWorktreeChanged} />); });
+    await user.click(screen.getByRole("button", { name: "Select worktree feature" }));
+    await screen.findByText("feature history");
+    const worktree = { path: "/p/.eldrun/worktrees/feature", site: "host" };
+    expect(onWorktreeChanged).toHaveBeenLastCalledWith(worktree);
+    expect(mockInvoke).toHaveBeenCalledWith("git_log", { projectDir: "/p", worktree, limit: 100, skip: 0 });
+    expect(screen.getByRole("button", { name: "feature" }).className).toContain("current");
+    await user.click(screen.getByRole("button", { name: "spare" }));
+    expect(mockInvoke).toHaveBeenCalledWith("git_checkout", { projectDir: "/p", worktree, target: "spare" });
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    expect(mockInvoke).toHaveBeenCalledWith("git_fetch", { projectDir: "/p", worktree, projectId: null });
+  });
+
+  it("a branch in another worktree jumps there without checking it out", async () => {
+    const user = userEvent.setup();
+    await renderHistory();
+    await user.click(screen.getByRole("button", { name: "feature Used in feature" }));
+    await screen.findByText("feature history");
+    expect(mockInvoke.mock.calls.some(([cmd]) => cmd === "git_checkout")).toBe(false);
+    await user.click(screen.getByRole("button", { name: "main Used in p" }));
+    await screen.findByText("feat: add widget");
+    expect(screen.getByRole("button", { name: "Select worktree p" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("a mirror selection uses explicit mirror context throughout", async () => {
+    const user = userEvent.setup();
+    await act(async () => { render(<GitHistory projectDir="/p" remote projectId="pid" />); });
+    await user.click(screen.getByTitle("Side"));
+    await user.click(screen.getByRole("option", { name: "Mirror" }));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("git_branches", { projectDir: "/p", worktree: { path: "", site: "mirror" } }));
+    await user.click(screen.getByRole("button", { name: "Select worktree feature" }));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("git_merge_state", { projectDir: "/p", worktree: { path: "/p/.eldrun/worktrees/feature", site: "mirror" } }));
+  });
+
+  it("an older running backend cannot silently ignore a selection", async () => {
+    const previous = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation((cmd: string, args: Record<string, unknown>) => cmd === "git_worktree_selection_supported"
+      ? Promise.reject("unknown command") : previous(cmd, args));
+    await renderHistory();
+    expect((screen.getByRole("button", { name: "Select worktree feature" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Worktree selection needs the updated backend/)).toBeTruthy();
+  });
+
+  it("late history from an earlier load does not replace the latest selected history", async () => {
+    const user = userEvent.setup();
+    let rerender!: ReturnType<typeof render>["rerender"];
+    await act(async () => { ({ rerender } = render(<GitHistory projectDir="/p" />)); });
+    const previous = mockInvoke.getMockImplementation()!;
+    let answer!: (value: typeof COMMITS) => void;
+    mockInvoke.mockImplementation((cmd: string, args: Record<string, unknown>) => {
+      if (cmd === "git_log" && args.worktree) return new Promise((resolve) => { answer = resolve; });
+      return previous(cmd, args);
+    });
+    await user.click(screen.getByRole("button", { name: "Select worktree feature" }));
+    // Disconnect/reconnect starts a newer load; the previous one must be ignored.
+    const secondAnswer = answer;
+    mockInvoke.mockImplementation(previous);
+    await act(async () => { rerender(<GitHistory projectDir="/p" connected={false} />); });
+    await act(async () => { rerender(<GitHistory projectDir="/p" connected />); });
+    await screen.findByText("feature history");
+    await act(async () => { secondAnswer(COMMITS); });
+    expect(screen.queryByText("feat: add widget")).toBeNull();
   });
 });

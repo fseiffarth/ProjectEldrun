@@ -1990,6 +1990,7 @@ pub fn run() {
             commands::skills::skills_list_installed,
             // Git worktrees (TODO Group E #23)
             commands::git::git_worktree_list,
+            commands::git::git_worktree_selection_supported,
             commands::git::git_worktree_add,
             commands::git::git_worktree_remove,
             commands::git::git_worktree_lock,
