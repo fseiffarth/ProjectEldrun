@@ -64,5 +64,5 @@ Settings → System → Experimental, then use `+` → Browser.
 
 ## Agents and the calendar
 
-Agents in the root console with the **MCP** chip on get Eldrun's root tools
+Agents in the root console with the **MCP** chip on get Tabtivity's root tools
 (calendar, board, project list). See `tabs-and-panels`.

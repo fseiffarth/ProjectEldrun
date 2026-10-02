@@ -22,6 +22,7 @@ import { useTabsStore } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { STEERING_GROUPS, STEERING_KEYS } from "../../lib/shortcuts/shortcuts";
 import { STEERING_BINDINGS, findSteeringConflicts, steeringActionFor } from "../../lib/shortcuts/steeringBindings";
+import { storageKey } from "../../lib/brand";
 
 function Harness() {
   useKeyboard({ onTogglePanels: () => {} });
@@ -102,7 +103,7 @@ describe("steering legend fold (H)", () => {
     );
     press({ key: " ", shiftKey: true });
     press({ key: "h" });
-    expect(localStorage.getItem("eldrun.steering.legendHidden")).toBe("1");
+    expect(localStorage.getItem(storageKey("steering.legendHidden"))).toBe("1");
     press({ key: " " });
     expect(steering().active).toBe(false);
     expect(document.querySelector(".steering-legend-fab")).toBeNull();
@@ -112,7 +113,7 @@ describe("steering legend fold (H)", () => {
     expect(fab).not.toBeNull();
     fireEvent.click(fab);
     expect(steering()).toMatchObject({ active: true, legendHidden: false });
-    expect(localStorage.getItem("eldrun.steering.legendHidden")).toBeNull();
+    expect(localStorage.getItem(storageKey("steering.legendHidden"))).toBeNull();
   });
 });
 

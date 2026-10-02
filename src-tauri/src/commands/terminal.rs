@@ -1,3 +1,4 @@
+use crate::brand::UPPER;
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, State};
@@ -63,14 +64,14 @@ pub fn agent_fence_status(project_id: String) -> crate::services::agent_fence::A
     crate::services::agent_fence::status_for_scope(&project_id)
 }
 
-/// Whether fenced Copilot tabs have a sign-in Eldrun holds for them, and as
+/// Whether fenced Copilot tabs have a sign-in Tabtivity holds for them, and as
 /// whom. Never returns the token (see `services::copilot_auth`).
 #[tauri::command]
 pub async fn copilot_fence_auth_status() -> crate::services::copilot_auth::CopilotFenceAuth {
     crate::services::copilot_auth::status().await
 }
 
-/// Forget the Copilot sign-in Eldrun holds for fenced tabs.
+/// Forget the Copilot sign-in Tabtivity holds for fenced tabs.
 #[tauri::command]
 pub async fn copilot_fence_sign_out() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(crate::services::copilot_auth::sign_out)
@@ -155,18 +156,18 @@ pub async fn local_tmux_kill(session: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
-/// End every tmux session Eldrun created on the local machine during a clean
+/// End every tmux session Tabtivity created on the local machine during a clean
 /// application quit — the frontend close handler's half of
-/// `services::tmux_local::kill_eldrun_sessions`, which owns the rule (every
-/// `eldrun-` session, no foreign one) and is also run by `RunEvent::Exit` as
+/// `services::tmux_local::kill_app_sessions`, which owns the rule (every
+/// `tabtivity-` session, no foreign one) and is also run by `RunEvent::Exit` as
 /// the net for exits that never reach frontend code. A renderer or process
 /// crash reaches neither, leaving the sessions alive for restore.
 #[tauri::command]
-pub async fn local_tmux_kill_eldrun_sessions() -> Result<(), String> {
+pub async fn local_tmux_kill_app_sessions() -> Result<(), String> {
     if !crate::services::tmux_local::tmux_available() {
         return Ok(());
     }
-    tauri::async_runtime::spawn_blocking(crate::services::tmux_local::kill_eldrun_sessions)
+    tauri::async_runtime::spawn_blocking(crate::services::tmux_local::kill_app_sessions)
         .await
         .map_err(|e| e.to_string())?
 }
@@ -222,7 +223,7 @@ pub async fn pty_write(
     id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
-    // Watch for an Eldrun-minted interactive login command being typed in, which is
+    // Watch for a Tabtivity-minted interactive login command being typed in, which is
     // what marks this PTY as a legitimate destination for the matching saved
     // credential (see `commands::credentials`).
     crate::commands::credentials::note_pty_input(&id, &data);
@@ -309,7 +310,14 @@ pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<
     // The terminal is gone, so its login marking must not outlive it and bless a
     // future PTY that reuses the id.
     crate::commands::credentials::forget_login_pty(&id);
-    registry.lock().unwrap().kill(&id);
+    // Taken under the lock, torn down after it: the lock is on every
+    // keystroke's path, the teardown walks the process table.
+    let taken = registry.lock().unwrap().take(&id);
+    if let Some(taken) = taken {
+        tauri::async_runtime::spawn_blocking(move || taken.teardown())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     crate::services::agent_fence::on_tab_gone(&id);
     crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), &id);
     crate::services::agent_turn::on_tab_gone(&id);
@@ -324,11 +332,23 @@ pub async fn pty_kill_scope(
     registry: State<'_, RegistryState>,
     scope: String,
 ) -> Result<Vec<String>, String> {
-    let ids = registry.lock().unwrap().ids_for_scope(&scope);
+    // Every PTY of the scope is taken in one short hold of the registry lock
+    // (it is on every keystroke's path) and torn down after it, with one
+    // process-table walk for the lot instead of one per tab.
+    let (ids, taken) = {
+        let mut registry = registry.lock().unwrap();
+        let ids = registry.ids_for_scope(&scope);
+        let taken: Vec<_> = ids.iter().filter_map(|id| registry.take(id)).collect();
+        (ids, taken)
+    };
     for id in &ids {
         crate::commands::credentials::forget_login_pty(id);
         crate::terminal::route_remove_all_views(id);
-        registry.lock().unwrap().kill(id);
+    }
+    tauri::async_runtime::spawn_blocking(move || crate::terminal::teardown_taken(taken))
+        .await
+        .map_err(|e| e.to_string())?;
+    for id in &ids {
         crate::services::agent_fence::on_tab_gone(id);
         crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), id);
         crate::services::agent_turn::on_tab_gone(id);

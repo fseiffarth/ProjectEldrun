@@ -26,10 +26,10 @@ What the user asked for, in their words:
 > both to desktop back bake them together (or put them separately) then feed
 > into agent with corresponding promt
 
-> Idea is open eldrun phone eg on ipad write with pencil changes to pdf then
+> Idea is open tabtivity phone eg on ipad write with pencil changes to pdf then
 > submit and agent reads and changes it automatically
 
-So the primary device is an **iPad with Apple Pencil** running Eldrun Mobile
+So the primary device is an **iPad with Apple Pencil** running Tabtivity Mobile
 (Safari / Home Screen PWA — every iPad browser is WebKit), handwriting the
 changes onto the page; a phone with a finger is the secondary case. The agent
 reads the handwriting and applies it to the PDF's *source* by itself.
@@ -126,13 +126,13 @@ On an iPad no tool switching is needed to write:
 
 ### 2.3 What the agent gets
 
-Per Submit, in the project inbox (`.eldrun/inbox/`):
+Per Submit, in the project inbox (`.tabtivity/inbox/`):
 
 - `<stamp>-<stem>-marked.pdf` — a copy of the PDF with the layer baked in as
   annotations: `/Ink` for pen strokes, `/Highlight` (QuadPoints from the box)
   for boxes, `/FreeText` for text notes, each with an `/AP` appearance stream
   so every viewer (and an agent looking at the rendered page) sees them the
-  same, `/Contents` holding the note text, `/T` "Eldrun Mobile". Original
+  same, `/Contents` holding the note text, `/T` "Tabtivity Mobile". Original
   untouched.
 - `<stamp>-<stem>-p<N>-layer.png` — each marked page's layer alone,
   transparent, at the page's aspect (1200 px wide), drawn on the phone.
@@ -140,26 +140,32 @@ Per Submit, in the project inbox (`.eldrun/inbox/`):
 and one chat message, built by the sidecar:
 
 ```
-Apply the changes I marked by hand on `docs/paper/draft.pdf`.
+I marked these changes by hand on `docs/paper/draft.pdf`.
 Marked copy with my handwriting and marks as annotations:
-@.eldrun/inbox/…-draft-marked.pdf
+@.tabtivity/inbox/…-draft-marked.pdf
 My markup layers, one per page, each the size of that page:
-Page 3: @.eldrun/inbox/…-draft-p3-layer.png
-Page 7: @.eldrun/inbox/…-draft-p7-layer.png
+Page 3: @.tabtivity/inbox/…-draft-p3-layer.png
+Page 7: @.tabtivity/inbox/…-draft-p7-layer.png
 My typed notes:
 - p3: "use the 2024 numbers here"
-Read every mark (strike-throughs, insertions, circled parts, margin notes).
-If the PDF is built from sources in this project (LaTeX, Markdown, a
-script, …), make the changes there and rebuild it; do not edit the PDF
-itself. List any mark you could not read or apply. When done, send the
-rebuilt PDF to me with `eldrun-send <file>`.
+Read every mark (strike-throughs, insertions, circled parts, margin notes)
+and list the changes they ask for, and any mark you could not read. Do not
+change any file yet — not this one, not the sources it is built from, not
+any other file — until I tell you which changes to make.
+Once you have rebuilt the PDF, send it to me with `tabtivity-send <file>`.
 ```
 
+The paragraph after the notes is the phone's **Mark up prompt** setting
+(Home → This phone; `markupInstruction.ts`), worded there and nowhere else,
+sent with a Submit only once changed. Its default asks first (2026-10-02):
+the earlier "make the changes in the sources and rebuild" had an agent edit
+the `.tex` beside a marked PDF unasked.
+
 "Automatically" means the agent works the prompt like any other: whether it
-asks before editing is its own CLI's permission mode — Eldrun injects none
-(`AGENTS.md` invariant). The `eldrun-send` line closes the loop: the rebuilt
+asks before editing is its own CLI's permission mode — Tabtivity injects none
+(`AGENTS.md` invariant). The `tabtivity-send` line closes the loop: the rebuilt
 PDF lands as a bubble in the same chat (`from_tab`), where it can be opened
-and marked up again. (Shell-less tabs without `eldrun-send` — ollama-launch,
+and marked up again. (Shell-less tabs without `tabtivity-send` — ollama-launch,
 plain shells — just skip that line.)
 
 If baking fails (encrypted PDF, malformed file, copy over 24 MiB), the message
@@ -243,8 +249,8 @@ while writing, pressure arrives, palm rejection holds, latency acceptable;
 (6) Safari's canvas memory ceiling with a few pages rendered at iPad width.
 Also confirm the PWA itself pairs and runs on the iPad at all — it has been
 used on Android so far. If (3) is bad (> ~1 s per page), fall
-back to desktop-rendered page pictures before building the rest: an
-`eldrun --render-pdf-page` helper (PDFium, bytes in on stdin, JPEG out on
+back to desktop-rendered page pictures before building the rest: a
+`tabtivity --render-pdf-page` helper (PDFium, bytes in on stdin, JPEG out on
 stdout) under each OS's sandbox — bubblewrap, `sandbox-exec`, a
 capability-less AppContainer — with the layer, bake and Submit unchanged.
 
@@ -347,7 +353,7 @@ Tests:
   gives `BakeError`, never a panic; prompt text deterministic.
 - `host.rs` — `/pdf-frame.html` gets the frame headers, every other path keeps
   `DENY`; files switch off → `files_off`; foreign-project token → 404; outbox
-  leaf with `/` or `..` refused; the marked copy lands under `.eldrun/inbox/`;
+  leaf with `/` or `..` refused; the marked copy lands under `.tabtivity/inbox/`;
   no answer carries an absolute path; bad origin / oversized body refused; the
   source's bytes and mtime unchanged.
 - Phone — `layer.ts`, `store.ts`, `rasterize.ts`, `frameProtocol.ts`
@@ -365,14 +371,14 @@ Live, on the phone (not runnable from here):
    figure and write "smaller" beside it, highlight a sentence; the page never
    scrolls while writing, a resting palm draws nothing, fingers scroll and
    zoom. Close, reopen — the ink is still there. Desktop: nothing new in
-   `.eldrun/inbox/`, the PDF's mtime unchanged.
+   `.tabtivity/inbox/`, the PDF's mtime unchanged.
 4. Submit → the chat shows the prompt naming the PDF; the inbox holds
    `…-marked.pdf` (the handwriting visible as ink annotations in the desktop
    viewer and in another PDF reader) and one layer PNG per marked page. Reopen
    — the layer is gone. The agent edits the `.tex`, rebuilds, and the rebuilt
-   PDF arrives as a bubble in the same chat via `eldrun-send`.
+   PDF arrives as a bubble in the same chat via `tabtivity-send`.
 5. Same on a picture (`…-marked.png` + layer), and on a PDF the agent sent with
-   `eldrun-send`.
+   `tabtivity-send`.
 6. Submit while the agent works → held and delivered like a typed message.
 7. A 100+ page PDF scrolls without the tab reloading; a PDF with JPX images
    renders with those images blank, nothing else broken.

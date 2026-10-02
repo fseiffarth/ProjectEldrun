@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { formatBuildStamp, formatBundleVersion } from "../../../mobile-web/src/buildInfo";
+import { BRAND } from "../../lib/brand";
 
-describe("Eldrun Mobile build stamp", () => {
+describe(`${BRAND.display} Mobile build stamp`, () => {
   it("formats as dd-mm hh:mm in local time", () => {
     const local = new Date(2026, 8, 6, 7, 5).toISOString();
     expect(formatBuildStamp(local)).toBe("06-09 07:05");

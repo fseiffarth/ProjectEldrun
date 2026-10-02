@@ -1,9 +1,9 @@
 //! The phone → project drop box behind the Focus composer's **+**.
 //!
-//! A file picked on the phone lands in the project's own `.eldrun/inbox/` —
+//! A file picked on the phone lands in the project's own `.tabtivity/inbox/` —
 //! a directory the desktop already git-ignores, hides from the tree and skips
 //! in sync — and the phone gets back a *project-relative* reference
-//! (`.eldrun/inbox/<file>`) to put after an `@` in the message. That relative
+//! (`.tabtivity/inbox/<file>`) to put after an `@` in the message. That relative
 //! reference is the one deliberate exception to "paths never cross the browser
 //! API": it carries no host component, resolves only from inside the session's
 //! own working directory, and is exactly what the agent needs to read the
@@ -13,11 +13,11 @@
 //! write is defensive: the file name is rebuilt from a safe alphabet and
 //! stamped, the file is created with `create_new` (never overwriting), and the
 //! inbox directory must canonicalize *below* the project root — a planted
-//! `.eldrun` symlink cannot redirect the bytes elsewhere.
+//! `.tabtivity` symlink cannot redirect the bytes elsewhere.
 //!
 //! The **global inbox** (`<state_dir>/inbox/`) is the same drop box for a file
 //! that belongs to no project — the phone's *Send to desktop*. It lives in
-//! Eldrun's own state, never in a project folder, so nothing is filed into a
+//! Tabtivity's own state, never in a project folder, so nothing is filed into a
 //! project without the user moving it there; the desktop lists, opens and
 //! deletes it by leaf name through the functions below.
 
@@ -29,14 +29,14 @@ use std::{
 };
 
 /// Project-relative directory the phone's files land in.
-pub const INBOX_DIR: &str = ".eldrun/inbox";
+pub const INBOX_DIR: &str = crate::brand::INBOX_DIR;
 /// State-dir-relative directory of the global inbox (no project).
 pub const GLOBAL_INBOX_DIR: &str = "inbox";
 /// One file the phone may send. A phone photo is a few MiB; a short video
 /// clip fits; a movie does not belong in an agent prompt.
 pub const MAX_INBOX_FILE: usize = 24 * 1024 * 1024;
 /// What one inbox may hold in total before uploads are refused — the inbox is
-/// never pruned by Eldrun, so the cap is what keeps a forgotten one bounded.
+/// never pruned by Tabtivity, so the cap is what keeps a forgotten one bounded.
 pub const MAX_INBOX_TOTAL: u64 = 1024 * 1024 * 1024;
 /// Characters kept of the phone's file name, stem and extension together.
 const MAX_NAME: usize = 80;
@@ -156,7 +156,7 @@ fn inbox_total(dir: &Path) -> Result<u64, InboxError> {
     Ok(total)
 }
 
-/// Writes `bytes` into `root/.eldrun/inbox/` under a stamped, sanitized,
+/// Writes `bytes` into `root/.tabtivity/inbox/` under a stamped, sanitized,
 /// unique name. `root` must be the project's canonical directory.
 pub fn store(root: &Path, raw_name: &str, bytes: &[u8]) -> Result<Stored, InboxError> {
     store_at(root, INBOX_DIR, raw_name, bytes, SystemTime::now())
@@ -186,7 +186,7 @@ fn store_at(
     }
     let dir = root.join(rel_dir);
     fs::create_dir_all(&dir).map_err(|e| InboxError::Io(e.to_string()))?;
-    // A `.eldrun` or `inbox` link planted in the tree must not carry the
+    // A `.tabtivity` or `inbox` link planted in the tree must not carry the
     // bytes out of the project.
     let canonical_root = root.canonicalize().map_err(|_| InboxError::Unavailable)?;
     let canonical_dir = dir.canonicalize().map_err(|_| InboxError::Unavailable)?;
@@ -346,7 +346,7 @@ mod tests {
         let root = dir.path();
         let first = store_at(root, INBOX_DIR, "IMG_1.jpg", b"one", at(T0)).unwrap();
         assert_eq!(first.name, "20260831-120000-IMG_1.jpg");
-        assert_eq!(first.reference, ".eldrun/inbox/20260831-120000-IMG_1.jpg");
+        assert_eq!(first.reference, concat!(".", crate::app_slug!(), "/inbox/20260831-120000-IMG_1.jpg"));
         assert_eq!(first.size, 3);
         assert_eq!(fs::read(root.join(&first.reference)).unwrap(), b"one");
 
@@ -383,8 +383,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
-        fs::create_dir_all(root.join(".eldrun")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), root.join(".eldrun").join("inbox")).unwrap();
+        fs::create_dir_all(root.join(concat!(".", crate::app_slug!()))).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join(concat!(".", crate::app_slug!())).join("inbox")).unwrap();
         assert_eq!(
             store_at(&root, INBOX_DIR, "leak.txt", b"x", at(T0)),
             Err(InboxError::Unavailable)

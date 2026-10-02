@@ -69,6 +69,7 @@ import {
 import { AGENT_TAB_ACTIONS, chordLabel, resolveChord } from "../../lib/shortcuts/shortcuts";
 import { useShortcutOverrides } from "../../lib/shortcuts/shortcutHint";
 import { ErrorNote } from "../common/ErrorNote";
+import { NAMES } from "../../lib/brand";
 
 interface OllamaModelInfo {
   name: string;
@@ -545,7 +546,7 @@ interface AgentVersionStale {
   direction: "newer" | "older" | "different";
 }
 
-/** What one installed CLI answers `--version`, against the releases Eldrun's
+/** What one installed CLI answers `--version`, against the releases Tabtivity's
  *  flags and parsers were checked with. Reported, never enforced — see
  *  `services::agent_versions`. */
 interface AgentVersionReport {
@@ -596,7 +597,7 @@ interface AgentInfo {
  *
  * Codex gates user-level hooks behind a one-time trust approval, and an
  * untrusted one silently never fires — which is why Codex tabs used to restore
- * into a blank conversation. Eldrun resumes them anyway now (it reconstructs the
+ * into a blank conversation. Tabtivity resumes them anyway now (it reconstructs the
  * session from Codex's rollout logs), but that is a heuristic: it can mix up two
  * Codex tabs open in the same directory. Enabling the hook makes it exact.
  *
@@ -641,7 +642,7 @@ function CodexHookNotice() {
       </p>
       <p className="settings-help">
         {t("agents.codexHookFindPre")} <code>/hooks</code>{" "}
-        {t("agents.codexHookFindMid")} <strong>eldrun_session_start</strong>
+        {t("agents.codexHookFindMid")} <strong>{NAMES.sessionHookSh.replace(/\.sh$/, "")}</strong>
         {off ? t("agents.codexHookActionDisabled") : t("agents.codexHookActionUntrusted")}
       </p>
       <div className="ollama-install-cmd-row">
@@ -688,7 +689,7 @@ function ClaudeRemoteControlNotice() {
 }
 
 /** One row of `agent_logins` (`services::agent_auth`): a CLI's shared
- *  sign-in across every Eldrun agent home. Never a token. */
+ *  sign-in across every Tabtivity agent home. Never a token. */
 interface AgentLogin {
   id: string;
   signed_in: boolean;
@@ -700,7 +701,7 @@ interface AgentLogin {
   shared: boolean;
 }
 
-/** The shared agent logins: one row per CLI whose login Eldrun can share,
+/** The shared agent logins: one row per CLI whose login Tabtivity can share,
  *  with the one-click import from this computer and a way out. */
 function AgentLoginsRows() {
   const t = useT();
@@ -794,7 +795,7 @@ interface AgentGlobalLayer {
   codexAutoReview: boolean;
 }
 
-/** The Eldrun-wide agent config: the instructions, skills, hooks and MCP
+/** The Tabtivity-wide agent config: the instructions, skills, hooks and MCP
  *  servers every agent home gets, filled from this computer in one click. */
 function AgentGlobalRow() {
   const t = useT();
@@ -848,7 +849,7 @@ function AgentGlobalRow() {
   );
 }
 
-/** Codex auto-review (`approvals_reviewer` in the Eldrun-wide layer's Codex
+/** Codex auto-review (`approvals_reviewer` in the Tabtivity-wide layer's Codex
  *  config). On the Codex card, not under the fence settings: it is what makes
  *  fenced Codex usable, so it sits where a Codex user looks. */
 function CodexAutoReviewToggle() {
@@ -885,7 +886,7 @@ function CodexAutoReviewToggle() {
   );
 }
 
-/** `copilot_fence_auth_status`: the Copilot sign-in Eldrun holds for fenced
+/** `copilot_fence_auth_status`: the Copilot sign-in Tabtivity holds for fenced
  *  tabs (`services::copilot_auth`). Never carries the token itself. */
 interface CopilotFenceAuth {
   supported: boolean;
@@ -1037,7 +1038,7 @@ function AgentFenceCard() {
  * install through `npm`, so when `npm` isn't on the host's PATH — or the Node
  * that is there is older than the current LTS the CLIs require — this points
  * the user at the one-click, no-admin Node install for their OS (and stays
- * hidden once a current Node is detected). Follows Eldrun's
+ * hidden once a current Node is detected). Follows Tabtivity's
  * install-via-terminal-tab policy.
  */
 function NodeRuntimeNotice() {
@@ -1544,7 +1545,7 @@ const NO_CUSTOM_AGENTS: CustomAgent[] = [];
 
 /**
  * "Manage Agents" panel: detect and one-click-install the AI coding-agent CLIs
- * Eldrun can launch as agent tabs (Claude, Codex, Google Antigravity, Google
+ * Tabtivity can launch as agent tabs (Claude, Codex, Google Antigravity, Google
  * Gemini, Mistral/vibe, Aider, OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw).
  * The
  * registry lives in the backend (`commands::agents`); this just renders each
@@ -1690,7 +1691,7 @@ export function AgentsPanel({
 
   // Remove then immediately re-run the official installer — the one-click fix
   // for an install that half-succeeded (binary present but broken) or that
-  // Eldrun's stale detection missed (see paths.rs's Windows install-dir list).
+  // Tabtivity's stale detection missed (see paths.rs's Windows install-dir list).
   const reinstallAgent = async (id: string) => {
     if (await removeAgent(id)) await installAgent(id);
   };
@@ -1784,7 +1785,7 @@ export function AgentsPanel({
   };
 
   // What this CLI reports as its version, and whether that release is still the
-  // one Eldrun's flags and parsers were verified against
+  // one Tabtivity's flags and parsers were verified against
   // (docs/third_party_update_checklist.md, as data in `agent_versions`).
   // Informational: drift is what explains an agent tab misreading an approval
   // prompt or a mode line, and it blocks nothing.
@@ -2346,7 +2347,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
   const [pullProgress, setPullProgress] = useState<
     Record<string, { pct: number | null; status: string }>
   >({});
-  // Model refs whose download was interrupted by a previous Eldrun exit/crash,
+  // Model refs whose download was interrupted by a previous Tabtivity exit/crash,
   // persisted by the backend. Each can be resumed ("Continue") since Ollama
   // picks up a partially-fetched model where it left off.
   const [interrupted, setInterrupted] = useState<string[]>([]);
@@ -2690,7 +2691,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
 
   // Point the *running* server at the chosen folder (systemd drop-in), in a
   // visible terminal — it needs a root password and rewrites a service the user
-  // is entitled to read first. The setting alone already covers a server Eldrun
+  // is entitled to read first. The setting alone already covers a server Tabtivity
   // starts itself.
   const applyModelsDirToService = () => {
     if (!modelsDirPlan?.service_cmd) return;
@@ -2859,7 +2860,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownRegistry]);
 
-  // "Load on Eldrun start" — which models `stores/agents/ollamaAutoload` warms into
+  // "Load on Tabtivity start" — which models `stores/agents/ollamaAutoload` warms into
   // memory at launch. The per-model switches write straight through (the same
   // setting the 🧠 menu's chip toggles, so the two surfaces cannot disagree);
   // the Energy Saver opt-out is *staged* behind a Save button, because it is the
@@ -3365,7 +3366,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
         </div>
       )}
 
-      {/* Load-on-start: the models Eldrun warms into memory at launch, plus the
+      {/* Load-on-start: the models Tabtivity warms into memory at launch, plus the
           Energy Saver opt-out. See `stores/agents/ollamaAutoload` for the rules. */}
       <div className="settings-section-title">
         {t("ollama.autostartTitle")} <UntestedTag id="ollama.autostartTitle" />

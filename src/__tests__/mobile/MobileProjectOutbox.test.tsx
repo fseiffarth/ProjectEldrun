@@ -1,6 +1,6 @@
 /**
- * The project screen's way to what was sent this project with `eldrun-send`
- * (`.eldrun/outbox/`): the 🖼 in the dropdown under its name, which opens the same gallery
+ * The project screen's way to what was sent this project with `tabtivity-send`
+ * (`.tabtivity/outbox/`): the 🖼 in the dropdown under its name, which opens the same gallery
  * sheet the Focus screen does. There is no shelf under the tab cards any more
  * — it showed the same files a second time, under another name.
  *
@@ -81,7 +81,7 @@ describe("Mobile project — the files the agent sent", () => {
       .toBe("/api/v1/projects/p1/outbox/plot.png");
   });
 
-  it("lists every file, and opens a PDF in the browser's own viewer", async () => {
+  it("lists every file, and opens a PDF in the app's own page view", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     vi.stubGlobal("fetch", hostWith([
       { name: "paper.pdf", kind: "application/pdf", size: 4_000, modified: 1_770_000_009 },
@@ -93,10 +93,14 @@ describe("Mobile project — the files the agent sent", () => {
     expect(gallery.querySelectorAll(".outbox-entry").length).toBe(8);
 
     fireEvent.click(within(gallery).getByRole("button", { name: "Open paper.pdf" }));
-    // This host mints no ticket, so the plain URL opens.
-    await waitFor(() => expect(open).toHaveBeenCalledWith("/api/v1/projects/p1/outbox/paper.pdf", "_blank", "noopener"));
+    // Never the phone's own PDF viewer: the installed app is not got back to
+    // from there. ✕ comes back to the gallery.
+    const viewer = await screen.findByRole("dialog", { name: "paper.pdf" });
+    expect(within(viewer).getByTitle("pdf")).toBeTruthy();
+    expect(open).not.toHaveBeenCalled();
+    fireEvent.click(within(viewer).getByRole("button", { name: "Close" }));
 
-    fireEvent.click(within(gallery).getByRole("button", { name: "Close" }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "Files from the agent" })).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Files from the agent" })).toBeNull());
   });
 

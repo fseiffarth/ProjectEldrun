@@ -23,6 +23,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import type { ProjectEntry, Settings } from "../../types";
+import { BRAND, MOBILE_ACCESS_KEY, NAMES } from "../../lib/brand";
 
 const project: ProjectEntry = {
   id: "p-mobile",
@@ -30,9 +31,9 @@ const project: ProjectEntry = {
   status: "active",
   position: 1,
   local_file: "/projects/alpha/project.json",
-  eldrun_mobile_access: true,
+  [MOBILE_ACCESS_KEY]: true,
 };
-const tmuxSession = "eldrun-p-mobile--agent-123456789";
+const tmuxSession = `${BRAND.slug}-p-mobile--agent-123456789`;
 const scheduleTargetId = "target-123";
 const stored = {
   id: "schedule-1",
@@ -43,7 +44,7 @@ const stored = {
 };
 
 async function ask(action: Record<string, unknown>) {
-  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === "eldrun-mobile-desktop-request");
+  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === NAMES.mobileDesktopEvent);
   const deliver = listener![1] as (event: { payload: unknown }) => void;
   await act(async () => {
     deliver({ payload: {

@@ -81,7 +81,7 @@ interface BoxesStore {
   removeFromBox: (projectId: string, boxId: string) => Promise<void>;
   /** Set a box's full member list (the box editor's Save). */
   setBoxMembers: (boxId: string, memberIds: string[]) => Promise<void>;
-  /** Switch the box's Eldrun Mobile reach (#31aa) — the box twin of
+  /** Switch the box's Tabtivity Mobile reach (#31aa) — the box twin of
    *  `projects.setProjectMobileAccess`. Enabling resolves the box folder on
    *  the backend, so the returned record carries `folder` too. */
   setBoxMobileAccess: (boxId: string, enabled: boolean) => Promise<void>;
@@ -261,7 +261,7 @@ export const useBoxesStore = create<BoxesStore>((set, get) => ({
       boxes: state.boxes.map((b) => {
         if (b.id !== boxId || !!b.hide_pill === hidden) return b;
         changed = true;
-        // Absent from disk while shown, like `eldrun_mobile_access` while off.
+        // Absent from disk while shown, like `tabtivity_mobile_access` while off.
         const { hide_pill: _drop, ...rest } = b;
         return hidden ? { ...rest, hide_pill: true } : rest;
       }),

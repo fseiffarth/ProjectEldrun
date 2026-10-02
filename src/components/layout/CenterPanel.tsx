@@ -78,6 +78,7 @@ import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
 import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
+import { MOBILE_ACCESS_KEY } from "../../lib/brand";
 
 /** Pixel coordinates of a group's pane region, relative to the center panel. */
 interface Rect {
@@ -251,7 +252,7 @@ function CenterPanelImpl() {
         ) {
           useTabsStore.getState().addTab(
             { label: "Projects", cmd: BLOB_TAB_CMD, cwd: "", kind: "projects3d" },
-            // Eldrun opened this, not the user — it must not show up in the usage
+            // Tabtivity opened this, not the user — it must not show up in the usage
             // recap as a tab they opened.
             { seeded: true },
           );
@@ -1300,7 +1301,7 @@ function CenterPanelImpl() {
           // Persistent sessions (TODO #85): the stable, persisted session name to
           // wrap a shell/script tab in a tmux session, so a long run survives — for a
           // REMOTE tab an SSH drop / relaunch (default ON per project, opt out via
-          // the pill toggle), for a LOCAL tab an Eldrun crash (default ON on Unix via
+          // the pill toggle), for a LOCAL tab a Tabtivity crash (default ON on Unix via
           // `persist_local_sessions`). Remote shell/script AND remote agent tabs
           // (`shouldPersistTab`; the agent's process reattaches, composing with its
           // own `--resume`); local persistence stays shell-only
@@ -1313,7 +1314,7 @@ function CenterPanelImpl() {
           if (!mobileAgentTmuxReady.current.has(mobileReadyKey)) {
             mobileAgentTmuxReady.current.set(
               mobileReadyKey,
-              !!paneProject?.eldrun_mobile_access || !!paneBox?.eldrun_mobile_access,
+              !!paneProject?.[MOBILE_ACCESS_KEY] || !!paneBox?.[MOBILE_ACCESS_KEY],
             );
           }
           const tmuxSession =
@@ -1474,6 +1475,9 @@ export function SplitPreviewOverlay({ groupRects }: { groupRects: Record<string,
  *    collide with them.
  * `pointer-events: none`, panel-relative coords from the same measured rects.
  */
+/** `.subwindow-number`'s height (subwindows.css). */
+const SUBWINDOW_NUMBER_SIZE = 18;
+
 export function FocusFrameOverlay({
   groupRects,
   frameRects,
@@ -1535,12 +1539,21 @@ export function FocusFrameOverlay({
           const up = (n - down) % n;
           const label =
             down === 0 ? "0" : down <= up ? `${down}↓` : `${up}↑`;
+          // On the tab bar's drag grip (the strip between the subwindow's top
+          // and its pane), not the pane's corner: there it covered the agent
+          // prompt strip / the terminal's first line. No bar measured (the
+          // empty-scope slot) → the pane corner.
+          const fr = frameRects[id];
+          const bar = fr ? r.top - fr.top : 0;
+          const pos =
+            fr && bar >= SUBWINDOW_NUMBER_SIZE
+              ? {
+                  left: fr.left + 3,
+                  top: fr.top + (bar - SUBWINDOW_NUMBER_SIZE) / 2 + 2,
+                }
+              : { left: r.left + 6, top: r.top + 6 };
           return (
-            <div
-              key={id}
-              className="subwindow-number"
-              style={{ left: r.left + 6, top: r.top + 6 }}
-            >
+            <div key={id} className="subwindow-number" style={pos}>
               {label}
             </div>
           );

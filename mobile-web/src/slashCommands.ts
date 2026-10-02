@@ -16,8 +16,9 @@
 // across the bridge.
 
 import { agentDraftPrefixes, agentFamily } from "../../shared/agentComposer";
+import { storageKey } from "../../src/lib/brand";
 
-const KEY = "eldrun.mobile.slashCommands";
+const KEY = storageKey("mobile.slashCommands");
 
 /** Lines kept per CLI; past it the oldest goes. */
 const MAX_PER_CLI = 30;

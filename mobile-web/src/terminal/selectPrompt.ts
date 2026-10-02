@@ -5,7 +5,7 @@
  *
  * The scoping is the same as `statusLine`'s, and for the reason `readableScreen`
  * dropped the semantic parser it replaced: this never runs over ordinary
- * output. The caller reads it only while Eldrun itself has just sent the
+ * output. The caller reads it only while Tabtivity itself has just sent the
  * command that opens the dialog, and only a shape it positively recognizes — a
  * contiguous run of numbered rows, numbered from 1, carrying exactly one
  * highlight marker — becomes a list. Anything else returns `null`, the dialog
@@ -411,13 +411,16 @@ export function readSelectPrompt(
   for (let index = runs.length - 1; index >= 0; index -= 1) {
     const candidate = runs[index];
     const windowed = candidate.hidden !== undefined || candidate.edge;
-    // A run from anywhere but 1 is a slice only a windowed dialog draws.
-    if (candidate.options[0].number !== 1 && !windowed) continue;
+    const title = readTitle(lines, candidate.start);
+    // Codex may clip the top of its model picker without a hidden-row note or
+    // edge marker. Its heading and the caller's agent identify that slice.
+    const codexModelSlice = /codex/iu.test(agentLabel ?? "") && title?.startsWith("Select Model") === true;
+    if (candidate.options[0].number !== 1 && !windowed && !codexModelSlice) continue;
     if (candidate.options.length >= MIN_OPTIONS && candidate.marked.length === 1) {
       return {
         options: candidate.options,
         current: candidate.marked[0],
-        title: readTitle(lines, candidate.start),
+        title,
         start: candidate.start,
         ...readContext(lines, candidate.start),
         ...(candidate.hidden ? { hidden: candidate.hidden } : {}),
@@ -477,9 +480,14 @@ export function mergeSelectRows(step: SelectStep | null, prompt: SelectPrompt): 
  * printed number — where to walk the highlight next to make the dialog draw
  * it — or `undefined` once every row is known. */
 export function missingSelectRow(step: SelectStep, prompt: SelectPrompt): number | undefined {
+  const seen = new Set(step.options.map((option) => option.number));
+  // A clipped first row already tells us its printed number, even when the
+  // picker gives no count of hidden rows. Walk up to collect it for the sheet.
+  for (let number = 1; number < prompt.options[0].number; number += 1) {
+    if (!seen.has(number)) return number;
+  }
   if (!prompt.hidden) return undefined;
   const total = prompt.options.length + prompt.hidden;
-  const seen = new Set(step.options.map((option) => option.number));
   for (let number = 1; number <= total; number += 1) if (!seen.has(number)) return number;
   return undefined;
 }
@@ -509,6 +517,29 @@ export function revealSelectRow(step: SelectStep, prompt: SelectPrompt): number 
  * answered exactly as a walked one. */
 export function selectKeys(current: number, target: number): string[] {
   return [...selectMoveKeys(current, target), "\r"];
+}
+
+/** Claude Code's free-text row under an agent's question (AskUserQuestion,
+ * 2.1.287): `4. Type something.`, or `4. [ ] Type something` on a multi-select
+ * one. It is a text field, not a choice — Enter on it while empty answers
+ * nothing — so a phone tapping it has to be asked for the words. Once typed,
+ * the row prints them in place of this placeholder. */
+const FREE_TEXT = /^(?:\[[^\]]\]\s+)?Type something\.?$/u;
+
+/** Whether `option` is the question's free-text row (`FREE_TEXT`). */
+export function freeTextRow(option: SelectOption): boolean {
+  return FREE_TEXT.test(option.label);
+}
+
+/** The writes that answer a question's free-text row with `text`: walk the
+ * highlight onto it — which focuses its field — type the words as one line,
+ * and accept. Not on a multi-select question: typing there ticks the row's box
+ * by itself and Enter would untick it, so its Submit row still sends it. */
+export function freeTextWrites(current: number, option: SelectOption, text: string): string[] {
+  const line = text.replace(/\s+/gu, " ").trim();
+  if (!line) return [];
+  const writes = [...selectMoveKeys(current, option.index), line];
+  return CHECKBOX_LABEL.test(option.label) ? writes : [...writes, "\r"];
 }
 
 /** The arrow keys alone: the highlight moves, nothing is accepted. */

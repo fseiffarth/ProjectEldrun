@@ -18,7 +18,7 @@ import type { SteeringKeyMap } from "../../lib/shortcuts/steeringBindings";
  * The keyboard-shortcut cheat sheet (part 2 of the keyboard-only steering
  * system) — opened by the `shortcutHelp` chord (F1 by default), by `?` inside
  * steering mode, and from the header ⚙ menu; all three doors dispatch the one
- * `eldrun:open-shortcut-help` window event this host listens for.
+ * `tabtivity:open-shortcut-help` window event this host listens for.
  *
  * Every key it shows renders from `lib/shortcuts/shortcuts` — `SHORTCUT_DEFS` through
  * `resolveChord`, so a user rebind shows its *effective* chord (marked
@@ -38,8 +38,8 @@ export function ShortcutHelpOverlay() {
 
   useEffect(() => {
     const openIt = () => setOpen(true);
-    window.addEventListener("eldrun:open-shortcut-help", openIt);
-    return () => window.removeEventListener("eldrun:open-shortcut-help", openIt);
+    window.addEventListener("app:open-shortcut-help", openIt);
+    return () => window.removeEventListener("app:open-shortcut-help", openIt);
   }, []);
 
   useEffect(() => {
@@ -122,6 +122,8 @@ export function ShortcutHelpOverlay() {
               <UntestedTag id="steering.legendGroups" />
               <UntestedTag id="steering.handoffLegend" />
               <UntestedTag id="steering.dim" />
+              <UntestedTag id="steering.popout" />
+              <UntestedTag id="steering.pointer" />
             </h3>
             <p className="shortcut-help-intro">
               {t("shortcutHelp.steeringIntro", {

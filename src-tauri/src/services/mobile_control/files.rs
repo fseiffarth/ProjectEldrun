@@ -1,5 +1,5 @@
 //! Read-only browsing of a mobile project's tree (#31bo,
-//! `docs/eldrun_mobile_future_plan.md` §D): the "what did the agent just
+//! `docs/tabtivity_mobile_future_plan.md` §D): the "what did the agent just
 //! write" glance, without a shell.
 //!
 //! Paths never cross the browser API. Every folder and file the phone may ask
@@ -8,7 +8,7 @@
 //! — so a token is opaque to the phone and useless against another project.
 //! Tokens are not a permission: every request re-proves the path below the
 //! project root, with no link anywhere on the way, and the host-wide switch
-//! (`eldrun_mobile_host.project_files`, default off) is read per request.
+//! (`tabtivity_mobile_host.project_files`, default off) is read per request.
 //!
 //! Nothing here writes. A file is served exactly as the outbox serves one —
 //! typed by its bytes (`outbox::classify`), opened without following a link.
@@ -45,7 +45,7 @@ pub fn files_open(state_dir: &Path) -> bool {
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .and_then(|settings| {
             settings
-                .get("eldrun_mobile_host")?
+                .get(crate::brand::MOBILE_HOST_KEY)?
                 .get("project_files")?
                 .as_bool()
         })
@@ -99,11 +99,11 @@ pub struct Listing {
 }
 
 /// Names the listing leaves out and no token may cross: git's internals, the
-/// project's own `.eldrun/` (its outbox has its own door), and `.env*`. A
+/// project's own `.tabtivity/` (its outbox has its own door), and `.env*`. A
 /// courtesy against a glance over a shoulder, not the boundary — that is the
 /// switch, since a phone with a shell can read anything anyway.
 pub fn hidden(name: &str) -> bool {
-    name == ".git" || name == ".eldrun" || name.starts_with(".env")
+    name == ".git" || crate::brand::is_project_dir(name) || name.starts_with(".env")
 }
 
 /// A leaf the browser lists and resolves. The same test both ways, so nothing
@@ -124,11 +124,13 @@ fn valid_rel(rel: &str) -> bool {
     rel.len() <= MAX_REL && (rel.is_empty() || rel.split('/').all(valid_segment))
 }
 
-fn token_key(host_key: &[u8]) -> [u8; 32] {
+/// The token key under a given salt: the current one, or the one an older
+/// build's host sealed with.
+fn token_key_with(salt: &str, host_key: &[u8]) -> [u8; 32] {
     // Not `[0u8; 32]`: CodeQL reads that literal as the key itself, since it
     // doesn't see `expand` overwrite the buffer.
     let mut key: [u8; 32] = std::array::from_fn(|_| 0);
-    Hkdf::<Sha256>::new(Some(b"eldrun-mobile-files"), host_key)
+    Hkdf::<Sha256>::new(Some(salt.as_bytes()), host_key)
         .expand(b"path-token v1", &mut key)
         .expect("32 bytes is a valid HKDF-SHA256 length");
     key
@@ -136,9 +138,13 @@ fn token_key(host_key: &[u8]) -> [u8; 32] {
 
 /// Seals a project-relative path for the phone.
 pub fn seal(host_key: &[u8], raw_id: &str, rel: &str) -> String {
+    seal_with(crate::brand::MOBILE_FILES_SALT, host_key, raw_id, rel)
+}
+
+fn seal_with(salt: &str, host_key: &[u8], raw_id: &str, rel: &str) -> String {
     let mut nonce = [0u8; NONCE_LEN];
     getrandom::fill(&mut nonce).expect("the OS RNG must be available to seal a path");
-    let cipher = XChaCha20Poly1305::new((&token_key(host_key)).into());
+    let cipher = XChaCha20Poly1305::new((&token_key_with(salt, host_key)).into());
     let sealed = cipher
         .encrypt((&nonce).into(), Payload { msg: rel.as_bytes(), aad: raw_id.as_bytes() })
         .expect("XChaCha20-Poly1305 only fails on an impossibly long message");
@@ -151,6 +157,25 @@ pub fn seal(host_key: &[u8], raw_id: &str, rel: &str) -> String {
 /// The relative path a token seals, if it was sealed for this project by this
 /// host and names a path the browser would list.
 pub fn unseal(host_key: &[u8], raw_id: &str, token: &str) -> Option<String> {
+    unseal_for(&crate::brand::PAIR, host_key, raw_id, token)
+}
+
+/// [`unseal`] for a brand pair: a token that does not open under the current
+/// salt is tried under the one an older build's host sealed with (counted as
+/// a legacy hit). A phone that kept a page open across the update still holds
+/// such tokens; new ones are only ever sealed under the current salt.
+pub(crate) fn unseal_for(pair: &crate::brand::Pair, host_key: &[u8], raw_id: &str, token: &str) -> Option<String> {
+    let salt = pair.cur(crate::brand::Name::MOBILE_FILES_SALT);
+    if let Some(rel) = unseal_with(&salt, host_key, raw_id, token) {
+        return Some(rel);
+    }
+    let old_salt = pair.legacy(crate::brand::Name::MOBILE_FILES_SALT)?;
+    let rel = unseal_with(&old_salt, host_key, raw_id, token)?;
+    crate::brand::legacy_hit("mobile-files-salt");
+    Some(rel)
+}
+
+fn unseal_with(salt: &str, host_key: &[u8], raw_id: &str, token: &str) -> Option<String> {
     if token.len() > 2 * MAX_REL {
         return None;
     }
@@ -160,7 +185,7 @@ pub fn unseal(host_key: &[u8], raw_id: &str, token: &str) -> Option<String> {
     }
     let (nonce, sealed) = bytes.split_at(NONCE_LEN);
     let nonce: [u8; NONCE_LEN] = nonce.try_into().ok()?;
-    let cipher = XChaCha20Poly1305::new((&token_key(host_key)).into());
+    let cipher = XChaCha20Poly1305::new((&token_key_with(salt, host_key)).into());
     let plain = cipher
         .decrypt((&nonce).into(), Payload { msg: sealed, aad: raw_id.as_bytes() })
         .ok()?;
@@ -183,8 +208,8 @@ fn canonical_root(root: &Path) -> Result<PathBuf, FilesError> {
 /// to the folder before it, and listing and opening a file start from this
 /// descriptor too. Nothing is resolved by path after a check, so a folder on
 /// the way swapped for a link mid-request changes nothing — the walk already
-/// holds the real one. Elsewhere it is the path, proven per request by
-/// canonicalizing (a swap between that proof and the open is not caught there).
+/// holds the real one. Windows uses the same boundary through native
+/// handle-relative opens and handle-based directory enumeration.
 #[cfg(unix)]
 struct ProjectDir(fs::File);
 
@@ -307,52 +332,11 @@ impl ProjectDir {
     }
 }
 
-#[cfg(not(unix))]
-struct ProjectDir(PathBuf);
-
-#[cfg(not(unix))]
-impl ProjectDir {
-    /// `root` + `rel`, proven to be exactly that: canonicalizing it must change
-    /// nothing, so no link anywhere on the way (not just at the leaf) — and a
-    /// link swapped in after the listing is caught here, per request.
-    fn open(root: &Path, rel: &str) -> Result<Self, FilesError> {
-        let root = canonical_root(root)?;
-        if !valid_rel(rel) {
-            return Err(FilesError::NotFound);
-        }
-        let mut expected = root.clone();
-        if !rel.is_empty() {
-            expected.extend(rel.split('/'));
-        }
-        let canonical = expected.canonicalize().map_err(|_| FilesError::NotFound)?;
-        if canonical != expected || !canonical.starts_with(&root) || !canonical.is_dir() {
-            return Err(FilesError::NotFound);
-        }
-        Ok(Self(canonical))
-    }
-
-    fn child_dir_meta(&self, name: &str) -> Option<fs::Metadata> {
-        fs::symlink_metadata(self.0.join(name)).ok().filter(fs::Metadata::is_dir)
-    }
-
-    fn open_file(&self, name: &str) -> Option<(fs::File, fs::Metadata)> {
-        outbox::open_regular(&self.0.join(name))
-    }
-
-    fn entries(&self) -> Result<Vec<(String, bool)>, FilesError> {
-        let mut out = Vec::new();
-        for entry in fs::read_dir(&self.0).map_err(|e| FilesError::Io(e.to_string()))? {
-            let Ok(entry) = entry else { continue };
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
-            // `file_type` does not follow a link.
-            let Ok(kind) = entry.file_type() else { continue };
-            if kind.is_dir() || kind.is_file() {
-                out.push((name, kind.is_dir()));
-            }
-        }
-        Ok(out)
-    }
-}
+#[cfg(windows)]
+#[path = "files_windows.rs"]
+mod windows;
+#[cfg(windows)]
+use windows::ProjectDir;
 
 fn child(rel: &str, name: &str) -> String {
     if rel.is_empty() { name.to_string() } else { format!("{rel}/{name}") }
@@ -421,6 +405,25 @@ mod tests {
     use super::*;
 
     const KEY: &[u8] = b"host-key-for-tests-0123456789abcdef";
+
+    /// A token sealed by an older build's host still opens after a rename
+    /// (and is counted); one sealed now opens without a second try; a token
+    /// for another project opens under neither salt.
+    #[test]
+    fn a_token_sealed_under_the_old_salt_still_opens() {
+        use crate::brand::Name;
+        use crate::services::brand_migration::{hits, testing::RENAMED};
+        let _ = hits::taken();
+        let old = seal_with(&crate::brand::LEGACY.name(Name::MOBILE_FILES_SALT), KEY, "p1", "docs/a.pdf");
+        assert_eq!(unseal_for(&RENAMED, KEY, "p1", &old).as_deref(), Some("docs/a.pdf"));
+        assert_eq!(hits::taken(), ["mobile-files-salt"]);
+        let new = seal_with(&RENAMED.cur(Name::MOBILE_FILES_SALT), KEY, "p1", "docs/a.pdf");
+        assert_eq!(unseal_for(&RENAMED, KEY, "p1", &new).as_deref(), Some("docs/a.pdf"));
+        assert_eq!(unseal_for(&RENAMED, KEY, "p2", &old), None);
+        assert!(hits::taken().is_empty());
+        // The production pair: what `seal` writes, `unseal` reads.
+        assert_eq!(unseal(KEY, "p1", &seal(KEY, "p1", "x/y.txt")).as_deref(), Some("x/y.txt"));
+    }
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR-body";
 
     fn tree() -> tempfile::TempDir {
@@ -428,7 +431,7 @@ mod tests {
         let root = dir.path();
         fs::create_dir_all(root.join("src/deep")).unwrap();
         fs::create_dir_all(root.join(".git")).unwrap();
-        fs::create_dir_all(root.join(".eldrun/outbox")).unwrap();
+        fs::create_dir_all(root.join(concat!(".", crate::app_slug!(), "/outbox"))).unwrap();
         fs::write(root.join("README.md"), "# Hello\n").unwrap();
         fs::write(root.join("b.txt"), "b").unwrap();
         fs::write(root.join("plot.png"), PNG).unwrap();
@@ -492,7 +495,7 @@ mod tests {
         let dir = tree();
         assert_eq!(read(dir.path(), "src/main.rs").unwrap(), (b"fn main() {}\n".to_vec(), "text/plain; charset=utf-8"));
         assert_eq!(read(dir.path(), "plot.png").unwrap().1, "image/png");
-        for refused in ["", "src", "missing.txt", ".env.local", ".git", ".eldrun/outbox", "../x", "src/../b.txt"] {
+        for refused in ["", "src", "missing.txt", ".env.local", ".git", concat!(".", crate::app_slug!(), "/outbox"), "../x", "src/../b.txt"] {
             assert!(read(dir.path(), refused).is_err(), "{refused}");
         }
         assert_eq!(list(dir.path(), "README.md", KEY, "p1"), Err(FilesError::NotFound));
@@ -581,14 +584,104 @@ mod tests {
         assert_eq!(read(dir.path(), "src/main.rs"), Err(FilesError::NotFound));
     }
 
+    // Junctions need neither Administrator rights nor Developer Mode. These
+    // tests run on Windows CI and must fail if creating the fixture fails.
+    #[cfg(windows)]
+    fn junction(target: &Path, link: &Path) {
+        use std::os::windows::process::CommandExt;
+        let output = std::process::Command::new("cmd")
+            .arg("/D")
+            .raw_arg(format!("/C mklink /J \"{}\" \"{}\"", link.display(), target.display()))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "mklink: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junctions_are_not_listed_or_traversed_even_when_they_point_inside() {
+        let dir = tree();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.txt"), "private").unwrap();
+        junction(outside.path(), &dir.path().join("away"));
+        junction(&dir.path().join("src"), &dir.path().join("alias"));
+        junction(outside.path(), &dir.path().join("src/deep/escape"));
+
+        let listing = list(dir.path(), "", KEY, "p1").unwrap();
+        assert!(!names(&listing).contains(&"away"));
+        assert!(!names(&listing).contains(&"alias"));
+        assert!(!names(&list(dir.path(), "src/deep", KEY, "p1").unwrap()).contains(&"escape"));
+        for path in ["away/secret.txt", "alias/main.rs", "src/deep/escape/secret.txt", "away"] {
+            assert_eq!(read(dir.path(), path), Err(FilesError::NotFound), "{path}");
+        }
+        assert_eq!(list(dir.path(), "away", KEY, "p1"), Err(FilesError::NotFound));
+        assert_eq!(list(dir.path(), "alias", KEY, "p1"), Err(FilesError::NotFound));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn handle_enumeration_continues_across_batches_and_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        // These native directory records total more than the 64 KiB buffer.
+        let count = 800;
+        for i in 0..count {
+            fs::write(dir.path().join(format!("entry-{i:04}-{}", "x".repeat(100))), "ok").unwrap();
+        }
+        let held = ProjectDir::open(dir.path(), "").unwrap();
+        for _ in 0..2 {
+            let entries = held.entries().unwrap();
+            assert_eq!(entries.len(), count);
+            assert_eq!(entries.iter().map(|(name, _)| name).collect::<std::collections::HashSet<_>>().len(), count);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_concurrent_parent_junction_replacement_cannot_redirect_a_held_walk() {
+        let dir = tree();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir(outside.path().join("deep")).unwrap();
+        fs::write(outside.path().join("main.rs"), "private").unwrap();
+        fs::write(outside.path().join("leak.txt"), "private").unwrap();
+        fs::write(outside.path().join("deep/notes.txt"), "private").unwrap();
+
+        // Precisely schedule the attacker between acquiring the parent and
+        // opening/listing its children: the original path implementation
+        // would leak both the file bytes and the outside listing here.
+        let held = ProjectDir::open(dir.path(), "src").unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                fs::rename(dir.path().join("src"), dir.path().join("src-moved")).unwrap();
+                junction(outside.path(), &dir.path().join("src"));
+            }).join().unwrap();
+
+            let (mut file, _) = held.open_file("main.rs").unwrap();
+            let mut text = String::new();
+            file.read_to_string(&mut text).unwrap();
+            assert_eq!(text, "fn main() {}\n");
+            let entries = held.entries().unwrap();
+            assert!(entries.iter().any(|(name, _)| name == "deep"));
+            assert!(!entries.iter().any(|(name, _)| name == "leak.txt"));
+            assert!(held.child_dir_meta("deep").is_some());
+            // A second step of a walk also uses the held parent handle.
+            let deep = held.child_dir("deep").unwrap();
+            let (mut file, _) = deep.open_file("notes.txt").unwrap();
+            text.clear();
+            file.read_to_string(&mut text).unwrap();
+            assert_eq!(text, "deep");
+        });
+        assert_eq!(read(dir.path(), "src/main.rs"), Err(FilesError::NotFound));
+        assert_eq!(list(dir.path(), "src", KEY, "p1"), Err(FilesError::NotFound));
+    }
+
     #[test]
     fn the_switch_is_off_unless_the_settings_turn_it_on() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!files_open(dir.path()));
         let write = |value: Value| fs::write(dir.path().join("settings.json"), value.to_string()).unwrap();
-        write(serde_json::json!({ "eldrun_mobile_host": { "enabled": true } }));
+        write(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true } }));
         assert!(!files_open(dir.path()));
-        write(serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }));
+        write(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true, "project_files": true } }));
         assert!(files_open(dir.path()));
         fs::write(dir.path().join("settings.json"), "{ not json").unwrap();
         assert!(!files_open(dir.path()));

@@ -1,3 +1,10 @@
+// The brand module is shared with the crate it builds, so the names this
+// script exports are spelled where every other name is.
+#[allow(dead_code)]
+#[path = "src/brand.rs"]
+mod brand;
+
+use crate::brand::UPPER;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -22,7 +29,7 @@ fn rust_bytes(bytes: &[u8]) -> String {
 /// the only thing that lets `live_pwa` refuse an overlay that is *older* than
 /// what it would shadow. Without it a stale `target/mobile-pwa/` left behind by
 /// an abandoned branch would keep serving itself to the phone after the user
-/// upgraded to a newer Eldrun — the exact staleness this whole mechanism exists
+/// upgraded to a newer Tabtivity — the exact staleness this whole mechanism exists
 /// to end, only harder to see.
 fn newest_mtime(dir: &Path) -> i64 {
     let Ok(entries) = fs::read_dir(dir) else {
@@ -71,7 +78,7 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<(String, Vec<u8>)>) {
 ///
 /// The phone can never request one, so they are not baked in. The only trigger
 /// for a dictionary load is `ensureDict(cachedLang())`, `cachedLang()` reads the
-/// `eldrun-lang` localStorage key, and that key is written only by
+/// `tabtivity-lang` localStorage key, and that key is written only by
 /// `applyLanguage` — desktop code the PWA never imports (it takes `useT` and
 /// `TranslationKey` from i18n, nothing else) — on the desktop webview's own
 /// origin, not the sidecar's. So on the phone the language is always `en`.
@@ -107,7 +114,7 @@ fn generate_mobile_assets() {
     collect(&dist, &dist, &mut assets);
     assets.retain(|(name, _)| !is_unreachable_dict_chunk(name));
     if !assets.iter().any(|(name, _)| name == "/index.html") {
-        assets.push(("/index.html".into(), b"<!doctype html><title>Eldrun Mobile</title><main>Mobile assets are not built. Run npm run mobile:build.</main>".to_vec()));
+        assets.push(("/index.html".into(), concat!("<!doctype html><title>", crate::app_name!(), " Mobile</title><main>Mobile assets are not built. Run npm run mobile:build.</main>").as_bytes().to_vec()));
     }
     assets.sort_by(|a, b| a.0.cmp(&b.0));
     let rows = assets
@@ -131,8 +138,8 @@ fn generate_mobile_assets() {
     // tauri:dev`); unset in CI and in every release build, where the constant
     // below is `None` and `live_pwa` compiles down to "there is no overlay".
     // That is deliberate: a shipped binary must never read a PWA off the disk.
-    println!("cargo:rerun-if-env-changed=ELDRUN_MOBILE_LIVE_DIR");
-    let live_dir = match env::var("ELDRUN_MOBILE_LIVE_DIR") {
+    println!(concat!("cargo:rerun-if-env-changed=", crate::app_upper!(), "_MOBILE_LIVE_DIR"));
+    let live_dir = match env::var(crate::app_env!("MOBILE_LIVE_DIR")) {
         Ok(dir) if !dir.trim().is_empty() => format!("Some({:?})", dir.trim()),
         _ => "None".to_string(),
     };
@@ -163,7 +170,7 @@ fn watch_frontend_dist() {
     );
 }
 
-/// Bake the commit this binary is compiled from in as `ELDRUN_BUILD_COMMIT`,
+/// Bake the commit this binary is compiled from in as `TABTIVITY_BUILD_COMMIT`,
 /// for the side panel's version footer. It is the backend's commit on purpose:
 /// the dev window's frontend hot-reloads and its vite server restarts on a
 /// config edit, but the binary is what the window was launched as. Reruns when
@@ -183,7 +190,7 @@ fn embed_build_commit() {
     let Some(commit) = git(&["rev-parse", "--short", "HEAD"]) else {
         return;
     };
-    println!("cargo:rustc-env=ELDRUN_BUILD_COMMIT={commit}");
+    println!("cargo:rustc-env={UPPER}_BUILD_COMMIT={commit}");
     let mut watched = vec!["HEAD".to_string(), "packed-refs".to_string()];
     if let Some(branch) = git(&["symbolic-ref", "-q", "HEAD"]) {
         watched.push(branch);

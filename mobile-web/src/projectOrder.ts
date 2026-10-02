@@ -3,7 +3,7 @@
  *
  * Unlike a tab order, this one is the phone's alone: it is kept in
  * `localStorage` (`prefs.ts`) and never crosses the bridge, so arranging the
- * list needs no desktop and leaves the Eldrun window's own project pills where
+ * list needs no desktop and leaves the Tabtivity window's own project pills where
  * their owner put them. The two surfaces are read for different things — the
  * desktop pills are a switcher the whole day's work runs through, the phone list
  * is a handful of rows reached with one thumb.

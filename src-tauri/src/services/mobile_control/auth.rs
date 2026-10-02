@@ -333,7 +333,8 @@ impl AuthStore {
         let nonce = random_id::<24>()?;
         let expires_at = now() + CHALLENGE_TTL;
         let payload = format!(
-            "eldrun-mobile-auth-v1\n{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}",
+            crate::brand::MOBILE_AUTH_CONTEXT,
             self.origin, device_id, nonce, expires_at
         );
         self.challenges.insert(
@@ -470,6 +471,7 @@ impl AuthStore {
     }
 
     pub fn devices(&self) -> Vec<AdminDevice> {
+        let t = now();
         self.devices
             .devices
             .iter()
@@ -478,6 +480,7 @@ impl AuthStore {
                 name: d.name.clone(),
                 created_at: d.created_at,
                 last_seen_at: d.last_seen_at,
+                online: self.sessions.values().any(|s| s.device_id == d.id && s.expires_at >= t),
             })
             .collect()
     }
@@ -553,8 +556,10 @@ impl AuthStore {
         self.push.deliveries(notice, &tag, &paired)
     }
 
-    pub fn push_forget_endpoint(&mut self, endpoint: &str) {
-        self.push.forget_endpoint(endpoint);
+    /// The push service said `endpoint` is gone: its row lapses, keeping the
+    /// phone's choices for its next sign-in (`PushStore::lapse_endpoint`).
+    pub fn push_lapse_endpoint(&mut self, endpoint: &str) {
+        self.push.lapse_endpoint(endpoint);
     }
 
     fn audit(&self, event: &str, device_id: Option<&str>) {
@@ -608,13 +613,23 @@ mod tests {
         let public = Base64UrlUnpadded::encode_string(public.as_bytes());
         let (code, _) = auth.create_pairing_code().expect("pairing code");
         let device = auth.pair(&code, "Phone", &public).expect("paired");
+        // Paired is not signed in: the desktop's list says which is which.
+        assert!(!auth.devices()[0].online);
         let (nonce, payload, _) = auth.challenge(&device).expect("challenge");
         let signature: Signature = signing.sign(payload.as_bytes());
         let signature = Base64UrlUnpadded::encode_string(&signature.to_bytes());
         let (token, _) = auth.login(&device, &nonce, &signature).expect("login");
         assert_eq!(auth.authenticate(&token).as_deref(), Some(device.as_str()));
+        assert!(auth.devices()[0].online);
+        auth.logout(&token);
+        assert!(!auth.devices()[0].online);
+        let (nonce, payload, _) = auth.challenge(&device).expect("challenge");
+        let signature: Signature = signing.sign(payload.as_bytes());
+        let signature = Base64UrlUnpadded::encode_string(&signature.to_bytes());
+        let (token, _) = auth.login(&device, &nonce, &signature).expect("login");
         auth.revoke(&device).expect("revoke");
         assert!(auth.authenticate(&token).is_none());
+        assert!(auth.devices().is_empty());
     }
 
     #[test]

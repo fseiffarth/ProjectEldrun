@@ -168,7 +168,7 @@ describe("NewTabSheet → Sign in to an agent", () => {
       { id: "a2", label: "Codex", modes: [] },
       { id: "a3", label: "Copilot", modes: [] },
     ];
-    render(<NewTabSheet projectId="p1" agents={agents} busy={false} onPick={onPick} onSendFile={() => undefined} onClose={() => undefined} />);
+    render(<NewTabSheet projectId="p1" agents={agents} shells={false} busy={false} onPick={onPick} onSendFile={() => undefined} onClose={() => undefined} />);
     const entry = await screen.findByRole("button", { name: /Sign in to an agent/ });
     expect(entry.textContent).toContain("1 not signed in");
     fireEvent.click(entry);

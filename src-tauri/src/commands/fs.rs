@@ -121,8 +121,8 @@ pub fn list_dir_local(project_dir: &str, rel_path: &str) -> Result<Vec<FileEntry
             Err(_) => continue,
         };
         let name = entry.file_name().to_string_lossy().to_string();
-        // Always hide .eldrun/ — it is internal runtime storage, not user content.
-        if name == ".eldrun" {
+        // Always hide .tabtivity/ — it is internal runtime storage, not user content.
+        if crate::brand::is_project_dir(&name) {
             continue;
         }
         result.push(file_entry_from(&path, &meta, name));
@@ -217,8 +217,8 @@ async fn list_dir_remote(
 
     Ok(entries
         .into_iter()
-        // Always hide .eldrun/ — mirrors the local lister (internal runtime dir).
-        .filter(|e| e.name != ".eldrun")
+        // Always hide .tabtivity/ — mirrors the local lister (internal runtime dir).
+        .filter(|e| !crate::brand::is_project_dir(&e.name))
         .map(|e| remote_file_entry(&remote_dir, e))
         .collect())
 }
@@ -1436,8 +1436,8 @@ const MAX_BINARY_VIEW_BYTES: u64 = 256 * 1024 * 1024;
 /// Read an absolute file path as UTF-8 text for the in-app text/markdown viewer.
 ///
 /// Takes an absolute path (the same `FileEntry.path` the file tree already uses
-/// to open files). Security #1: the path is confined to Eldrun's known roots
-/// (`~/eldrun`, the sshfs mounts dir, the state dir) so a content-injection in
+/// to open files). Security #1: the path is confined to Tabtivity's known roots
+/// (`~/tabtivity`, the sshfs mounts dir, the state dir) so a content-injection in
 /// a renderer cannot turn this into an arbitrary file read of e.g.
 /// `~/.ssh/id_rsa`. Refuses files over `MAX_TEXT_VIEW_BYTES` and non-UTF-8
 /// (binary) files.
@@ -1491,7 +1491,7 @@ pub fn read_file_text_local(path: &str, scope_id: Option<&str>) -> Result<String
 /// Write UTF-8 text to an absolute file path from the in-app editor.
 ///
 /// Counterpart to `read_file_text`: same absolute `FileEntry.path`, confined to
-/// Eldrun's known roots (Security #1 — without it any reachable IPC caller could
+/// Tabtivity's known roots (Security #1 — without it any reachable IPC caller could
 /// overwrite arbitrary user files), refuses to grow a file past
 /// `MAX_TEXT_VIEW_BYTES`, and only writes to an existing regular file (the
 /// editor edits files opened from the tree; it never creates new paths).
@@ -1544,7 +1544,7 @@ pub fn write_file_text_local(
     fs::write(&p, content).map_err(|e| e.to_string())
 }
 
-/// Write raw bytes to an absolute path, confined to Eldrun's known roots
+/// Write raw bytes to an absolute path, confined to Tabtivity's known roots
 /// (Security #1). Unlike `write_file_text` this may create a new file (so the
 /// image annotator can "Save as…" a sibling PNG), but still refuses paths
 /// outside the allowed roots and oversized payloads.
@@ -1558,7 +1558,7 @@ pub fn write_file_text_local(
 /// straight into it without anyone clicking anything.
 ///
 /// The header values are `encodeURIComponent`-encoded, because a header is ASCII and
-/// a path is not: `~/eldrun/projects/Übung/…` would otherwise be unsendable. Nothing
+/// a path is not: `~/tabtivity/projects/Übung/…` would otherwise be unsendable. Nothing
 /// about that is a trust boundary — the decoded path goes through exactly the same
 /// `confine_abs_write` as before.
 #[tauri::command]
@@ -1566,9 +1566,9 @@ pub async fn write_file_bytes(
     request: tauri::ipc::Request<'_>,
     pool: tauri::State<'_, RemotePoolState>,
 ) -> Result<(), String> {
-    let path = request_header(&request, "x-eldrun-path")
+    let path = request_header(&request, crate::brand::FILE_PATH_HEADER)
         .ok_or_else(|| "write_file_bytes: missing path".to_string())?;
-    let project_id = request_header(&request, "x-eldrun-project").filter(|s| !s.is_empty());
+    let project_id = request_header(&request, crate::brand::FILE_PROJECT_HEADER).filter(|s| !s.is_empty());
     // The raw body is the whole point of this command. A JSON one is still accepted,
     // because Tauri has a documented fallback (the postMessage interface, used when
     // the custom-protocol IPC is blocked) that carries the headers but re-encodes the
@@ -1669,7 +1669,7 @@ pub fn write_file_bytes_local(
 
 /// Read an absolute file path as raw bytes for the in-app PDF viewer.
 ///
-/// Confined to Eldrun's known roots (Security #1). Refuses files over
+/// Confined to Tabtivity's known roots (Security #1). Refuses files over
 /// `MAX_BINARY_VIEW_BYTES`.
 ///
 /// Answers with a **raw** IPC body (`ipc::Response`), not a serialized `Vec<u8>`.
@@ -1737,7 +1737,7 @@ pub fn read_file_bytes_local(path: &str, scope_id: Option<&str>) -> Result<Vec<u
 /// Return a file's last-modified time as whole seconds since the Unix epoch.
 ///
 /// Used by the in-app text/markdown/TeX viewer to poll for external changes
-/// (#43 diff-aware auto-reload). Confined to Eldrun's known roots (Security #1).
+/// (#43 diff-aware auto-reload). Confined to Tabtivity's known roots (Security #1).
 /// Mirrors the `FileEntry.modified_secs` machinery in `list_dir`.
 #[tauri::command]
 pub async fn file_mtime(
@@ -1855,7 +1855,7 @@ fn compute_allowed_roots(
 ) -> Vec<PathBuf> {
     // The ROOT scope — a viewer with no owning project (`scope_id: None`), i.e.
     // the side panel's root view and any root-scope tab — browses the root
-    // terminal folder `~/eldrun/root`. Its *listing* passes confinement because
+    // terminal folder `~/tabtivity/root`. Its *listing* passes confinement because
     // `list_dir` confines against the project_dir argument, but every absolute-
     // path read a viewer then makes (`read_file_bytes`, `file_mtime`, …) lands
     // here — and a roots set without that folder refused each one, so a PDF
@@ -2127,7 +2127,7 @@ fn collect_project_paths(
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == ".eldrun" {
+        if crate::brand::is_project_dir(&name) {
             continue;
         }
         let rel_path = if rel_dir.is_empty() {
@@ -2156,10 +2156,9 @@ fn collect_project_paths(
 const MAX_SCAN_DEPTH: usize = 64;
 
 fn should_skip_ending_scan_dir(name: &str) -> bool {
-    matches!(
+    crate::brand::is_project_dir(name) || matches!(
         name,
         ".git"
-            | ".eldrun"
             | "node_modules"
             | "target"
             | "dist"
@@ -2317,8 +2316,8 @@ mod tests {
     #[test]
     fn percent_decode_reads_what_encode_uri_component_writes() {
         assert_eq!(
-            percent_decode("/home/f/eldrun/projects/thesis/thesis.pdf").as_deref(),
-            Some("/home/f/eldrun/projects/thesis/thesis.pdf")
+            percent_decode(concat!("/home/f/", crate::app_slug!(), "/projects/thesis/thesis.pdf")).as_deref(),
+            Some(concat!("/home/f/", crate::app_slug!(), "/projects/thesis/thesis.pdf"))
         );
         // Non-ASCII: `encodeURIComponent("Übung")` is the UTF-8 bytes, percent-escaped.
         assert_eq!(
@@ -2980,13 +2979,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         write_project_file_local(
             &tmp.path().to_string_lossy(),
-            ".eldrun/scaffold-fill-claude.md",
+            concat!(".", crate::app_slug!(), "/scaffold-fill-claude.md"),
             "fill AGENTS.md",
         )
         .unwrap();
 
         let content =
-            std::fs::read_to_string(tmp.path().join(".eldrun/scaffold-fill-claude.md")).unwrap();
+            std::fs::read_to_string(tmp.path().join(concat!(".", crate::app_slug!(), "/scaffold-fill-claude.md"))).unwrap();
         assert_eq!(content, "fill AGENTS.md");
     }
 
@@ -3053,14 +3052,14 @@ mod tests {
         // the link's target outside the project.
         let outer = tempfile::tempdir().unwrap();
         let root = outer.path().join("project");
-        std::fs::create_dir_all(root.join("eldrun-screenshots")).unwrap();
+        std::fs::create_dir_all(root.join(concat!(crate::app_slug!(), "-screenshots"))).unwrap();
         let outside = outer.path().join("planted.desktop");
-        std::os::unix::fs::symlink(&outside, root.join("eldrun-screenshots/shot.png")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(concat!(crate::app_slug!(), "-screenshots/shot.png"))).unwrap();
         std::os::unix::fs::symlink(&outside, root.join("notes.md")).unwrap();
         let dir = root.to_string_lossy().to_string();
 
         assert!(
-            write_project_file_bytes_local(&dir, "eldrun-screenshots/shot.png", b"png").is_err()
+            write_project_file_bytes_local(&dir, concat!(crate::app_slug!(), "-screenshots/shot.png"), b"png").is_err()
         );
         assert!(write_project_file_local(&dir, "notes.md", "text").is_err());
         assert!(!outside.exists(), "nothing may land outside the project");
@@ -3142,7 +3141,7 @@ mod tests {
     }
 
     /// The root terminal folder the tests thread through `compute_allowed_roots`.
-    const ROOT_WORK: &str = "/home/u/eldrun/root";
+    const ROOT_WORK: &str = concat!("/home/u/", crate::app_slug!(), "/root");
 
     #[test]
     fn state_json_cache_follows_a_same_length_rewrite() {
@@ -3235,11 +3234,11 @@ mod tests {
         let mut r = entry(
             "r",
             "current",
-            "/home/u/.local/share/eldrun/remote-projects/r",
+            concat!("/home/u/.local/share/", crate::app_slug!(), "/remote-projects/r"),
         );
         r.extra.insert(
             "mirror".to_string(),
-            Value::String("/home/u/eldrun/projects-ssh/myproj".to_string()),
+            Value::String(concat!("/home/u/", crate::app_slug!(), "/projects-ssh/myproj").to_string()),
         );
         let roots = compute_allowed_roots(&vec![r], &Vec::new(), Some("r"), Path::new(ROOT_WORK));
         assert!(
@@ -3273,10 +3272,10 @@ mod tests {
         let mut y = entry("y", "inactive", "/home/u/code/projecty");
         y.extra.insert(
             "mirror".to_string(),
-            Value::String("/home/u/eldrun/projects-ssh/y".to_string()),
+            Value::String(concat!("/home/u/", crate::app_slug!(), "/projects-ssh/y").to_string()),
         );
         let projects = vec![entry("x", "current", "/home/u/code/projectx"), y];
-        let boxes = vec![mk_box("b1", &["x", "y"], Some("/home/u/eldrun/boxes/b1"))];
+        let boxes = vec![mk_box("b1", &["x", "y"], Some(concat!("/home/u/", crate::app_slug!(), "/boxes/b1")))];
         let roots = compute_allowed_roots(&projects, &boxes, Some("box:b1"), Path::new(ROOT_WORK));
         assert!(roots.iter().any(|r| r.ends_with("boxes/b1")));
         assert!(roots.iter().any(|r| r.ends_with("projectx")));
@@ -3327,7 +3326,7 @@ mod tests {
     fn allowed_roots_root_scope_includes_root_folder_beside_current() {
         // The ROOT scope (scope_id None) reads the root terminal folder — the
         // regression here was a PDF opened from the root tree failing every
-        // byte read and hanging on "Loading" (~/eldrun/root was never a root).
+        // byte read and hanging on "Loading" (~/tabtivity/root was never a root).
         let projects = vec![entry("x", "current", "/home/u/code/projectx")];
         let roots = compute_allowed_roots(&projects, &Vec::new(), None, Path::new(ROOT_WORK));
         assert!(roots.iter().any(|r| r == Path::new(ROOT_WORK)));
@@ -3419,7 +3418,7 @@ mod tests {
 
     #[test]
     fn dir_size_skips_an_excluded_subtree() {
-        let tmp = std::env::temp_dir().join(format!("eldrun-excl-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(concat!(crate::app_slug!(), "-excl-{}"), std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(tmp.join("keep")).unwrap();
         fs::create_dir_all(tmp.join("venv/lib")).unwrap();

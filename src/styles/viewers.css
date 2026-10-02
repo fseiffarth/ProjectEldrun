@@ -4459,6 +4459,65 @@
   pointer-events: none;
 }
 
+/* Mark up (`PdfMarkupLayer`, `usePdfMarkup`). The drawing surface covers the
+   page above every other layer — the remarks' markers (4) and cards (6) and the
+   blackout boxes (6) included — so while it is on the page takes no other click:
+   an armed tool owns the plain drag, as the blackout surface's comment says. */
+.file-viewer-pdf-markup-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 7;
+  cursor: var(--cur-crosshair, crosshair);
+  touch-action: none;
+}
+.file-viewer-pdf-markup-layer.is-text {
+  cursor: var(--cur-text, text);
+}
+.file-viewer-pdf-markup-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+/* The remarks stay on show while marking, out of reach (and out of the tab order
+   in effect: nothing over the layer takes a pointer). */
+.file-viewer-pdf-page-wrap.is-marking .file-viewer-pdf-note,
+.file-viewer-pdf-page-wrap.is-marking .file-viewer-pdf-hl {
+  pointer-events: none;
+}
+/* A typed note's card: the remark card, opened where the note sits. */
+.file-viewer-pdf-markup-note .file-viewer-pdf-note-text {
+  font-weight: 600;
+}
+/* The strip's tools and colours show which one is armed — the selected state
+   of the generic toolbar button (`.toolbar-btn.active`). */
+.file-viewer-pdf-markup-bar .file-viewer-zoom-btn[aria-pressed="true"],
+.file-viewer-pdf-markup-status .file-viewer-zoom-btn.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.file-viewer-pdf-markup-colors {
+  display: inline-flex;
+  gap: 3px;
+}
+.file-viewer-pdf-markup-swatch span {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  vertical-align: middle;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}
+.file-viewer-pdf-markup-round {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+}
+
 .file-viewer-pdf-copy-bar {
   display: flex;
   align-items: center;
@@ -4601,7 +4660,7 @@
   100% { box-shadow: 0 0 0 14px rgba(68, 147, 248, 0); }
 }
 
-/* The card a remark is written in. App chrome rather than paper — it is Eldrun's
+/* The card a remark is written in. App chrome rather than paper — it is Tabtivity's
    editor, not part of the document — and it sits above every page overlay. */
 .file-viewer-pdf-note-card {
   position: absolute;

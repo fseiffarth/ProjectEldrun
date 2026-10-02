@@ -52,8 +52,9 @@ class FakeWebSocket {
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { BRAND, storageKey } from "../../lib/brand";
 
-const KEY = "eldrun.mobile.slashCommands";
+const KEY = storageKey("mobile.slashCommands");
 const CLAUDE_TAB = { id: "tab-c", label: "Claude", kind: "agent" as const, available: true, viewer_busy: false };
 
 function memoryStorage(seed: Record<string, string> = {}) {
@@ -70,7 +71,7 @@ const settle = () => act(async () => { await new Promise((resolve) => window.set
 const typedOut = () => act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 400)); });
 const lines = (draft: string, cli: string, used: string[] = []) => slashSuggestions(draft, cli, used).map((row) => row.line);
 
-describe("Eldrun Mobile slash commands — which CLI", () => {
+describe(`${BRAND.display} Mobile slash commands — which CLI`, () => {
   it("keys the known families by their label, and any other CLI by its own first word", () => {
     expect(slashCli("Claude")).toBe("claude");
     expect(slashCli("Claude Code (fenced)")).toBe("claude");
@@ -91,7 +92,7 @@ describe("Eldrun Mobile slash commands — which CLI", () => {
   });
 });
 
-describe("Eldrun Mobile slash commands — the store", () => {
+describe(`${BRAND.display} Mobile slash commands — the store`, () => {
   it("keeps what was sent per CLI, newest first, arguments and all", () => {
     const storage = memoryStorage();
     rememberSlashCommand("claude", "/model opus", storage, 1);
@@ -144,7 +145,7 @@ describe("Eldrun Mobile slash commands — the store", () => {
   });
 });
 
-describe("Eldrun Mobile slash commands — the suggestions", () => {
+describe(`${BRAND.display} Mobile slash commands — the suggestions`, () => {
   it("offers nothing unless the draft is one line starting with a slash", () => {
     expect(lines("", "claude")).toEqual([]);
     expect(lines("compact", "claude")).toEqual([]);
@@ -170,13 +171,13 @@ describe("Eldrun Mobile slash commands — the suggestions", () => {
   });
 });
 
-describe("Eldrun Mobile slash commands — the composer", () => {
+describe(`${BRAND.display} Mobile slash commands — the composer`, () => {
   beforeEach(() => {
     localStorage.clear();
     sent.length = 0;
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ error: "not_found" }), { status: 404 }))));
-    localStorage.setItem("eldrun.mobile.view.agent", "terminal");
+    localStorage.setItem(storageKey("mobile.view.agent"), "terminal");
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
   });
 
@@ -296,7 +297,7 @@ describe("Eldrun Mobile slash commands — the composer", () => {
   });
 });
 
-describe("Eldrun Mobile slash commands — the Plan / Goal chips", () => {
+describe(`${BRAND.display} Mobile slash commands — the Plan / Goal chips`, () => {
   const both = draftPrefixes("claude");
 
   it("knows which CLIs have which", () => {

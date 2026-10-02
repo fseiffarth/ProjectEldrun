@@ -8,7 +8,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{
     auth::AuthStore,
-    protocol::{AdminRequest, AdminResponse, DesktopRequest, DesktopResponse, MAX_CONTROL_MESSAGE},
+    protocol::{
+        AdminRequest, AdminResponse, DesktopRequest, DesktopResponse, MAX_CONTROL_MESSAGE,
+        MAX_DESKTOP_RESPONSE,
+    },
     push::{self, AgentTabRef, Notice, NoticeKind},
 };
 
@@ -40,7 +43,7 @@ fn queue_notice(auth: &Arc<Mutex<AuthStore>>, notice: &Notice) -> AdminResponse 
             let auth = auth.clone();
             runtime.spawn(async move {
                 for endpoint in push::send(deliveries).await {
-                    auth.lock().unwrap_or_else(PoisonError::into_inner).push_forget_endpoint(&endpoint);
+                    auth.lock().unwrap_or_else(PoisonError::into_inner).push_lapse_endpoint(&endpoint);
                 }
             });
         }
@@ -48,26 +51,29 @@ fn queue_notice(auth: &Arc<Mutex<AuthStore>>, notice: &Notice) -> AdminResponse 
     AdminResponse::Ok
 }
 
-pub async fn write_frame<T: serde::Serialize>(
+/// One length-prefixed frame of already-serialized JSON, refused whole when it
+/// exceeds `max`: a partial length prefix would desynchronize the peer.
+async fn write_frame_bytes(
     stream: &mut (impl AsyncWriteExt + Unpin),
-    value: &T,
+    bytes: &[u8],
+    max: usize,
 ) -> Result<(), String> {
-    let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
-    if bytes.len() > MAX_CONTROL_MESSAGE {
+    if bytes.len() > max {
         return Err("control message too large".into());
     }
     stream
         .write_u32(bytes.len() as u32)
         .await
         .map_err(|e| e.to_string())?;
-    stream.write_all(&bytes).await.map_err(|e| e.to_string())
+    stream.write_all(bytes).await.map_err(|e| e.to_string())
 }
 
-pub async fn read_frame<T: serde::de::DeserializeOwned>(
+async fn read_frame_capped<T: serde::de::DeserializeOwned>(
     stream: &mut (impl AsyncReadExt + Unpin),
+    max: usize,
 ) -> Result<T, String> {
     let len = stream.read_u32().await.map_err(|e| e.to_string())? as usize;
-    if len == 0 || len > MAX_CONTROL_MESSAGE {
+    if len == 0 || len > max {
         return Err("invalid control message length".into());
     }
     let mut bytes = vec![0; len];
@@ -76,6 +82,82 @@ pub async fn read_frame<T: serde::de::DeserializeOwned>(
         .await
         .map_err(|e| e.to_string())?;
     serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+}
+
+/// Write one control frame, capped at [`MAX_CONTROL_MESSAGE`]. Every request,
+/// the whole admin plane and the Windows pipe token go through this; only a
+/// desktop's answer has the larger bound ([`write_desktop_response`]).
+pub async fn write_frame<T: serde::Serialize>(
+    stream: &mut (impl AsyncWriteExt + Unpin),
+    value: &T,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
+    write_frame_bytes(stream, &bytes, MAX_CONTROL_MESSAGE).await
+}
+
+/// Read one control frame, capped at [`MAX_CONTROL_MESSAGE`] — the bound for
+/// everything a peer sends before it has been answered.
+pub async fn read_frame<T: serde::de::DeserializeOwned>(
+    stream: &mut (impl AsyncReadExt + Unpin),
+) -> Result<T, String> {
+    read_frame_capped(stream, MAX_CONTROL_MESSAGE).await
+}
+
+/// The code a desktop answers with when its real answer exceeds
+/// [`MAX_DESKTOP_RESPONSE`].
+pub const RESPONSE_TOO_LARGE: &str = "response_too_large";
+
+/// The same, for a mutation (`DesktopRequest::is_mutation`): the window has
+/// already made the change, and only the refreshed list it answers with is too
+/// large. A code of its own, because `response_too_large` on a write reads as
+/// a failed write and the retry applies a Create twice. An error *code*
+/// rather than a new `DesktopResponse` variant on purpose: a sidecar older
+/// than this passes an unknown code through to the phone as it stands, while
+/// an unknown variant fails to parse there and reads as a closed desktop.
+pub const APPLIED_RESPONSE_TOO_LARGE: &str = "applied_response_too_large";
+
+/// Write the desktop's answer to the sidecar, under the response cap.
+/// `applied` says the request was a mutation the window has answered.
+///
+/// An answer that is still too large goes out as a small stated error instead
+/// of nothing. Dropping the stream made the sidecar read EOF, which it cannot
+/// tell from a closed desktop: reads fell back to the headless state with the
+/// window open, and a mutation the window had already applied was answered
+/// `desktop_unavailable`, inviting a retry that applied it twice.
+pub async fn write_desktop_response(
+    stream: &mut (impl AsyncWriteExt + Unpin),
+    response: &DesktopResponse,
+    applied: bool,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec(response).map_err(|e| e.to_string())?;
+    if bytes.len() <= MAX_DESKTOP_RESPONSE {
+        return write_frame_bytes(stream, &bytes, MAX_DESKTOP_RESPONSE).await;
+    }
+    // Only a real answer is this large — the window's own refusals and the
+    // "did not answer" stand-in are a few bytes — so for a mutation, reaching
+    // here means the handler ran to its end.
+    let (code, message) = if applied {
+        (APPLIED_RESPONSE_TOO_LARGE, "Applied; the refreshed answer is too large to relay")
+    } else {
+        (RESPONSE_TOO_LARGE, "Desktop answer is too large to relay")
+    };
+    write_frame(
+        stream,
+        &DesktopResponse::Error {
+            code: code.into(),
+            message: message.into(),
+        },
+    )
+    .await
+}
+
+/// Read the desktop's answer, under the cap [`write_desktop_response`] writes
+/// with. Only the sidecar calls this, on a connection it opened to the
+/// desktop's own same-user socket.
+pub async fn read_desktop_response(
+    stream: &mut (impl AsyncReadExt + Unpin),
+) -> Result<DesktopResponse, String> {
+    read_frame_capped(stream, MAX_DESKTOP_RESPONSE).await
 }
 
 /// The admin plane's request/response mapping, shared by every transport.
@@ -187,8 +269,14 @@ pub async fn serve(socket: &Path, context: AdminContext) -> Result<(), String> {
 pub mod pipe {
     use std::path::{Path, PathBuf};
 
-    /// Stable per-path pipe name so two Eldrun state dirs never collide.
+    /// Stable per-path pipe name so two Tabtivity state dirs never collide.
     pub fn pipe_name(socket: &Path) -> String {
+        pipe_name_with(crate::brand::CONTROL_PIPE_PREFIX, socket)
+    }
+
+    /// [`pipe_name`] under a given prefix: the current one, or the one an
+    /// older build's host listens on.
+    pub fn pipe_name_with(prefix: &str, socket: &Path) -> String {
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(socket.to_string_lossy().as_bytes());
         let mut hex = String::with_capacity(32);
@@ -196,7 +284,7 @@ pub mod pipe {
             use std::fmt::Write;
             let _ = write!(hex, "{byte:02x}");
         }
-        format!(r"\\.\pipe\eldrun-control-{hex}")
+        format!(r"\\.\pipe\{prefix}{hex}")
     }
 
     pub fn token_path(socket: &Path) -> PathBuf {
@@ -239,6 +327,12 @@ pub mod pipe {
     ) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, String> {
         use tokio::net::windows::named_pipe::ClientOptions;
         let name = pipe_name(socket);
+        // A host an older build started listens under the old prefix. Tried
+        // only when nothing answers under the current one, and only while
+        // the two differ.
+        let legacy_name = crate::brand::PAIR
+            .legacy(crate::brand::Name::CONTROL_PIPE_PREFIX)
+            .map(|prefix| pipe_name_with(&prefix, socket));
         // `ERROR_PIPE_BUSY`: every instance is taken — the one condition a
         // retry can resolve, since the listener creates the next instance right
         // after each accept.
@@ -257,7 +351,15 @@ pub mod pipe {
                 // host simply not running — is the answer, not a wait: retrying
                 // it made every bridge call with the desktop closed sit out the
                 // whole deadline before it could say `desktop_unavailable`.
-                Err(error) => return Err(error.to_string()),
+                Err(error) => {
+                    if let Some(legacy_name) = &legacy_name {
+                        if let Ok(client) = ClientOptions::new().open(legacy_name) {
+                            crate::brand::legacy_hit("control-pipe");
+                            return Ok(client);
+                        }
+                    }
+                    return Err(error.to_string());
+                }
             }
         }
     }
@@ -311,7 +413,7 @@ pub async fn serve(socket: &Path, context: AdminContext) -> Result<(), String> {
 
 #[cfg(not(any(unix, windows)))]
 pub async fn serve(_: &Path, _: AdminContext) -> Result<(), String> {
-    Err("Eldrun Mobile host is not supported on this platform".into())
+    Err(concat!(crate::app_name!(), " Mobile host is not supported on this platform").into())
 }
 
 /// The sidecar's most common state — not running — reaching a caller as a
@@ -320,9 +422,9 @@ pub async fn serve(_: &Path, _: AdminContext) -> Result<(), String> {
 /// A stopped host leaves its socket *file* behind, so connecting to it fails
 /// with `ECONNREFUSED`; passing that through rendered the whole feature's
 /// ordinary down state in the Mobile menu as `Connection refused (os error
-/// 111)`, which names neither Eldrun Mobile nor anything the reader can act on.
+/// 111)`, which names neither Tabtivity Mobile nor anything the reader can act on.
 /// `NotFound` is the same state with the socket file already gone.
-pub const NOT_RUNNING_ERROR: &str = "The Eldrun Mobile host is not running";
+pub const NOT_RUNNING_ERROR: &str = concat!("The ", crate::app_name!(), " Mobile host is not running");
 
 #[cfg(unix)]
 fn connect_error(error: std::io::Error) -> String {
@@ -389,7 +491,7 @@ pub async fn desktop_call(
     // answered.
     tokio::time::timeout(response_timeout, async {
         write_frame(&mut stream, request).await?;
-        read_frame(&mut stream).await
+        read_desktop_response(&mut stream).await
     })
     .await
     .map_err(|_| "desktop_unavailable")?
@@ -406,7 +508,7 @@ pub async fn desktop_call(
     tokio::time::timeout(response_timeout, async {
         write_frame(&mut stream, &token).await?;
         write_frame(&mut stream, request).await?;
-        read_frame(&mut stream).await
+        read_desktop_response(&mut stream).await
     })
     .await
     .map_err(|_| "desktop_unavailable")?
@@ -533,6 +635,136 @@ mod frame_tests {
         assert!(read_frame::<AdminRequest>(&mut not_json).await.is_err());
     }
 
+    fn transcript_of(text_bytes: usize) -> DesktopResponse {
+        serde_json::from_value(serde_json::json!({
+            "status": "agent_transcript",
+            "transcript": {
+                "available": true,
+                "entries": [{ "kind": "answer", "text": "x".repeat(text_bytes) }],
+                "truncated": false,
+            },
+        }))
+        .expect("transcript response")
+    }
+
+    /// A desktop answer runs well past the request cap — a long transcript, a
+    /// full board — and crosses whole under its own larger one.
+    #[tokio::test]
+    async fn a_desktop_response_over_the_request_cap_round_trips() {
+        let mut wire: Vec<u8> = Vec::new();
+        write_desktop_response(&mut wire, &transcript_of(MAX_CONTROL_MESSAGE * 4), false)
+            .await
+            .unwrap();
+        assert!(wire.len() > MAX_CONTROL_MESSAGE * 4);
+        let mut reader: &[u8] = &wire;
+        match read_desktop_response(&mut reader).await.unwrap() {
+            DesktopResponse::AgentTranscript { transcript } => {
+                assert_eq!(transcript.entries[0].text.len(), MAX_CONTROL_MESSAGE * 4);
+            }
+            other => panic!("read back {other:?}"),
+        }
+        assert!(reader.is_empty());
+        // The ordinary reader — the one every request and the admin plane use
+        // — still refuses the same bytes at its own bound.
+        let mut reader: &[u8] = &wire;
+        let err = read_frame::<DesktopResponse>(&mut reader).await.unwrap_err();
+        assert_eq!(err, "invalid control message length");
+    }
+
+    /// The larger cap is the response direction's alone: a request over the
+    /// control cap is refused unwritten, exactly as before.
+    #[tokio::test]
+    async fn a_request_over_the_control_cap_is_still_refused() {
+        let request = DesktopRequest::TabPrompt {
+            request_id: "r1".into(),
+            project_id: "p".into(),
+            tmux_session: concat!(crate::app_slug!(), "-p").into(),
+            message: "x".repeat(MAX_CONTROL_MESSAGE + 1),
+        };
+        let mut wire: Vec<u8> = Vec::new();
+        let err = write_frame(&mut wire, &request).await.unwrap_err();
+        assert_eq!(err, "control message too large");
+        assert!(wire.is_empty());
+    }
+
+    /// An answer beyond even the response cap reaches the sidecar as a small
+    /// stated error — a present desktop with a failure, not a dropped stream
+    /// that reads as no desktop at all.
+    #[tokio::test]
+    async fn an_answer_over_the_response_cap_becomes_a_stated_error() {
+        let mut wire: Vec<u8> = Vec::new();
+        write_desktop_response(&mut wire, &transcript_of(MAX_DESKTOP_RESPONSE + 1), false)
+            .await
+            .unwrap();
+        assert!(wire.len() < 1024, "only the error frame went out");
+        let mut reader: &[u8] = &wire;
+        match read_desktop_response(&mut reader).await.unwrap() {
+            DesktopResponse::Error { code, .. } => {
+                assert_eq!(code, RESPONSE_TOO_LARGE);
+                assert_ne!(code, "desktop_unavailable");
+            }
+            other => panic!("read back {other:?}"),
+        }
+        assert!(reader.is_empty());
+    }
+
+    /// The same overflow on a mutation says so: the window has already made
+    /// the change, so the sidecar hears "applied", never the code a failed
+    /// write or an oversized read would carry. An answer that fits is written
+    /// as it is, mutation or not.
+    #[tokio::test]
+    async fn a_mutations_answer_over_the_response_cap_is_stated_as_applied() {
+        let mut wire: Vec<u8> = Vec::new();
+        write_desktop_response(&mut wire, &transcript_of(MAX_DESKTOP_RESPONSE + 1), true)
+            .await
+            .unwrap();
+        assert!(wire.len() < 1024, "only the error frame went out");
+        // Small enough for a sidecar that still reads at the control cap.
+        let mut reader: &[u8] = &wire;
+        match read_frame::<DesktopResponse>(&mut reader).await.unwrap() {
+            DesktopResponse::Error { code, .. } => {
+                assert_eq!(code, APPLIED_RESPONSE_TOO_LARGE);
+                assert_ne!(code, RESPONSE_TOO_LARGE);
+            }
+            other => panic!("read back {other:?}"),
+        }
+        assert!(reader.is_empty());
+
+        let mut wire: Vec<u8> = Vec::new();
+        write_desktop_response(&mut wire, &transcript_of(1024), true)
+            .await
+            .unwrap();
+        let mut reader: &[u8] = &wire;
+        assert!(matches!(
+            read_desktop_response(&mut reader).await.unwrap(),
+            DesktopResponse::AgentTranscript { .. }
+        ));
+        // The window's own refusal of a mutation is small and crosses as it is.
+        let refusal = DesktopResponse::Error {
+            code: "invalid_task".into(),
+            message: "no".into(),
+        };
+        let mut wire: Vec<u8> = Vec::new();
+        write_desktop_response(&mut wire, &refusal, true).await.unwrap();
+        let mut reader: &[u8] = &wire;
+        match read_desktop_response(&mut reader).await.unwrap() {
+            DesktopResponse::Error { code, .. } => assert_eq!(code, "invalid_task"),
+            other => panic!("read back {other:?}"),
+        }
+    }
+
+    /// The response reader trusts no length either: one byte over its cap is
+    /// rejected off the prefix alone, with no body there to allocate for.
+    #[tokio::test]
+    async fn the_response_reader_rejects_lengths_over_its_cap() {
+        let mut too_big: &[u8] = &((MAX_DESKTOP_RESPONSE + 1) as u32).to_be_bytes();
+        let err = read_desktop_response(&mut too_big).await.unwrap_err();
+        assert_eq!(err, "invalid control message length");
+        let mut zero: &[u8] = &0u32.to_be_bytes();
+        let err = read_desktop_response(&mut zero).await.unwrap_err();
+        assert_eq!(err, "invalid control message length");
+    }
+
     /// The admin plane's mapping, transport aside: status reports the port and
     /// version, an unknown device is an error not a silent no-op, forget-all
     /// and shutdown answer `Ok`, and shutdown actually flips the watch.
@@ -552,7 +784,7 @@ mod frame_tests {
             shutdown,
             agent_tab: Some(Arc::new(move |tmux: &str| {
                 seen.lock().unwrap().push(tmux.to_string());
-                (tmux == "eldrun-watched").then(|| AgentTabRef {
+                (tmux == concat!(crate::app_slug!(), "-watched")).then(|| AgentTabRef {
                     project_id: "p".into(),
                     project_label: "Aurora".into(),
                     tab_id: "t".into(),
@@ -603,7 +835,7 @@ mod frame_tests {
         ));
         // Agent turns go through the sidecar's own lookup: an unknown session
         // and a tab a phone is attached to both send nothing, quietly.
-        for tmux in ["eldrun-unknown", "eldrun-watched"] {
+        for tmux in [concat!(crate::app_slug!(), "-unknown"), concat!(crate::app_slug!(), "-watched")] {
             assert!(matches!(
                 respond(Ok(AdminRequest::AgentTurn {
                     tmux_session: tmux.into(),
@@ -613,7 +845,7 @@ mod frame_tests {
                 AdminResponse::Ok
             ));
         }
-        assert_eq!(*looked_up.lock().unwrap(), ["eldrun-unknown", "eldrun-watched"]);
+        assert_eq!(*looked_up.lock().unwrap(), [concat!(crate::app_slug!(), "-unknown"), concat!(crate::app_slug!(), "-watched")]);
         assert!(matches!(respond(Ok(AdminRequest::ForgetAll)), AdminResponse::Ok));
         assert!(matches!(
             respond(Err("control message timed out".into())),

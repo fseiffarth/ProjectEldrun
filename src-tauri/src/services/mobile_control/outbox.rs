@@ -1,12 +1,12 @@
-//! Explicit project → phone files, published into `.eldrun/outbox/`.
+//! Explicit project → phone files, published into `.tabtivity/outbox/`.
 //!
 //! Only safe leaf names of bounded, non-symlink regular files cross the API.
 //! The directory must resolve below its project root. Types come from bytes:
 //! images/PDF, inert UTF-8 text (including HTML/SVG), or attachment downloads.
 //! Nothing detects terminal paths or copies files on the agent's behalf.
 //!
-//! `eldrun-send` run in an agent tab leaves a marker beside each file,
-//! `.<leaf>.tab`, holding the tab's `$ELDRUN_TAB_UID`: that tab's chat shows
+//! `tabtivity-send` run in an agent tab leaves a marker beside each file,
+//! `.<leaf>.tab`, holding the tab's `$TABTIVITY_TAB_UID`: that tab's chat shows
 //! the file, every other tab's gallery still lists it. The marker is hidden by
 //! the leaf alphabet and never crosses — the listing says only `from_tab`.
 
@@ -18,7 +18,7 @@ use std::{
 };
 
 /// Project-relative directory an agent puts files for the phone in.
-pub const OUTBOX_DIR: &str = ".eldrun/outbox";
+pub const OUTBOX_DIR: &str = crate::brand::OUTBOX_DIR;
 /// One file the phone will load. The inbox's ceiling, for the same reason:
 /// a screenshot or a plot is a few MiB; a raw camera dump is not a message.
 pub const MAX_OUTBOX_FILE: u64 = 24 * 1024 * 1024;
@@ -202,7 +202,7 @@ fn marker_name(name: &str) -> String {
     format!(".{name}.tab")
 }
 
-/// The tab id `eldrun-send` recorded for `name`, if a well-formed one is
+/// The tab id `tabtivity-send` recorded for `name`, if a well-formed one is
 /// there — the hook's alphabet (`[A-Za-z0-9-]`), bounded.
 fn sender(dir: &Path, name: &str) -> Option<String> {
     let (file, meta) = open_regular(&dir.join(marker_name(name)))?;
@@ -216,7 +216,7 @@ fn sender(dir: &Path, name: &str) -> Option<String> {
         .then(|| id.to_string())
 }
 
-/// `name` without the `YYYYMMDD-HHMMSS-` stamps `eldrun-send` and the phone
+/// `name` without the `YYYYMMDD-HHMMSS-` stamps `tabtivity-send` and the phone
 /// inbox put in front of a leaf to keep it unique — a photo the phone sent and
 /// an agent sent back carries two. A leaf that is nothing but stamps stays.
 pub fn sent_name(name: &str) -> &str {
@@ -241,7 +241,7 @@ pub fn unix_secs(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// The files in `root/.eldrun/outbox/`, newest first, at most `MAX_LISTED`.
+/// The files in `root/.tabtivity/outbox/`, newest first, at most `MAX_LISTED`.
 /// A project without an outbox lists nothing. Files that are not servable
 /// files are left out silently — the folder is the agent's to fill and the
 /// listing is what the phone can actually show.
@@ -250,11 +250,13 @@ pub fn list(root: &Path) -> Result<Vec<OutboxFile>, OutboxError> {
 }
 
 /// [`list`] as one tab sees it: every file, with `from_tab` set on those the
-/// tab whose `ELDRUN_TAB_UID` is `tab` sent.
+/// tab whose `TABTIVITY_TAB_UID` is `tab` sent.
 pub fn list_for(root: &Path, tab: Option<&str>) -> Result<Vec<OutboxFile>, OutboxError> {
     let Some(dir) = outbox_dir(root)? else {
         return Ok(Vec::new());
     };
+    // The note the old-named send command leaves here (after a rename).
+    crate::services::brand_migration::compat::take_send_alias_marker(&crate::brand::PAIR, &dir);
     let mut images = Vec::new();
     for entry in fs::read_dir(&dir).map_err(|e| OutboxError::Io(e.to_string()))? {
         let entry = entry.map_err(|e| OutboxError::Io(e.to_string()))?;
@@ -308,7 +310,7 @@ pub fn read(root: &Path, name: &str) -> Result<(Vec<u8>, &'static str), OutboxEr
 /// such here too — the difference between dropping a file the agent published
 /// and unlinking whatever it pointed at.
 ///
-/// The folder is the one place in a project Eldrun publishes *for* the phone,
+/// The folder is the one place in a project Tabtivity publishes *for* the phone,
 /// and nothing pruned it: a picture the reader is done with could only be
 /// cleared from a shell on the desktop.
 pub fn remove(root: &Path, name: &str) -> Result<(), OutboxError> {
@@ -385,7 +387,7 @@ mod tests {
     #[test]
     fn the_sent_name_drops_every_send_stamp() {
         assert_eq!(sent_name("20260930-101530-plot.png"), "plot.png");
-        // Phone → inbox → `eldrun-send` back: two stamps.
+        // Phone → inbox → `tabtivity-send` back: two stamps.
         assert_eq!(sent_name("20260930-101530-20260930-101010-IMG_4711.jpg"), "IMG_4711.jpg");
         assert_eq!(sent_name("plot.png"), "plot.png");
         assert_eq!(sent_name("2026-09-30-notes.md"), "2026-09-30-notes.md");
@@ -485,13 +487,13 @@ mod tests {
         // Resolving to the root itself is not below it: it must not turn
         // the outbox route into a listing of every file in the project.
         let root = dir.path().join("root-alias");
-        fs::create_dir_all(root.join(".eldrun")).unwrap();
+        fs::create_dir_all(root.join(concat!(".", crate::app_slug!()))).unwrap();
         std::os::unix::fs::symlink(&root, root.join(OUTBOX_DIR)).unwrap();
         assert_eq!(list(&root), Err(OutboxError::Unavailable));
 
         // The outbox itself as a link out of the project.
         let root = dir.path().join("linked-dir");
-        fs::create_dir_all(root.join(".eldrun")).unwrap();
+        fs::create_dir_all(root.join(concat!(".", crate::app_slug!()))).unwrap();
         std::os::unix::fs::symlink(outside.path(), root.join(OUTBOX_DIR)).unwrap();
         assert_eq!(list(&root), Err(OutboxError::Unavailable));
         assert_eq!(read(&root, "private.png"), Err(OutboxError::Unavailable));

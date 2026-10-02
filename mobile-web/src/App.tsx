@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { EldrunMark } from "./EldrunMark";
+import { AppMark } from "./AppMark";
 import { hasPairedDevice, logoutAuth, resumeAuth } from "./auth";
 import { connectTrace, getMobileStatus, primeConnection, setUnauthorizedHandler, traceConnect, type TabRow } from "./api";
 import { classifyUnavailable, describeUnavailable, suspectsTunnel, tailscaleAppLink, TUNNEL_STEPS, unavailableDetail, type UnavailableReason } from "./connection";
@@ -8,6 +8,7 @@ import { forgetLastPlace, parsePlace, rememberLastPlace, resolvePlace, restoreLa
 import { refreshPush } from "./push";
 import { hasLocalUnlock } from "./localLock";
 import { clearConnectReload, isConnectReload, noteUnlockedLeave, takeConnectReload, takeReloadGrace } from "./reloadGrace";
+import { noteDesktopTheme } from "./theme";
 import { isUntested, setUntestedTagsVisible } from "../../src/lib/untested";
 import { useT } from "../../src/lib/i18n";
 import { Pair } from "./screens/Pair";
@@ -24,6 +25,7 @@ import { SECTION_GLYPH } from "./glyphs";
  * fails is exactly when the reader needs to know whether the phone picked up
  * the desktop's current bundle or is booting a stale one out of the cache. */
 import { BUNDLE_VERSION as SPLASH_VERSION } from "./buildInfo";
+import { BRAND, LEGACY_NAMES, NAMES, storageDashKey } from "../../src/lib/brand";
 
 /**
  * The four top-level sections. To-do, Calendar and Mail used to be pushed on
@@ -52,7 +54,7 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "mail", icon: SECTION_GLYPH.mail, label: "Mail" },
 ];
 /**
- * How long Eldrun Mobile may go untouched before the local lock closes the
+ * How long Tabtivity Mobile may go untouched before the local lock closes the
  * session. Long enough to outlast a reload, a trip to another app, and reading a
  * screenful of terminal output without touching the glass; short enough that a
  * phone whose own screen saver has taken over is locked here too — the web
@@ -93,7 +95,7 @@ const launchPlace = takeLaunchPlace();
 // Keep the last known desktop preference through the lock and connection
 // screens, before the authenticated status probe can refresh it.
 try {
-  setUntestedTagsVisible(localStorage.getItem("eldrun-show-untested-tags") === "true");
+  setUntestedTagsVisible(localStorage.getItem(storageDashKey("show-untested-tags")) === "true");
 } catch {
   // Private browsing may refuse localStorage; default to hiding the tags.
   setUntestedTagsVisible(false);
@@ -104,7 +106,7 @@ const ACTIVITY_EVENTS = ["pointerdown", "keydown", "input", "touchstart", "touch
 
 /**
  * The launch curtain, and the same one the desktop app draws while its settings
- * and project reads are in flight (`AppShell`'s `StartupSplash`): the Eldrun
+ * and project reads are in flight (`AppShell`'s `StartupSplash`): the Tabtivity
  * mark inside two counter-rotating orbit rings. It stood in as a `✦` glyph,
  * which is the one screen a phone reliably sees on every cold open — every cold
  * open asks for the PIN or fingerprint first, and re-authenticates from scratch
@@ -121,9 +123,9 @@ function Splash({ message, progress, tone, children }: { message: string; progre
       <div className="splash-mark" aria-hidden="true">
         <span className="splash-orbit splash-orbit-one" />
         <span className="splash-orbit splash-orbit-two" />
-        <EldrunMark />
+        <AppMark />
       </div>
-      <div className="splash-name">ELDRUN</div>
+      <div className="splash-name">{BRAND.display.toUpperCase()}</div>
       <p className="splash-message">{message}</p>
       {progress ? <div className="splash-progress" aria-hidden="true"><span /></div> : null}
       {children}
@@ -333,10 +335,11 @@ export function App() {
   useEffect(() => {
     if (auth !== "paired") return;
     const refresh = () => {
-      void getMobileStatus().then(({ show_untested_tags }) => {
+      void getMobileStatus().then(({ show_untested_tags, color_scheme }) => {
+        noteDesktopTheme(color_scheme);
         const visible = show_untested_tags === true;
         if (setUntestedTagsVisible(visible)) refreshTags((tick) => tick + 1);
-        try { localStorage.setItem("eldrun-show-untested-tags", String(visible)); } catch { /* unavailable */ }
+        try { localStorage.setItem(storageDashKey("show-untested-tags"), String(visible)); } catch { /* unavailable */ }
       }).catch(() => undefined);
     };
     refresh();
@@ -355,7 +358,9 @@ export function App() {
     if (!("serviceWorker" in navigator)) return;
     const onMessage = (event: MessageEvent) => {
       const data = event.data as { type?: unknown } | null;
-      if (data?.type !== "eldrun-open") return;
+      // The worker and the page update at different moments, so across a
+      // rename a still-old worker posts the old message type.
+      if (data?.type !== NAMES.mobileOpenMessage && data?.type !== LEGACY_NAMES.mobileOpenMessage) return;
       const place = parsePlace(data);
       if (!place) return;
       if (authRef.current === "paired") void resolvePlace(place).then(goTo);

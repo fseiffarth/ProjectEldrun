@@ -27,10 +27,11 @@ use super::{
     alarms,
     auth::AuthStore,
     config::{verify_tailscale_serve, HostConfig},
-    discovery::{Catalog, CatalogCache, PublicTab, ResolvedTab, ScopeKind, TabPrompt, TabSchedules},
+    discovery::{shells_open, Catalog, CatalogCache, PublicTab, ResolvedTab, ScopeKind, TabPrompt, TabSchedules},
     files,
     headless,
     inbox,
+    markup,
     outbox,
     limits,
     protocol::{
@@ -38,7 +39,7 @@ use super::{
         MailMarkAction, MobileCollectedPrompt, MobilePromptInput, MobileSchedule,
         MobileScheduleInput, PromptMutation, ScheduleMutation,
         TabPlace, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES,
-        MAX_TAB_LABEL, TERMINAL_PROTOCOL,
+        MAX_TAB_LABEL,
     },
     pty_bridge::{self, TerminalRegistry},
     scheduler,
@@ -58,6 +59,13 @@ const MAX_TAB_PROMPTS: usize = 5;
 /// not recorded in its history.
 const MAX_SENT_PROMPT: usize = 16 * 1024;
 const MAX_TAB_PROMPT_CHARS: usize = 240;
+
+/// The one page another page may frame: the sealed pdf.js frame the markup
+/// view renders PDF pages in (`mobile-web/pdf-frame.html`). It is loaded as
+/// `<iframe sandbox="allow-scripts">` — an opaque origin with no cookie, no
+/// storage and no API — and its own policy lets it run its script and draw,
+/// and nothing else: no network, no forms, framed only by the PWA itself.
+const PDF_FRAME_PATH: &str = "/pdf-frame.html";
 
 const MOBILE_PERMISSIONS_POLICY: &str =
     "camera=(), microphone=(self), on-device-speech-recognition=(self), geolocation=(), payment=(), usb=()";
@@ -218,15 +226,42 @@ fn exact_origin(headers: &HeaderMap, state: &HostState) -> bool {
 }
 
 fn cookie_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .find_map(|part| {
+    session_cookie_in(&crate::brand::PAIR, headers.get(header::COOKIE)?.to_str().ok()?)
+}
+
+/// The session token in a `Cookie` header: the cookie under its current name,
+/// else under the name an older build's host set (counted as a legacy hit).
+fn session_cookie_in<'a>(pair: &crate::brand::Pair, cookies: &'a str) -> Option<&'a str> {
+    let named = |wanted: &str| {
+        cookies.split(';').find_map(|part| {
             let (name, value) = part.trim().split_once('=')?;
-            (name == "__Host-eldrun_session").then_some(value)
+            (name == wanted).then_some(value)
         })
+    };
+    if let Some(token) = named(&pair.cur(crate::brand::Name::SESSION_COOKIE)) {
+        return Some(token);
+    }
+    let token = named(&pair.legacy(crate::brand::Name::SESSION_COOKIE)?)?;
+    crate::brand::legacy_hit("session-cookie");
+    Some(token)
+}
+
+/// The terminal subprotocol to answer a WebSocket upgrade with, given what
+/// the client offered: the current one, else the one an older build of the
+/// phone app still offers (counted as a legacy hit). A phone keeps running
+/// its cached app until the service worker has updated.
+fn terminal_protocol_in(pair: &crate::brand::Pair, offered: &str) -> Option<String> {
+    let offers = |wanted: &str| offered.split(',').any(|v| v.trim() == wanted);
+    let current = pair.cur(crate::brand::Name::TERMINAL_PROTOCOL);
+    if offers(&current) {
+        return Some(current);
+    }
+    let old = pair.legacy(crate::brand::Name::TERMINAL_PROTOCOL)?;
+    if !offers(&old) {
+        return None;
+    }
+    crate::brand::legacy_hit("terminal-protocol");
+    Some(old)
 }
 
 fn authenticate(
@@ -317,26 +352,47 @@ async fn open_ticket(
     }
 }
 
+/// Run a catalog read without holding an async worker for it. A read past the
+/// TTL forks `tmux ls` (bounded by `discovery::TMUX_LS_TIMEOUT`, but seconds
+/// against a hung tmux server) and every other read waits on the catalog mutex
+/// behind it; done inline on the workers, a few such requests parked all of
+/// them and the sidecar stopped answering anything — pings and terminal output
+/// included. `block_in_place` hands this worker's other tasks to a fresh one
+/// first. It is only legal on the multi-threaded runtime the sidecar runs on;
+/// anywhere else (the current-thread runtime of a test) the read runs inline.
+fn off_worker<T>(read: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(read)
+        }
+        _ => read(),
+    }
+}
+
 fn catalog(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::Value>)> {
     let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
-    state
-        .catalog
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .load(&state.config.state_dir, &key)
-        .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
+    off_worker(|| {
+        state
+            .catalog
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .load(&state.config.state_dir, &key)
+    })
+    .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
 }
 
 /// The create-tab poll is waiting for a tab the desktop has just been asked to
 /// open, so by definition it is not in the cached snapshot yet.
 fn catalog_fresh(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::Value>)> {
     let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
-    state
-        .catalog
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .load_fresh(&state.config.state_dir, &key)
-        .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
+    off_worker(|| {
+        state
+            .catalog
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .load_fresh(&state.config.state_dir, &key)
+    })
+    .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
 }
 
 /// The host key the desktop mints its opaque ids with — the same
@@ -469,13 +525,19 @@ fn catalog_stale(state: &HostState) {
 
 async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
     let sensitive = request.uri().path().starts_with("/api/") || request.uri().path() == "/healthz";
+    let frame = request.uri().path() == PDF_FRAME_PATH;
     let mut response = next.run(request).await;
+    // The sealed frame answers its own framing rules (`pdf_frame`); a miss
+    // there falls back to everyone else's.
+    let framed = frame && response.status() == StatusCode::OK;
     let headers = response.headers_mut();
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    if !framed {
+        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    }
     headers.insert(
         header::STRICT_TRANSPORT_SECURITY,
         HeaderValue::from_static("max-age=31536000"),
@@ -487,8 +549,53 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> 
         "permissions-policy",
         HeaderValue::from_static(MOBILE_PERMISSIONS_POLICY),
     );
-    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"));
+    if !framed {
+        headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"));
+    }
     response
+}
+
+/// The sealed frame's policy. Inside a sandbox the document's origin is
+/// opaque, and whether `'self'` still matches the server it came from differs
+/// between engines — so the server is also named outright, from the `Host`
+/// the request came in on (a host name, nothing else, or it is left out).
+fn pdf_frame_policy(host: Option<&HeaderValue>) -> String {
+    let named = host
+        .and_then(|value| value.to_str().ok())
+        .filter(|host| {
+            !host.is_empty()
+                && host.len() <= 255
+                && host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':'))
+        })
+        .map(|host| format!(" https://{host}"))
+        .unwrap_or_default();
+    format!(
+        "default-src 'none'; script-src 'self'{named}; style-src 'unsafe-inline'; img-src blob: data:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'{named}"
+    )
+}
+
+/// `GET /pdf-frame.html` — the sealed frame (`PDF_FRAME_PATH`), with its own
+/// framing rules. Only the frame's own bytes: a bundle without it is a 404,
+/// never the app shell under a framable policy.
+async fn pdf_frame(headers: HeaderMap) -> Response<Body> {
+    let found = match live_pwa::current() {
+        Some(live) => live.get(PDF_FRAME_PATH),
+        None => MOBILE_ASSETS
+            .iter()
+            .find(|(asset, _, _)| *asset == PDF_FRAME_PATH)
+            .map(|(_, bytes, mime)| (bytes::Bytes::from_static(bytes), *mime)),
+    };
+    let Some((bytes, mime)) = found else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::X_FRAME_OPTIONS, "SAMEORIGIN")
+        .header(header::CONTENT_SECURITY_POLICY, pdf_frame_policy(headers.get(header::HOST)))
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn health() -> impl IntoResponse {
@@ -548,7 +655,7 @@ async fn login(
         Ok((token, expires_at)) => {
             let mut response =
                 Json(json!({ "ok": true, "expires_at": expires_at })).into_response();
-            let cookie = format!("__Host-eldrun_session={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=43200");
+            let cookie = format!("{}={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=43200", crate::brand::SESSION_COOKIE);
             response
                 .headers_mut()
                 .insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
@@ -569,9 +676,18 @@ async fn logout(State(state): State<HostState>, headers: HeaderMap) -> Response<
     response.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_static(
-            "__Host-eldrun_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0",
+            concat!("__Host-", crate::app_slug!(), "_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"),
         ),
     );
+    // A cookie an older build's host set is expired as well; there is none
+    // to name while the name is unchanged.
+    if let Some(old) = crate::brand::PAIR.legacy(crate::brand::Name::SESSION_COOKIE) {
+        if let Ok(expired) =
+            HeaderValue::from_str(&format!("{old}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"))
+        {
+            response.headers_mut().append(header::SET_COOKIE, expired);
+        }
+    }
     response
 }
 
@@ -583,15 +699,25 @@ async fn status(State(state): State<HostState>, headers: HeaderMap) -> impl Into
     // (and every crash), and on Windows the nominal path is never a file.
     let desktop_available =
         admin::desktop_reachable(&state.config.control_dir.join("desktop-control.sock")).await;
-    let show_untested_tags = std::fs::read(state.config.state_dir.join("settings.json"))
+    let settings = std::fs::read(state.config.state_dir.join("settings.json"))
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let show_untested_tags = settings
+        .as_ref()
         .and_then(|settings| settings.get("show_untested_tags").and_then(|value| value.as_bool()))
         .unwrap_or(false);
+    // The desktop's theme, for a phone that follows it. Only a short plain
+    // name crosses: the phone checks it against the themes it knows.
+    let color_scheme = settings
+        .as_ref()
+        .and_then(|settings| settings.get("color_scheme").and_then(|value| value.as_str()))
+        .filter(|scheme| scheme.len() <= 32 && scheme.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+        .unwrap_or("light_lavender")
+        .to_string();
     (
         StatusCode::OK,
         Json(
-            json!({ "desktop_available": desktop_available, "host": state.config.host.display_name, "show_untested_tags": show_untested_tags }),
+            json!({ "desktop_available": desktop_available, "host": state.config.host.display_name, "show_untested_tags": show_untested_tags, "color_scheme": color_scheme }),
         ),
     )
 }
@@ -905,7 +1031,9 @@ async fn project(
             json!({ "project": public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents, "closed": closed,
                 // Whether this project's 📁 answers (`files.rs`): the host-wide
                 // switch, and a project rather than a box or the root console.
-                "files": project.public.kind == ScopeKind::Project && files::files_open(&state.config.state_dir) }),
+                "files": project.public.kind == ScopeKind::Project && files::files_open(&state.config.state_dir),
+                // Whether the phone may offer a new shell (`shells_open`).
+                "shells": shells_open(&state.config.state_dir) }),
         ),
     )
 }
@@ -1000,6 +1128,11 @@ async fn create_tab(
         || !request.launch_shape_ok()
     {
         return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    // The catalog would never list the new shell, so the create would only
+    // time out after leaving an unreachable tab on the desktop.
+    if matches!(request.kind, CreateTabKind::Shell) && !shells_open(&state.config.state_dir) {
+        return api_error(StatusCode::FORBIDDEN, "shells_off");
     }
     let Ok(catalog_snapshot) = catalog(&state) else {
         return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
@@ -1440,6 +1573,12 @@ async fn alerts_resolve(
 /// This device's push state and the key it must subscribe with. The endpoint
 /// goes back only to the device that registered it, so the phone can tell a
 /// browser-rotated subscription from the one on file.
+///
+/// A row the push service declared gone is `lapsed`, not `subscribed`: nothing
+/// is sent to it, but its choices and the dead endpoint are still answered, so
+/// the phone's silent refresh re-subscribes with them (`refreshPush`) instead
+/// of leaving notices off. A phone bundle that predates the field reads
+/// `subscribed: false` and behaves as it always did.
 fn push_state(state: &HostState, device_id: &str) -> (StatusCode, Json<serde_json::Value>) {
     let auth = state.auth.lock().unwrap_or_else(PoisonError::into_inner);
     let push = auth.push();
@@ -1448,7 +1587,8 @@ fn push_state(state: &HostState, device_id: &str) -> (StatusCode, Json<serde_jso
         StatusCode::OK,
         Json(json!({
             "vapid_public_key": push.public_key(),
-            "subscribed": subscription.is_some(),
+            "subscribed": subscription.is_some_and(|s| !s.lapsed),
+            "lapsed": subscription.is_some_and(|s| s.lapsed),
             "details": subscription.is_some_and(|s| s.details),
             "calendar": subscription.is_some_and(|s| s.calendar),
             "agents": subscription.map(|s| s.agents).unwrap_or_default(),
@@ -1528,7 +1668,7 @@ fn agent_tab_ref(state: &HostState, tmux_session: &str) -> Option<AgentTabRef> {
                 project_label: project.public.label.clone(),
                 tab_id: tab.public.id.clone(),
                 tab_label: tab.public.label.clone(),
-                attached: state.terminal_registry.is_busy(tmux_session),
+                attached: state.terminal_registry.is_watched(tmux_session),
             })
     })
 }
@@ -2614,7 +2754,7 @@ async fn order_tab(
 
 /// `DELETE /api/v1/tabs/{id}` — close one tab from the phone, agent or shell.
 /// The desktop owns the tab layout, so this is a bridge call, and it closes the
-/// way the desktop's own × does: the tab leaves the Eldrun window while the
+/// way the desktop's own × does: the tab leaves the Tabtivity window while the
 /// tmux session behind it keeps running, reattachable from the desktop's
 /// Sessions view. Only the opaque tab id crosses; the raw project id and the
 /// tmux name stay on the desktop/sidecar link.
@@ -2946,13 +3086,13 @@ async fn agent_transcript(
         .unwrap_or_else(|_| crate::services::agent_transcript::AgentTranscript::unavailable("read_failed"));
         return (
             StatusCode::OK,
-            Json(json!({ "transcript": transcript, "desktop_available": false })),
+            Json(json!({ "transcript": phone_transcript(transcript), "desktop_available": false })),
         );
     }
     match response {
         Ok(DesktopResponse::AgentTranscript { transcript }) => (
             StatusCode::OK,
-            Json(json!({ "transcript": transcript })),
+            Json(json!({ "transcript": phone_transcript(transcript) })),
         ),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             if code == "tab_not_found" {
@@ -2964,6 +3104,16 @@ async fn agent_transcript(
         ),
         _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
     }
+}
+
+/// A transcript as the phone may see it: the shell commands the desktop
+/// Reader shows beside its working row are command lines, which never cross
+/// the browser API.
+fn phone_transcript(
+    mut transcript: crate::services::agent_transcript::AgentTranscript,
+) -> crate::services::agent_transcript::AgentTranscript {
+    transcript.shells.clear();
+    transcript
 }
 
 async fn schedule_mutation(
@@ -3500,9 +3650,9 @@ async fn terminal(
         .get(header::SEC_WEBSOCKET_PROTOCOL)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if !offered.split(',').any(|v| v.trim() == TERMINAL_PROTOCOL) {
+    let Some(protocol) = terminal_protocol_in(&crate::brand::PAIR, offered) else {
         return api_error(StatusCode::BAD_REQUEST, "terminal_protocol_required").into_response();
-    }
+    };
     let Ok(catalog) = catalog(&state) else {
         return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable").into_response();
     };
@@ -3536,7 +3686,7 @@ async fn terminal(
     // `DefaultBodyLimit` does not reach WebSocket frames, and tungstenite's
     // default is 64 MiB — so `MAX_INPUT_FRAME` was only checked *after* the
     // server had already buffered a thousandfold more than it allows.
-    ws.protocols([TERMINAL_PROTOCOL])
+    ws.protocols([protocol])
         .max_message_size(MAX_INPUT_FRAME)
         .max_frame_size(MAX_INPUT_FRAME)
         .on_upgrade(move |socket| async move {
@@ -3545,7 +3695,14 @@ async fn terminal(
             // last moment the screen was in front of somebody. Both edges are
             // stamped, so a turn that finished while the phone was watching
             // does not come back as an unread `done` the moment it detaches.
-            mark_tab_seen(&seen_state, seen_project.clone(), seen_tmux.clone(), seen_uid.as_deref());
+            // A page going hidden and coming back are the same two edges with
+            // the socket left open, and the bridge stamps those (and the
+            // detach, unless the page was hidden by then): a turn that
+            // finishes in a pocket is still unread when the phone comes out.
+            let seen = move || {
+                mark_tab_seen(&seen_state, seen_project.clone(), seen_tmux.clone(), seen_uid.as_deref())
+            };
+            seen();
             let _ = pty_bridge::attach(
                 socket,
                 tmux,
@@ -3558,9 +3715,9 @@ async fn terminal(
                 move || {
                     mark_tab_input(&input_socket, input_project.clone(), input_tmux.clone());
                 },
+                seen,
             )
             .await;
-            mark_tab_seen(&seen_state, seen_project, seen_tmux, seen_uid.as_deref());
         })
 }
 
@@ -3574,7 +3731,7 @@ struct InboxQuery {
 
 /// `POST /api/v1/tabs/{tab_id}/inbox` — the composer's **+ → From this phone**.
 /// The raw body is the file; it lands in the tab's project under
-/// `.eldrun/inbox/` and the phone gets the project-relative reference back to
+/// `.tabtivity/inbox/` and the phone gets the project-relative reference back to
 /// put after an `@`. The tab names the project and nothing else: a session
 /// that has ended can still receive a file for the next one. See
 /// `inbox.rs` for why a relative reference may cross the boundary.
@@ -3666,7 +3823,7 @@ fn inbox_error(error: inbox::InboxError) -> (StatusCode, Json<serde_json::Value>
 }
 
 /// `POST /api/v1/inbox` — the phone's **Send to desktop**: a file that belongs
-/// to no project. It lands in Eldrun's own `<state_dir>/inbox/`, never in a
+/// to no project. It lands in Tabtivity's own `<state_dir>/inbox/`, never in a
 /// project folder, and the desktop's header lists it from there. The answer
 /// carries the stored name and size only — there is nothing to reference.
 async fn global_inbox_upload(
@@ -3774,7 +3931,7 @@ struct AttachDesktopImageBody {
 
 /// `POST /api/v1/tabs/{tab_id}/desktop-images` — copy one listed image into
 /// the tab's project inbox. Answers like `inbox_upload`: the stored name, the
-/// project-relative `.eldrun/inbox/<file>` reference, the size.
+/// project-relative `.tabtivity/inbox/<file>` reference, the size.
 async fn attach_desktop_image(
     State(state): State<HostState>,
     headers: HeaderMap,
@@ -3873,7 +4030,7 @@ fn outbox_error(error: outbox::OutboxError) -> (StatusCode, Json<serde_json::Val
 }
 
 /// `GET /api/v1/tabs/{tab_id}/outbox` — the files the agent left in the
-/// project's `.eldrun/outbox/` for the phone to see (`outbox.rs`): leaf name,
+/// project's `.tabtivity/outbox/` for the phone to see (`outbox.rs`): leaf name,
 /// kind, size and mtime, newest first. Read from disk by the sidecar itself,
 /// like the inbox write — no desktop round trip, and no path in the answer.
 async fn outbox_list(
@@ -3973,7 +4130,7 @@ async fn project_outbox_file(
 /// desktop published to this phone.
 ///
 /// What the reader can see, the reader can clear: nothing prunes
-/// `.eldrun/outbox/`, and a picture that has been looked at could only be
+/// `.tabtivity/outbox/`, and a picture that has been looked at could only be
 /// removed from a shell on the desktop until now. Only a leaf the listing
 /// handed out is deletable (`outbox::remove` re-proves it exactly as a read
 /// does), and the exact-origin check every mutating route here carries applies
@@ -4053,6 +4210,70 @@ async fn outbox_bytes(root: PathBuf, name: String, download: bool) -> Response<B
                 api_error(StatusCode::INTERNAL_SERVER_ERROR, "read_failed").into_response()
             }),
         Err(error) => outbox_error(error).into_response(),
+    }
+}
+
+/// `POST /api/v1/tabs/{tab_id}/markup` — the markup view's **Submit**
+/// (`markup.rs`): the marks of a PDF or picture the phone marked up, whose
+/// layer PNGs already went through this tab's inbox. Bakes a PDF's marked copy
+/// into the same inbox and answers the prompt the phone sends into the chat.
+/// The source is named by a sealed file token of this tab's project or an
+/// outbox leaf, read only; the answer carries project-relative references and
+/// never the root.
+async fn markup_submit(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let Ok(request) = serde_json::from_slice::<markup::MarkupRequest>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, markup::MarkupError::Invalid.code());
+    };
+    if let Err(error) = markup::validate(&request) {
+        return api_error(StatusCode::BAD_REQUEST, error.code());
+    }
+    let (root, raw_id, kind, send_back) = {
+        let catalog = match catalog(&state) {
+            Ok(catalog) => catalog,
+            Err(error) => return error,
+        };
+        let Some((project, tab)) = catalog.tab(&tab_id) else {
+            return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+        };
+        // A tab with a session id is one `tabtivity-send` can answer into.
+        (project.root.clone(), project.raw_id.clone(), project.public.kind, tab.session_id.is_some())
+    };
+    let source = match &request.source {
+        markup::MarkupSource::Files(token) => {
+            // The file browser's own gates: the host-wide switch, projects only.
+            if !files::files_open(&state.config.state_dir) {
+                return api_error(StatusCode::NOT_FOUND, "files_off");
+            }
+            if kind != ScopeKind::Project {
+                return api_error(StatusCode::NOT_FOUND, "files_unavailable");
+            }
+            match files_rel(&state, &raw_id, Some(token)) {
+                Ok(rel) => markup::ResolvedSource::Files(rel),
+                Err(error) => return error,
+            }
+        }
+        markup::MarkupSource::Outbox(name) => markup::ResolvedSource::Outbox(name.clone()),
+    };
+    // Reads, a bake bounded by its own deadline, and an inbox write.
+    let submitted = tokio::task::spawn_blocking(move || markup::submit(&root, &source, &request, send_back)).await;
+    match submitted {
+        Ok(Ok(done)) => (StatusCode::OK, Json(json!({ "prompt": done.prompt, "marked": done.marked }))),
+        Ok(Err(markup::MarkupError::Files(error))) => files_error(error),
+        Ok(Err(markup::MarkupError::Outbox(error))) => outbox_error(error),
+        Ok(Err(error @ markup::MarkupError::Unsupported)) => api_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, error.code()),
+        Ok(Err(error)) => api_error(StatusCode::BAD_REQUEST, error.code()),
+        Err(_) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "markup_failed"),
     }
 }
 
@@ -4351,6 +4572,11 @@ fn router(state: HostState) -> Router {
             "/api/v1/inbox",
             post(global_inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
         )
+        // Vectors only — the layer pictures went up through the inbox.
+        .route(
+            "/api/v1/tabs/{tab_id}/markup",
+            post(markup_submit).layer(DefaultBodyLimit::max(markup::MAX_MARKUP_BODY)),
+        )
         .route(
             "/api/v1/tabs/{tab_id}/desktop-images",
             get(desktop_images).post(attach_desktop_image),
@@ -4371,6 +4597,7 @@ fn router(state: HostState) -> Router {
             "/api/v1/projects/{project_id}/outbox/{name}",
             get(project_outbox_file).delete(project_outbox_delete),
         )
+        .route(PDF_FRAME_PATH, get(pdf_frame))
         .route("/", get(index))
         .route("/{*path}", get(static_asset))
         .layer(DefaultBodyLimit::max(MAX_CONTROL_MESSAGE))
@@ -4464,7 +4691,42 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::brand::SLUG;
     use super::*;
+
+    /// The host accepts the names an older phone app or an older host used,
+    /// counts them, and prefers the current ones.
+    #[test]
+    fn old_protocol_names_are_accepted_and_counted() {
+        use crate::brand::{Name, LEGACY, PAIR};
+        use crate::services::brand_migration::{hits, testing::RENAMED};
+        let _ = hits::taken();
+        let old_protocol = LEGACY.name(Name::TERMINAL_PROTOCOL);
+        assert_eq!(terminal_protocol_in(&RENAMED, &old_protocol), Some(old_protocol.clone()));
+        assert_eq!(hits::taken(), ["terminal-protocol"]);
+        assert_eq!(
+            terminal_protocol_in(&RENAMED, &format!("{old_protocol}, newname-terminal.v1")).as_deref(),
+            Some("newname-terminal.v1")
+        );
+        assert_eq!(terminal_protocol_in(&RENAMED, "something-else"), None);
+        assert!(hits::taken().is_empty());
+
+        let old_cookie = format!("theme=dark; {}=tok-old", LEGACY.name(Name::SESSION_COOKIE));
+        assert_eq!(session_cookie_in(&RENAMED, &old_cookie), Some("tok-old"));
+        assert_eq!(hits::taken(), ["session-cookie"]);
+        let both = format!("{old_cookie}; __Host-newname_session=tok-new");
+        assert_eq!(session_cookie_in(&RENAMED, &both), Some("tok-new"));
+        assert_eq!(session_cookie_in(&RENAMED, "theme=dark"), None);
+        assert!(hits::taken().is_empty());
+
+        // The production pair: one name each, as before.
+        let current = super::super::protocol::TERMINAL_PROTOCOL;
+        assert_eq!(terminal_protocol_in(&PAIR, current).as_deref(), Some(current));
+        assert_eq!(
+            session_cookie_in(&PAIR, &format!("{}=tok", crate::brand::SESSION_COOKIE)),
+            Some("tok")
+        );
+    }
 
     use axum::body::to_bytes;
     use p256::{
@@ -4560,7 +4822,7 @@ mod tests {
                     "name": "Aurora",
                     "status": "active",
                     "directory": fixture.root.to_string_lossy(),
-                    "eldrun_mobile_access": true,
+                    concat!(crate::app_slug!(), "_mobile_access"): true,
                 }]))
                 .expect("projects fixture"),
             )
@@ -4576,7 +4838,7 @@ mod tests {
                         "cwd": fixture.root.to_string_lossy(),
                         "kind": "agent",
                         "sessionId": "9d0f-session",
-                        "tmuxSession": format!("eldrun-{RAW_PROJECT}--agent-abcdef123"),
+                        "tmuxSession": format!("{SLUG}-{RAW_PROJECT}--agent-abcdef123"),
                     }]
                 }))
                 .expect("session fixture"),
@@ -4591,6 +4853,12 @@ mod tests {
         fn with_box() -> Self {
             let fixture = Self::bare();
             let state_dir = &fixture.state.config.state_dir;
+            // Shell tabs are off the phone unless switched on.
+            std::fs::write(
+                state_dir.join("settings.json"),
+                serde_json::json!({ crate::brand::MOBILE_HOST_KEY: { "enabled": true, "shell_tabs": true } }).to_string(),
+            )
+            .expect("write settings");
             let folder = state_dir.join("boxes").join("paper");
             std::fs::create_dir_all(&folder).expect("box folder");
             std::fs::write(
@@ -4608,7 +4876,7 @@ mod tests {
                 state_dir.join("boxes.json"),
                 serde_json::to_vec(&serde_json::json!([
                     { "id": RAW_BOX, "name": "Paper", "member_ids": [RAW_PROJECT],
-                      "folder": folder.to_string_lossy(), "eldrun_mobile_access": true },
+                      "folder": folder.to_string_lossy(), concat!(crate::app_slug!(), "_mobile_access"): true },
                     { "id": "b-off", "name": "Private", "member_ids": [RAW_PROJECT],
                       "folder": folder.to_string_lossy() },
                 ]))
@@ -4625,13 +4893,13 @@ mod tests {
                         "cmd": "bash",
                         "cwd": folder.to_string_lossy(),
                         "kind": "shell",
-                        "tmuxSession": format!("eldrun-box_{RAW_BOX}--shell-abcdef123"),
+                        "tmuxSession": format!("{SLUG}-box_{RAW_BOX}--shell-abcdef123"),
                     }, {
                         "label": "Aurora shell",
                         "cmd": "bash",
                         "cwd": fixture.root.to_string_lossy(),
                         "kind": "shell",
-                        "tmuxSession": format!("eldrun-box_{RAW_BOX}--shell-bcdef1234"),
+                        "tmuxSession": format!("{SLUG}-box_{RAW_BOX}--shell-bcdef1234"),
                     }]
                 }))
                 .expect("session fixture"),
@@ -4795,7 +5063,7 @@ mod tests {
     fn a_tab_publishes_the_newest_prompts_of_its_tail_and_no_more() {
         use crate::services::mobile_control::protocol::{AgentTabPrompt, AgentTabPrompts};
         let rows = prompt_rows(vec![AgentTabPrompts {
-            tmux_session: "eldrun-p_paper--agent-123456789".into(),
+            tmux_session: concat!(crate::app_slug!(), "-p_paper--agent-123456789").into(),
             prompts: (0..12)
                 .map(|n| AgentTabPrompt {
                     text: format!("prompt {n}"),
@@ -4803,7 +5071,7 @@ mod tests {
                 })
                 .collect(),
         }]);
-        let prompts = &rows["eldrun-p_paper--agent-123456789"];
+        let prompts = &rows[concat!(crate::app_slug!(), "-p_paper--agent-123456789")];
         assert_eq!(prompts.len(), MAX_TAB_PROMPTS);
         // Oldest first, ending on the newest the desktop sent.
         assert_eq!(prompts[0].text, "prompt 7");
@@ -4814,7 +5082,7 @@ mod tests {
     fn a_long_prompt_is_cut_before_it_reaches_the_phone() {
         use crate::services::mobile_control::protocol::{AgentTabPrompt, AgentTabPrompts};
         let rows = prompt_rows(vec![AgentTabPrompts {
-            tmux_session: "eldrun-p_paper--agent-123456789".into(),
+            tmux_session: concat!(crate::app_slug!(), "-p_paper--agent-123456789").into(),
             prompts: vec![AgentTabPrompt {
                 // Multi-byte on purpose: the cut counts characters, so a byte
                 // slice here would panic mid-character.
@@ -4822,7 +5090,7 @@ mod tests {
                 at: None,
             }],
         }]);
-        let prompts = &rows["eldrun-p_paper--agent-123456789"];
+        let prompts = &rows[concat!(crate::app_slug!(), "-p_paper--agent-123456789")];
         assert_eq!(prompts[0].text.chars().count(), MAX_TAB_PROMPT_CHARS);
         assert!(prompts[0].at.is_none());
     }
@@ -4890,6 +5158,48 @@ mod tests {
         assert_eq!(json(&body)["subscribed"], true);
         assert_eq!(json(&body)["details"], true);
         assert_eq!(json(&body)["agents"], "questions");
+        assert_eq!(json(&body)["lapsed"], false);
+
+        // The push service says the endpoint is gone: the phone is told it
+        // lapsed, with the choices it made and the endpoint that died — what
+        // its silent refresh re-subscribes from.
+        host.state
+            .auth
+            .lock()
+            .unwrap()
+            .push_lapse_endpoint("https://fcm.googleapis.com/fcm/send/phone");
+        let (_, _, body) = host.send(get_as("/api/v1/push", &cookie)).await;
+        let lapsed = json(&body);
+        assert_eq!(lapsed["subscribed"], false);
+        assert_eq!(lapsed["lapsed"], true);
+        assert_eq!(lapsed["agents"], "questions");
+        assert_eq!(lapsed["details"], true);
+        assert_eq!(lapsed["endpoint"], "https://fcm.googleapis.com/fcm/send/phone");
+        // Registering a fresh subscription brings it back…
+        let fresh = subscription("https://fcm.googleapis.com/fcm/send/phone-2");
+        let (status, _, body) = host.send(push_request("PUT", ORIGIN, &cookie, &fresh)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(json(&body)["subscribed"], true);
+        assert_eq!(json(&body)["lapsed"], false);
+        // …and an explicit unsubscribe removes even a lapsed record.
+        host.state
+            .auth
+            .lock()
+            .unwrap()
+            .push_lapse_endpoint("https://fcm.googleapis.com/fcm/send/phone-2");
+        let (status, _, body) = host
+            .send(push_request("DELETE", ORIGIN, &cookie, &serde_json::json!({})))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(json(&body)["subscribed"], false);
+        assert_eq!(json(&body)["lapsed"], false);
+        let (status, _, _) = host.send(push_request("PUT", ORIGIN, &cookie, &good)).await;
+        assert_eq!(status, StatusCode::OK);
+        host.state
+            .auth
+            .lock()
+            .unwrap()
+            .push_lapse_endpoint("https://fcm.googleapis.com/fcm/send/phone");
 
         host.state.auth.lock().unwrap().revoke(&device_id).expect("revoke");
         assert!(host.state.auth.lock().unwrap().push().subscription(&device_id).is_none());
@@ -4991,7 +5301,7 @@ mod tests {
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains(&host.root.to_string_lossy().to_string()));
         assert!(!body.contains("scheduleTargetId"));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
 
         // A tab the desktop never bound to a schedule target has nowhere to
         // file a rule: the owner answers "no such tab" rather than inventing
@@ -5687,7 +5997,7 @@ mod tests {
                     "kind": "agent",
                     "sessionId": "9d0f-session",
                     "scheduleTargetId": "tgt-1",
-                    "tmuxSession": format!("eldrun-{RAW_PROJECT}--agent-abcdef123"),
+                    "tmuxSession": format!("{SLUG}-{RAW_PROJECT}--agent-abcdef123"),
                 }]
             }))
             .expect("session fixture"),
@@ -5747,7 +6057,7 @@ mod tests {
             assert!(!body.contains(&task.id), "raw task id leaked: {body}");
             assert!(!body.contains(&event.id), "raw event id leaked: {body}");
             assert!(!body.contains("tgt-1"), "schedule target leaked: {body}");
-            assert!(!body.contains("eldrun-"), "tmux name leaked: {body}");
+            assert!(!body.contains(concat!(crate::app_slug!(), "-")), "tmux name leaked: {body}");
             assert!(!body.contains(&host.root.to_string_lossy().to_string()), "path leaked: {body}");
         };
 
@@ -5898,7 +6208,7 @@ mod tests {
         assert_eq!(json(&body)["desktop_available"], false);
         assert_eq!(json(&body)["tabs"].as_array().expect("tabs").len(), 0);
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
     }
 
     #[test]
@@ -6057,7 +6367,7 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
         assert_eq!(json(&body)["error"], "desktop_unavailable");
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
 
         // The create route will not take the session name from the phone.
         let (status, _, body) = host
@@ -6067,7 +6377,7 @@ mod tests {
                 json!({
                     "project_id": project_id,
                     "kind": "agent",
-                    "like_tab": "eldrun-anything",
+                    "like_tab": concat!(crate::app_slug!(), "-anything"),
                     "sign_in": "default",
                     "idempotency_key": key,
                 }),
@@ -6161,7 +6471,7 @@ mod tests {
         assert_eq!(json(&body)["desktop_available"], false);
         assert_eq!(json(&body)["tab"]["label"], "Release review");
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
     }
 
     #[tokio::test]
@@ -6209,10 +6519,10 @@ mod tests {
         assert_eq!(json(&body)["desktop_available"], false);
         assert!(!body.contains(RAW_BOX));
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
         assert_eq!(
             host.runner.killed.lock().unwrap().as_slice(),
-            [format!("eldrun-box_{RAW_BOX}--shell-abcdef123")],
+            [format!("{SLUG}-box_{RAW_BOX}--shell-abcdef123")],
             "the session behind the closed tab was ended"
         );
         let (_, _, project_body) = host
@@ -6316,7 +6626,7 @@ mod tests {
         assert_eq!(json(&body)["tabs"], serde_json::json!([anchor_id, tab_id]), "the moved tab now follows its anchor");
         assert!(!body.contains(RAW_BOX));
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
     }
 
     #[tokio::test]
@@ -6483,7 +6793,7 @@ mod tests {
         // `__Host-` guarantees and must not authenticate.
         let request = Request::builder()
             .uri("/api/v1/status")
-            .header(header::COOKIE, format!("eldrun_session={token}"))
+            .header(header::COOKIE, format!("{SLUG}_session={token}"))
             .body(Body::empty())
             .expect("request");
         let (status, _, body) = host.send(request).await;
@@ -6558,7 +6868,7 @@ mod tests {
         let host = Fixture::bare();
         let (cookie, _) = host.pair_device(&signing_key(13)).await;
         for attribute in [
-            "__Host-eldrun_session=",
+            concat!("__Host-", crate::app_slug!(), "_session="),
             "Path=/",
             "Secure",
             "HttpOnly",
@@ -6826,7 +7136,7 @@ mod tests {
             tab["available"], false,
             "a tab with no tmux session must not be attachable: {body}"
         );
-        assert!(!body.contains("eldrun-raw-project"), "a tmux name leaked: {body}");
+        assert!(!body.contains(concat!(crate::app_slug!(), "-raw-project")), "a tmux name leaked: {body}");
     }
 
     #[tokio::test]
@@ -6854,7 +7164,24 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {answer}");
         assert_eq!(json(&answer)["error"], "invalid_request");
 
+        // A shell, while shells are off the phone (the default), is refused
+        // before the catalog is asked.
+        let (status, _, answer) = host
+            .send(request(serde_json::json!({
+                "project_id": "target",
+                "kind": "shell",
+                "idempotency_key": "0123456789abcdef",
+            })))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {answer}");
+        assert_eq!(json(&answer)["error"], "shells_off");
+
         // An unknown project resolves to nothing rather than to a raw id.
+        std::fs::write(
+            host.state.config.state_dir.join("settings.json"),
+            serde_json::json!({ crate::brand::MOBILE_HOST_KEY: { "enabled": true, "shell_tabs": true } }).to_string(),
+        )
+        .expect("settings");
         let (status, _, answer) = host
             .send(request(serde_json::json!({
                 "project_id": "target",
@@ -7121,7 +7448,7 @@ mod tests {
 
         std::fs::write(
             host.state.config.state_dir.join("settings.json"),
-            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }).to_string(),
+            serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true, "project_files": true } }).to_string(),
         )
         .unwrap();
         let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
@@ -7168,6 +7495,121 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
+    #[tokio::test]
+    async fn only_the_pdf_frame_may_be_framed_and_only_by_the_pwa() {
+        let host = Fixture::bare();
+        let request = Request::builder()
+            .uri(PDF_FRAME_PATH)
+            .header(header::HOST, "phone.example.ts.net")
+            .body(Body::empty())
+            .unwrap();
+        let (status, headers, _) = host.send(request).await;
+        if status == StatusCode::OK {
+            assert_eq!(headers[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+            let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap().to_string();
+            assert!(policy.contains("default-src 'none'"), "{policy}");
+            assert!(policy.contains("connect-src 'none'"), "{policy}");
+            assert!(policy.contains("frame-ancestors 'self' https://phone.example.ts.net"), "{policy}");
+            assert!(!policy.contains("wasm-unsafe-eval") && !policy.contains("unsafe-eval"), "{policy}");
+        } else {
+            // A bundle built without the frame: a plain miss, never the shell
+            // under a framable policy.
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
+        }
+        for uri in ["/", "/index.html", "/pdf-frame.html/x", "/assets/pdf-frame.js", "/api/v1/status"] {
+            let (_, headers, _) = host.send(get_request(uri)).await;
+            assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{uri}");
+            assert!(headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap().contains("frame-ancestors 'none'"), "{uri}");
+        }
+        // A host header that is not a host name is left out of the policy.
+        let forged = HeaderValue::from_static("evil.example; script-src *");
+        assert!(!pdf_frame_policy(Some(&forged)).contains("evil"));
+        assert!(pdf_frame_policy(None).contains("script-src 'self';"));
+    }
+
+    #[tokio::test]
+    async fn a_markup_submit_bakes_a_copy_into_the_inbox_and_answers_a_prompt() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(63)).await.0;
+        let tab_id = fixture_tab_id(&host, &cookie).await;
+        let (_, _, body) = host.send(get_as("/api/v1/projects?view=search&q=aurora", &cookie)).await;
+        let project_id = json(&body)["projects"][0]["id"].as_str().unwrap().to_string();
+        std::fs::create_dir_all(host.root.join("docs")).unwrap();
+        let pdf = super::super::markup_pdf::tests::classic_pdf(&[0, 90], false);
+        std::fs::write(host.root.join("docs/draft.pdf"), &pdf).unwrap();
+        let before = std::fs::metadata(host.root.join("docs/draft.pdf")).unwrap().modified().unwrap();
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR-layer".to_vec();
+        let (status, _, body) = host.send(inbox_request(&tab_id, "draft-p2-layer.png", &cookie, png)).await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        let layer = json(&body)["attachment"]["reference"].as_str().unwrap().to_string();
+        let submit = |origin: &str, body: Vec<u8>| {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/tabs/{tab_id}/markup"))
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let marks = serde_json::json!([{ "kind": "ink", "color": "red", "width": 2, "points": [[10, 10, 0.5], [40, 30, 0.7]] },
+            { "kind": "text", "color": "blue", "at": [20, 50], "size": 14, "text": "smaller" }]);
+        let request_for = |source: Value| serde_json::to_vec(&serde_json::json!({
+            "source": source,
+            "pages": [{ "n": 2, "size": [800, 600], "layer": layer, "marks": marks }],
+        })).unwrap();
+
+        // The file browser's switch gates a file source, as it gates reading.
+        let (status, _, body) = host.send(submit(ORIGIN, request_for(serde_json::json!({ "files": "AAAA" })))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        assert_eq!(json(&body)["error"], "files_off");
+        std::fs::write(
+            host.state.config.state_dir.join("settings.json"),
+            serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true, "project_files": true } }).to_string(),
+        )
+        .unwrap();
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}/files"), &cookie)).await;
+        let docs = json(&body)["entries"].as_array().unwrap().iter()
+            .find(|entry| entry["name"] == "docs").unwrap()["token"].as_str().unwrap().to_string();
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}/files?dir={docs}"), &cookie)).await;
+        let token = json(&body)["entries"][0]["token"].as_str().unwrap().to_string();
+
+        let (status, _, body) = host.send(submit(ORIGIN, request_for(serde_json::json!({ "files": token })))).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let answer = json(&body);
+        let prompt = answer["prompt"].as_str().unwrap();
+        let marked = answer["marked"].as_str().unwrap();
+        assert!(prompt.starts_with("I marked these changes by hand on `docs/draft.pdf`."), "{prompt}");
+        assert!(prompt.contains(&format!("Page 2: @{layer}")), "{prompt}");
+        assert!(prompt.contains("- p2: \"smaller\""), "{prompt}");
+        assert!(marked.starts_with(concat!(".", crate::app_slug!(), "/inbox/")) && marked.ends_with("-draft-marked.pdf"), "{marked}");
+        assert!(!body.contains(&host.root.to_string_lossy().to_string()), "a filesystem path leaked: {body}");
+        let copy = std::fs::read(host.root.join(marked)).unwrap();
+        assert!(copy.starts_with(&pdf) && copy.len() > pdf.len());
+        assert_eq!(std::fs::read(host.root.join("docs/draft.pdf")).unwrap(), pdf, "the source is never written");
+        assert_eq!(std::fs::metadata(host.root.join("docs/draft.pdf")).unwrap().modified().unwrap(), before);
+
+        // A forged token, an outbox leaf with a separator, a bad origin and an
+        // oversized body are all refused before anything is written.
+        let (status, _, body) = host.send(submit(ORIGIN, request_for(serde_json::json!({ "files": "AAAA" })))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        assert_eq!(json(&body)["error"], "file_not_found");
+        for leaf in ["../draft.pdf", "a/b.pdf", ".hidden.pdf"] {
+            let (status, _, body) = host.send(submit(ORIGIN, request_for(serde_json::json!({ "outbox": leaf })))).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{leaf} answered: {body}");
+            assert_eq!(json(&body)["error"], "invalid_markup");
+        }
+        let (status, ..) = host.send(submit("https://elsewhere.example", request_for(serde_json::json!({ "files": token })))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, ..) = host.send(submit(ORIGIN, vec![b' '; markup::MAX_MARKUP_BODY + 1])).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        let (status, _, body) = host.send(submit(ORIGIN, b"{\"source\":1}".to_vec())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        let inbox: Vec<_> = std::fs::read_dir(host.root.join(inbox::INBOX_DIR)).unwrap().flatten().collect();
+        assert_eq!(inbox.len(), 2, "the layer and one marked copy");
+    }
+
     /// The browser's own PDF viewer fetches without the strict session cookie;
     /// a ticket minted over the session opens that one URL and nothing else.
     #[tokio::test]
@@ -7183,7 +7625,7 @@ mod tests {
         std::fs::write(host.root.join("other.pdf"), "%PDF-1.7\n%%EOF\n").unwrap();
         std::fs::write(
             host.state.config.state_dir.join("settings.json"),
-            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }).to_string(),
+            serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true, "project_files": true } }).to_string(),
         )
         .unwrap();
         let (_, _, body) = host.send(get_as(&base, &cookie)).await;
@@ -7243,7 +7685,7 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "answered: {body}");
         let attachment = &json(&body)["attachment"];
         let reference = attachment["reference"].as_str().expect("reference");
-        assert!(reference.starts_with(".eldrun/inbox/"), "{reference}");
+        assert!(reference.starts_with(concat!(".", crate::app_slug!(), "/inbox/")), "{reference}");
         assert!(reference.ends_with("-IMG_0042.jpg"), "{reference}");
         assert_eq!(attachment["size"], bytes.len());
         assert!(
@@ -7325,7 +7767,7 @@ mod tests {
             .as_str()
             .expect("reference")
             .to_string();
-        assert!(reference.starts_with(".eldrun/inbox/"), "{reference}");
+        assert!(reference.starts_with(concat!(".", crate::app_slug!(), "/inbox/")), "{reference}");
         assert!(reference.ends_with("-notes.pdf"), "{reference}");
         assert!(
             !body.contains(&host.root.to_string_lossy().to_string()),
@@ -7428,6 +7870,26 @@ mod tests {
         assert_eq!(json(&body)["show_untested_tags"], true);
     }
 
+    #[tokio::test]
+    async fn status_reports_the_desktop_theme_for_a_phone_that_follows_it() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(92)).await.0;
+        let settings = host.state.config.state_dir.join("settings.json");
+
+        // Unset is the desktop's own default.
+        let (_, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(json(&body)["color_scheme"], "light_lavender");
+
+        std::fs::write(&settings, br#"{"color_scheme":"light_lavender"}"#).expect("settings");
+        let (_, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(json(&body)["color_scheme"], "light_lavender");
+
+        // Anything that is not a plain theme name never crosses.
+        std::fs::write(&settings, br#"{"color_scheme":"<b>/etc/passwd</b>"}"#).expect("settings");
+        let (_, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(json(&body)["color_scheme"], "light_lavender");
+    }
+
     /// The desktop pill's git dot reaches the list row and the project screen
     /// under the opaque id; the desktop's raw id and any level the phone does
     /// not know stay behind.
@@ -7472,6 +7934,79 @@ mod tests {
             .await;
         assert_eq!(status, StatusCode::OK, "answered: {body}");
         assert!(json(&body)["project"].get("git").is_none(), "unknown level dropped: {body}");
+        desktop.await.expect("fake desktop");
+    }
+
+    /// A write the desktop applied, whose refreshed list was too large to
+    /// relay, reaches the phone under its own code on every list-answering
+    /// write route. Not a 2xx: the body has no list, and a phone bundle that
+    /// does not know the code must land in its error path rather than read a
+    /// board out of nothing. Not a 503 either, which the phone reads as a
+    /// closed desktop. The phone tells it from a failed write by the code and
+    /// reloads through the read route (`reloadIfApplied` in `api.ts`).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_applied_write_with_an_unrelayable_answer_keeps_its_own_code() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(55)).await.0;
+        let (_, _, body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project = json(&body)["projects"][0]["id"].as_str().unwrap().to_string();
+        let writes: Vec<(String, Value)> = vec![
+            ("/api/v1/todo".into(), json!({ "type": "toggle", "task_id": "t1" })),
+            ("/api/v1/alerts".into(), json!({ "alert_id": "row" })),
+            (
+                "/api/v1/calendar?month=2026-09".into(),
+                json!({ "type": "delete_event", "event_id": "e1" }),
+            ),
+            (
+                "/api/v1/mail/folders/f1/messages/m1/mark".into(),
+                json!({ "action": "seen" }),
+            ),
+            (
+                "/api/v1/mail/folders/f1/messages/m1/reply".into(),
+                json!({ "body": "Thanks" }),
+            ),
+            (format!("/api/v1/projects/{project}/prompts"), json!({ "message": "Review" })),
+        ];
+
+        let socket = host.state.config.control_dir.join("desktop-control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let expected = writes.len();
+        let desktop = tokio::spawn(async move {
+            let mut answered = 0;
+            while answered < expected {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                // A reachability probe connects and sends nothing.
+                let Ok(request) = admin::read_frame::<DesktopRequest>(&mut stream).await else {
+                    continue;
+                };
+                assert!(request.is_mutation(), "not a mutation: {request:?}");
+                let response = DesktopResponse::Error {
+                    code: admin::APPLIED_RESPONSE_TOO_LARGE.into(),
+                    message: String::new(),
+                };
+                admin::write_frame(&mut stream, &response).await.expect("answer");
+                answered += 1;
+            }
+        });
+
+        for (uri, body) in &writes {
+            let request = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(body).expect("body")))
+                .expect("request");
+            let (status, _, answer) = host.send(request).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} answered: {answer}");
+            assert_eq!(
+                json(&answer)["error"],
+                admin::APPLIED_RESPONSE_TOO_LARGE,
+                "{uri} answered: {answer}"
+            );
+        }
         desktop.await.expect("fake desktop");
     }
 }

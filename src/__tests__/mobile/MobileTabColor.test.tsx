@@ -27,6 +27,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import type { ProjectEntry, Settings } from "../../types";
+import { BRAND, MOBILE_ACCESS_KEY, NAMES } from "../../lib/brand";
 
 const project: ProjectEntry = {
   id: "p-mobile",
@@ -34,11 +35,11 @@ const project: ProjectEntry = {
   status: "active",
   position: 1,
   local_file: "/projects/alpha/project.json",
-  eldrun_mobile_access: true,
+  [MOBILE_ACCESS_KEY]: true,
 };
 
-const AGENT_TMUX = "eldrun-p-mobile--agent-123456789";
-const SHELL_TMUX = "eldrun-p-mobile--shell-123456789";
+const AGENT_TMUX = `${BRAND.slug}-p-mobile--agent-123456789`;
+const SHELL_TMUX = `${BRAND.slug}-p-mobile--shell-123456789`;
 
 const TABS: TabEntry[] = [
   { key: "agent-1", label: "Claude", kind: "agent", cmd: "claude", cwd: "/projects/alpha", tmuxSession: AGENT_TMUX },
@@ -46,7 +47,7 @@ const TABS: TabEntry[] = [
 ];
 
 async function ask(request: Record<string, unknown>) {
-  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === "eldrun-mobile-desktop-request");
+  const listener = vi.mocked(listen).mock.calls.find(([name]) => name === NAMES.mobileDesktopEvent);
   const deliver = listener![1] as (event: { payload: unknown }) => void;
   const answer = () => vi.mocked(invoke).mock.calls.find(([command, args]) =>
     command === "mobile_desktop_respond"
@@ -145,10 +146,10 @@ describe("Mobile bridge — colouring a tab", () => {
   });
 
   it("refuses a tmux name this scope does not hold, and a project with Mobile off", async () => {
-    expect(await ask({ type: "color_tab", request_id: "c8", project_id: project.id, tmux_session: "eldrun-elsewhere--agent-9", color: "blue" }))
+    expect(await ask({ type: "color_tab", request_id: "c8", project_id: project.id, tmux_session: `${BRAND.slug}-elsewhere--agent-9`, color: "blue" }))
       .toMatchObject({ status: "error", code: "tab_not_found" });
 
-    useProjectsStore.setState({ projects: [{ ...project, eldrun_mobile_access: false }] });
+    useProjectsStore.setState({ projects: [{ ...project, [MOBILE_ACCESS_KEY]: false }] });
     expect(await ask({ type: "color_tab", request_id: "c9", project_id: project.id, tmux_session: AGENT_TMUX, color: "blue" }))
       .toMatchObject({ status: "error", code: "project_ineligible" });
     expect(colorOf("agent-1")).toBeUndefined();
@@ -228,7 +229,7 @@ describe("Mobile project screen — the row's colour dot", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Colour Claude" }));
     fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({ error: "desktop_unavailable" }), { status: 503 }));
     fireEvent.click(screen.getByRole("button", { name: "Blue" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("Open desktop Eldrun to colour a tab.");
+    expect((await screen.findByRole("alert")).textContent).toBe(`Open desktop ${BRAND.display} to colour a tab.`);
     // The sheet stays up, still showing the colour the tab actually has.
     expect(screen.getByRole("button", { name: "None" }).getAttribute("aria-pressed")).toBe("true");
   });

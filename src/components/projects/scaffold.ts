@@ -1,6 +1,7 @@
 import type { DetectedSpecSource, ProjectEntry } from "../../types";
 import { resolveProjectDirectory } from "../../types";
 import { translate, useI18nStore, type TranslationKey } from "../../lib/i18n";
+import { BRAND } from "../../lib/brand";
 
 export const TERMINAL_OPTIONS = ["claude", "codex", "gemini", "vibe"];
 
@@ -134,7 +135,7 @@ export function collectScaffoldAgentFills(
 export function buildScaffoldFillPrompt(files: string[]) {
   const fileList = files.map((file) => `- ${file}`).join("\n");
   return [
-    "Fill the Eldrun project scaffold files listed below.",
+    `Fill the ${BRAND.display} project scaffold files listed below.`,
     "",
     "Instructions:",
     "- Inspect the project first so the files reflect the actual codebase and purpose.",
@@ -158,7 +159,7 @@ export function buildScaffoldFillPrompt(files: string[]) {
 
 export function buildDescriptionFillPrompt(projectName: string) {
   return [
-    `Write a concise Eldrun project description for "${projectName}".`,
+    `Write a concise ${BRAND.display} project description for "${projectName}".`,
     "",
     "Instructions:",
     "- Inspect the project first so the description reflects the actual codebase and purpose.",

@@ -340,7 +340,10 @@ pub fn tool(name: &str) -> Option<ToolPolicy> {
         // The help corpus (`services::help_mcp`): read-only, compiled in, and
         // served to the help identity alone — never to a root or reader tab
         // through `/mcp`, so the root tool list stays what it was.
-        "eldrun_help_search" | "eldrun_help_read" | "eldrun_help_topics" | "eldrun_help_status" => {
+        crate::brand::HELP_TOOL_SEARCH
+        | crate::brand::HELP_TOOL_READ
+        | crate::brand::HELP_TOOL_TOPICS
+        | crate::brand::HELP_TOOL_STATUS => {
             return Some(ToolPolicy { family: "help", write: false, destructive: false, root: false, reader: false, local: false, help: true });
         }
         "mail_draft_create" => ("mail", true, false, true, true),
@@ -543,7 +546,7 @@ mod tests {
         assert!(validate(&narrow, &json!("12345678")).is_ok());
     }
 
-    /// Audit rows name a tool only when it is one Eldrun serves; anything else
+    /// Audit rows name a tool only when it is one Tabtivity serves; anything else
     /// — a method name an agent made up, private text included — is written
     /// down as `protocol`. The ring holds 500 rows, and the admission failures
     /// in it are bounded on their own so a probe flood cannot evict the rest.

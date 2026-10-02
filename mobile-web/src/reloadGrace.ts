@@ -14,7 +14,9 @@
  * those checks, and an app the OS killed and reopened carried it — whoever
  * picked the phone up next walked straight in.
  */
-const RELOAD_GRACE_KEY = "eldrun.mobile.reloadGrace";
+import { storageKey } from "../../src/lib/brand";
+
+const RELOAD_GRACE_KEY = storageKey("mobile.reloadGrace");
 /** A reload's gap between leaving and the new page asking is a second or two;
  * this leaves room for a slow phone without covering a phone set down. */
 export const RELOAD_GRACE_MS = 15_000;
@@ -79,7 +81,7 @@ export function takeReloadGrace(
  * sessionStorage, which a reload keeps, and a connect that works clears it,
  * so each failure streak gets its one reload and never a loop.
  */
-const CONNECT_RELOAD_KEY = "eldrun.mobile.connectReload";
+const CONNECT_RELOAD_KEY = storageKey("mobile.connectReload");
 
 /** Whether this failure may reload the page. Marks the reload as spent; a
  * blocked store says no, since nothing could stop the next page reloading. */

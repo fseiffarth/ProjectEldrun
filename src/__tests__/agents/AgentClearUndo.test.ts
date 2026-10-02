@@ -8,11 +8,12 @@ import { _clearScheduledAgentInputsForTest, registerScheduledAgentInput } from "
 import { noteTypedLine } from "../../lib/agents/typedClear";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
+import { BRAND } from "../../lib/brand";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
 
 function agentTab(cmd: string, extra: Partial<TabEntry> = {}): TabEntry {
-  return { key: `agent-${cmd}`, kind: "agent", cmd, label: cmd, cwd: "/p1", sessionId: SESSION, scheduleTargetId: `target-${cmd}`, tmuxSession: `eldrun-p1-${cmd}`, ...extra } as TabEntry;
+  return { key: `agent-${cmd}`, kind: "agent", cmd, label: cmd, cwd: "/p1", sessionId: SESSION, scheduleTargetId: `target-${cmd}`, tmuxSession: `${BRAND.slug}-p1-${cmd}`, ...extra } as TabEntry;
 }
 
 function seed(tabs: TabEntry[]): void {
@@ -25,7 +26,7 @@ describe("Undo clear", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     _clearScheduledAgentInputsForTest();
-    useAgentClearUndoStore.setState({ cleared: {} });
+    useAgentClearUndoStore.setState({ cleared: {}, marks: {} });
     useProjectsStore.setState({ projects: [{ id: "p1", name: "p1", path: "/p1" }] as never });
     seed([]);
   });
@@ -41,6 +42,22 @@ describe("Undo clear", () => {
     store.noteRoll("p1:agent-1", "clear");
     store.dismiss("p1:agent-1");
     expect(useAgentClearUndoStore.getState().cleared).toEqual({});
+  });
+
+  it("keeps the Reader's mark past the card, until the conversation is resumed or cleared anew", () => {
+    const store = useAgentClearUndoStore.getState();
+    const mark = { anchor: { kind: "answer", text: "done" }, seen: 1 } as never;
+    store.noteRoll("p1:agent-1", "clear");
+    store.setMark("p1:agent-1", mark);
+    store.noteRoll("p1:agent-1", "clear");
+    expect(useAgentClearUndoStore.getState().marks["p1:agent-1"]).toBe(mark);
+    store.dismiss("p1:agent-1");
+    expect(useAgentClearUndoStore.getState().marks["p1:agent-1"]).toBe(mark);
+    store.noteRoll("p1:agent-1", "clear");
+    expect(useAgentClearUndoStore.getState().marks).toEqual({});
+    store.setMark("p1:agent-1", mark);
+    store.noteRoll("p1:agent-1", "resume");
+    expect(useAgentClearUndoStore.getState().marks).toEqual({});
   });
 
   it("offers a typed clear only on a tab whose conversation can come back", () => {
@@ -77,7 +94,7 @@ describe("Undo clear", () => {
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(command === "agent_tab_undo_clear" ? { kind: "relaunch" } : undefined));
     await expect(undoAgentClear("p1", tab)).resolves.toBe("undone");
-    expect(invokeMock).toHaveBeenCalledWith("local_tmux_kill", { session: "eldrun-p1-codex" });
+    expect(invokeMock).toHaveBeenCalledWith("local_tmux_kill", { session: `${BRAND.slug}-p1-codex` });
     const after = useTabsStore.getState().tabsByScope.p1[0];
     expect(after.relaunchSeq).toBe(1);
     expect(after.args).toEqual([]);

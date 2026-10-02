@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, normalizeTodoBoard, type TodoBoard, type TodoCard, type TodoColumn, type TodoTaskInput } from "../api";
+import { api, normalizeTodoBoard, reloadIfApplied, wasApplied, type TodoBoard, type TodoCard, type TodoColumn, type TodoTaskInput } from "../api";
 import { describeFailure, failureCode } from "../connection";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
@@ -117,10 +117,16 @@ export function Todo({ card }: { card?: string }) {
   const mutate = async (body: unknown) => {
     setBusy(true); setError("");
     try {
-      const next = await api<{ board: TodoBoard }>("/api/v1/todo", { method: "POST", body: JSON.stringify(body) });
+      const next = await reloadIfApplied(
+        api<{ board: TodoBoard }>("/api/v1/todo", { method: "POST", body: JSON.stringify(body) }),
+        () => api<{ board: TodoBoard }>("/api/v1/todo"),
+      );
       setBoard(normalizeTodoBoard(next.board));
       return true;
-    } catch (reason) { setError(boardError(reason)); return false; } finally { setBusy(false); }
+      // A change the desktop made but whose board could not be shown is still
+      // done: the editor closes as on success, so nothing invites sending the
+      // same card twice.
+    } catch (reason) { setError(boardError(reason)); return wasApplied(reason); } finally { setBusy(false); }
   };
   const columns = [...(board?.columns ?? [])].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
   // Ids of columns the board no longer has come off as we write: a fold would

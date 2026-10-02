@@ -55,7 +55,8 @@ class FakeWebSocket {
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
 import type { TranscriptEntry } from "../../../mobile-web/src/api";
-import { openSubagent, siblingPosition, stepSibling, subagentsIn } from "../../../mobile-web/src/terminal/subagents";
+import { compactTokens, openSubagent, openSubagentRunning, siblingPosition, stepSibling, subagentAtWork, subagentsIn, workingElapsed, workingModelName } from "../../../mobile-web/src/terminal/subagents";
+import { BRAND, storageKey } from "../../lib/brand";
 
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, agent_label: "Claude Code", available: true, viewer_busy: false };
 
@@ -73,7 +74,7 @@ const MAIN = {
   entries: [
     { kind: "prompt", text: "look around", at: "2026-09-24T10:00:00Z" },
     { kind: "answer", text: "Sending two scouts.", at: "2026-09-24T10:00:01Z" },
-    { kind: "agent", text: "Map the backend", role: "Explore", subagent: "00000000000000a1", at: "2026-09-24T10:00:02Z" },
+    { kind: "agent", text: "Map the backend", role: "Explore", subagent: "00000000000000a1", at: "2026-09-24T10:00:02Z", finished: true },
     { kind: "agent", text: "Find the tests", role: "general-purpose", subagent: "00000000000000b2", at: "2026-09-24T10:00:03Z" },
     { kind: "agent", text: "Still starting", role: "Plan", at: "2026-09-24T10:00:04Z" },
     { kind: "answer", text: "Both reported.", at: "2026-09-24T10:05:00Z" },
@@ -114,22 +115,75 @@ describe("the pure path through subagents", () => {
     expect(subagentsIn(entries).map((ref) => ref.token)).toEqual(["00000000000000a1", "00000000000000b2"]);
     const path = openSubagent([], { token: "00000000000000a1", task: "Map the backend", role: "Explore" }, entries, 240);
     expect(siblingPosition(path[0])).toEqual({ index: 0, count: 2 });
+    // Opened, it carries the time its entry says it was spawned.
+    expect(path[0].at).toBe("2026-09-24T10:00:02Z");
     const next = stepSibling(path, 1);
-    expect(next[0]).toMatchObject({ token: "00000000000000b2", task: "Find the tests", scrollTop: 240 });
+    expect(next[0]).toMatchObject({ token: "00000000000000b2", task: "Find the tests", scrollTop: 240, at: "2026-09-24T10:00:03Z" });
     // Past either end the path stays as it is.
     expect(stepSibling(next, 1)).toBe(next);
     expect(stepSibling(path, -1)).toBe(path);
     expect(stepSibling([], 1)).toEqual([]);
   });
+
+  it("knows an open subagent at work by the session's live entries", () => {
+    const live = entries.map((entry) => (entry.subagent === "00000000000000a1" ? { ...entry, running: true } : entry));
+    const ref = { token: "00000000000000a1", task: "Map the backend" };
+    const path = openSubagent([], ref, live, 0);
+    expect(openSubagentRunning(path, live, true)).toBe(true);
+    // A subagent the session waits on is not at work once the session is not.
+    expect(openSubagentRunning(path, live, false)).toBe(false);
+    // It reported back since it was opened.
+    expect(openSubagentRunning(path, entries, true)).toBe(false);
+    // A nested one runs only while its outermost does and it did when opened.
+    const nested = openSubagent(path, { token: "c3", task: "Dig", running: true }, [], 0);
+    expect(openSubagentRunning(nested, live, true)).toBe(true);
+    expect(openSubagentRunning(openSubagent(path, { token: "c3", task: "Dig" }, [], 0), live, true)).toBe(false);
+    expect(openSubagentRunning([], live, true)).toBe(false);
+  });
+
+  it("keeps a background subagent at work after the session's turn ends", () => {
+    const live = entries.map((entry) => (entry.subagent === "00000000000000a1" ? { ...entry, running: true, background: true } : entry));
+    const path = openSubagent([], { token: "00000000000000a1", task: "Map the backend" }, live, 0);
+    expect(openSubagentRunning(path, live, false)).toBe(true);
+    expect(subagentsIn(live)[0]).toMatchObject({ running: true, background: true });
+    expect(subagentAtWork({ running: true, background: true }, false)).toBe(true);
+    expect(subagentAtWork({ running: true }, false)).toBe(false);
+    expect(subagentAtWork({ background: true }, true)).toBe(false);
+  });
+
+  it("names a working model by its family", () => {
+    expect(workingModelName("claude-haiku-4-5-20251001")).toBe("Haiku");
+    expect(workingModelName("claude-opus-4-1-20250805")).toBe("Opus");
+    expect(workingModelName("gpt-5-codex")).toBe("gpt-5-codex");
+  });
+
+  it("says a subagent's elapsed time and tokens as a spinner does", () => {
+    const start = "2026-09-24T10:00:00Z";
+    const at = (seconds: number) => Date.parse(start) + seconds * 1000;
+    expect(workingElapsed(start, at(45))).toBe("45s");
+    expect(workingElapsed(start, at(65))).toBe("1m 5s");
+    expect(workingElapsed(start, at(3720))).toBe("1h 2m");
+    expect(workingElapsed(start, at(-5))).toBeUndefined();
+    expect(workingElapsed(undefined, at(5))).toBeUndefined();
+    expect(workingElapsed("not a time", at(5))).toBeUndefined();
+    expect(compactTokens(950)).toBe("950");
+    expect(compactTokens(12_342)).toBe("12.3k");
+    expect(compactTokens(40_000)).toBe("40k");
+    expect(compactTokens(1_250_000)).toBe("1.3M");
+    expect(compactTokens(0)).toBeUndefined();
+    expect(compactTokens(undefined)).toBeUndefined();
+    expect(workingModelName(" ")).toBeUndefined();
+    expect(workingModelName(undefined)).toBeUndefined();
+  });
 });
 
-describe("Eldrun Mobile Reader opens the subagents an agent spawned", () => {
+describe(`${BRAND.display} Mobile Reader opens the subagents an agent spawned`, () => {
   beforeEach(() => {
     terminalState.lines = [];
     terminalState.alternate = false;
     FakeWebSocket.instances = [];
     localStorage.clear();
-    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    localStorage.setItem(storageKey("mobile.view.claude-code"), "focus");
     vi.stubGlobal("WebSocket", FakeWebSocket);
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
   });
@@ -147,7 +201,12 @@ describe("Eldrun Mobile Reader opens the subagents an agent spawned", () => {
     const session = screen.getByTestId("session-transcript");
     const card = within(session).getByRole("button", { name: "Subagent: Explore · Map the backend" });
     // One whose CLI has not said where it lives yet is there, but shut.
-    expect((within(session).getByRole("button", { name: "Subagent: Plan · Still starting" }) as HTMLButtonElement).disabled).toBe(true);
+    const starting = within(session).getByRole("button", { name: "Subagent: Plan · Still starting" }) as HTMLButtonElement;
+    expect(starting.disabled).toBe(true);
+    // Each says when it started; the one that has reported back wears the ✓.
+    expect(card.querySelector(".transcript-time")).not.toBeNull();
+    expect(card.querySelector(".agent-status.done")?.textContent).toContain("✓");
+    expect(starting.querySelector(".agent-status")).toBeNull();
 
     fireEvent.click(card);
     await settle();
@@ -166,6 +225,40 @@ describe("Eldrun Mobile Reader opens the subagents an agent spawned", () => {
     await settle();
     screen.getByTestId("session-transcript");
     expect(screen.queryByRole("navigation", { name: "Subagent" })).toBeNull();
+  });
+
+  it("names an open subagent's own model while it is still at work", async () => {
+    const main = { ...MAIN, entries: MAIN.entries.map((entry) => (entry.subagent === "00000000000000a1" ? { ...entry, running: true } : entry)) };
+    const own: Record<string, unknown> = { ...SUBAGENTS, "00000000000000a1": { ...(SUBAGENTS["00000000000000a1"] as object), model: "claude-haiku-4-5-20251001", tokens: 12_342 } };
+    // 65 s after its spawn entry's stamp.
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-24T10:01:07Z"));
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.endsWith("/outbox")) return Promise.resolve(jsonResponse(200, { files: [] }));
+      if (url.includes("/transcript")) {
+        const token = new URL(url, "http://phone").searchParams.get("subagent");
+        return Promise.resolve(jsonResponse(200, { transcript: token ? own[token] : main }));
+      }
+      return Promise.resolve(jsonResponse(404, { error: "not_found" }));
+    }));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    // The session at work, as its screen paints it.
+    const bytes = new TextEncoder().encode("> look around\n\n✻ Thinking… (9s · esc to interrupt)\n\n> ");
+    const payload = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(payload).set(bytes);
+    act(() => { FakeWebSocket.instances[0].onmessage?.({ data: payload } as MessageEvent); });
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
+
+    fireEvent.click(screen.getByRole("button", { name: "Subagent: Explore · Map the backend" }));
+    await settle();
+    expect(screen.getByTestId("subagent-working").textContent).toContain("Haiku is working…");
+    // How long it has worked and its tokens, as the session's own row says them.
+    expect(screen.getByTestId("subagent-working").textContent).toContain("1m 5s · 12.3k tokens");
+    // A sibling that has reported back is not at work.
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Subagent" })).getByRole("button", { name: "Next subagent" }));
+    await settle();
+    within(screen.getByTestId("subagent-transcript")).getByText("Tests live beside the code.");
+    expect(screen.queryByTestId("subagent-working")).toBeNull();
   });
 
   it("hides the main conversation's pinned prompt while reading a subagent", async () => {
@@ -187,6 +280,27 @@ describe("Eldrun Mobile Reader opens the subagents an agent spawned", () => {
     fireEvent.click(within(screen.getByRole("navigation", { name: "Subagent" })).getByRole("button", { name: "Back to the main conversation" }));
     await settle();
     expect(screen.getByRole("button", { name: label }).textContent).toContain("look around");
+  });
+
+  it("pins the prompt under the subagent index, which hides what scrolls behind it", async () => {
+    vi.stubGlobal("fetch", subagentFetch());
+    // The output's top edge at 100; the index sticks over it, 50 tall shut
+    // and 300 open. The prompt's bubble is wholly behind the shut index.
+    let indexHeight = 50;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("readable-output")) return new DOMRect(0, 100, 400, 600);
+      if (this.classList.contains("subagent-index")) return new DOMRect(0, 100, 400, indexHeight);
+      return new DOMRect(0, this.dataset.prompt === "look around" ? 110 : 500, 300, 40);
+    });
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    const pin = screen.getByRole("button", { name: "Your prompt for this answer — show it" });
+    expect(pin.textContent).toContain("look around");
+    expect(pin.style.top).toBe("56px");
+
+    indexHeight = 300;
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Subagents in this conversation" })).getByRole("button", { name: /^Subagents \(3\)/ }));
+    expect(screen.getByRole("button", { name: "Your prompt for this answer — show it" }).style.top).toBe("306px");
   });
 
   it("keeps the session's subagents reachable from the chat header", async () => {

@@ -452,7 +452,7 @@ button.settings-btn.danger:hover:not(:disabled),
   opacity: 1;
 }
 
-/* Where pages dragged from another strip (or another Eldrun window) would land. It
+/* Where pages dragged from another strip (or another Tabtivity window) would land. It
    sits in the flex flow, so it opens a real gap between the two cards. */
 .page-strip-caret {
   flex: 0 0 auto;
@@ -692,7 +692,7 @@ button.settings-btn.danger:hover:not(:disabled),
    and half sat flush with the dialog padding; every `Dropdown` was as wide as
    its own longest option, so no two controls shared a right edge; `.settings-
    row input` matched no rule at all, which rendered the browser-home, search-
-   template, min-subwindow and Eldrun Mobile fields as raw *native* inputs — a
+   template, min-subwindow and Tabtivity Mobile fields as raw *native* inputs — a
    white box in a dark theme; and help paragraphs floated between rows,
    belonging to nothing.
 
@@ -1141,7 +1141,7 @@ label.settings-toggle-card-row {
   color: var(--danger);
 }
 
-/* Eldrun Mobile: keep the Tailscale setup close to the fields it configures,
+/* Tabtivity Mobile: keep the Tailscale setup close to the fields it configures,
    without making the normal settings card visually read as a warning. */
 .mobile-settings-guide {
   margin: 4px 0;
@@ -1184,7 +1184,7 @@ label.settings-toggle-card-row {
   flex: 0 0 auto;
 }
 
-/* A compact, actionable summary of the checks Eldrun itself can make. It does
+/* A compact, actionable summary of the checks Tabtivity itself can make. It does
    not pretend to verify tailnet account policy or the physical phone. */
 .mobile-security-health {
   display: flex;
@@ -1931,7 +1931,7 @@ label.settings-toggle-card-row {
 
 /* "Go easy on this machine" — same borrowed `.remote-connect-remember` row as the
    terminal-login switch above it, and set apart the same way. It is last in the
-   section on purpose: it says nothing about *this* connect, only about how Eldrun
+   section on purpose: it says nothing about *this* connect, only about how Tabtivity
    should behave on this host from now on. */
 .careful-host-toggle {
   margin-top: 8px;
@@ -2554,7 +2554,7 @@ label.settings-toggle-card-row {
 }
 
 /* Closing a project — the app's own confirmation, replacing the native
-   `confirm()` that was the one dialog in Eldrun the theme could not reach.
+   `confirm()` that was the one dialog in Tabtivity the theme could not reach.
    Rides the shared `.project-dialog` surface (accent rail, wash, shadow) and
    adds only what is specific to it: the two counts, and the list of tabs that
    turns "3 terminal tabs" back into named work. */
@@ -3503,7 +3503,7 @@ label.settings-toggle-card-row {
   min-width: 0;
 }
 
-/* "Push to GitHub/GitLab" picked but no Eldrun connection yet: a nudge to set
+/* "Push to GitHub/GitLab" picked but no Tabtivity connection yet: a nudge to set
    the access token up in Settings → Git Hosting, with a one-click redirect. */
 .git-connect-notice {
   display: flex;
@@ -4016,4 +4016,21 @@ label.settings-toggle-card-row {
 .settings-dialog.theme-customizer {
   width: min(720px, calc(100vw - 32px));
   max-height: min(860px, calc(100vh - 64px));
+}
+
+/* A free-text prompt (Settings → PDF markup): the field chrome above, full
+   card width, several lines. */
+.settings-card > .settings-prompt-text {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-base);
+  padding: 6px 9px;
+  resize: vertical;
 }

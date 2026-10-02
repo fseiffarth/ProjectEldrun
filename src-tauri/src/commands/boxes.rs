@@ -1,6 +1,6 @@
 //! Project boxes — meta-project grouping (TODO Group A: #13 + #41).
 //!
-//! Boxes live in their own sibling file `~/.local/share/eldrun/boxes.json` so the
+//! Boxes live in their own sibling file `~/.local/share/tabtivity/boxes.json` so the
 //! existing `projects.json` stays byte-compatible for Python rollback. A box owns
 //! the authoritative ordered `member_ids` — membership is N:M (a project may sit
 //! in several boxes at once) and lives NOWHERE else; the old per-project `box_id`
@@ -9,12 +9,12 @@
 //!
 //! A box folder also carries one **link per member** (a symlink on Unix, a
 //! directory junction on Windows) beside the generated agent docs, so agent CLIs
-//! launched in the box folder can traverse straight into each member's tree. Eldrun's own file confinement
+//! launched in the box folder can traverse straight into each member's tree. Tabtivity's own file confinement
 //! deliberately does NOT follow these links — the multi-root Files view (and the
-//! explicit allowed-roots set in `compute_box_allowed_roots`) is Eldrun's file
+//! explicit allowed-roots set in `compute_box_allowed_roots`) is Tabtivity's file
 //! surface; the links exist purely for the agents' benefit. Ownership of the
-//! links is recorded in `<folder>/.eldrun-box-links.json` so regeneration only
-//! ever removes links Eldrun itself created (see `write_box_member_links`).
+//! links is recorded in `<folder>/.tabtivity-box-links.json` so regeneration only
+//! ever removes links Tabtivity itself created (see `write_box_member_links`).
 
 use std::collections::HashSet;
 use std::fs;
@@ -31,11 +31,11 @@ use crate::storage;
 /// box file should link to (CLAUDE.md → members' CLAUDE.md, etc.).
 const BOX_AGENT_DOCS: &[&str] = &["CLAUDE.md", "GEMINI.md", "AGENTS.md"];
 
-/// Markers delimiting the Eldrun-managed link block inside a box agent doc. Only
+/// Markers delimiting the Tabtivity-managed link block inside a box agent doc. Only
 /// the text between (and including) these lines is rewritten on regeneration, so
 /// anything a user adds outside the block survives.
-const BOX_LINKS_START: &str = "<!-- eldrun:box-links:start -->";
-const BOX_LINKS_END: &str = "<!-- eldrun:box-links:end -->";
+const BOX_LINKS_START: &str = crate::brand::BOX_LINKS_START;
+const BOX_LINKS_END: &str = crate::brand::BOX_LINKS_END;
 
 fn boxes_path() -> std::path::PathBuf {
     storage::state_dir().join("boxes.json")
@@ -244,17 +244,17 @@ pub(crate) fn box_allowed_roots(box_id: &str) -> Option<Vec<PathBuf>> {
     Some(roots)
 }
 
-/// Build the Eldrun-managed link block for one box agent doc. Pure (no IO) so it
+/// Build the Tabtivity-managed link block for one box agent doc. Pure (no IO) so it
 /// is unit-testable. `agent_file` is the filename of THIS doc (e.g. "CLAUDE.md");
 /// each member is linked to its same-named md file plus its root path.
 fn box_links_block(agent_file: &str, box_name: &str, members: &[(String, PathBuf)]) -> String {
     let mut out = String::new();
     out.push_str(BOX_LINKS_START);
     out.push('\n');
-    out.push_str("<!-- Managed by Eldrun — do not edit between these markers. -->\n\n");
+    out.push_str(concat!("<!-- Managed by ", crate::app_name!(), " — do not edit between these markers. -->\n\n"));
     out.push_str(&format!(
-        "## Box \"{box_name}\" — member projects\n\nThis folder is an Eldrun project box grouping the projects below. Each entry \
-links to the project root and its `{agent_file}`:\n\n"
+        "## Box \"{box_name}\" — member projects\n\nThis folder is a {app} project box grouping the projects below. Each entry \
+links to the project root and its `{agent_file}`:\n\n", app = crate::brand::DISPLAY
     ));
     if members.is_empty() {
         out.push_str("_No member projects yet._\n");
@@ -287,7 +287,8 @@ so it is reachable by relative path from this folder.\n",
 /// symlinks on disk) are ever removed on regeneration — a user file or folder
 /// that happens to share a member's name is never touched (the member's link
 /// gets a `-1`/`-2` suffixed name instead).
-const BOX_LINKS_MANIFEST: &str = ".eldrun-box-links.json";
+#[cfg(test)]
+const BOX_LINKS_MANIFEST: &str = crate::brand::BOX_LINKS_MANIFEST;
 
 type BoxLinksManifest = std::collections::BTreeMap<String, String>;
 
@@ -338,7 +339,14 @@ fn plan_member_links(
 /// do not hold, a junction does not, and both read back through the same
 /// `symlink_metadata` / `read_link` calls this planner relies on.
 fn write_box_member_links(folder: &Path, members: &[(String, PathBuf)]) -> std::io::Result<()> {
-    let manifest_path = folder.join(BOX_LINKS_MANIFEST);
+    // The manifest an older build wrote under the app's old name is taken
+    // over (renamed); `folder.join(BOX_LINKS_MANIFEST)` while it is unchanged.
+    let manifest_path = crate::services::brand_migration::adopt_named_file(
+        &crate::brand::PAIR,
+        crate::brand::Name::BOX_LINKS_MANIFEST,
+        folder,
+        "box-links-manifest",
+    );
     let manifest: BoxLinksManifest = if manifest_path.exists() {
         crate::storage::read_json(&manifest_path).unwrap_or_default()
     } else {
@@ -474,21 +482,37 @@ fn remove_member_link(link: &Path) -> std::io::Result<()> {
 /// previous managed block (between the markers) and leaving the rest untouched.
 /// When no file exists, `existing` is empty and a titled doc is created.
 fn merge_box_doc(agent_file: &str, existing: &str, block: &str) -> String {
-    if let (Some(start), Some(end)) = (existing.find(BOX_LINKS_START), existing.find(BOX_LINKS_END))
-    {
-        if end > start {
-            let end = end + BOX_LINKS_END.len();
-            // Drop a trailing newline right after the old end marker so we don't
-            // accumulate blank lines on each regeneration.
-            let tail = existing[end..]
-                .strip_prefix('\n')
-                .unwrap_or(&existing[end..]);
-            return format!("{}{}\n{}", &existing[..start], block.trim_end(), tail);
-        }
+    merge_box_doc_for(&crate::brand::PAIR, agent_file, existing, block)
+}
+
+/// [`merge_box_doc`] for a brand pair. A block an older build wrote sits
+/// between markers that carry the app's old name: it is found there (counted
+/// as a legacy hit) and replaced in place by `block`, which carries the
+/// current markers — never left beside a second block.
+fn merge_box_doc_for(pair: &crate::brand::Pair, agent_file: &str, existing: &str, block: &str) -> String {
+    use crate::brand::Name;
+    let current = (pair.cur(Name::BOX_LINKS_START), pair.cur(Name::BOX_LINKS_END));
+    let old = pair.legacy(Name::BOX_LINKS_START).zip(pair.legacy(Name::BOX_LINKS_END));
+    let found = |(start_marker, end_marker): &(String, String)| {
+        let (start, end) = (existing.find(start_marker.as_str())?, existing.find(end_marker.as_str())?);
+        (end > start).then(|| (start, end + end_marker.len()))
+    };
+    let span = found(&current).or_else(|| {
+        let span = found(old.as_ref()?)?;
+        crate::brand::legacy_hit("box-links-marker");
+        Some(span)
+    });
+    if let Some((start, end)) = span {
+        // Drop a trailing newline right after the old end marker so we don't
+        // accumulate blank lines on each regeneration.
+        let tail = existing[end..]
+            .strip_prefix('\n')
+            .unwrap_or(&existing[end..]);
+        return format!("{}{}\n{}", &existing[..start], block.trim_end(), tail);
     }
     if existing.trim().is_empty() {
         let title = agent_file.strip_suffix(".md").unwrap_or(agent_file);
-        return format!("# {title} — Eldrun box context\n\n{block}");
+        return format!("# {title} — {app} box context\n\n{block}", app = crate::brand::DISPLAY);
     }
     // Existing content without a managed block: append the block at the end.
     format!("{}\n\n{block}", existing.trim_end())
@@ -545,7 +569,7 @@ pub fn create_box(name: String) -> Result<ProjectBox, String> {
         position,
         folder: None,
         relations: vec![],
-        eldrun_mobile_access: false,
+        app_mobile_access: false,
         extra: Default::default(),
     };
     boxes.push(new_box.clone());
@@ -645,7 +669,7 @@ pub fn set_box_members(box_id: String, member_ids: Vec<String>) -> Result<Projec
     Ok(updated)
 }
 
-/// Switch a box's Eldrun Mobile reach (#31aa) — the box-scope twin of
+/// Switch a box's Tabtivity Mobile reach (#31aa) — the box-scope twin of
 /// `set_project_mobile_access`. The machine-wide preconditions are the same
 /// (persistent local sessions, tmux), because a box tab reaches the phone the
 /// way a project tab does: through the tmux session the tab already runs in.
@@ -671,7 +695,7 @@ pub fn set_box_mobile_access(box_id: String, enabled: bool) -> Result<ProjectBox
         .iter_mut()
         .find(|b| b.id == box_id)
         .ok_or_else(|| format!("box '{box_id}' not found"))?;
-    target.eldrun_mobile_access = enabled;
+    target.app_mobile_access = enabled;
     let updated = target.clone();
     write_boxes(&boxes)?;
     Ok(updated)
@@ -937,7 +961,7 @@ mod tests {
             "relations should be skipped: {back}"
         );
         assert!(
-            !back.contains("eldrun_mobile_access"),
+            !back.contains(concat!(crate::app_slug!(), "_mobile_access")),
             "an off Mobile bit should be skipped: {back}"
         );
 
@@ -973,11 +997,11 @@ mod tests {
         let members = vec![
             (
                 "Alpha".to_string(),
-                PathBuf::from("/home/u/eldrun/projects/alpha"),
+                PathBuf::from(concat!("/home/u/", crate::app_slug!(), "/projects/alpha")),
             ),
             (
                 "Beta".to_string(),
-                PathBuf::from("/home/u/eldrun/projects/beta"),
+                PathBuf::from(concat!("/home/u/", crate::app_slug!(), "/projects/beta")),
             ),
         ];
         let block = box_links_block("CLAUDE.md", "My Box", &members);
@@ -985,12 +1009,12 @@ mod tests {
         assert!(block.trim_end().ends_with(BOX_LINKS_END));
         assert!(block.contains("My Box"));
         // Each member: root path + a link to its same-named (CLAUDE.md) doc.
-        assert!(block.contains("root: `/home/u/eldrun/projects/alpha`"));
-        assert!(block.contains("[`CLAUDE.md`](/home/u/eldrun/projects/alpha/CLAUDE.md)"));
-        assert!(block.contains("[`CLAUDE.md`](/home/u/eldrun/projects/beta/CLAUDE.md)"));
+        assert!(block.contains(concat!("root: `/home/u/", crate::app_slug!(), "/projects/alpha`")));
+        assert!(block.contains(concat!("[`CLAUDE.md`](/home/u/", crate::app_slug!(), "/projects/alpha/CLAUDE.md)")));
+        assert!(block.contains(concat!("[`CLAUDE.md`](/home/u/", crate::app_slug!(), "/projects/beta/CLAUDE.md)")));
         // The agent file name flows through, so GEMINI links point at GEMINI.md.
         let gem = box_links_block("GEMINI.md", "My Box", &members);
-        assert!(gem.contains("[`GEMINI.md`](/home/u/eldrun/projects/alpha/GEMINI.md)"));
+        assert!(gem.contains(concat!("[`GEMINI.md`](/home/u/", crate::app_slug!(), "/projects/alpha/GEMINI.md)")));
     }
 
     #[test]
@@ -1003,7 +1027,7 @@ mod tests {
     fn merge_box_doc_creates_titled_doc_when_empty() {
         let block = box_links_block("CLAUDE.md", "B", &[]);
         let merged = merge_box_doc("CLAUDE.md", "", &block);
-        assert!(merged.starts_with("# CLAUDE — Eldrun box context"));
+        assert!(merged.starts_with(concat!("# CLAUDE — ", crate::app_name!(), " box context")));
         assert!(merged.contains(BOX_LINKS_START));
     }
 
@@ -1032,6 +1056,51 @@ mod tests {
         assert_eq!(merged.matches(BOX_LINKS_END).count(), 1);
     }
 
+    /// A block an older build wrote (old markers) is replaced in place by the
+    /// current one — one block afterwards, the user's notes kept — and the
+    /// old manifest is taken over under its current name.
+    #[test]
+    fn a_block_and_manifest_under_the_old_name_are_taken_over() {
+        use crate::brand::{Name, LEGACY};
+        use crate::services::brand_migration::{adopt_named_file, hits, testing::RENAMED};
+        let old_block = format!(
+            "{}\n- /p/old\n{}\n",
+            LEGACY.name(Name::BOX_LINKS_START),
+            LEGACY.name(Name::BOX_LINKS_END)
+        );
+        let existing = format!("# CLAUDE\n\n{old_block}\n## My notes\nkeep me\n");
+        let new_block = format!(
+            "{}\n- /p/new\n{}\n",
+            RENAMED.cur(Name::BOX_LINKS_START),
+            RENAMED.cur(Name::BOX_LINKS_END)
+        );
+        let _ = hits::taken();
+        let merged = merge_box_doc_for(&RENAMED, "CLAUDE.md", &existing, &new_block);
+        assert_eq!(hits::taken(), ["box-links-marker"]);
+        assert!(merged.contains("/p/new") && !merged.contains("/p/old"));
+        assert!(merged.contains("## My notes\nkeep me"));
+        assert!(!merged.contains(&LEGACY.name(Name::BOX_LINKS_START)));
+        assert_eq!(merged.matches(&RENAMED.cur(Name::BOX_LINKS_START)).count(), 1);
+        // The next refresh finds the current block: no second one, no hit.
+        let again = merge_box_doc_for(&RENAMED, "CLAUDE.md", &merged, &new_block);
+        assert_eq!(again.matches(&RENAMED.cur(Name::BOX_LINKS_START)).count(), 1);
+        assert!(hits::taken().is_empty());
+
+        let folder = tempfile::tempdir().unwrap();
+        let old_manifest = folder.path().join(LEGACY.name(Name::BOX_LINKS_MANIFEST));
+        std::fs::write(&old_manifest, "{\"alpha\":\"/p/alpha\"}").unwrap();
+        let path = adopt_named_file(&RENAMED, Name::BOX_LINKS_MANIFEST, folder.path(), "box-links-manifest");
+        assert_eq!(path, folder.path().join(RENAMED.cur(Name::BOX_LINKS_MANIFEST)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"alpha\":\"/p/alpha\"}");
+        assert!(!old_manifest.exists());
+        assert_eq!(hits::taken(), ["box-links-manifest"]);
+        // The production pair: the constant's path, nothing looked up.
+        assert_eq!(
+            adopt_named_file(&crate::brand::PAIR, Name::BOX_LINKS_MANIFEST, folder.path(), "x"),
+            folder.path().join(BOX_LINKS_MANIFEST)
+        );
+    }
+
     fn project_entry(id: &str, dir: &str) -> crate::schema::projects::ProjectEntry {
         let mut extra = std::collections::HashMap::new();
         extra.insert("directory".to_string(), Value::String(dir.to_string()));
@@ -1056,18 +1125,18 @@ mod tests {
     #[test]
     fn box_allowed_roots_covers_folder_members_and_mirror() {
         let mut b = mk_box("b1", &["p1", "p2"]);
-        b.folder = Some("/home/u/eldrun/boxes/b1".to_string());
+        b.folder = Some(concat!("/home/u/", crate::app_slug!(), "/boxes/b1").to_string());
         let mut p2 = project_entry("p2", "/home/u/code/p2");
         p2.extra.insert(
             "mirror".to_string(),
-            Value::String("/home/u/eldrun/projects-ssh/p2".to_string()),
+            Value::String(concat!("/home/u/", crate::app_slug!(), "/projects-ssh/p2").to_string()),
         );
         let projects = vec![project_entry("p1", "/home/u/code/p1"), p2];
         let roots = compute_box_allowed_roots(&vec![b], &projects, "b1").unwrap();
-        assert!(roots.contains(&PathBuf::from("/home/u/eldrun/boxes/b1")));
+        assert!(roots.contains(&PathBuf::from(concat!("/home/u/", crate::app_slug!(), "/boxes/b1"))));
         assert!(roots.contains(&PathBuf::from("/home/u/code/p1")));
         assert!(roots.contains(&PathBuf::from("/home/u/code/p2")));
-        assert!(roots.contains(&PathBuf::from("/home/u/eldrun/projects-ssh/p2")));
+        assert!(roots.contains(&PathBuf::from(concat!("/home/u/", crate::app_slug!(), "/projects-ssh/p2"))));
     }
 
     #[test]
@@ -1206,7 +1275,7 @@ mod tests {
                 &[("one".to_string(), t1.clone()), ("two".to_string(), t2)],
             )
             .unwrap();
-            // A FOREIGN symlink Eldrun never made stays, member or not.
+            // A FOREIGN symlink Tabtivity never made stays, member or not.
             std::os::unix::fs::symlink(&t1, folder.join("foreign")).unwrap();
 
             write_box_member_links(&folder, &[("one".to_string(), t1)]).unwrap();

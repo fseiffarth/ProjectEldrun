@@ -1,11 +1,11 @@
-//! The one-line `eldrun-send` hint for the agent CLIs past Claude and Codex.
+//! The one-line `tabtivity-send` hint for the agent CLIs past Claude and Codex.
 //!
-//! Claude and Codex learn the command from Eldrun's session hook
+//! Claude and Codex learn the command from Tabtivity's session hook
 //! (`agent_session`), which prints it on `SessionStart`. The project scaffold's
 //! `AGENTS.md` used to carry it for everyone else, but that file is the user's,
 //! committed and never rewritten, so the text froze in every project and
 //! reached collaborators' agents where the command doesn't exist. This module
-//! delivers it from Eldrun's own side instead, per CLI, in the one way each
+//! delivers it from Tabtivity's own side instead, per CLI, in the one way each
 //! one takes context at session start:
 //!
 //! - **A `SessionStart` hook** where the CLI has one that feeds the model:
@@ -15,20 +15,21 @@
 //!   Copilot (a file of its own in `.copilot/hooks/`, `additionalContext`).
 //!   All point at one script in `<state_dir>/hooks/`, read-only in the fence,
 //!   which prints the hint in the shape asked for and stays silent outside an
-//!   Eldrun project tab.
+//!   Tabtivity project tab.
 //! - **Instructions** where it has no such hook. Mistral Vibe loads its
-//!   user-level `.vibe/AGENTS.md` beside the project's, so Eldrun keeps a
+//!   user-level `.vibe/AGENTS.md` beside the project's, so Tabtivity keeps a
 //!   marker-delimited block there; only the text between the markers is
-//!   Eldrun's. OpenCode gets a file of Eldrun's in its `instructions` list
+//!   Tabtivity's. OpenCode gets a file of Tabtivity's in its `instructions` list
 //!   (`.config/opencode/opencode.json`) instead: its user-level `AGENTS.md`
 //!   would *replace* the `~/.claude/CLAUDE.md` it otherwise falls back to,
 //!   which is where the user's global instructions reach it.
 //!
-//! Everything is written into Eldrun's per-scope agent homes at each spawn,
+//! Everything is written into Tabtivity's per-scope agent homes at each spawn,
 //! after the global layer (`agent_global`) — never the user's own home — and
 //! through directory handles (`home_io`), as `agent_session` registers its
 //! hooks. AppHandle-free.
 
+use crate::brand::{DISPLAY, UPPER};
 use std::io;
 use std::path::PathBuf;
 
@@ -39,12 +40,12 @@ use crate::storage;
 
 /// What every CLI is told.
 pub const HINT: &str =
-    "To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).";
+    concat!("To put a file in front of the user on their phone, run `", crate::app_slug!(), "-send <file>` (local and container tabs).");
 
 #[cfg(not(windows))]
-const SCRIPT_NAME: &str = "eldrun_agent_hint.sh";
+const SCRIPT_NAME: &str = crate::brand::AGENT_HINT_SH;
 #[cfg(windows)]
-const SCRIPT_NAME: &str = "eldrun_agent_hint.ps1";
+const SCRIPT_NAME: &str = crate::brand::AGENT_HINT_PS1;
 
 /// How the script prints the hint — each CLI parses its hook's stdout its own way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +73,7 @@ impl Shape {
         }
     }
 
-    /// What the hook prints in an Eldrun project tab.
+    /// What the hook prints in a Tabtivity project tab.
     fn output(self) -> String {
         match self {
             Shape::Plain => HINT.to_string(),
@@ -97,7 +98,7 @@ impl Shape {
 
 /// Claude-shaped `settings.json` files (`{"hooks": {"SessionStart": [{"hooks":
 /// [{type, command}]}]}}`) whose CLI adds `additionalContext` to the session.
-const SETTINGS_HOOKS: &[&str] = &[
+pub(crate) const SETTINGS_HOOKS: &[&str] = &[
     ".gemini/settings.json",
     ".qwen/settings.json",
     ".augment/settings.json",
@@ -105,21 +106,21 @@ const SETTINGS_HOOKS: &[&str] = &[
 ];
 
 /// Droid's user hooks: the same groups with the events at the top level.
-const DROID_HOOKS: &str = ".factory/hooks.json";
-const CURSOR_HOOKS: &str = ".cursor/hooks.json";
+pub(crate) const DROID_HOOKS: &str = ".factory/hooks.json";
+pub(crate) const CURSOR_HOOKS: &str = ".cursor/hooks.json";
 /// Copilot loads every `*.json` in its user hooks directory, so this file is
-/// Eldrun's alone and simply rewritten.
-const COPILOT_HOOKS: &str = ".copilot/hooks/eldrun-hint.json";
+/// Tabtivity's alone and simply rewritten.
+const COPILOT_HOOKS: &str = crate::brand::COPILOT_HINT_HOOKS;
 /// Vibe's user-level instructions, loaded beside the project's `AGENTS.md`.
-const VIBE_INSTRUCTIONS: &str = ".vibe/AGENTS.md";
+pub(crate) const VIBE_INSTRUCTIONS: &str = ".vibe/AGENTS.md";
 /// OpenCode's global config; its `instructions` files add to `AGENTS.md`.
-const OPENCODE_CONFIG: &str = ".config/opencode/opencode.json";
+pub(crate) const OPENCODE_CONFIG: &str = ".config/opencode/opencode.json";
 /// The hint as an instructions file, beside the script: the hooks dir is
 /// mounted read-only at its own path in the fence.
-const INSTRUCTIONS_NAME: &str = "eldrun_agent_hint.md";
+const INSTRUCTIONS_NAME: &str = crate::brand::AGENT_HINT_MD;
 
-const BLOCK_START: &str = "<!-- eldrun:agent-hint:start -->";
-const BLOCK_END: &str = "<!-- eldrun:agent-hint:end -->";
+const BLOCK_START: &str = crate::brand::AGENT_HINT_START;
+const BLOCK_END: &str = crate::brand::AGENT_HINT_END;
 
 fn script_path() -> PathBuf {
     storage::state_dir().join("hooks").join(SCRIPT_NAME)
@@ -147,6 +148,9 @@ fn command(shape: Shape) -> String {
     }
 }
 
+/// The app's variables the script reads; see `agent_session::HOOK_ENV`.
+const HINT_ENV: &[&str] = &["TAB_UID", "PROJECT_DIR"];
+
 /// POSIX body. Every printed string is a single-quoted literal, which is why
 /// [`HINT`] must never hold a `'` (a test pins that).
 #[cfg_attr(windows, allow(dead_code))]
@@ -161,14 +165,15 @@ fn posix_script_body() -> String {
     }
     format!(
         "#!/bin/sh\n\
-         # Eldrun agent hint (SessionStart): tells an agent in an Eldrun project tab\n\
+         # {DISPLAY} agent hint (SessionStart): tells an agent in a {DISPLAY} project tab\n\
          # how to put a file on the user's phone, in the output shape its CLI reads\n\
-         # ($1). Silent anywhere else. Managed by Eldrun; do not edit.\n\
-         if [ -z \"$ELDRUN_TAB_UID\" ] || [ -z \"$ELDRUN_PROJECT_DIR\" ]; then\n\
+         # ($1). Silent anywhere else. Managed by {DISPLAY}; do not edit.\n\
+         {legacy_env}if [ -z \"${UPPER}_TAB_UID\" ] || [ -z \"${UPPER}_PROJECT_DIR\" ]; then\n\
          \x20 case \"$1\" in\n{quiet}  esac\n\
          \x20 exit 0\n\
          fi\n\
-         case \"$1\" in\n{cases}esac\n"
+         case \"$1\" in\n{cases}esac\n",
+        legacy_env = crate::services::brand_migration::compat::script_preamble_sh(HINT_ENV),
     )
 }
 
@@ -185,12 +190,13 @@ fn powershell_script_body() -> String {
     }
     format!(
         "param([string]$Shape = 'plain')\r\n\
-         # Eldrun agent hint (SessionStart) - see the POSIX twin. Managed by Eldrun; do not edit.\r\n\
-         if (-not $env:ELDRUN_TAB_UID -or -not $env:ELDRUN_PROJECT_DIR) {{\r\n\
+         # {DISPLAY} agent hint (SessionStart) - see the POSIX twin. Managed by {DISPLAY}; do not edit.\r\n\
+         {legacy_env}if (-not $env:{UPPER}_TAB_UID -or -not $env:{UPPER}_PROJECT_DIR) {{\r\n\
          \x20 switch ($Shape) {{\r\n{quiet}  }}\r\n\
          \x20 exit 0\r\n\
          }}\r\n\
-         switch ($Shape) {{\r\n{cases}}}\r\n"
+         switch ($Shape) {{\r\n{cases}}}\r\n",
+        legacy_env = crate::services::brand_migration::compat::script_preamble_ps1(HINT_ENV),
     )
 }
 
@@ -215,7 +221,7 @@ pub fn write_script() -> io::Result<()> {
     Ok(())
 }
 
-/// Register the hint in one Eldrun agent home. Best effort per file, logged; a
+/// Register the hint in one Tabtivity agent home. Best effort per file, logged; a
 /// linked config dir is skipped, as for the session hooks.
 pub fn register_in_home(home: &std::path::Path) {
     let report = |rel: &str, result: io::Result<()>| {
@@ -271,7 +277,7 @@ fn write_if_changed(file: &HomeFile, bytes: &[u8]) -> io::Result<()> {
     file.write(bytes)
 }
 
-/// Read a JSON config, let `edit` add Eldrun's hook, write it back only when
+/// Read a JSON config, let `edit` add Tabtivity's hook, write it back only when
 /// that changed something. A file that is there but isn't plain JSON (some
 /// CLIs accept comments) is left alone rather than replaced.
 fn merge_json(file: &HomeFile, edit: impl FnOnce(&mut Value) -> bool) -> io::Result<()> {
@@ -334,7 +340,7 @@ fn add_cursor_hook(root: &mut Value, cmd: &str) -> bool {
 }
 
 /// Copilot's hook file. It runs the `bash` command on Linux/macOS and the
-/// `powershell` one on Windows; Eldrun registers the host's own.
+/// `powershell` one on Windows; Tabtivity registers the host's own.
 fn copilot_hooks(cmd: &str) -> String {
     let key = if cfg!(windows) { "powershell" } else { "bash" };
     let mut hook = json!({ "type": "command", "timeoutSec": 10 });
@@ -343,7 +349,7 @@ fn copilot_hooks(cmd: &str) -> String {
     serde_json::to_string_pretty(&file).expect("plain JSON") + "\n"
 }
 
-/// `current` with Eldrun's block in it: replaced in place when the markers are
+/// `current` with Tabtivity's block in it: replaced in place when the markers are
 /// there, appended otherwise. Nothing outside the markers changes.
 fn with_block(current: &str) -> String {
     let block = format!("{BLOCK_START}\n{HINT}\n{BLOCK_END}\n");
@@ -383,7 +389,7 @@ mod tests {
     fn json_shapes_print_valid_json_naming_the_command() {
         for shape in [Shape::Context, Shape::Copilot, Shape::Cursor] {
             let v: Value = serde_json::from_str(&shape.output()).unwrap();
-            assert!(v.to_string().contains("eldrun-send <file>"), "{shape:?}");
+            assert!(v.to_string().contains(concat!(crate::app_slug!(), "-send <file>")), "{shape:?}");
             let _: Value = serde_json::from_str(shape.silent()).unwrap();
         }
         let v: Value = serde_json::from_str(&Shape::Context.output()).unwrap();
@@ -393,7 +399,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn script_prints_each_shape_only_in_an_eldrun_project_tab() {
+    fn script_prints_each_shape_only_in_an_app_project_tab() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("hint.sh");
         std::fs::write(&script, posix_script_body()).unwrap();
@@ -401,8 +407,8 @@ mod tests {
             let mut cmd = std::process::Command::new("sh");
             cmd.arg(&script).arg(shape.arg()).env_clear()
                 .env("PATH", std::env::var_os("PATH").unwrap_or_default());
-            if tab { cmd.env("ELDRUN_TAB_UID", "aaaa"); }
-            if project { cmd.env("ELDRUN_PROJECT_DIR", dir.path()); }
+            if tab { cmd.env(crate::app_env!("TAB_UID"), "aaaa"); }
+            if project { cmd.env(crate::app_env!("PROJECT_DIR"), dir.path()); }
             let out = cmd.output().unwrap();
             assert!(out.status.success());
             String::from_utf8(out.stdout).unwrap()
@@ -520,11 +526,11 @@ mod tests {
     }
 
     #[test]
-    fn the_global_layer_import_recognises_the_hint_as_eldrun_s() {
+    fn the_global_layer_import_recognises_the_hint_as_app_s() {
         let hooks_dir = storage::state_dir().join("hooks").to_string_lossy().into_owned();
         let mut settings = json!({});
         add_session_start_group(&mut settings, true, &command(Shape::Context));
-        crate::services::agent_global::strip_eldrun_json_hooks(&mut settings, &hooks_dir);
+        crate::services::agent_global::strip_app_json_hooks(&mut settings, &hooks_dir);
         assert_eq!(settings, json!({}));
     }
 }

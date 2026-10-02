@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Terminal } from "@xterm/xterm";
 import { CanvasAddon } from "@xterm/addon-canvas";
@@ -40,7 +40,7 @@ import { SIGN_IN_CARD_CLASS, TerminalSignInCard } from "./TerminalSignInCard";
 import { TerminalPromptStrip } from "./TerminalPromptStrip";
 import { TerminalReaderView } from "./TerminalReaderView";
 import { readerOffered } from "../../lib/agents/agentReader";
-import { useAgentReaderStore, useReaderOpen } from "../../stores/agents/agentReader";
+import { useAgentReaderStore, useReaderChangesOpen, useReaderOpen } from "../../stores/agents/agentReader";
 import { useTabsStore } from "../../stores/tabs";
 import { TerminalUndoClearCard } from "./TerminalUndoClearCard";
 import { TerminalVersionCard } from "./TerminalVersionCard";
@@ -51,6 +51,7 @@ import { noteTypedLine } from "../../lib/agents/typedClear";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
 import { notePromptTrailInput } from "../../stores/agents/promptTrail";
 import "@xterm/xterm/css/xterm.css";
+import { envName, storageKey } from "../../lib/brand";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
 // one encoder rather than allocating a `new TextEncoder()` per keystroke. The
@@ -125,7 +126,7 @@ interface Props {
   tmuxAttach?: string | null;
   /** Host-bound marker id (#150) — see `lib/remote/hostBound.ts`. */
   hostBoundUid?: string | null;
-  /** The root console's Host session: spawned unfenced in Eldrun's `host`
+  /** The root console's Host session: spawned unfenced in Tabtivity's `host`
    *  home (`PtyOptions.host_session`). Honoured by the backend only with no
    *  project id. */
   hostSession?: boolean;
@@ -355,12 +356,26 @@ function terminalTheme(scheme: string | undefined) {
 // xterm — before the first open because xterm has no renderer to write into,
 // and for every hidden spell after it because a `display: none` pane still
 // pays full escape-sequence parsing + render scheduling per chunk. With many
-// parallel agent tabs streaming (Eldrun's normal shape) that made background
+// parallel agent tabs streaming (Tabtivity's normal shape) that made background
 // tabs the renderer's biggest standing cost. The buffer flushes when the pane
 // is next shown; agent TUIs repaint whole screens, so the flush converges on
 // the current frame. Cap the retained text so a chatty background agent can't
 // grow this without bound; xterm trims to its own scrollback on flush anyway.
 const PENDING_OUTPUT_CAP = 1_000_000;
+
+/** How long an OPEN pane must stay hidden before its renderer addon is
+ *  released. The canvas renderer keeps four full-pane canvases (text,
+ *  selection, link, cursor) whose backing stores stay allocated under
+ *  `display: none` — ~4 × width × height × 4 bytes at device pixels, about
+ *  30 MB for a 1800×1100 pane — and the WebGL renderer holds a GL context the
+ *  browser evicts once too many are live. Every tab of every open project
+ *  stays mounted, so a session with several projects carried that for every
+ *  terminal ever shown. Releasing the addon leaves xterm's paused DOM renderer
+ *  in place; the buffer, scrollback, selection and PTY are untouched, and the
+ *  addon is re-loaded the moment the pane is shown again (the same swap a
+ *  WebGL context loss or the renderer flag already performs). The delay keeps
+ *  ordinary tab flipping from paying the re-load. */
+export const RENDERER_RELEASE_MS = 60_000;
 
 // Agent-terminal zoom. Agent TUIs (Claude, Codex, …) render dense layouts, so
 // zoomable agent panes let the user scale the font with Ctrl+wheel / Ctrl +/-/0.
@@ -368,8 +383,8 @@ const PENDING_OUTPUT_CAP = 1_000_000;
 // persisted in localStorage — mirrors the view-pref pattern used by FileTree /
 // GitHistory — and broadcast on a window event so all open agent panes restyle
 // live, not just the one being scrolled. Non-agent shells keep the fixed default.
-const AGENT_FONT_KEY = "eldrun.agentTermFontSize";
-const AGENT_ZOOM_EVENT = "eldrun-agent-zoom";
+const AGENT_FONT_KEY = storageKey("agentTermFontSize");
+const AGENT_ZOOM_EVENT = "app-agent-zoom";
 const DEFAULT_FONT_SIZE = 13;
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 32;
@@ -415,6 +430,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const viewerUpdateSeq = useRef(0);
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
+  // The pane's element for the overlays drawn into it (Reader, cards), as
+  // state: a ref read while rendering is null on the first render, and a pane
+  // nothing re-renders afterwards (a new Claude tab, its session id fixed at
+  // spawn) would open on its terminal although its CLI's choice is the Reader.
+  const [host, setHost] = useState<HTMLDivElement | null>(null);
+  useLayoutEffect(() => setHost(containerRef.current), []);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const unlistenOutput = useRef<(() => void) | null>(null);
@@ -439,6 +460,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const openedRef = useRef(false);
   const pendingOutput = useRef("");
   const doFitRef = useRef<(() => void) | null>(null);
+  // Renderer hibernation (see RENDERER_RELEASE_MS): the `visible` effect's way
+  // into the mount effect's renderer manager.
+  const rendererVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
   const visibleRef = useRef(visible);
   // Announcement text for an accepted OSC 52 clipboard write, held in a ref because
   // the OSC handler is registered once inside the setup effect (see below).
@@ -495,6 +519,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const [signIn, setSignIn] = useState<SignInRequest | null>(null);
   // The session in this pane was just cleared: offer to take it back.
   const undoClearOffered = useAgentClearUndoStore((state) => !!state.cleared[id]);
+  // Over the Reader, only once it has let go of the cleared chat (its mark).
+  const readerCleared = useAgentClearUndoStore((state) => state.marks[id] !== undefined);
   const dismissedSignIns = useRef(new Set<string>());
   const signInCopiedRef = useRef(t("terminal.signIn.copied"));
   signInCopiedRef.current = t("terminal.signIn.copied");
@@ -696,8 +722,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         dropCanvas();
       }
     };
+    // Hibernation state: true while a long-hidden pane has had its renderer
+    // addon released (RENDERER_RELEASE_MS). While set, `applyRenderer` stands
+    // down — a renderer-flag flip on a hidden pane would otherwise re-allocate
+    // what was just released; `restoreRenderer` picks the current flag on show.
+    let rendererReleased = false;
+    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
     const applyRenderer = (wantWebgl: boolean) => {
-      if (cancelled || !openedRef.current) return;
+      if (cancelled || !openedRef.current || rendererReleased) return;
       if (wantWebgl) {
         if (webglAddon) return;
         dropCanvas();
@@ -718,6 +750,31 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
     };
     applyRendererRef.current = applyRenderer;
+    const releaseRenderer = () => {
+      releaseTimer = null;
+      if (cancelled || !openedRef.current || visibleRef.current) return;
+      if (!canvasAddon && !webglAddon) return;
+      dropWebgl();
+      dropCanvas();
+      rendererReleased = true;
+    };
+    const restoreRenderer = () => {
+      if (releaseTimer) {
+        clearTimeout(releaseTimer);
+        releaseTimer = null;
+      }
+      if (!rendererReleased) return;
+      rendererReleased = false;
+      applyRenderer(webglWantedRef.current);
+    };
+    rendererVisibilityRef.current = (nowVisible: boolean) => {
+      if (nowVisible) {
+        restoreRenderer();
+        return;
+      }
+      if (releaseTimer || rendererReleased || !openedRef.current) return;
+      releaseTimer = setTimeout(releaseRenderer, RENDERER_RELEASE_MS);
+    };
 
     // THE one way buffered output reaches xterm — every catch-up goes through
     // here, never through a bare `term.write`, because output written late is
@@ -830,11 +887,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     };
 
     // What this tab counts as for the usage recap. A `local_agent` tab always
-    // carries its model in the env Eldrun spawned it with, and that is the only
+    // carries its model in the env Tabtivity spawned it with, and that is the only
     // signal here that distinguishes it from the cloud agent of the same command
     // (a local model driven through `vibe` still has cmd "vibe") — TerminalView
     // is handed cmd/env, not the TabEntry's kind.
-    const localModel = env.ELDRUN_LOCAL_MODEL || env.VIBE_ACTIVE_MODEL;
+    const localModel = env[envName("LOCAL_MODEL")] || env.VIBE_ACTIVE_MODEL;
     const kind: TabKind = declaredKind ?? (localModel ? "local_agent" : cmdToKind(cmd));
     const agentLeaf = agentPromptLeaf({ kind, cmd, env });
     // A shell tab can be RESUMED with no initialInput to type — a tmux reattach on
@@ -963,7 +1020,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     //
     // A Claude whose version takes `--name` never gets the line typed at all:
     // `pty_spawn` puts the name on the launch argv and answers `named`, and the
-    // hold lifts the moment it does. Only a Claude Eldrun cannot vouch for (a
+    // hold lifts the moment it does. Only a Claude Tabtivity cannot vouch for (a
     // container's or a remote host's, an old or not-yet-probed host CLI) is
     // still typed at. `launchNamed` is null until the spawn has answered.
     const launchName = attachOnly ? null : claudeLaunchName(cmd, initialInput);
@@ -983,7 +1040,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // Wire keyboard input → PTY write. The input stamp is what licenses this
     // tab's later output to show as "working"/"done" (see noteUserInput).
     //
-    // This is also the one place Eldrun sees everything the user asks an agent,
+    // This is also the one place Tabtivity sees everything the user asks an agent,
     // so the usage recap's "you asked them N things" is counted here (see
     // lib/agents/promptCount): Enter with content pending = one submit.
     term.onData((data) => {
@@ -1032,7 +1089,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // itself". xterm parses OSC codes but performs no action on 52 without a
     // handler, so the CLI reports success (it only confirms the write *reached
     // the terminal*) while the OS clipboard silently keeps its old contents.
-    // `c` is the only target register Eldrun has one clipboard for; a `?`
+    // `c` is the only target register Tabtivity has one clipboard for; a `?`
     // query (read-back) is intentionally left unhandled — implementing it would
     // let any program read whatever the user last copied elsewhere.
     // Gated rather than trusted: the payload is sanitized and capped by
@@ -1376,7 +1433,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           if (!isClaudeCommand(cmd)) return true;
           try {
             // The scope decides which `.claude.json` the spawn reads — the
-            // fence's staged copy carries trust Eldrun recorded, the host
+            // fence's staged copy carries trust Tabtivity recorded, the host
             // file does not — so the probe needs it, not just the folder.
             return await invoke<boolean>("claude_folder_trusted", {
               cwd,
@@ -1427,6 +1484,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // goes through `flushPending`'s query guard like every other late write.
         let tail = "";
         let snapshotEnd: number | undefined;
+        // Register this view before taking the snapshot: a popout hears only
+        // the PTYs it has a view of (`streamEventName`), so a chunk emitted
+        // between the snapshot and a later registration would never reach it.
+        // Registered first, every later chunk lands in `historyOutput`, and the
+        // byte ranges drop whatever the snapshot already holds.
+        const viewSeq = ++viewerUpdateSeq.current;
+        try {
+          await invoke("pty_set_visible", { id, viewerId, visible, updateSeq: viewSeq });
+        } catch {
+          // An older backend: the visibility effect registers the view instead.
+        }
+        if (cancelled) return;
         try {
           const snapshot = await invoke<string | PtyScrollback>("pty_scrollback", { id });
           if (typeof snapshot === "string") {
@@ -1508,7 +1577,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // identical options for a tab *restored at relaunch* (nobody asked for
         // that) and for a click. The backend's own comment says the frontend
         // should "offer connect and open"; nothing did, so the raw
-        // `ELDRUN_HPC_GUARD connect user@host:22` was printed into the pane.
+        // `TABTIVITY_HPC_GUARD connect user@host:22` was printed into the pane.
         //
         // Connecting the project is what actually lifts the refusal: the pool
         // holds a standing authorization once it is up
@@ -1617,7 +1686,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // (writeTerm buffers past a hidden pane's xterm) — flush it in the
         // same beat the pane regains its layout, before the refit, so the
         // catch-up isn't waiting on the next live chunk to drain it.
-        if (visibleRef.current) flushPending();
+        if (visibleRef.current) {
+          restoreRenderer();
+          flushPending();
+        }
         fitRef.current.fit();
         invoke("pty_resize", {
           id,
@@ -1805,6 +1877,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       ro.disconnect();
       doFitRef.current = null;
       applyRendererRef.current = null;
+      rendererVisibilityRef.current = null;
+      if (releaseTimer) clearTimeout(releaseTimer);
       unlistenOutput.current?.();
       unlistenReplay.current?.();
       unlistenReady.current?.();
@@ -1900,6 +1974,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   // most resizes, but a hidden→visible transition doesn't always fire it, so
   // drive the open/fit logic explicitly here.
   useEffect(() => {
+    // Re-load a released renderer before the refit paints (show), or arm the
+    // release of a pane that just went hidden.
+    rendererVisibilityRef.current?.(visible);
     if (visible) doFitRef.current?.();
   }, [visible, id]);
 
@@ -1922,7 +1999,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   }, [id, viewerId]);
 
   // The Reader over an agent pane (`TerminalReaderView`): offered only for a
-  // CLI whose transcript Eldrun reads, and only in the tab's own pane.
+  // CLI whose transcript Tabtivity reads, and only in the tab's own pane.
   const readerIds = splitPtyId(id);
   const readerTab = useTabsStore((state) => readerIds
     ? state.tabsByScope[readerIds.scope]?.find((entry) => entry.key === readerIds.key)
@@ -1930,6 +2007,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const readerAvailable = readerOffered(readerTab) && !attachOnly;
   const readerAgent = readerTab?.cmd ?? cmd;
   const readerOn = useReaderOpen(readerAgent, readerAvailable);
+  const changesOn = useReaderChangesOpen(readerAgent);
   const setReader = (on: boolean) => {
     useAgentReaderStore.getState().set(readerAgent, on);
     if (!on) setTimeout(() => termRef.current?.focus(), 0);
@@ -1947,7 +2025,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   };
 
   // The spawn effect's own reading of the tab kind (see there).
-  const paneKind: TabKind = declaredKind ?? (env.ELDRUN_LOCAL_MODEL || env.VIBE_ACTIVE_MODEL ? "local_agent" : cmdToKind(cmd));
+  const paneKind: TabKind = declaredKind ?? (env[envName("LOCAL_MODEL")] || env.VIBE_ACTIVE_MODEL ? "local_agent" : cmdToKind(cmd));
   const splitId = splitPtyId(id);
   return (
     <>
@@ -1983,12 +2061,16 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         background={terminalTheme(colorScheme).background}
         foreground={terminalTheme(colorScheme).foreground ?? "inherit"}
         onReturnFocus={() => termRef.current?.focus()}
-        reader={readerAvailable ? { open: readerOn, onToggle: () => setReader(!readerOn) } : undefined}
+        reader={readerAvailable ? {
+          open: readerOn,
+          onToggle: () => setReader(!readerOn),
+          changes: { open: changesOn, onToggle: () => useAgentReaderStore.getState().setChanges(readerAgent, !changesOn) },
+        } : undefined}
       />
     )}
-    {readerOn && splitId && containerRef.current && (
+    {readerOn && splitId && host && (
       <TerminalReaderView
-        host={containerRef.current}
+        host={host}
         ptyId={id}
         scope={splitId.scope}
         tabKey={splitId.key}
@@ -1998,10 +2080,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         onShowTerminal={() => setReader(false)}
       />
     )}
-    {signIn && containerRef.current && (
+    {signIn && host && (
       <TerminalSignInCard
         key={signIn.url}
-        host={containerRef.current}
+        host={host}
         request={signIn}
         onOpen={() => void invoke("open_external_url", { url: signIn.url }).catch(() => {})}
         onCopy={() => {
@@ -2023,14 +2105,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         onDismiss={() => dismissSignIn(signIn.url)}
       />
     )}
-    {undoClearOffered && !signIn && containerRef.current && (
-      <TerminalUndoClearCard host={containerRef.current} ptyId={id} />
+    {undoClearOffered && (!readerOn || readerCleared) && !signIn && host && (
+      <TerminalUndoClearCard host={host} ptyId={id} />
     )}
     {/* The host's CLI only: a remote or container tab runs another install. */}
-    {zoomable && !remoteHostId && !sandbox && !undoClearOffered && !signIn && containerRef.current && (
-      <TerminalVersionCard host={containerRef.current} cmd={cmd} />
+    {zoomable && !remoteHostId && !sandbox && !undoClearOffered && !signIn && host && (
+      <TerminalVersionCard host={host} cmd={cmd} />
     )}
-    {keySelecting && containerRef.current && createPortal(
+    {keySelecting && host && createPortal(
       // The keyboard-steering legend's look, pinned inside the pane.
       <div className="steering-legend terminal-key-select" role="status">
         <span className="steering-legend-title">
@@ -2043,7 +2125,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         <span className="steering-legend-item"><kbd>Enter</kbd>{t("terminal.keySelect.copy")}</span>
         <span className="steering-legend-item"><kbd>Esc</kbd>{t("terminal.keySelect.leave")}</span>
       </div>,
-      containerRef.current,
+      host,
     )}
     {dialogs}
     </>

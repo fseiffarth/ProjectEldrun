@@ -289,7 +289,7 @@ pub fn prompts(state_dir: &Path, project_id: &str) -> Result<Vec<ProjectAgentPro
 
 // ── Transcript ──────────────────────────────────────────────────────────────
 
-/// The agents whose transcript Eldrun reads at all (`TRANSCRIPT_AGENTS`).
+/// The agents whose transcript Tabtivity reads at all (`TRANSCRIPT_AGENTS`).
 const TRANSCRIPT_AGENTS: &[&str] = &["claude", "codex", "opencode"];
 
 /// `agentTranscriptFor` off the tab record: the same two "not yet" answers
@@ -1551,7 +1551,7 @@ mod tests {
                 color: None,
                 sign_in: false,
             },
-            tmux_name: "eldrun-x".into(),
+            tmux_name: concat!(crate::app_slug!(), "-x").into(),
             session_id: session_id.map(str::to_string),
             schedule_target_id: None,
             cmd: cmd.into(),

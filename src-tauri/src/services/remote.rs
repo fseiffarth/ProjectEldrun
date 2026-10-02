@@ -118,7 +118,7 @@ static PROJECTS_CACHE: std::sync::Mutex<Option<(std::time::SystemTime, u64, Arc<
 /// `FlatMapAccess::next_value_seed`, `skip_to_escape`, spread across every tokio
 /// worker, at ~175% of a core.
 ///
-/// A `stat` replaces the read whenever nothing has changed. Eldrun is the only
+/// A `stat` replaces the read whenever nothing has changed. Tabtivity is the only
 /// writer of this file, and every write goes through `storage::write_json`, so a
 /// changed list always moves `mtime` (nanosecond precision on Linux) or `len`.
 /// The value is an `Arc`, so a hit costs one clone of a pointer rather than of
@@ -398,7 +398,7 @@ pub async fn connect_host(
     }
     // The connection is live and the user's: hold a standing dial authorization
     // for as long as it is pooled. Work that rides a master a person opened — a
-    // shell tab, a `git status`, a Sessions listing — is not Eldrun reaching out
+    // shell tab, a `git status`, a Sessions listing — is not Tabtivity reaching out
     // by itself, so it must not be refused on a host tagged HPC. The guard lives
     // *in* the pool entry, so it is released however that entry dies.
     let dial = crate::services::ssh_common::user_dial(&spec.user, &spec.host, spec.port);
@@ -461,7 +461,7 @@ pub async fn disconnect_project(pool: &RemotePoolState, project_id: &str) {
 }
 
 /// Tear down every pooled connection. Used at app exit so no ssh ControlMaster
-/// child outlives Eldrun.
+/// child outlives Tabtivity.
 pub async fn disconnect_all(pool: &RemotePoolState) {
     let conns: Vec<PooledRemote> = {
         let mut guard = pool.lock().await;
@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn spec_from_entry_none_for_local_project() {
-        let e = entry("p1", Some("/home/u/eldrun/projects/alpha"), None);
+        let e = entry("p1", Some(concat!("/home/u/", crate::app_slug!(), "/projects/alpha")), None);
         assert!(spec_from_entry(&e).is_none());
     }
 

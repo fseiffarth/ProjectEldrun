@@ -10,6 +10,7 @@
 //! hands back what is on disk now for the view to re-apply its click to. A
 //! click never overwrites an edit it did not see.
 
+use crate::brand::SLUG;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -152,7 +153,7 @@ pub fn write_in(root: &Path, name: &str, expected: &str, next: &str) -> Result<W
     if current != expected {
         return Ok(WriteOutcome::Changed { current });
     }
-    let tmp = path.with_file_name(format!(".{name}.eldrun-tmp"));
+    let tmp = path.with_file_name(format!(".{name}.{SLUG}-tmp"));
     fs::write(&tmp, next).map_err(|e| e.to_string())?;
     if let Err(e) = fs::rename(&tmp, &path) {
         let _ = fs::remove_file(&tmp);

@@ -27,6 +27,7 @@ import {
   useTabsStore,
   type SavedLayoutTree,
 } from "../../stores/tabs";
+import { BRAND, envName, tabCommand } from "../../lib/brand";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -106,7 +107,7 @@ describe("a sign-in tab (31bk) or cloud session", () => {
       kind: "agent",
       signIn: true,
     });
-    expect(tab.tmuxSession).toMatch(/^eldrun-p--agent-/);
+    expect(tab.tmuxSession).toMatch(new RegExp(String.raw`^${BRAND.slug}-p--agent-`));
     expect(isRestorableTab(tab)).toBe(false);
     expect(isSavedWhileLive(tab)).toBe(true);
     const saved = useTabsStore.getState().snapshotScopeForSwitch("p");
@@ -148,9 +149,9 @@ describe("a sign-in tab (31bk) or cloud session", () => {
 
   it("is only a live agent tab with the marker", () => {
     expect(isSavedWhileLive({ kind: "agent", signIn: true })).toBe(false);
-    expect(isSavedWhileLive({ kind: "agent", tmuxSession: "eldrun-p--agent-1" })).toBe(false);
-    expect(isSavedWhileLive({ kind: "shell", signIn: true, tmuxSession: "eldrun-p--shell-1" })).toBe(false);
-    expect(isSavedWhileLive({ kind: "local_agent", cloud: true, tmuxSession: "eldrun-p--agent-1" })).toBe(false);
+    expect(isSavedWhileLive({ kind: "agent", tmuxSession: `${BRAND.slug}-p--agent-1` })).toBe(false);
+    expect(isSavedWhileLive({ kind: "shell", signIn: true, tmuxSession: `${BRAND.slug}-p--shell-1` })).toBe(false);
+    expect(isSavedWhileLive({ kind: "local_agent", cloud: true, tmuxSession: `${BRAND.slug}-p--agent-1` })).toBe(false);
   });
 });
 
@@ -180,12 +181,12 @@ describe("a relaunchable local-model tab (#31bl)", () => {
       label: "qwen3:8b · Claude Code",
       cmd: "ollama",
       args: launch.args,
-      env: { ELDRUN_LOCAL_MODEL: "qwen3:8b" },
+      env: { [envName("LOCAL_MODEL")]: "qwen3:8b" },
       cwd: "/tmp",
       kind: "local_agent",
       localLaunch: launch,
     });
-    expect(tab.tmuxSession).toMatch(/^eldrun-p--agent-/);
+    expect(tab.tmuxSession).toMatch(new RegExp(String.raw`^${BRAND.slug}-p--agent-`));
     const saved = useTabsStore.getState().snapshotScopeForSwitch("p");
     const savedTab = saved.tabs.find((t) => t.key === tab.key);
     expect(savedTab?.localLaunch).toEqual(launch);
@@ -240,7 +241,7 @@ describe("isResumableAgentTab / isRestorableTab", () => {
 
   it("keeps shell/files tabs via kind regardless of sessionId", () => {
     expect(isRestorableTab({ kind: "shell", cmd: "bash" })).toBe(true);
-    expect(isRestorableTab({ kind: "files", cmd: "__eldrun_files__" })).toBe(true);
+    expect(isRestorableTab({ kind: "files", cmd: tabCommand("files") })).toBe(true);
   });
 });
 
@@ -292,7 +293,7 @@ describe("saveLayout — persists restorable tabs (incl. resumable agents)", () 
       sessionId: "abc-123",
     });
     store.addTab({ label: "bash", cmd: "bash", cwd: "/p", kind: "shell" });
-    store.addTab({ label: "Files", cmd: "__eldrun_files__", cwd: "/p", kind: "files" });
+    store.addTab({ label: "Files", cmd: tabCommand("files"), cwd: "/p", kind: "files" });
 
     await useTabsStore.getState().saveLayout("/p/project.json");
 

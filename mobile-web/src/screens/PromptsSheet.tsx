@@ -9,9 +9,12 @@ import {
   type ProjectPrompt,
   type ProjectPromptList,
   type TabRow,
+  wasApplied,
 } from "../api";
+import { describeFailure } from "../connection";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
+import { BRAND } from "../../../src/lib/brand";
 
 /** The project's collected prompts — text kept without a tab. Sending aims
  * one at an agent tab now (the desktop queues a one-time schedule at its own
@@ -44,9 +47,15 @@ export function PromptsSheet({ projectId, tabs, onClose, onSchedule }: {
     setError("");
   }, []);
   const fail = useCallback((cause: unknown) => {
+    // Made on the desktop, only the refreshed list did not come back: say so,
+    // rather than "could not be loaded" under a form that invites a resend.
+    if (wasApplied(cause)) {
+      setError(describeFailure(cause));
+      return;
+    }
     const unavailable = cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable");
     setOffline(unavailable);
-    setError(unavailable ? "Open desktop Eldrun to manage collected prompts." : "Prompts could not be loaded.");
+    setError(unavailable ? `Open desktop ${BRAND.display} to manage collected prompts.` : "Prompts could not be loaded.");
   }, []);
   // Held only when the host itself could not answer (a 503): with the window
   // closed the host writes the prompts itself (headless owner plan, H3).
@@ -85,6 +94,7 @@ export function PromptsSheet({ projectId, tabs, onClose, onSchedule }: {
       apply(editing ? await updatePrompt(projectId, editing, message) : await createPrompt(projectId, message));
       reset();
     } catch (cause) {
+      if (wasApplied(cause)) reset();
       fail(cause);
     } finally {
       setBusy(false);

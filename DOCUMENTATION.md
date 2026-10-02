@@ -1,6 +1,6 @@
 # ProjectEldrun — Documentation
 
-Eldrun is a Tauri 2 + React + TypeScript desktop workspace for AI-assisted
+Tabtivity is a Tauri 2 + React + TypeScript desktop workspace for AI-assisted
 development. It keeps a root control terminal, per-project terminal and agent
 tabs in a tiling layout, a project switcher in the top header, a file panel with
 native viewers, global app launching, time tracking, local Ollama model
@@ -19,36 +19,36 @@ This document reflects the code in `src/` and `src-tauri/src/` as of
 
 ## Document Boundaries
 
-- `DOCUMENTATION.md` describes how Eldrun works now: architecture, behavior,
+- `DOCUMENTATION.md` describes how Tabtivity works now: architecture, behavior,
   persistence, and operational notes.
 - `STATUS.md` is the short current-state snapshot: readiness, validation, and
   known rough edges.
 - `ROADMAP.md` captures product direction and sequencing.
 - `TODO.md` tracks concrete implementation tasks with grouped IDs.
 
-## Eldrun's Model
+## Tabtivity's Model
 
-Eldrun treats development work as a set of active projects, each with its own
+Tabtivity treats development work as a set of active projects, each with its own
 directory, metadata, terminal tabs, file context, and optional workspace-level
 desktop state.
 
-- The root terminal is for orchestration: managing Eldrun itself and the broader
-  workspace under `~/eldrun/root/`.
+- The root terminal is for orchestration: managing Tabtivity itself and the broader
+  workspace under `~/tabtivity/root/`.
 - Project terminals are for implementation work inside a specific project
   directory. They launch with a best-effort project sandbox that keeps XDG
-  config/cache/data/state and temp writes under `<project>/.eldrun/sandbox/`.
+  config/cache/data/state and temp writes under `<project>/.tabtivity/sandbox/`.
   The root terminal keeps the normal workspace environment.
 - Agent tabs run `claude`, `codex`, `gemini`, or `vibe`; plain shell tabs run
   the user's shell. Other agents can be used in a plain shell tab.
 - Local Ollama models appear as Local Agent tab choices when the Ollama server
   exposes installed models. They run through `vibe` with an isolated per-model
-  `VIBE_HOME` under `~/.local/share/eldrun/vibe_local/`.
+  `VIBE_HOME` under `~/.local/share/tabtivity/vibe_local/`.
 - The file panel, default app mappings, tracked external windows, and time
   tracking follow the active project.
 - Global app shortcuts are intentionally cross-project. They launch or raise
   tools such as a browser, password manager, notes app, or screenshot tool and
   keep those windows visible across project switches. They are not owned by a
-  single project. Roles Eldrun has since grown its own surface for — mail,
+  single project. Roles Tabtivity has since grown its own surface for — mail,
   calendar, file manager, system monitor, print manager — were **retired** from
   that bar (`RETIRED_GLOBAL_APP_ROLES` in `GlobalAppBar.tsx`) rather than deleted
   from settings, so a configured command survives if a role ever returns.
@@ -99,7 +99,7 @@ npm install
 ### Launching
 
 ```bash
-docs/start-eldrun-tauri.sh
+docs/start-tabtivity-tauri.sh
 ```
 
 Or for a development build:
@@ -118,9 +118,9 @@ sources. `scripts/guard-single-instance.sh` (wired into both `pretauri:dev`
 hooks) refuses a second session, including one that would silently attach to an
 orphaned vite on port 1420 and render its stale module graph.
 
-The desktop launchers are `docs/Eldrun.desktop` for the packaged app,
-`docs/EldrunHotReload.desktop` for the hot-reload dev server, and
-`docs/EldrunDev.desktop` for a frozen release build of the working tree
+The desktop launchers are `docs/Tabtivity.desktop` for the packaged app,
+`docs/TabtivityHotReload.desktop` for the hot-reload dev server, and
+`docs/TabtivityDev.desktop` for a frozen release build of the working tree
 (`npm run package:dev` builds and installs it — real state, no hot reload;
 it and the hot-reload window run one at a time, each launcher refusing while
 the other is up); all carry a
@@ -147,9 +147,9 @@ worth knowing:
 - **Restarting is yours.** On Linux the running `.AppImage` is swapped in place
   (the previous build is kept beside it as `.old`) and the new one takes effect
   at your next launch; on Windows the NSIS installer runs and offers to close
-  Eldrun first; on macOS the `.dmg` opens. A copy installed by a package
+  Tabtivity first; on macOS the `.dmg` opens. A copy installed by a package
   manager — the `.deb`, or a plain `cargo build` binary — is downloaded and
-  then left alone, since installing it is not Eldrun's to do.
+  then left alone, since installing it is not Tabtivity's to do.
 
 ## User Interface
 
@@ -232,7 +232,7 @@ Toolbar behavior:
   `<state_dir>/sessions/<project id>/terminals.json`, or opens a default agent
   tab on an explicit switch.
 - When the root is active, the scope is `"root"` and the root terminal opens in
-  `~/eldrun/root/`.
+  `~/tabtivity/root/`.
 - `TabBar.tsx` renders tabs with close, rename (double-click), drag-to-reorder,
   and a `+` menu for adding agent, shell, and files tabs plus locally installed
   Ollama models, the workspace-app tabs (browser, print manager, monitor, skills,
@@ -332,7 +332,7 @@ Contents:
   activates a unique match, `Escape` clears the search.
 - **Project pills** — one per active/current project, drag-to-reorder with
   pointer events (`stores/drag/pillDrag.ts`, `PILL_DRAG_TYPE`); HTML5 drag-and-drop is
-  not used anywhere in Eldrun because it breaks on WebKitGTK. Hovering a pill
+  not used anywhere in Tabtivity because it breaks on WebKitGTK. Hovering a pill
   shows the project path, status, today's active time (`get_time_today`), and
   live CPU%; a running-task indicator spins on pills with live terminal output,
   including backgrounded projects. Clicking switches to the project; the × button
@@ -371,7 +371,7 @@ or `glab`) installed and authenticated, or a token under Settings → Git hostin
 
 Settings dialog (`SettingsPanel.tsx` + `SettingsSubPanels.tsx`) covers the main
 page — default agent command, theme, workspace management, experimental flags,
-the daily-recap toggle, and the Eldrun Mobile opt-in (`MobileSettings`) — plus
+the daily-recap toggle, and the Tabtivity Mobile opt-in (`MobileSettings`) — plus
 these sub-panels: **Global apps** (per-role commands, e.g. the browser for PDF links), **File types**
 (per-type viewer behaviour, autocomplete and spelling defaults, autosave),
 **Ollama** (model management, when the binary is installed), **Agents**,
@@ -392,28 +392,63 @@ tab end to end and whose "off" closes something already open; the live sweep and
 the restore filter both do nothing until settings have actually loaded, because
 unknown must not read as off.
 
-### Eldrun Mobile
+### Tabtivity Mobile
 
-Eldrun Mobile provides tailnet-only access to explicitly opted-in local project
-sessions. The independently installed sidecar — a copy of the Eldrun binary
+Tabtivity Mobile provides tailnet-only access to explicitly opted-in local project
+sessions. The independently installed sidecar — a copy of the Tabtivity binary
 running `--mobile-host` — binds to loopback;
 an existing, non-Funnel Tailscale Serve HTTPS root handler must be verified as
-an exact proxy to that port before Eldrun saves or starts it. Each browser pairs
+an exact proxy to that port before Tabtivity saves or starts it. Each browser pairs
 with a short-lived code and a device-held P-256 key and can be revoked
-individually.
+individually. The header's phone menu lists every paired device — a green
+lamp for one signed in now, otherwise when it last connected — with
+**Disconnect** (click again to confirm): the device is unpaired, signed out
+within seconds, and needs a new pairing code to come back.
 
 Only persistent local shells and resumable configured agents are discoverable.
-The sidecar derives opaque browser ids from trusted Eldrun state and revalidates
+The sidecar derives opaque browser ids from trusted Tabtivity state and revalidates
 the project, tab, tmux session, device session, and canonical project directory
 throughout an attachment. Mobile creation goes through the running desktop and
 accepts only a typed shell or cataloged resumable-agent request; it does not
 accept paths, commands, argv, or tmux names. The protocol lives in
 `src-tauri/src/services/mobile_control/`.
 
+**Mark up a PDF or picture for the agent.** In an agent tab's viewer (the
+files drawer, the 🖼 gallery or a picture/PDF bubble in the chat) a PDF or a
+picture carries **Mark up**: write on the pages with a pen (an Apple Pencil
+always draws, fingers scroll and pinch; a phone without a pen gets a ✋ / ✎
+switch), drag highlighter boxes, tap to type notes, erase whole strokes, undo.
+The marks live only on the phone (its own storage) until **Submit**: each
+marked page's layer goes into the project's `.tabtivity/inbox/`, the desktop bakes
+the marks into a copy, `<name>-marked.pdf`, as real PDF annotations (a picture
+comes back drawn on, `<name>-marked.png`), and a prompt naming the file, the
+copy, the layers and the typed notes goes into the chat — held like a typed
+message while the agent works. The original file is never changed; the agent
+is asked to apply the marks to the sources and send the rebuilt file back with
+`tabtivity-send`. PDF pages are drawn on the phone by pdf.js inside a sealed
+frame with no access to the session or the network. Project files need
+**Settings → Mobile → Project files on the phone**; files the agent sent work
+without it.
+
+Marking up is a loop, not one shot (`docs/pdf_markup_rounds_plan.md`):
+**Submit keeps the view open.** The round's marks stay on show, dimmed, and are
+never sent again; marking goes on while the agent works, and the next Submit
+carries only the new marks (into the agent's queue if it is busy). A pill
+follows the agent since the last Submit — sent, queued, working, asking,
+finished (with whether the PDF changed) — off the live screen. **Reload PDF**
+redraws the file as it is now, or the newer copy the agent sent, under the same
+layer: unsent marks stay, and the sent ones stay too, dimmed, so each change can
+be checked and its mark then erased by hand (the eraser and Clear page reach
+shown sent marks; ⋯ **Show sent marks** hides them). Nothing removes a mark
+automatically. The default prompt has the agent only list the changes; once it
+has, the pill offers **Make these changes**, which sends the go-ahead (edit the
+sources, rebuild, send the PDF back) — its wording is the second field of Home →
+This phone → **Mark up prompt**.
+
 ### Workspace Apps
 
 Each of these replaced a global-app role, on the same reasoning: what sits
-behind the button is a list and a handful of verbs, and Eldrun can render a
+behind the button is a list and a handful of verbs, and Tabtivity can render a
 list. Where a link still needs an app, `src/lib/linkTarget.ts::routeUri` decides
 — it opens the in-app surface when its flag is on and falls back to
 `launch_app` for the configured external app when it is not.
@@ -473,7 +508,7 @@ file's own bytes, so comments, delimiters, quoting, and line endings survive, an
 they withhold the affordance rather than mangle a construct they cannot rewrite
 safely. The full list, with per-viewer behaviour, is in `README.md`.
 
-Three that carry design decisions worth recording here:
+Four that carry design decisions worth recording here:
 
 - **TeX** opens as a *single workspace tab per document* (deduped on
   `resolve_tex_root`): a left sidebar of the main file's `\input` children and
@@ -483,6 +518,19 @@ Three that carry design decisions worth recording here:
 - **PDF redaction** rasterises the pages you marked on save, so covered text is
   gone from the file rather than hidden under a shape that any copy, extract, or
   annotation-delete would lift. Only marked pages are flattened.
+- **PDF markup** (✎ **Mark up** in the PDF toolbar, the TeX workspace's PDF
+  too) is the phone's markup on the desktop: pen, highlighter, typed notes and
+  eraser over the pages, kept in this window's own storage — never in the
+  project or the session — until **Submit** bakes `<name>-marked.pdf` into
+  `.tabtivity/inbox/` (`pdf_markup_submit`, `commands/pdf_markup.rs`) and queues the
+  prompt for an agent tab of the same project, straight into its queue if it
+  works. The strip stays open with the same rounds and pill as the phone; a
+  recompile while marks are on the pages waits for **Reload PDF** rather than
+  sliding new pages under them. Local projects in the main window only, on the
+  PDF as saved (no page edits pending), one pane per file. **Make these
+  changes** appears once the agent has listed them; both prompts — the one a
+  Submit ends with and that go-ahead — are the desktop's own, in Settings →
+  Agents → **PDF markup** (`pdf_markup_instruction`, `pdf_markup_apply`).
 - **Markdown** renders fenced `mermaid` code blocks and `$…$`/`$$…$$` math; KaTeX runs
   with `trust: false` and mermaid script-free.
 
@@ -534,7 +582,7 @@ Three properties hold for everything on that list, and are the rule for
 anything added to it: it costs work nobody asked for, its absence is *legible*
 (the number is simply not there — no spinner and no `…` that never resolves),
 and nothing is lost but the aid. No file goes unlisted, no edit unsaved, no
-lamp wrong. Fast mode may make Eldrun say less; it never makes it say something
+lamp wrong. Fast mode may make Tabtivity say less; it never makes it say something
 untrue.
 
 It is a separate switch from **Energy Saver**, and the two compose. Energy saver
@@ -559,7 +607,7 @@ returns true. The panel uses backend commands from `commands/ollama.rs`:
 | `ensure_ollama_running` | Starts the system `ollama` service when possible, otherwise falls back to `ollama serve`. |
 | `list_ollama_models` | Lists installed model names for the Local Agents tab menu. |
 | `list_ollama_models_detailed` | Returns installed model names, disk sizes, family, parameter size, quantization, running state, and VRAM use. |
-| `list_installable_models` | Returns Eldrun's built-in catalog of common model families and tags. |
+| `list_installable_models` | Returns Tabtivity's built-in catalog of common model families and tags. |
 | `pull_ollama_model` | Pulls or updates a model through `/api/pull`. |
 | `stop_ollama_model` | Unloads a model from memory with `keep_alive = 0`. |
 | `delete_ollama_model` | Deletes a local model through `/api/delete`. |
@@ -573,7 +621,7 @@ spawns `ollama serve`; when system model directories are detected, it sets
 Local model tabs use `prepare_local_agent(model)`. The backend writes:
 
 ```text
-~/.local/share/eldrun/vibe_local/<alias>/config.toml
+~/.local/share/tabtivity/vibe_local/<alias>/config.toml
 ```
 
 The generated Vibe config pins `active_model = "<alias>"`, disables tools with
@@ -588,7 +636,7 @@ keeps global `~/.vibe/config.toml` untouched.
 | Key | Behavior |
 |-----|----------|
 | `F11` | Toggle fullscreen for the focused window (main or popout); also the fullscreen button in the window controls. |
-| `Super` | Toggle all panels (file panel, switcher). Only while Eldrun is focused. |
+| `Super` | Toggle all panels (file panel, switcher). Only while Tabtivity is focused. |
 | `Escape` | Close dialogs. |
 | `Enter` | Confirm create/import dialogs; activate a unique search result. |
 
@@ -616,12 +664,12 @@ Example: `My New Project!` → `my-new-project`.
 
 On confirmation the backend:
 
-1. Creates `~/eldrun/projects/<sanitized-name>/`.
+1. Creates `~/tabtivity/projects/<sanitized-name>/`.
 2. Runs `git init --initial-branch=main`, falling back to plain `git init`.
 3. Writes scaffold files.
-4. Commits them as `Initial project scaffold` with author `Eldrun <eldrun@local>`.
+4. Commits them as `Initial project scaffold` with author `Tabtivity <tabtivity@local>`.
 5. Creates project-local `project.json`.
-6. Adds a lightweight global index entry to `~/.local/share/eldrun/projects.json`.
+6. Adds a lightweight global index entry to `~/.local/share/tabtivity/projects.json`.
 
 ### Importing a Project
 
@@ -632,11 +680,11 @@ Import modes:
 | Mode | Behavior |
 |------|----------|
 | Keep location | Registers the selected directory in place. |
-| Copy | Copies the source into `~/eldrun/projects/<sanitized-name>/`, excluding `.git/`. |
-| Move | Moves the source into `~/eldrun/projects/<sanitized-name>/`. |
+| Copy | Copies the source into `~/tabtivity/projects/<sanitized-name>/`, excluding `.git/`. |
+| Move | Moves the source into `~/tabtivity/projects/<sanitized-name>/`. |
 
 Missing scaffold files are created without overwriting existing ones. If the
-target has no `.git/`, Eldrun initializes git and commits the registration.
+target has no `.git/`, Tabtivity initializes git and commits the registration.
 
 ### Scaffold Files
 
@@ -668,7 +716,7 @@ untouched text — and reports it as `updated_files`. Anything a user or agent
 wrote is left alone, and `project_scaffold_missing` counts a legacy stub as
 missing so the pill's tag agrees with what a repair would actually do.
 
-The root terminal also gets context files in `~/eldrun/root/`:
+The root terminal also gets context files in `~/tabtivity/root/`:
 `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`.
 
 ### Project Boxes (meta-project grouping)
@@ -682,7 +730,7 @@ merges across members, and box-rooted agent tabs (`BoxScopeChip.tsx`,
 `set_box_members`, `ensure_box_folder`, `refresh_box_agent_docs`,
 `set_box_relations`.
 
-- **Data model (N:M).** Boxes live in their own `~/.local/share/eldrun/boxes.json`
+- **Data model (N:M).** Boxes live in their own `~/.local/share/tabtivity/boxes.json`
   (`Vec<ProjectBox>` = `{id, name, member_ids, position, folder?, relations}`)
   so `projects.json` stays byte-compatible. The box's ordered `member_ids` is
   the ONLY membership record, and membership is non-exclusive — a project may
@@ -712,19 +760,19 @@ merges across members, and box-rooted agent tabs (`BoxScopeChip.tsx`,
   the two). While a box slice is selected the switcher's "+" lists non-members
   to add, and each member pill's ✕ removes only that membership.
 - **Box folder, agent docs + member symlinks.** Opening a box (`openBox` →
-  `ensure_box_folder`) lazily creates a folder under `~/eldrun/boxes/<name>/`
+  `ensure_box_folder`) lazily creates a folder under `~/tabtivity/boxes/<name>/`
   (unique name resolved against other boxes and existing dirs) and
   writes/refreshes managed `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks
   pointing at each member's root and same-named agent doc; only the text
-  between the `<!-- eldrun:box-links:start -->` / `…:end -->` markers is
+  between the `<!-- tabtivity:box-links:start -->` / `…:end -->` markers is
   regenerated, so user edits outside the block survive. Beside the docs, one
   **symlink per member** (Unix; skipped on Windows) makes each member root
   reachable as `./<member>/`, so agent CLIs launched in the box folder can
   traverse into every member. Ownership is recorded in
-  `.eldrun-box-links.json`: regeneration only ever removes links Eldrun itself
+  `.tabtivity-box-links.json`: regeneration only ever removes links Tabtivity itself
   created, never a user file shadowing a member's name (the member re-links
-  under a `-1` suffix instead). Eldrun's own file confinement deliberately does
-  NOT follow the links — the multi-root Files view is Eldrun's file surface.
+  under a `-1` suffix instead). Tabtivity's own file confinement deliberately does
+  NOT follow the links — the multi-root Files view is Tabtivity's file surface.
   `refresh_box_agent_docs` re-runs both after membership changes.
 - **Box scope (persisted).** Opening a box activates a `box:<id>` tab scope
   (disjoint from project ids and `"root"`). The scope is first-class now: its
@@ -748,7 +796,7 @@ the project; nothing else about working in it changes.
 | Tier | Where tabs run | Files | Chosen |
 |------|----------------|-------|--------|
 | Local | host, in the project dir | host | default |
-| Containerized | one session-lived `eldrun-<id>` Docker container | host (bind-mounted at the *identical* absolute path) | pill toggle |
+| Containerized | one session-lived `tabtivity-<id>` Docker container | host (bind-mounted at the *identical* absolute path) | pill toggle |
 | Remote SSH | the host, over `ssh -tt` on a pooled ControlMaster | the host, over SFTP | at creation, or by *extending* a local project |
 | VM | a QEMU/KVM guest, over SSH on a forwarded loopback port | guest only — **no shared filesystem** | at creation only |
 
@@ -772,7 +820,7 @@ properties of the *process* — where it runs and what it can reach.
 
 An agent's **permission mode** is deliberately not among them. Claude's
 plan/accept-edits, Codex's sandbox and approval policy, Gemini's approval mode:
-each is set inside that agent's own CLI, and Eldrun launches the plain command
+each is set inside that agent's own CLI, and Tabtivity launches the plain command
 with no mode flag. A per-tab Plan/Auto toggle existed and was removed — a mode
 is a *launch* flag, so every flip respawned the PTY (losing the scrollback and
 any turn in flight), and a persisted per-tab mode became a second authority
@@ -839,7 +887,7 @@ Tauri v2 Application
 |   |   +-- mail.rs / calendar.rs / caldav.rs / browser.rs / printing.rs
 |   |   +-- tex.rs / synctex.rs / presenter.rs / sqlite.rs / sheets.rs
 |   |   +-- skills.rs / agents.rs / ollama.rs / monitor.rs / usage_stats.rs
-|   |   +-- mobile_control.rs  Eldrun Mobile sidecar commands
+|   |   +-- mobile_control.rs  Tabtivity Mobile sidecar commands
 |   |   +-- apps.rs / default_apps.rs / workspace.rs / subwindow.rs
 |   +-- services/         Reusable runtime logic, AppHandle-free where that
 |   |                     is the established boundary (~45 modules)
@@ -859,7 +907,7 @@ Tauri v2 Application
 |   |   +-- windows.rs / macos.rs / null.rs
 |   +-- terminal/mod.rs   PTY registry the frontend reconnects to by id
 |   +-- schema/           Serde structs mirroring persisted JSON
-|   +-- paths.rs / storage.rs   Path helpers (~/.local/share/eldrun/)
+|   +-- paths.rs / storage.rs   Path helpers (~/.local/share/tabtivity/)
 |   +-- lib.rs            Command registration and app setup
 |   +-- main.rs           Tauri entry point
 +-- React/TypeScript frontend (src/)
@@ -893,15 +941,15 @@ keys.
 
 ## Persistence Model
 
-Eldrun splits global index data from project-local metadata.
+Tabtivity splits global index data from project-local metadata.
 
 ### Global Directory
 
-All global data is under `~/.local/share/eldrun/`.
+All global data is under `~/.local/share/tabtivity/`.
 
 | File | Purpose |
 |------|---------|
-| `projects.json` | Lightweight index of known projects. The retired built-in Trash workspace's `eldrun-trash` entry is dropped on every read/write. |
+| `projects.json` | Lightweight index of known projects. The retired built-in Trash workspace's `tabtivity-trash` entry is dropped on every read/write. |
 | `boxes.json` | Project-box definitions (id, name, ordered `member_ids`, `folder?`, relations). |
 | `settings.json` | User settings: agent command, theme, workspace management, global apps, experimental flags, shortcut overrides, window state. |
 | `default_apps.json` | Global file-extension → app command map. |
@@ -913,7 +961,7 @@ All global data is under `~/.local/share/eldrun/`.
 | `crash.log` | Appended on Rust panics. |
 | `sessions/<project id>/terminals.json` | **Tab layout and `open_apps`**, keyed by project id — outside the project tree. |
 | `mail/` | Sealed mail store: SQLite index, blobs, `accounts.json.enc`, `filters.json.enc`. |
-| `browser/`, `vm/`, `remote-projects/`, `skills_cache/` | Per-subsystem state. Box *folders* live under `~/eldrun/boxes/<name>/` (outside the state dir); a box scope's tab layout persists under `sessions/box_<id>/`. |
+| `browser/`, `vm/`, `remote-projects/`, `skills_cache/` | Per-subsystem state. Box *folders* live under `~/tabtivity/boxes/<name>/` (outside the state dir); a box scope's tab layout persists under `sessions/box_<id>/`. |
 | `vibe_local/` | Per-model Vibe homes for local Ollama agent tabs. |
 
 `active_session.json` no longer exists; orphan-session recovery is handled
@@ -921,11 +969,11 @@ inside the time-tracking service.
 
 **Session state lives outside the project tree.** Tab layout and `open_apps` are
 stored per project id under `sessions/`. The copy inside a project folder
-(`<project>/.eldrun/sessions/terminals.json`) is legacy/export-only and is
+(`<project>/.tabtivity/sessions/terminals.json`) is legacy/export-only and is
 adopted only on an explicit request (`commands::projects::adopt_folder_tab_layout`)
 — and `open_apps` is **never** adopted, since a folder-supplied list of host
 commands to launch is exactly what the move guarded against. Treat any in-project
-control file as attacker-controlled: Eldrun's control files live in a
+control file as attacker-controlled: Tabtivity's control files live in a
 container's rw mount, and the host reads them as executable intent.
 
 Usage stats are deliberately **not** mixed with time (`time_summary.json`),
@@ -946,7 +994,7 @@ Each entry:
   "name": "My Project",
   "status": "current",
   "position": 10,
-  "local_file": "/home/user/eldrun/projects/my-project/project.json"
+  "local_file": "/home/user/tabtivity/projects/my-project/project.json"
 }
 ```
 
@@ -964,12 +1012,12 @@ Each entry:
 {
   "id": "<uuid4>",
   "name": "My Project",
-  "directory": "/home/user/eldrun/projects/my-project",
+  "directory": "/home/user/tabtivity/projects/my-project",
   "git_type": "remote-private",
   "created_at": "2026-06-01T10:00:00+00:00",
   "status": "current",
   "position": 10,
-  "local_file": "/home/user/eldrun/projects/my-project/project.json",
+  "local_file": "/home/user/tabtivity/projects/my-project/project.json",
   "default_apps": {
     ".md": "gnome-text-editor"
   },
@@ -1101,7 +1149,7 @@ startup. (The former `active_session.json` sentinel file is gone.)
 5. Workspace management (if enabled) allocates desktops for visible projects.
 6. The daily recap opens on the first launch of each day (`daily_stats_recap`,
    default on).
-7. If Eldrun Mobile is enabled, the loopback sidecar starts; the header's
+7. If Tabtivity Mobile is enabled, the loopback sidecar starts; the header's
    `MobileIndicator` reports its status.
 8. Connection lamps fill in. Keychain reads are **bounded**
    (`remote_credentials::read_timed`, 4 s): a locked Secret Service collection
@@ -1145,9 +1193,9 @@ wrapper/pidfile mechanism.
 
 **Restore.** Shell and files tabs always restore. Claude and Codex agent tabs
 that carry a `sessionId` are resumable and restored with `--resume`; Gemini and
-Vibe tabs are dropped. Eldrun installs `SessionStart` hooks (a POSIX script on
+Vibe tabs are dropped. Tabtivity installs `SessionStart` hooks (a POSIX script on
 Linux, a PowerShell `.ps1` on Windows) that record each tab's live session id
-keyed by an `ELDRUN_TAB_UID` env var, so resume follows the live session even
+keyed by a `TABTIVITY_TAB_UID` env var, so resume follows the live session even
 across a `/clear`. Codex additionally has hook-free binding, and Codex user hooks
 may need a one-time `/hooks` trust.
 
@@ -1182,7 +1230,7 @@ as external processes tracked by PID.
 Two unrelated things, often confused:
 
 - **Online / offline** is read from the webview's own `navigator.onLine` and its
-  `online`/`offline` events in `HeaderBar.tsx`. Eldrun runs **no** reachability
+  `online`/`offline` events in `HeaderBar.tsx`. Tabtivity runs **no** reachability
   probe of its own and contacts no third-party host to decide this.
 - **Adapter type** (`lan` / `wlan`) comes from the `network_conn_type` command,
   polled every 10 s and stretched under the power saver.
@@ -1206,8 +1254,8 @@ Backend auto-detection:
 
 **X11 two-desktop model:**
 
-- Workspace 0 (`Eldrun`): the visible workspace for the current project.
-- Workspace 1 (`Eldrun-Hidden`): parking workspace for inactive project windows.
+- Workspace 0 (`Tabtivity`): the visible workspace for the current project.
+- Workspace 1 (`Tabtivity-Hidden`): parking workspace for inactive project windows.
 - On project switch, non-sticky windows from workspace 0 are moved to workspace
   1 (or vice versa).
 - Global app windows are excluded from parking.
@@ -1216,28 +1264,28 @@ Backend auto-detection:
 
 - Each project gets a dedicated KDE virtual desktop.
 - Switching projects switches `VirtualDesktopManager.current` via KWin DBus.
-- Eldrun is made sticky at startup via `_NET_WM_STATE_STICKY` or KWin scripting.
+- Tabtivity is made sticky at startup via `_NET_WM_STATE_STICKY` or KWin scripting.
 - KDE 5 and KDE 6 use different DBus paths (`/KWin` vs `/VirtualDesktopManager`).
 - Window enumeration uses KWin JS scripting via `org.kde.kwin.Scripting`.
 
 ### Downloads (removed)
 
-Eldrun used to maintain a `~/eldrun/downloads` symlink and rewrite Firefox and
+Tabtivity used to maintain a `~/tabtivity/downloads` symlink and rewrite Firefox and
 Chromium preference files on project switch. **Both were removed on 2026-06-30**,
-along with `commands/downloads.rs`, under the rule that Eldrun must never
+along with `commands/downloads.rs`, under the rule that Tabtivity must never
 manipulate another application's paths or config. `tests/no_foreign_config_writes.rs`
 is a regression guard that fails the build if such a write reappears in the source
 tree; the agent-session hooks (`services/agent_session.rs`) are the one deliberate
 exception to that rule.
 
-What remains is Eldrun's own: the in-app browser writes into its own downloads
+What remains is Tabtivity's own: the in-app browser writes into its own downloads
 directory — never the active project — and `commands/fs.rs::list_recent_downloads`
 is an unconfined lister sharing its shape with the project-confined one.
 
 ### Crash Logging
 
 `std::panic::set_hook` in the Rust backend appends stack traces to
-`~/.local/share/eldrun/crash.log` on panics.
+`~/.local/share/tabtivity/crash.log` on panics.
 
 ## Tests and Quality Checks
 
@@ -1300,7 +1348,7 @@ Ollama integration test skips itself when no local server or model is available.
   activation. Shell and files tabs restore, and Claude/Codex tabs with a
   `sessionId` resume their conversation, but live scrollback is not restored and
   Gemini/Vibe agent tabs are dropped. On a *remote* project, a tmux session per
-  shell tab does survive an SSH drop, a laptop sleep, or Eldrun quitting.
+  shell tab does survive an SSH drop, a laptop sleep, or Tabtivity quitting.
 - Detached (popped-out) subwindows are session-only: they re-dock into the main
   layout on restart rather than respawning as separate OS windows.
 - Project-box scopes are session-only: a box's tabs are dropped on project switch
@@ -1314,7 +1362,7 @@ Ollama integration test skips itself when no local server or model is available.
   has permission to do so; otherwise it falls back to a user `ollama serve`
   process.
 - Open-app restore uses a best-effort relaunch model; the geometry and focus
-  order of *externally launched app* windows are not restored. (Eldrun's own main
+  order of *externally launched app* windows are not restored. (Tabtivity's own main
   window does restore its monitor, position, size, and maximized state — see
   Startup below.)
 - Online/offline reflects what the webview reports (`navigator.onLine`), which
@@ -1324,7 +1372,7 @@ Ollama integration test skips itself when no local server or model is available.
   been run live (no VM has been booted), CalDAV has never been pointed at a real
   server, and SLURM/HPC awaits real-cluster QA. Such items carry an `UntestedTag`
   pill in the UI.
-- Eldrun Mobile hosts on all three OSes — systemd user service on Linux,
+- Tabtivity Mobile hosts on all three OSes — systemd user service on Linux,
   launchd LaunchAgent on macOS, Run-key autostart plus a named-pipe control
   plane on Windows, where terminal attach still requires tmux so only the
   desktop-mediated surfaces (mail, calendar, to-dos, pairing) work. Tailscale
@@ -1343,14 +1391,14 @@ Ollama integration test skips itself when no local server or model is available.
   with DMABUF off. DMABUF stays disabled — a 2026-08-05 re-test on WebKitGTK
   2.52.3 was faster but produced flicker, missing PDF images, and a renderer
   crash.
-- A native scrollbar's shape is unreachable from CSS on WebKitGTK, so Eldrun
+- A native scrollbar's shape is unreachable from CSS on WebKitGTK, so Tabtivity
   hides the engine's bar and draws its own (`lib/theme/customScrollbar.ts`).
 
 ## Practical Development Notes
 
 - Edit frontend under `src/`; backend under `src-tauri/src/`. Run all five gates
   above before handing off changes.
-- **Agents must never start Eldrun**, and must never stop an instance they did
+- **Agents must never start Tabtivity**, and must never stop an instance they did
   not start — a running window holds the user's open tabs and live terminals.
   The app's lifecycle belongs to the user. To verify something live, ask them to
   launch it or use a window they already have open; otherwise report the
@@ -1367,7 +1415,7 @@ Ollama integration test skips itself when no local server or model is available.
 - Keep service modules `AppHandle`-free and unit-testable where that is the
   established boundary.
 - Keep Tauri command payload names in camelCase to match frontend `invoke` calls.
-- Global/runtime data lives under `~/.local/share/eldrun/`; do not store it in
+- Global/runtime data lives under `~/.local/share/tabtivity/`; do not store it in
   tracked markdown files. Unknown JSON fields are preserved on read/write to
   allow rollback to earlier versions, and existing user state must round-trip
   cleanly.

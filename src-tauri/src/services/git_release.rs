@@ -1,6 +1,6 @@
 //! Release tags: tag a commit the remote already has and push exactly that
 //! tag. Shared by the git bar's Release button (the user's click) and an
-//! agent's `git_release` proposal on the `eldrun-git` lane
+//! agent's `git_release` proposal on the `tabtivity-git` lane
 //! (`services::git_push_mcp`), which the user approves on the same card as a
 //! push. `docs/context/git_push_mcp.md`. AppHandle-free.
 //!

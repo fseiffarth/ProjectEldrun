@@ -860,7 +860,7 @@ fn local_publish(
             args.extend(["push", "-u", "origin", "HEAD"].map(String::from));
             let mut push = crate::commands::git::hooked_git_command_in(dir, &args);
             if let Some(tok) = token {
-                push.env("ELDRUN_GIT_TOKEN", tok);
+                push.env(crate::app_env!("GIT_TOKEN"), tok);
                 push.env("GIT_TERMINAL_PROMPT", "0");
             }
             out.push('\n');

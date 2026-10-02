@@ -491,7 +491,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       setMenuPos(null);
       return;
     }
-    // Build the full launch spec (session-id minting, ELDRUN_TAB_UID, args,
+    // Build the full launch spec (session-id minting, TABTIVITY_TAB_UID, args,
     // session-rename input) via the shared helper so the main and detached add
     // menus can never drift. An agent on a project with linked worktrees is
     // asked which one first; the menu closes either way and the tab appears
@@ -1113,7 +1113,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         return;
       }
       // Released in FREE SPACE — outside the main window and not over a FRONT popout,
-      // so no visible Eldrun window is under the cursor (e.g. dragged onto the desktop
+      // so no visible Tabtivity window is under the cursor (e.g. dragged onto the desktop
       // or another monitor). Pop this tab into its own standalone OS window. Client
       // coords outside [0,inner) is the outside-the-window signal (DOM clientX/Y is
       // reliable CSS px on every engine). An OCCLUDED popout is deliberately NOT
@@ -1513,7 +1513,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             />
             {/* There is deliberately no Plan/Auto TOGGLE here. An agent's
                 permission mode is the agent's own to set, through its own CLI
-                (Claude's shift+tab, Codex's mode picker) — Eldrun launches the
+                (Claude's shift+tab, Codex's mode picker) — Tabtivity launches the
                 plain command and injects no mode flag. The badge that used to
                 sit here rewrote the tab's launch args, which respawned the PTY
                 on every flip; the mode a user sets inside the session still

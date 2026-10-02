@@ -20,6 +20,7 @@ import { openConnectionInRoot, forgetConnection } from "../../lib/remote/remoteC
 import { allGroups, useTabsStore } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
 import { useRootOverlayStore } from "../../stores/rootOverlay";
+import { BRAND } from "../../lib/brand";
 
 const rootTabs = () => useTabsStore.getState().tabsByScope.root ?? [];
 
@@ -32,7 +33,7 @@ beforeEach(() => {
     layoutByScope: { root: null },
     focusedGroupByScope: { root: null },
   });
-  useProjectsStore.setState({ rootDir: "/home/u/eldrun/root", activeId: "p1", switchToast: null });
+  useProjectsStore.setState({ rootDir: `/home/u/${BRAND.slug}/root`, activeId: "p1", switchToast: null });
   useRootOverlayStore.setState({ open: false, installTabs: {} });
 });
 

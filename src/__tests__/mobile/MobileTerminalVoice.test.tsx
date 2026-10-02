@@ -60,6 +60,7 @@ class FakeWebSocket {
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { BRAND, storageKey } from "../../lib/brand";
 
 function finalResult(transcript: string): MobileSpeechRecognitionResultEvent {
   return {
@@ -68,7 +69,7 @@ function finalResult(transcript: string): MobileSpeechRecognitionResultEvent {
   } as unknown as MobileSpeechRecognitionResultEvent;
 }
 
-describe("Eldrun Mobile terminal dictation", () => {
+describe(`${BRAND.display} Mobile terminal dictation`, () => {
   beforeEach(() => {
     // The composer's draft is kept on the phone now (`drafts.ts`), and the
     // unmount that flushes it runs in Testing Library's own cleanup — after this
@@ -80,8 +81,8 @@ describe("Eldrun Mobile terminal dictation", () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     // These read the Focus view; the phone opens on Terminal until the
     // reader chose Focus for the agent, so the stored choice is preset.
-    localStorage.setItem("eldrun.mobile.view.agent", "focus");
-    localStorage.setItem("eldrun.mobile.view.shell", "focus");
+    localStorage.setItem(storageKey("mobile.view.agent"), "focus");
+    localStorage.setItem(storageKey("mobile.view.shell"), "focus");
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
@@ -118,7 +119,7 @@ describe("Eldrun Mobile terminal dictation", () => {
     expect(FakeRecognition.instances[0].lang).toBe("en-GB");
 
     // The picker writes one choice for both directions of voice.
-    localStorage.setItem("eldrun.mobile.speechLang", "de");
+    localStorage.setItem(storageKey("mobile.speechLang"), "de");
     fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
     fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
     await act(async () => {});
@@ -228,7 +229,7 @@ describe("Eldrun Mobile terminal dictation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Chat" }));
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /phone's speech service/ }));
-    expect(localStorage.getItem("eldrun.mobile.voiceRemote")).toBe("1");
+    expect(localStorage.getItem(storageKey("mobile.voiceRemote"))).toBe("1");
     available.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
     await act(async () => {});
@@ -251,7 +252,7 @@ describe("Eldrun Mobile terminal dictation", () => {
     expect(choice.getAttribute("aria-disabled")).toBe("true");
     expect(choice.textContent).toContain("always dictates with the phone's speech service");
     fireEvent.click(choice);
-    expect(localStorage.getItem("eldrun.mobile.voiceRemote")).toBeNull();
+    expect(localStorage.getItem(storageKey("mobile.voiceRemote"))).toBeNull();
   });
 
   it("does not stage cleared dictation again when the phone re-reads its results", async () => {
@@ -323,7 +324,7 @@ describe("Eldrun Mobile terminal dictation", () => {
 
   it("keeps the native shell composer available beside the read-only terminal", async () => {
     // No choice stored for shells: the tab opens on the terminal itself.
-    localStorage.removeItem("eldrun.mobile.view.shell");
+    localStorage.removeItem(storageKey("mobile.view.shell"));
     render(<Terminal tab={{ id: "opaque-shell", label: "Shell", kind: "shell", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});
 
@@ -333,7 +334,7 @@ describe("Eldrun Mobile terminal dictation", () => {
     expect(screen.getByRole("textbox", { name: "Shell command" })).toBeTruthy();
     fireEvent.click(focus);
     expect(focus.getAttribute("aria-pressed")).toBe("true");
-    expect(localStorage.getItem("eldrun.mobile.view.shell")).toBe("focus");
+    expect(localStorage.getItem(storageKey("mobile.view.shell"))).toBe("focus");
     expect(screen.getByRole("textbox", { name: "Shell command" })).toBeTruthy();
   });
 

@@ -1,5 +1,5 @@
 //! Hook-free Codex session binding — the fallback that keeps Codex tabs
-//! resumable when Codex won't run Eldrun's `SessionStart` hook.
+//! resumable when Codex won't run Tabtivity's `SessionStart` hook.
 //!
 //! Codex gates user-level hooks behind a one-time trust approval (`/hooks`), and
 //! an untrusted hook never fires — silently. Until the user trusts it, nothing
@@ -22,19 +22,20 @@
 //!   cannot both be assigned the same conversation, and once a tab's hook
 //!   records the conversation a sibling was only guessed into, that guess is
 //!   withdrawn — two tabs never keep one conversation.
-//! - A Codex started *outside* Eldrun in a tracked tab's cwd can be mis-claimed
+//! - A Codex started *outside* Tabtivity in a tracked tab's cwd can be mis-claimed
 //!   when that tab's `/clear` is being rebound.
 //!
 //! Remote (ssh) Codex tabs are out of scope: their rollouts live on the far
 //! host, so `commands::terminal::pty_spawn` never tracks them. Every local tab's
-//! Codex — fenced or containerized — lives in its scope's Eldrun-owned agent
+//! Codex — fenced or containerized — lives in its scope's Tabtivity-owned agent
 //! home (`services::agent_home`), so each tracked tab carries the sessions
 //! tree of its own scope and the poll walks one tree per scope.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::services::agent_session;
 
@@ -52,6 +53,14 @@ const SLACK: Duration = Duration::from_secs(2);
 const FAST_TICK: Duration = Duration::from_millis(400);
 const SLOW_TICK: Duration = Duration::from_secs(2);
 const FAST_PHASE: Duration = Duration::from_secs(20);
+
+/// Once every tracked tab of a scope is past `FAST_PHASE`, its sessions tree is
+/// walked again only when a watcher saw something under it change — a new
+/// rollout (`/clear`), an append (a `/resume` writing to an old one) — or when
+/// this backstop is due. The walk stats every rollout Codex ever wrote, so a
+/// long-used home paid that every `SLOW_TICK` for as long as a Codex tab was
+/// open. A tree that cannot be watched is walked every tick, as before.
+const QUIET_BACKSTOP: Duration = Duration::from_secs(30);
 
 /// A rollout's identifying header: the first JSONL line, when it is a
 /// `session_meta` record.
@@ -72,7 +81,7 @@ pub struct RolloutMeta {
 
 /// One Codex tab the binder is following.
 struct Tracked {
-    /// `ELDRUN_TAB_UID` — the key `live_sessions/<uid>` is stored under.
+    /// `TABTIVITY_TAB_UID` — the key `live_sessions/<uid>` is stored under.
     uid: String,
     /// The tab's cwd, canonicalized where possible (matched against `meta.cwd`).
     cwd: PathBuf,
@@ -398,23 +407,98 @@ struct Snapshot {
     guessed: Option<String>,
 }
 
+/// A watch on one scope's sessions tree (see `QUIET_BACKSTOP`).
+struct RootWatch {
+    watcher: Option<notify::RecommendedWatcher>,
+    /// Set by the watcher on any create/modify/remove under the tree; taken by
+    /// the pass that walks it.
+    changed: Arc<AtomicBool>,
+    last_pass: Option<Instant>,
+    /// When starting the watcher last failed (a tree Codex has not created
+    /// yet), so a missing tree is retried at the backstop, not every tick.
+    failed_at: Option<Instant>,
+}
+
+fn root_watches() -> &'static Mutex<HashMap<PathBuf, RootWatch>> {
+    static W: OnceLock<Mutex<HashMap<PathBuf, RootWatch>>> = OnceLock::new();
+    W.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn watch_tree(root: &Path, changed: &Arc<AtomicBool>) -> Option<notify::RecommendedWatcher> {
+    use notify::{RecursiveMode, Watcher};
+    let flag = changed.clone();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        // Content changes only: the pass's own reads of rollout headers are
+        // access events, and counting them would keep the tree "changed".
+        if res.is_ok_and(|ev| ev.kind.is_create() || ev.kind.is_modify() || ev.kind.is_remove()) {
+            flag.store(true, Ordering::Release);
+        }
+    })
+    .ok()?;
+    watcher.watch(root, RecursiveMode::Recursive).ok()?;
+    Some(watcher)
+}
+
+/// Whether `root` needs walking at `now`: always while it cannot be watched,
+/// otherwise when something under it changed or the backstop is due.
+fn pass_due(watch: &mut RootWatch, root: &Path, now: Instant) -> bool {
+    if watch.watcher.is_none()
+        && watch.failed_at.is_none_or(|t| now.duration_since(t) >= QUIET_BACKSTOP)
+    {
+        watch.watcher = watch_tree(root, &watch.changed);
+        watch.failed_at = watch.watcher.is_none().then_some(now);
+        // A fresh watch saw nothing before it started: walk once now.
+        watch.last_pass = None;
+    }
+    let changed = watch.changed.swap(false, Ordering::AcqRel);
+    let due = watch.watcher.is_none()
+        || changed
+        || watch.last_pass.is_none_or(|t| now.duration_since(t) >= QUIET_BACKSTOP);
+    if due {
+        watch.last_pass = Some(now);
+    }
+    due
+}
+
 /// One pass: bind every tracked tab that can be bound, one walk per scope's
 /// sessions tree. Returns how long to wait before the next pass.
 fn poll_once() -> Duration {
-    let roots: Vec<PathBuf> = {
+    let now = SystemTime::now();
+    let (roots, young): (Vec<PathBuf>, HashSet<PathBuf>) = {
         let b = binder().lock().unwrap();
         let mut roots: Vec<PathBuf> = b.tabs.values().map(|t| t.root.clone()).collect();
         roots.sort();
         roots.dedup();
-        roots
+        let young = b
+            .tabs
+            .values()
+            .filter(|t| now.duration_since(t.since).unwrap_or_default() < FAST_PHASE)
+            .map(|t| t.root.clone())
+            .collect();
+        (roots, young)
     };
+    // A scope with no tracked tab left drops its watch.
+    root_watches().lock().unwrap().retain(|r, _| roots.contains(r));
     if roots.is_empty() {
         return SLOW_TICK;
     }
     let live = agent_session::live_sessions_dir();
+    let at = Instant::now();
     roots
         .iter()
         .map(|root| {
+            if !young.contains(root) {
+                let mut watches = root_watches().lock().unwrap();
+                let watch = watches.entry(root.clone()).or_insert_with(|| RootWatch {
+                    watcher: None,
+                    changed: Arc::new(AtomicBool::new(false)),
+                    last_pass: None,
+                    failed_at: None,
+                });
+                if !pass_due(watch, root, at) {
+                    return SLOW_TICK;
+                }
+            }
             let store = root
                 .parent()
                 .and_then(crate::services::codex_store::state_db_in);
@@ -626,6 +710,52 @@ mod tests {
         }
     }
 
+    fn new_watch() -> RootWatch {
+        RootWatch {
+            watcher: None,
+            changed: Arc::new(AtomicBool::new(false)),
+            last_pass: None,
+            failed_at: None,
+        }
+    }
+
+    /// A quiet scope's tree is walked once when watched, then only after a
+    /// change under it (or at the backstop).
+    #[test]
+    fn a_watched_tree_is_walked_only_after_a_change() {
+        let root = unique_tmp("codex-watch");
+        std::fs::create_dir_all(root.join("2026/10/01")).unwrap();
+        let mut w = new_watch();
+        let t0 = Instant::now();
+        assert!(pass_due(&mut w, &root, t0), "first pass walks");
+        assert!(w.watcher.is_some());
+        assert!(!pass_due(&mut w, &root, t0 + Duration::from_secs(2)), "nothing changed");
+
+        std::fs::write(root.join("2026/10/01/rollout-x.jsonl"), b"{}\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !w.changed.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(pass_due(&mut w, &root, t0 + Duration::from_secs(4)), "a new rollout walks");
+        assert!(!pass_due(&mut w, &root, t0 + Duration::from_secs(6)));
+        assert!(
+            pass_due(&mut w, &root, t0 + Duration::from_secs(4) + QUIET_BACKSTOP),
+            "the backstop walks"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A tree Codex has not created yet cannot be watched: it is walked every tick.
+    #[test]
+    fn an_unwatchable_tree_is_walked_every_tick() {
+        let root = unique_tmp("codex-watch-missing");
+        let mut w = new_watch();
+        let t0 = Instant::now();
+        assert!(pass_due(&mut w, &root, t0));
+        assert!(w.watcher.is_none());
+        assert!(pass_due(&mut w, &root, t0 + Duration::from_secs(2)));
+    }
+
     fn tracked(uid: &str, cwd: &Path, root: &Path, since_secs: u64) -> Tracked {
         Tracked {
             uid: uid.into(),
@@ -805,7 +935,7 @@ mod tests {
 
     #[test]
     fn snapshot_ids_opens_no_files() {
-        let root = unique_tmp("eldrun-bind-snap");
+        let root = unique_tmp(concat!(crate::app_slug!(), "-bind-snap"));
         let day = root.join("2026").join("07").join("11");
         std::fs::create_dir_all(&day).unwrap();
         for id in [A, B] {
@@ -827,7 +957,7 @@ mod tests {
 
     #[test]
     fn read_rollout_meta_handles_a_fat_header_and_rejects_non_meta() {
-        let root = unique_tmp("eldrun-bind-head");
+        let root = unique_tmp(concat!(crate::app_slug!(), "-bind-head"));
         std::fs::create_dir_all(&root).unwrap();
 
         // Real headers inline ~20 KB of base instructions ahead of nothing in

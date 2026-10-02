@@ -8,7 +8,7 @@ import { ErrorNote } from "./ErrorNote";
 
 /**
  * The three shapes every in-app question takes — ask for a name, ask yes/no,
- * say something happened — in Eldrun's own chrome.
+ * say something happened — in Tabtivity's own chrome.
  *
  * `RenameDialog` replaced one `window.prompt()` because WebKitGTK draws it as a
  * bare browser alert headed with the page origin ("localhost:1420 says" in a dev
@@ -16,7 +16,7 @@ import { ErrorNote } from "./ErrorNote";
  * folder the file is in, and throwing the typed name away when the operation
  * fails. Every *other* side-panel gesture kept the native box, so the panel
  * asked its questions two different ways depending on which one you clicked —
- * a rename in Eldrun's dialog, "New File" next to it in the browser's.
+ * a rename in Tabtivity's dialog, "New File" next to it in the browser's.
  *
  * So the rename dialog's chrome is generalized here rather than copied a
  * seventh time: `.file-delete-dialog` is the file-operation family's surface

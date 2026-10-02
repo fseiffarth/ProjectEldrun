@@ -1,7 +1,7 @@
-//! Read-only CI for the `eldrun-git` lane (`services::git_push_mcp`): a
+//! Read-only CI for the `tabtivity-git` lane (`services::git_push_mcp`): a
 //! fenced agent reads why a GitHub Actions run — the build, the tests, the
 //! security workflow — failed, and which code-scanning alerts are open,
-//! without the token entering its sandbox. Eldrun asks api.github.com from the
+//! without the token entering its sandbox. Tabtivity asks api.github.com from the
 //! host and hands back capped, redacted text. `docs/context/git_push_mcp.md`.
 //! AppHandle-free.
 //!
@@ -87,7 +87,7 @@ fn client() -> Result<reqwest::Client, Failure> {
     // `reqwest` is built with `rustls-no-provider`; see `app_update::client`.
     crate::services::mail_engine::install_crypto_provider();
     reqwest::Client::builder()
-        .user_agent(concat!("Eldrun/", env!("CARGO_PKG_VERSION")))
+        .user_agent(crate::brand::user_agent())
         .timeout(Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::none())
         .build()

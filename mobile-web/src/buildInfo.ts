@@ -4,11 +4,11 @@
 // hand whether a refresh actually picked up the new one.
 import { version as APP_VERSION } from "../../package.json";
 
-declare const __ELDRUN_MOBILE_BUILT_AT__: string | undefined;
-declare const __ELDRUN_MOBILE_COMMIT__: string | undefined;
+declare const __APP_MOBILE_BUILT_AT__: string | undefined;
+declare const __APP_MOBILE_COMMIT__: string | undefined;
 
-const BUILT_AT = typeof __ELDRUN_MOBILE_BUILT_AT__ === "string" ? __ELDRUN_MOBILE_BUILT_AT__ : undefined;
-const COMMIT = typeof __ELDRUN_MOBILE_COMMIT__ === "string" ? __ELDRUN_MOBILE_COMMIT__ : "";
+const BUILT_AT = typeof __APP_MOBILE_BUILT_AT__ === "string" ? __APP_MOBILE_BUILT_AT__ : undefined;
+const COMMIT = typeof __APP_MOBILE_COMMIT__ === "string" ? __APP_MOBILE_COMMIT__ : "";
 
 /** `dd-mm hh:mm` in the phone's local time, or "" when the stamp is missing or unreadable. */
 export function formatBuildStamp(iso: string | undefined = BUILT_AT): string {

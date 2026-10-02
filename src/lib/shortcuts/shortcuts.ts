@@ -254,7 +254,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // The boxes' twin of the project cycle: walk the box pills in the leading
   // segment (their row order) and open the next / previous box. Ctrl+Shift+
   // PageUp/Down is what tabbed terminals use to MOVE a tab, which an xterm.js
-  // terminal in Eldrun has no use for, and it is no editor chord either.
+  // terminal in Tabtivity has no use for, and it is no editor chord either.
   {
     action: "cycleBox",
     labelKey: "shortcut.cycleBox",
@@ -750,6 +750,8 @@ export const STEERING_CONTEXTS: { id: SteeringContext; labelKey: TranslationKey 
  *   agentPrompt — the active tab is an agent (the prompt box sends to it)
  *   intoTerminal — where ←/→ step tabs, and the active tab is a terminal
  *                ↓ can scroll (the scroll level)
+ *   popouts    — the active scope has a subwindow popped out into its own
+ *                window (J raises it)
  */
 export type SteeringCondition =
   | "stepsPanes"
@@ -767,7 +769,8 @@ export type SteeringCondition =
   | "agentPlan"
   | "agentGoal"
   | "agentPrompt"
-  | "intoTerminal";
+  | "intoTerminal"
+  | "popouts";
 
 /** One row of the steering legend / cheat sheet: the steering actions it
  *  explains (their keys render through `steeringRowLabel`, so a rebind shows
@@ -828,6 +831,8 @@ export interface SteeringLegendState {
   apps: { mail: boolean; calendar: boolean; todo: boolean };
   /** The active tab is a live terminal (↓ scrolls it). */
   terminal?: boolean;
+  /** The active scope has popped-out subwindows. */
+  popouts?: boolean;
   /** The agent keys the active tab takes; unset = none. */
   agent?: { clear: boolean; plan: boolean; goal: boolean; prompt: boolean };
   /** How many tabs, in every scope, need an answer / work / finished unseen. */
@@ -862,6 +867,8 @@ function steeringConditionHolds(cond: SteeringCondition, s: SteeringLegendState)
       return !!s.agent?.prompt;
     case "intoTerminal":
       return !!s.terminal && steeringConditionHolds("stepsTabs", s);
+    case "popouts":
+      return !!s.popouts;
     default:
       return s.apps[cond];
   }
@@ -962,6 +969,7 @@ export const STEERING_KEYS: SteeringKeyDef[] = [
   { actions: ["panels"], labelKey: "steering.panels.label", descKey: "steering.panels.desc", levels: BASE_LEVELS, group: "open" },
   { actions: ["settings"], labelKey: "steering.settings.label", descKey: "steering.settings.desc", levels: BASE_LEVELS, group: "open" },
   { actions: ["jumpProject"], labelKey: "steering.jumpProject.label", descKey: "steering.jumpProject.desc", levels: BASE_LEVELS, group: "move" },
+  { actions: ["popout"], labelKey: "steering.popout.label", descKey: "steering.popout.desc", levels: BASE_LEVELS, when: "popouts", group: "move" },
   { actions: ["help"], labelKey: "steering.help.label", descKey: "steering.help.desc", levels: ALL_LEVELS, group: "mode" },
   { actions: ["legend"], labelKey: "steering.legend.label", descKey: "steering.legend.desc", levels: ALL_LEVELS, group: "mode" },
   { actions: ["back"], labelKey: "steering.back.label", descKey: "steering.back.desc", levels: ["region"], group: "mode" },

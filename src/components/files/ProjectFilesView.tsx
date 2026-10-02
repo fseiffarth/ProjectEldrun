@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { invokeTrusted } from "../../lib/execTrust";
+import { gitWorktreeArgs, type GitWorktreeSelection } from "../../lib/gitWorktree";
 import { GitHistory } from "./GitHistory";
 import { GitChangeTree, type ChangeScope } from "./GitChangeTree";
 import { GitPushProposals } from "../agents/GitPushMcp";
@@ -82,6 +83,8 @@ import { RemarksPane } from "./RemarksPane";
 import { DevTodoView, useDevTodoAvailable } from "./DevTodoView";
 import { ArrowDownIcon, ArrowUpIcon, CheckIcon, CommentIcon, GearIcon, HexagonIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
 import { ErrorNote } from "../common/ErrorNote";
+import { MOBILE_ACCESS_KEY, MOBILE_HOST_KEY } from "../../lib/brand";
+import { tmuxSessionRest } from "../../lib/brandMigration";
 
 /** How long the pointer must rest on a session row before its stats card opens
  *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
@@ -122,7 +125,7 @@ function MobileAccessIcon({ on }: { on: boolean }) {
 }
 
 /** The row's own name button shows a short, stable label rather than the raw
- *  `eldrun-<uuid>` — meaningless to read at a glance and mostly there to keep
+ *  `tabtivity-<uuid>` — meaningless to read at a glance and mostly there to keep
  *  the name unique. The full id lives in the session-stats popup instead
  *  (`SessionStatsMenu` below), alongside the rest of the row's detail. A
  *  hand-started/foreign session's name is usually short and meaningful
@@ -131,7 +134,7 @@ function sessionDisplayName(
   t: (key: TranslationKey, params?: Record<string, string | number>) => string,
   name: string,
 ): string {
-  return name.startsWith("eldrun-") ? t("projectFilesView.sessionLabel") : name;
+  return tmuxSessionRest(name) !== null ? t("projectFilesView.sessionLabel") : name;
 }
 
 /** The Sessions view's per-machine session-type sub-heading (TODO #85): one label
@@ -446,7 +449,7 @@ export function ProjectFilesView({
   // group's ×, and the Project Settings checkbox are three faces of one switch
   // and cannot disagree.
   const alertsEnabled = useSettingsStore((s) => s.settings?.files_alerts ?? true);
-  const mobileHostEnabled = useSettingsStore((s) => s.settings?.eldrun_mobile_host?.enabled ?? false);
+  const mobileHostEnabled = useSettingsStore((s) => s.settings?.[MOBILE_HOST_KEY]?.enabled ?? false);
   // ...but never in the docked subwindow column (`compact`), whatever the
   // setting says: that viewer is a ~300px sidebar beside a terminal, where a
   // strip of mail/appointment/card rows takes the space the tree is there for
@@ -499,7 +502,7 @@ export function ProjectFilesView({
     };
   }, [active, mobileEligible, mobileHostEnabled]);
 
-  const mobileAccessOn = project?.eldrun_mobile_access ?? false;
+  const mobileAccessOn = project?.[MOBILE_ACCESS_KEY] ?? false;
 
   const toggleMobileAccess = (enabled: boolean) => {
     if (!projectId) return;
@@ -524,6 +527,7 @@ export function ProjectFilesView({
   const [openTree, setOpenTree] = useState<"add" | "commit" | "push" | null>(null);
   const [commitMsg, setCommitMsg] = useState<string | null>(null);
   const [gitBusy, setGitBusy] = useState(false);
+  const [gitWorktree, setGitWorktree] = useState<{ root: string; selection: GitWorktreeSelection | null } | null>(null);
   // Bumped by the Pull button: GitHistory owns the pull preview it opens.
   const [pullRequest, setPullRequest] = useState(0);
   const [gitError, setGitError] = useState<string | null>(null);
@@ -554,20 +558,23 @@ export function ProjectFilesView({
   // subprocesses, so `Promise.all` collapses two serially-awaited chains into
   // one round of parallel work. Each result still applies independently.
   const runRefreshGit = (dir: string) => {
+    const context = gitContextKey;
+    const worktreeArgs = gitWorktreeArgs(selectedGitWorktree);
     void Promise.all([
-      invoke<GitStatus>("git_status", { projectDir: dir }).catch(() => null),
-      invoke<string[]>("git_unpushed_commits", { projectDir: dir }).catch(() => [] as string[]),
+      invoke<GitStatus>("git_status", { projectDir: dir, ...worktreeArgs }).catch(() => null),
+      invoke<string[]>("git_unpushed_commits", { projectDir: dir, ...worktreeArgs }).catch(() => [] as string[]),
     ]).then(([status, unpushed]) => {
+      if (context !== gitContextKeyRef.current) return;
       setGitStatus(status);
       setUnpushedCommits(unpushed);
-      writeGitBarSnapshot(dir, { status, unpushed });
+      if (!selectedGitWorktree) writeGitBarSnapshot(dir, { status, unpushed });
       // Keep the project's pill dot in sync from the data we just fetched (no
       // extra git subprocesses), so edits/commits/pushes reflect immediately
       // instead of waiting for the switcher's periodic poll.
       // Don't let a nested repo's status pollute the project pill's dirty dot —
       // that dot tracks the project repo (the switcher's poll recomputes it).
       // Gate on `active` so a background tab never churns the shared store.
-      if (active && projectId && status && !onNestedRepo) {
+      if (active && projectId && status && !onNestedRepo && !selectedGitWorktree) {
         useGitDirtyStore.getState().set(projectId, gitDirtyState(status, unpushed.length));
       }
     });
@@ -650,6 +657,23 @@ export function ProjectFilesView({
   // on: the nested repo when detected and not overridden, else the project repo.
   const effectiveGitRoot = nestedRoot && !preferProjectRepo ? nestedRoot : projectDir;
   const onNestedRepo = !!nestedRoot && effectiveGitRoot !== projectDir;
+  const selectedGitWorktree = view === "git" && gitWorktree?.root === effectiveGitRoot ? gitWorktree.selection : null;
+  const gitContextKey = JSON.stringify([effectiveGitRoot, selectedGitWorktree?.site ?? "host", selectedGitWorktree?.path ?? ""]);
+  const gitContextKeyRef = useRef(gitContextKey);
+  gitContextKeyRef.current = gitContextKey;
+  const onGitWorktreeChanged = useCallback((selection: GitWorktreeSelection | null) => {
+    setGitWorktree({ root: effectiveGitRoot, selection });
+  }, [effectiveGitRoot]);
+  const previousGitContext = useRef(gitContextKey);
+  useEffect(() => {
+    if (previousGitContext.current === gitContextKey) return;
+    previousGitContext.current = gitContextKey;
+    setCommitMsg(null);
+    setOpenTree(null);
+    setGitError(null);
+    setGitStatus(null);
+    setUnpushedCommits([]);
+  }, [gitContextKey]);
 
   // Diverged (amber/orange) files for a remote project, from the cached sync
   // status — backs the toolbar count badge and the "Orange" list view. These are
@@ -666,7 +690,7 @@ export function ProjectFilesView({
 
   // Persistent (tmux) sessions on the project's hosts (TODO #85): a session
   // outlives the tab that started it, so a host can hold runs no open tab points at
-  // (a crashed/relaunched Eldrun, another machine, a hand-started `tmux`). This list
+  // (a crashed/relaunched Tabtivity, another machine, a hand-started `tmux`). This list
   // makes them discoverable and reattachable — the primary UI surface for the
   // feature. **Multi-host**: aggregated across the primary AND every connected
   // worker, each row tagged with its host; polled while this view is active (rides
@@ -763,7 +787,7 @@ export function ProjectFilesView({
     // (`sessionKindFromName`), in a fixed order so the sub-headings never reshuffle
     // as sessions come and go. An empty bucket is dropped — a header for a type this
     // host is not running would be noise — and `other` (foreign/legacy/renamed
-    // sessions) only appears when there is at least one, so an ordinary all-Eldrun
+    // sessions) only appears when there is at least one, so an ordinary all-Tabtivity
     // host shows just Agents/Shells.
     return [...groups.values()]
       .filter((group) => group.rows.length > 0)
@@ -809,7 +833,7 @@ export function ProjectFilesView({
       return;
     }
     useTabsStore.getState().addTabToScope(projectId, {
-      label: name.startsWith("eldrun-") ? "session" : name,
+      label: tmuxSessionRest(name) !== null ? "session" : name,
       cmd: "",
       args: [],
       cwd: projectDir,
@@ -1166,7 +1190,7 @@ export function ProjectFilesView({
   const nameHover = useProjectHoverCard(project ?? undefined);
   const leftDockedPanel = containerClassName.includes("side-panel left");
 
-  // The root scope's own tree (`~/eldrun/root`): a real folder with no project
+  // The root scope's own tree (`~/tabtivity/root`): a real folder with no project
   // record behind it — no project.json, no git provider, no settings dialog — so
   // it is named for what it is rather than falling back to a bare "Files". The
   // check is the scope's, not "no project": a box scope has none either.
@@ -1211,7 +1235,7 @@ export function ProjectFilesView({
       setGitStatus(null);
       setUnpushedCommits([]);
     }
-  }, [active, effectiveGitRoot, remoteBlocked]);
+  }, [active, effectiveGitRoot, remoteBlocked, gitContextKey]);
 
   // The counts are one `git status` reading; nothing above re-reads them when
   // the repo moves under the view (an agent's or a terminal's add/commit/
@@ -1247,7 +1271,7 @@ export function ProjectFilesView({
       if (poll) clearInterval(poll);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, effectiveGitRoot, remoteBlocked, project?.remote, view]);
+  }, [active, effectiveGitRoot, remoteBlocked, project?.remote, view, gitContextKey]);
 
   // The gear dialog belongs to the project it was opened on; a project switch
   // reloads the filters under it, so close it rather than let it re-target.
@@ -1260,7 +1284,7 @@ export function ProjectFilesView({
     setGitBusy(true);
     setGitError(null);
     try {
-      await invoke("git_add_all", { projectDir: effectiveGitRoot });
+      await invoke("git_add_all", { projectDir: effectiveGitRoot, ...gitWorktreeArgs(selectedGitWorktree) });
       refreshGit(effectiveGitRoot);
     } catch (e) {
       setGitError(String(e));
@@ -1274,7 +1298,7 @@ export function ProjectFilesView({
     setGitBusy(true);
     setGitError(null);
     try {
-      const msg = await invoke<string>("git_generate_commit_message", { projectDir: effectiveGitRoot });
+      const msg = await invoke<string>("git_generate_commit_message", { projectDir: effectiveGitRoot, ...gitWorktreeArgs(selectedGitWorktree) });
       setCommitMsg(msg);
       setTimeout(() => commitRef.current?.focus(), 50);
     } catch (e) {
@@ -1289,7 +1313,7 @@ export function ProjectFilesView({
     setGitBusy(true);
     setGitError(null);
     try {
-      await invokeTrusted("git_commit", { projectDir: effectiveGitRoot, message: commitMsg });
+      await invokeTrusted("git_commit", { projectDir: effectiveGitRoot, ...gitWorktreeArgs(selectedGitWorktree), message: commitMsg });
       setCommitMsg(null);
       refreshGit(effectiveGitRoot);
     } catch (e) {
@@ -1308,6 +1332,7 @@ export function ProjectFilesView({
       // plain `git push`), not the project's GitHub/GitLab provider flow.
       await invokeTrusted("git_push", {
         projectDir: effectiveGitRoot,
+        ...gitWorktreeArgs(selectedGitWorktree),
         projectId: onNestedRepo ? null : projectId ?? null,
       });
       refreshGit(effectiveGitRoot);
@@ -1328,7 +1353,7 @@ export function ProjectFilesView({
     setGitError(null);
     let preview: GitReleasePreview;
     try {
-      preview = await invokeTrusted<GitReleasePreview>("git_release_preview", { projectDir: effectiveGitRoot, projectId: projectId ?? null });
+      preview = await invokeTrusted<GitReleasePreview>("git_release_preview", { projectDir: effectiveGitRoot, ...gitWorktreeArgs(selectedGitWorktree), projectId: projectId ?? null });
     } catch (e) {
       setGitError(String(e));
       setGitBusy(false);
@@ -1357,7 +1382,7 @@ export function ProjectFilesView({
       confirmLabel: t("projectFilesView.releaseConfirm"),
       validate: (value) => (/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(value.trim()) ? null : t("projectFilesView.releaseInvalid")),
     }, async (value) => {
-      done = await invokeTrusted<string>("git_release_tag", { projectDir: effectiveGitRoot, projectId: projectId ?? null, tag: value.trim() });
+      done = await invokeTrusted<string>("git_release_tag", { projectDir: effectiveGitRoot, ...gitWorktreeArgs(selectedGitWorktree), projectId: projectId ?? null, tag: value.trim() });
     });
     if (tag !== null && done) {
       refreshGit(effectiveGitRoot);
@@ -1476,7 +1501,7 @@ export function ProjectFilesView({
             })}
           </span>
         )}
-        {/* Per-project Eldrun Mobile opt-in. Deliberately NOT shaped like the
+        {/* Per-project Tabtivity Mobile opt-in. Deliberately NOT shaped like the
             tag chips beside it: those are static labels, this one is a live
             switch, and a chip that looked like them would invite reading it as
             another fact about the project. It is the header's own icon-button
@@ -1868,6 +1893,9 @@ export function ProjectFilesView({
             remote={!onNestedRepo && !!project?.remote}
             authProjectId={onNestedRepo ? undefined : projectId ?? undefined}
             onChanged={() => effectiveGitRoot && refreshGit(effectiveGitRoot)}
+            onWorktreeChanged={onGitWorktreeChanged}
+            actionsBusy={gitBusy || commitMsg !== null}
+            connected={active && !remoteBlocked}
             pullRequest={pullRequest}
           />
         </div>
@@ -1955,7 +1983,7 @@ export function ProjectFilesView({
                     <UntestedTag id="gitRelease" />
                   </button>
                 )}
-                {treeScope && projectDir && <GitChangeTree projectDir={projectDir} scope={treeScope} />}
+                {treeScope && projectDir && <GitChangeTree projectDir={effectiveGitRoot} worktree={selectedGitWorktree} scope={treeScope} />}
               </>
             )}
             {gitError && <ErrorNote className="git-action-error" error={gitError} />}

@@ -6,6 +6,7 @@ import { boxScopeId, useBoxesStore } from "./boxes";
 import { useProjectsStore } from "./projects";
 import { BOX_SCOPE_PREFIX } from "../lib/terminal/ptyId";
 import { resolveLocalMirror, resolveProjectDirectory } from "../types";
+import { storageKey } from "../lib/brand";
 
 /**
  * The **root console** — the root scope, reached as an overlay instead of as a
@@ -16,7 +17,7 @@ import { resolveLocalMirror, resolveProjectDirectory } from "../types";
  * the one that cost you the project you were in. It is now a floating subwindow
  * (`layout/RootOverlay`, Ctrl+Shift+R) over whatever is open — the fast-reach,
  * cross-project management surface: its agents are the only ones handed
- * Eldrun's own MCP tools (projects, calendar, to-do board; see the backend's
+ * Tabtivity's own MCP tools (projects, calendar, to-do board; see the backend's
  * `services::root_mcp`). The phone reaches it only behind its own switch and
  * the review gate (`docs/context/root_console.md`, "On the phone").
  *
@@ -60,7 +61,7 @@ export const ROOT_OVERLAY_FILL_MARGIN = 16;
 /** Which edge (or the whole thing) a frame drag is moving. */
 export type RootOverlayDragMode = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
-const FRAME_STORAGE_KEY = "eldrun.rootConsoleFrame";
+const FRAME_STORAGE_KEY = storageKey("rootConsoleFrame");
 
 /**
  * Keep a frame inside the window and above the minimum. Applied on every write

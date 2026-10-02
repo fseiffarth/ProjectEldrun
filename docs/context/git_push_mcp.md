@@ -1,12 +1,12 @@
 # Agent git push MCP
 
 Desktop v1: a fenced agent tab can ask
-Eldrun to push the project it works in, without a credential ever entering the
+Tabtivity to push the project it works in, without a credential ever entering the
 fence. Globally **on** by default since 2026-09-26 (`Settings::git_push_mcp`,
 absent = on, `false` = off; Settings → Manage CLIs) — the fence has to stay
 usable, and the default level only proposes. When on, every new local
 project-agent spawn (not a container tab; not
-a remote, VM or container project) gets the `eldrun-git` server on `/mcp/git`
+a remote, VM or container project) gets the `tabtivity-git` server on `/mcp/git`
 with a `Caller::Pusher` token bound to the tab, the project and the trusted
 entry's canonical directory. The per-project level lives in the `projects.json`
 entry's `git_push_mcp` block (`level` off / propose / apply, `protected`,
@@ -25,7 +25,7 @@ exists. Every failure is a normal tool result with a fixed `category`, one
 ## Why two phases
 
 `commands::git::git_push` runs the repo's `pre-push` on the host with
-`ELDRUN_GIT_TOKEN` in the environment after `exec_trust` approved the hook
+`TABTIVITY_GIT_TOKEN` in the environment after `exec_trust` approved the hook
 *files*; what those files run is not fingerprinted (this repo's hook runs
 `scripts/privacy-check.sh` and `scripts/bump-version.sh`, both agent-writable).
 Fine for a user's click, a fence escape once the agent can trigger the push.
@@ -34,7 +34,7 @@ runs project code holds the token:
 
 1. **Preflight, fenced, no token.** `resolve_pre_push_hook` finds the hook the
    way `exec_trust` does (`rev-parse --git-path hooks`). It runs with git's
-   arguments (`<remote> <url>`) and stdin line, `ELDRUN_PUSH_PREFLIGHT=1`, the
+   arguments (`<remote> <url>`) and stdin line, `TABTIVITY_PUSH_PREFLIGHT=1`, the
    token variables removed, inside `agent_fence::one_shot_command` when the
    tab was fenced (`fenced_scope_of_tab`) — a *narrower* bubblewrap profile
    built from the same primitives (project/box roots, allowlist, git-control
@@ -103,8 +103,8 @@ handle`, tools known only to `git_push_mcp` (the root registry never serves
 the class; tests hold that). `root_mcp::lane` gives every class its lane, so
 the schedule, push and help tokens coexist on one tab and a respawn replaces
 only its own. Spawn: `apply_git_push_to_spawn` after the schedule wiring,
-Claude `--mcp-config`, Codex `-c mcp_servers.eldrun-git…`, tool-tagged Vibe
-merged into `VIBE_MCP_SERVERS`, other CLIs the inert `ELDRUN_GIT_MCP_TOKEN` /
+Claude `--mcp-config`, Codex `-c mcp_servers.tabtivity-git…`, tool-tagged Vibe
+merged into `VIBE_MCP_SERVERS`, other CLIs the inert `TABTIVITY_GIT_MCP_TOKEN` /
 `_URL` pair. `SpawnTokenGuard`, the PTY exit path, `tmux_local::SECRET_ENV` and
 `sandbox::is_secret_exec_env` know the new variable. Sessions appear in MCP
 session access with Revoke (which drops the session's proposals). State
@@ -124,7 +124,7 @@ the git bar (`ProjectFilesView`) and the Agents view. Everything carries the
 - **The preflight can lie**: it runs agent-writable code with the agent's own
   authority, so a hook's privacy scan is only as strong as the fence. Inside
   the fence `$HOME` is empty, so this repo's per-user
-  `~/.config/eldrun/privacy-denylist` is not seen there (the per-clone
+  `~/.config/tabtivity/privacy-denylist` is not seen there (the per-clone
   `.git/info/privacy-denylist` is). CI's privacy job is the backstop. What the
   lie cannot do is touch the token or the host.
 - Hooks other than `pre-push` do not run for agent pushes. Global
@@ -159,7 +159,7 @@ the signing reminder; the release job refuses unsigned anyway).
 
 `ci_runs { ref?, limit?, failedOnly? }`, `ci_run { id }` and
 `ci_security_alerts { ref?, limit? }` let a fenced agent read why the build,
-the tests or the security workflow failed. Eldrun calls api.github.com from
+the tests or the security workflow failed. Tabtivity calls api.github.com from
 the host; the repo is the checked-out branch's upstream URL (else `origin`),
 github.com only (`not_github`), never an argument. The token goes to the API
 only when `https://github.com` is one of the project's token origins. `ci_run`

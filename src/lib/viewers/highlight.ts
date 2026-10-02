@@ -36,13 +36,31 @@ export type Lang =
   | "markdown"
   | "plain";
 
+const HTML_SPECIAL = /[&<>"']/;
+const HTML_SPECIAL_ALL = /[&<>"']/g;
+
+function escapeHtmlChar(c: string): string {
+  switch (c) {
+    case "&": return "&amp;";
+    case "<": return "&lt;";
+    case ">": return "&gt;";
+    case '"': return "&quot;";
+    case "'": return "&#39;";
+    default: return c;
+  }
+}
+
+/**
+ * HTML-escape `s` (`& < > " '`). One pass, and no pass at all for the common
+ * case of nothing to escape: the scanners below call this once per token — and,
+ * for a run of prose, once per character — on every keystroke of the whole
+ * document, and the old five chained `replace` calls were most of what
+ * highlighting a large `.tex` file cost.
+ */
 export function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+  if (s.length === 1) return escapeHtmlChar(s);
+  if (!HTML_SPECIAL.test(s)) return s;
+  return s.replace(HTML_SPECIAL_ALL, escapeHtmlChar);
 }
 
 function span(cls: string, text: string): string {
@@ -227,8 +245,9 @@ export function lineCommentMarker(lang: Lang): string | null {
   return SPECS[lang].line[0] ?? null;
 }
 
-const isIdentStart = (c: string) => /[A-Za-z_$]/.test(c);
-const isIdentPart = (c: string) => /[A-Za-z0-9_$]/.test(c);
+const isIdentStart = (c: string) =>
+  (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "_" || c === "$";
+const isIdentPart = (c: string) => isIdentStart(c) || (c >= "0" && c <= "9");
 const isDigit = (c: string) => c >= "0" && c <= "9";
 
 /** Read a string literal starting at `i` (on the opening delimiter). Returns the
@@ -267,7 +286,11 @@ function scanCode(code: string, spec: LangSpec): string {
   let i = 0;
   const n = code.length;
 
-  const atLineComment = () => spec.line.find((m) => code.startsWith(m, i));
+  // The first characters of the line-comment markers: most positions start none,
+  // and are told so without a search over the markers.
+  const commentLeads = new Set(spec.line.map((m) => m[0]));
+  const atLineComment = () =>
+    commentLeads.has(code[i]) ? spec.line.find((m) => code.startsWith(m, i)) : undefined;
 
   while (i < n) {
     const c = code[i];
@@ -350,7 +373,18 @@ function scanCode(code: string, spec: LangSpec): string {
       continue;
     }
 
-    // Anything else (punctuation, whitespace) passes through, escaped.
+    // Whitespace passes through as one run: no language's comment marker, string
+    // delimiter or sigil starts with a blank, so each of these characters would
+    // reach this point on its own — the run just skips re-testing every branch.
+    if (c === " " || c === "\t" || c === "\n" || c === "\r") {
+      let j = i + 1;
+      while (j < n && (code[j] === " " || code[j] === "\t" || code[j] === "\n" || code[j] === "\r")) j += 1;
+      out += code.slice(i, j);
+      i = j;
+      continue;
+    }
+
+    // Anything else (punctuation) passes through, escaped.
     out += escapeHtml(c);
     i += 1;
   }
@@ -718,8 +752,18 @@ function scanTex(code: string, depth = 0): string {
       continue;
     }
 
-    out += escapeHtml(c);
-    i += 1;
+    // Plain text. Taken as the whole run up to the next character that could open
+    // a token (exactly the ones the branches above test for), so prose is escaped
+    // once per run rather than once per character — the same output, since every
+    // character in the run would have fallen through to here on its own.
+    let j = i + 1;
+    while (j < n) {
+      const d = code[j];
+      if (d === "%" || d === "\\" || d === "$" || isDigit(d)) break;
+      j += 1;
+    }
+    out += escapeHtml(code.slice(i, j));
+    i = j;
   }
 
   return out;
@@ -878,8 +922,16 @@ function scanMarkdownInline(text: string): string {
       }
     }
 
-    out += escapeHtml(c);
-    i += 1;
+    // Plain text, as one run up to the next character a branch above could act
+    // on (see `scanTex`): the same output, escaped once per run.
+    let j = i + 1;
+    while (j < n) {
+      const d = text[j];
+      if (d === "`" || d === "[" || d === "!" || d === "*" || d === "_") break;
+      j += 1;
+    }
+    out += escapeHtml(text.slice(i, j));
+    i = j;
   }
 
   return out;

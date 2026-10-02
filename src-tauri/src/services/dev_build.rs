@@ -1,4 +1,4 @@
-//! What the background "Eldrun (dev)" freeze is doing, read for the header's
+//! What the background "Tabtivity (dev)" freeze is doing, read for the header's
 //! dev-build chip (`header/DevBuildIndicator.tsx`).
 //!
 //! The build is `scripts/package-dev-auto.sh`'s, queued by the `post-commit`
@@ -12,8 +12,8 @@
 //! step a pass has reached.
 //!
 //! Only a binary built from a checkout knows where that checkout is:
-//! `ELDRUN_DEV_SOURCE_ROOT` is exported by `package-dev.sh` and the hot-reload
-//! launcher and read at compile time, so a released Eldrun (CI builds, the
+//! `TABTIVITY_DEV_SOURCE_ROOT` is exported by `package-dev.sh` and the hot-reload
+//! launcher and read at compile time, so a released Tabtivity (CI builds, the
 //! AppImage) has no source root, reads nothing, and shows no chip.
 
 use std::fs;
@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 
 /// The checkout this binary was built from, or `None` for a release build.
-pub const SOURCE_ROOT: Option<&str> = option_env!("ELDRUN_DEV_SOURCE_ROOT");
+pub const SOURCE_ROOT: Option<&str> = option_env!(crate::app_env!("DEV_SOURCE_ROOT"));
 
 /// How much of the log's end is read. One pass writes ~25 KB (vite's asset
 /// listing dominates), so this holds the running pass and the one before it,
@@ -37,7 +37,7 @@ pub enum BuildState {
     /// No build process alive.
     Idle,
     /// The build process is alive but waiting for commits to settle
-    /// (`ELDRUN_DEV_BUILD_SETTLE`) before its next pass.
+    /// (`TABTIVITY_DEV_BUILD_SETTLE`) before its next pass.
     Waiting,
     /// A pass is running.
     Building,
@@ -194,7 +194,7 @@ pub fn parse_iso8601(s: &str) -> Option<i64> {
 /// Where the script keeps its files: fixed per user, like the binary it
 /// installs, never the (sandboxable) state dir.
 fn app_dir() -> PathBuf {
-    crate::paths::home_dir().join(".local/share/eldrun")
+    crate::storage::home_share_dir()
 }
 
 fn read_trimmed(path: &Path) -> Option<String> {
@@ -257,13 +257,13 @@ fn own_exe() -> Option<(PathBuf, bool)> {
 }
 
 /// The short commit of a finished snapshot in the tree that
-/// `start-eldrun-dev-build.sh` would adopt: `target/release/eldrun` newer than
+/// `start-tabtivity-dev-build.sh` would adopt: `target/release/tabtivity` newer than
 /// the installed binary, with the `.frozen` record `package-dev.sh` writes only
 /// after a verified build. A binary newer than its record is one cargo is still
 /// linking, or one that failed the check — not a snapshot.
 fn adoptable_snapshot(root: &str, installed: &Path) -> Option<String> {
-    let built = Path::new(root).join("target/release/eldrun");
-    let record = Path::new(root).join("target/release/eldrun.frozen");
+    let built = Path::new(root).join("target/release").join(crate::brand::BIN_NAME);
+    let record = Path::new(root).join("target/release").join(crate::brand::FROZEN_RECORD_NAME);
     let mtime = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
     let built_at = mtime(&built)?;
     if mtime(installed).is_some_and(|at| at >= built_at) || mtime(&record)? < built_at {
@@ -310,7 +310,7 @@ pub fn status() -> Option<DevBuildStatus> {
     });
     let stamp = read_trimmed(&dir.join("package-dev-auto.stamp"));
     let behind = stamp.as_deref().and_then(|sha| commits_behind(root, sha));
-    let binary = dir.join("eldrun-dev");
+    let binary = dir.join(crate::brand::DEV_BIN_NAME);
     let (frozen, replaced) = match own_exe() {
         Some((exe, replaced)) if exe == binary => (true, replaced),
         _ => (false, false),
@@ -339,7 +339,7 @@ pub fn status() -> Option<DevBuildStatus> {
 const PAUSED_FILE: &str = "package-dev-auto.paused";
 
 /// The HEAD this process last asked the script to freeze, so a HEAD the script
-/// declined (`eldrun.autoDevBuild false`) or already failed is asked for once,
+/// declined (`tabtivity.autoDevBuild false`) or already failed is asked for once,
 /// not on every poll.
 static LAST_QUEUED: Mutex<Option<String>> = Mutex::new(None);
 
@@ -362,7 +362,7 @@ pub fn needs_queue(
 
 /// Queue a freeze of HEAD when the `post-commit` hook could not. A commit made
 /// in an agent tab runs the hook inside the agent fence, whose `$HOME` is the
-/// agent's own: the script declines there (`ELDRUN_AGENT_FENCE`), since what it
+/// agent's own: the script declines there (`TABTIVITY_AGENT_FENCE`), since what it
 /// would lock, stamp and install is a throwaway copy and the real snapshot
 /// never moved (2026-09-25: 27 commits behind). This process runs on the host,
 /// so it asks instead, from the chip's poll. `SOURCE_ROOT` is this binary's
@@ -441,7 +441,7 @@ fn head_sha(root: &str) -> Option<String> {
     (!sha.is_empty()).then_some(sha)
 }
 
-/// Start the "Eldrun (dev)" launcher once this process has exited, detached so
+/// Start the "Tabtivity (dev)" launcher once this process has exited, detached so
 /// the quit's teardown does not take it along. The caller then closes the main
 /// window, which runs the ordinary quit (layout flush, tmux reap,
 /// `RunEvent::Exit`); the launcher refuses while this binary still runs, hence
@@ -449,11 +449,11 @@ fn head_sha(root: &str) -> Option<String> {
 /// after two minutes rather than open a second window some hours later.
 pub fn spawn_relauncher() -> Result<(), String> {
     let root = SOURCE_ROOT.ok_or("not a dev build")?;
-    let binary = app_dir().join("eldrun-dev");
+    let binary = app_dir().join(crate::brand::DEV_BIN_NAME);
     if !own_exe().is_some_and(|(exe, _)| exe == binary) {
-        return Err("this window is not the frozen Eldrun (dev) binary".into());
+        return Err(concat!("this window is not the frozen ", crate::app_name!(), " (dev) binary").into());
     }
-    let launcher = Path::new(root).join("start-eldrun-dev-build.sh");
+    let launcher = Path::new(root).join(crate::brand::DEV_LAUNCHER_SCRIPT);
     if !launcher.is_file() {
         return Err(format!("{} is missing", launcher.display()));
     }
@@ -461,7 +461,7 @@ pub fn spawn_relauncher() -> Result<(), String> {
     cmd.args([
         "-c",
         r#"i=0; while kill -0 "$1" 2>/dev/null; do i=$((i+1)); [ "$i" -gt 600 ] && exit 0; sleep 0.2; done; exec "$2""#,
-        "eldrun-relaunch",
+        concat!(crate::app_slug!(), "-relaunch"),
         &std::process::id().to_string(),
     ])
     .arg(&launcher)
@@ -507,20 +507,20 @@ mod tests {
         assert_eq!(parse_iso8601("2026-13-01T00:00:00Z"), None);
     }
 
-    const PASS_OK: &str = "\
+    const PASS_OK: &str = concat!("\
 === PACKAGE:DEV (auto) 2026-09-18T14:40:00+02:00 ===
 2026-09-18T14:40:30+02:00 building /r @ 47b2af1
 
-> eldrun@0.1.72 build
+> ", crate::app_slug!(), "@0.1.72 build
 > tsc && vite build && npm run mobile:build
 ✓ built in 16.37s
-> eldrun@0.1.72 mobile:build
+> ", crate::app_slug!(), "@0.1.72 mobile:build
 package-dev: published the phone bundle (47b2af1) to /r/target/mobile-pwa
-   Compiling eldrun v0.1.72 (/r/target/freeze-tree/src-tauri)
+   Compiling ", crate::app_slug!(), " v0.1.72 (/r/target/freeze-tree/src-tauri)
     Finished `release` profile [optimized] target(s) in 2m 14s
-Installed frozen binary: /h/eldrun-dev (0.1.72 @ 47b2af1, from head)
+Installed frozen binary: /h/", crate::app_slug!(), "-dev (0.1.72 @ 47b2af1, from head)
 2026-09-18T14:48:19+02:00 pass 1 (47b2af1) finished with status 0
-";
+");
 
     #[test]
     fn a_finished_pass_is_the_estimate_and_nothing_is_open() {
@@ -540,10 +540,10 @@ Installed frozen binary: /h/eldrun-dev (0.1.72 @ 47b2af1, from head)
         );
         let step = |extra: &str| parse_log(&format!("{log}{extra}")).open_pass.map(|p| p.2);
         assert_eq!(
-            step("> eldrun@0.1.73 build\n> tsc && vite build && npm run mobile:build\n"),
+            step(concat!("> ", crate::app_slug!(), "@0.1.73 build\n> tsc && vite build && npm run mobile:build\n")),
             Some(BuildPhase::Frontend)
         );
-        assert_eq!(step("> eldrun@0.1.73 mobile:build\n"), Some(BuildPhase::Mobile));
+        assert_eq!(step(concat!("> ", crate::app_slug!(), "@0.1.73 mobile:build\n")), Some(BuildPhase::Mobile));
         assert_eq!(
             step("package-dev: published the phone bundle (30ed347) to /x\n"),
             Some(BuildPhase::Cargo)
@@ -584,14 +584,14 @@ Installed frozen binary: /h/eldrun-dev (0.1.72 @ 47b2af1, from head)
         let root = dir.path().to_str().unwrap();
         let release = dir.path().join("target/release");
         fs::create_dir_all(&release).unwrap();
-        let installed = dir.path().join("eldrun-dev");
+        let installed = dir.path().join(crate::brand::DEV_BIN_NAME);
         let touch = |path: &Path, body: &str, age_secs: u64| {
             fs::write(path, body).unwrap();
             let file = fs::OpenOptions::new().write(true).open(path).unwrap();
             file.set_modified(SystemTime::now() - Duration::from_secs(age_secs)).unwrap();
         };
-        let built = release.join("eldrun");
-        let record = release.join("eldrun.frozen");
+        let built = release.join(crate::app_slug!());
+        let record = release.join(concat!(crate::app_slug!(), ".frozen"));
 
         // Nothing built.
         assert_eq!(adoptable_snapshot(root, &installed), None);

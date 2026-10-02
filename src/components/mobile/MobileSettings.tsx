@@ -10,6 +10,7 @@ import { IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab } from "../../lib/installCommand";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
 import { ErrorNote } from "../common/ErrorNote";
+import { MOBILE_ACCESS_KEY, MOBILE_HOST_KEY } from "../../lib/brand";
 
 /** `translate` at the live language, for code that runs outside a render: the
  *  module-level parser below and the async callbacks, whose `useCallback`
@@ -131,7 +132,7 @@ export function MobileSettings() {
   const setBoxMobileAccess = useBoxesStore((state) => state.setBoxMobileAccess);
   const rootDir = useProjectsStore((state) => state.rootDir);
   const setProjectMobileAccess = useProjectsStore((state) => state.setProjectMobileAccess);
-  const stored = settings?.eldrun_mobile_host;
+  const stored = settings?.[MOBILE_HOST_KEY];
   // The sidecar's `discovery::root_open`, repeated so the switch can say why
   // root is missing from the phone while it is on.
   const [reviewEnforced, setReviewEnforced] = useState(true);
@@ -260,11 +261,11 @@ export function MobileSettings() {
    * read by the desktop bridge alone — the sidecar never sees mail settings.
    * They ride on the stored host settings untouched otherwise, so flipping one
    * never re-verifies Serve or restarts the host. */
-  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply" | "root_access" | "project_files" | "stay_after_quit", on: boolean) => {
+  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply" | "root_access" | "project_files" | "stay_after_quit" | "shell_tabs", on: boolean) => {
     setError(null);
     try {
       await updateSettings({
-        eldrun_mobile_host: {
+        [MOBILE_HOST_KEY]: {
           ...(stored ?? { enabled: false }),
           // `mail_read` defaults on, so only its "off" is stored; the writes
           // default off, so only their "on" is.
@@ -294,7 +295,7 @@ export function MobileSettings() {
         });
       }
       await updateSettings({
-        eldrun_mobile_host: {
+        [MOBILE_HOST_KEY]: {
           enabled,
           display_name: displayName.trim() || "Workstation",
           port: parsedPort || 8742,
@@ -305,6 +306,7 @@ export function MobileSettings() {
           root_access: stored?.root_access,
           project_files: stored?.project_files,
           stay_after_quit: stored?.stay_after_quit,
+          shell_tabs: stored?.shell_tabs,
         },
       });
       await invoke("mobile_host_apply", { enabled });
@@ -329,7 +331,7 @@ export function MobileSettings() {
   const installOnPhone = async () => {
     setError(null);
     try {
-      // The backend materializes its embedded source so a packaged Eldrun has
+      // The backend materializes its embedded source so a packaged Tabtivity has
       // the same handoff script as a checkout. It answers with the script's
       // path because the state dir differs per OS (XDG on Linux, Application
       // Support on macOS) and must not be re-derived here.
@@ -374,7 +376,7 @@ export function MobileSettings() {
       setOrigin(detected.origin);
       setServeVerification({ verified: true });
       await updateSettings({
-        eldrun_mobile_host: {
+        [MOBILE_HOST_KEY]: {
           enabled: stored?.enabled ?? false,
           display_name: detected.display_name,
           port: detected.port,
@@ -385,6 +387,7 @@ export function MobileSettings() {
           root_access: stored?.root_access,
           project_files: stored?.project_files,
           stay_after_quit: stored?.stay_after_quit,
+          shell_tabs: stored?.shell_tabs,
         },
       });
     } catch (reason) {
@@ -424,7 +427,7 @@ export function MobileSettings() {
       const response = await invoke<AdminResponse>("mobile_admin", { request: { type: "forget_all" } });
       if (response.status === "error") throw new Error(response.message);
       await updateSettings({
-        eldrun_mobile_host: {
+        [MOBILE_HOST_KEY]: {
           enabled: false,
           display_name: displayName.trim() || "Workstation",
           port: Number(port) || 8742,
@@ -435,6 +438,7 @@ export function MobileSettings() {
           root_access: stored?.root_access,
           project_files: stored?.project_files,
           stay_after_quit: stored?.stay_after_quit,
+          shell_tabs: stored?.shell_tabs,
         },
       });
       await invoke("mobile_host_apply", { enabled: false });
@@ -663,6 +667,13 @@ export function MobileSettings() {
         onChange={(event) => void setMailGate("project_files", event.target.checked)}
       />
       <p className="settings-help">{t("mobile.projectFilesHelp")}</p>
+      <ToggleRow
+        label={<>{t("mobile.noShells")} <UntestedTag id="mobile.noShells" /></>}
+        checked={stored?.shell_tabs !== true}
+        disabled={busy}
+        onChange={(event) => void setMailGate("shell_tabs", !event.target.checked)}
+      />
+      <p className="settings-help">{t("mobile.noShellsHelp")}</p>
       {eligible.length > 0 && <input
         className="mobile-project-access-search"
         value={projectSearch}
@@ -675,7 +686,7 @@ export function MobileSettings() {
           <ToggleRow
             key={project.id}
             label={project.name}
-            checked={project.eldrun_mobile_access ?? false}
+            checked={project[MOBILE_ACCESS_KEY] ?? false}
             onChange={(event) => {
               setError(null);
               void setProjectMobileAccess(project.id, event.target.checked).catch((reason) => setError(String(reason)));
@@ -694,7 +705,7 @@ export function MobileSettings() {
             <ToggleRow
               key={box.id}
               label={box.name}
-              checked={box.eldrun_mobile_access ?? false}
+              checked={box[MOBILE_ACCESS_KEY] ?? false}
               onChange={(event) => {
                 setError(null);
                 void setBoxMobileAccess(box.id, event.target.checked).catch((reason) => setError(String(reason)));

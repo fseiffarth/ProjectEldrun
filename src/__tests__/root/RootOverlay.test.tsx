@@ -4,7 +4,7 @@
  * that makes it safe to float over a project: opening it never moves the active
  * project, its panes are attach-only views of the root tabs' own PTYs (so
  * closing it ends nothing), a tab added from it lands in the ROOT scope, and a
- * row a root agent wrote through Eldrun's MCP tools reaches the calendar store
+ * row a root agent wrote through Tabtivity's MCP tools reaches the calendar store
  * and the CalDAV write hook.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -63,11 +63,11 @@ vi.mock("../../components/tabs/NewTabMenu", () => ({
         {/* A singleton kind and a stacking one, to hold the console's ensure rule. */}
         <button
           data-testid="pick-monitor"
-          onClick={() => pick({ label: "System Monitor", cmd: "__eldrun_monitor__", cwd: "", kind: "monitor" })}
+          onClick={() => pick({ label: "System Monitor", cmd: tabCommand("monitor"), cwd: "", kind: "monitor" })}
         />
         <button
           data-testid="pick-network"
-          onClick={() => pick({ label: "Network Traffic", cmd: "__eldrun_network__", cwd: "", kind: "network" })}
+          onClick={() => pick({ label: "Network Traffic", cmd: tabCommand("network"), cwd: "", kind: "network" })}
         />
       </>
     );
@@ -90,6 +90,7 @@ import { setCalendarWriteHandler } from "../../lib/calendar/calendarWriteHook";
 import { useRootReviewStore } from "../../stores/rootReview";
 import { RootOverlayHost } from "../../components/layout/RootOverlay";
 import { SHORTCUT_DEFS, chordMatches, resolveChord } from "../../lib/shortcuts/shortcuts";
+import { BRAND, tabCommand } from "../../lib/brand";
 
 function seedRootTabs() {
   const tabs = useTabsStore.getState();
@@ -249,7 +250,7 @@ describe("RootOverlayHost", () => {
     expect(screen.queryByRole("region", { name: "Agent proposals" })).toBeNull();
     // The tools chip is a report, not a door: it is not a control at all, so a
     // click on it can neither open the panel nor flip a setting.
-    expect(screen.queryByRole("button", { name: /Eldrun tools/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: new RegExp(String.raw`${BRAND.display} tools`) })).toBeNull();
     const approvals = screen.getByRole("button", { name: /Approvals/ });
     await act(async () => { fireEvent.click(approvals); });
     expect(useRootReviewStore.getState().panel).toBe(true);
@@ -397,7 +398,7 @@ describe("RootOverlayHost", () => {
     expect(useCalendarStore.getState().tasks.map((t) => t.id)).toEqual(["t1"]);
     expect(announced).toHaveLength(1);
 
-    // A move's rank/column rows are Eldrun's own: merged, never announced.
+    // A move's rank/column rows are Tabtivity's own: merged, never announced.
     await act(async () =>
       listeners.get("root-mcp-changed")?.({ payload: { kind: "task", op: "upsert", row: { ...row, rank: 2048 }, local: true } }),
     );

@@ -785,7 +785,7 @@ export function decideTitlebarPress(input: {
  *      so it's a clean no-op rather than a hang).
  *   3. over a SIBLING popout → `dockDetached` into it.
  *   4. over the MAIN window → `dockMain` at the resolved pane target.
- *   5. free space (no Eldrun window under the cursor) → `newWindow`.
+ *   5. free space (no Tabtivity window under the cursor) → `newWindow`.
  */
 export type DetachedTabDrop =
   | { kind: "none" } // never returned here; the callers' shared "do nothing" arm

@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ActivityTab } from "../../../mobile-web/src/api";
 import { Activity } from "../../../mobile-web/src/screens/Activity";
+import { BRAND, storageKey } from "../../lib/brand";
 
 const fetchMock = vi.fn();
 const MIN = 60_000;
@@ -77,7 +78,7 @@ describe("Mobile activity list — what it says when it cannot answer", () => {
 
     fetchMock.mockImplementation(async () => new Response(JSON.stringify({ error: "desktop_unavailable" }), { status: 503 }));
     document.dispatchEvent(new Event("visibilitychange"));
-    await screen.findByText("Eldrun isn't running on your desktop.");
+    await screen.findByText(`${BRAND.display} isn't running on your desktop.`);
     expect(screen.getByText("Showing the last list this session loaded.")).toBeTruthy();
     expect(screen.getByText("Claude")).toBeTruthy();
     expect(onConnection).toHaveBeenLastCalledWith("desktop_down");
@@ -147,7 +148,7 @@ describe("Mobile activity list — rows", () => {
     const { unmount } = render(<Activity open={() => {}} onConnection={() => {}} />);
     await screen.findByText("A");
     fireEvent.change(screen.getByRole("combobox", { name: "Sort agent tabs" }), { target: { value: "native" } });
-    expect(localStorage.getItem("eldrun.mobile.agentsSort")).toBe("native");
+    expect(localStorage.getItem(storageKey("mobile.agentsSort"))).toBe("native");
     unmount();
 
     render(<Activity open={() => {}} onConnection={() => {}} />);

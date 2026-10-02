@@ -55,7 +55,7 @@ export function SettingsHeader({
   );
 }
 
-/** Page ids inside the main settings panel. `eldrun:open-settings` may carry
+/** Page ids inside the main settings panel. `tabtivity:open-settings` may carry
  *  one as `{ panel, anchor }`, which is how a deep link from elsewhere in the
  *  app opens that page instead of the General one. */
 export const SETTINGS_ANCHORS = {

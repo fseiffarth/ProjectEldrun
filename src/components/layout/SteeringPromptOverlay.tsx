@@ -9,6 +9,7 @@ import {
   sendSteeringPrompt,
   type SteeringPromptDetail,
 } from "../../lib/shortcuts/steeringAgent";
+import { agentTabLabel, agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 
 type Open = Omit<SteeringPromptDetail, "handled">;
@@ -56,6 +57,11 @@ export function SteeringPromptOverlay() {
 
 function PromptBox({ draftKey, target, onClose }: { draftKey: string; target: Open; onClose: () => void }) {
   const t = useT();
+  const modelsByTab = useAgentModelsStore((state) => state.byTab);
+  const screenModels = useAgentModelsStore((state) => state.screenByTab);
+  // Which agent the prompt goes to, in the words its own status line uses.
+  const agent = agentTabLabel(target.tab);
+  const model = agentTabModelTag(target.scope, target.tab, modelsByTab, screenModels);
   const [value, setValue] = useState(() => ledDraft(drafts.get(draftKey) ?? "", target.lead));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,8 +84,11 @@ function PromptBox({ draftKey, target, onClose }: { draftKey: string; target: Op
 
   return (
     <DialogShell className="steering-prompt-dialog" onDismiss={() => !busy && onClose()}>
-      <h2>
-        {t("steering.prompt.title", { tab: target.tab.label })}
+      <h2 className="steering-prompt-head">
+        <span className="steering-prompt-title">{t("steering.prompt.title", { tab: target.tab.label })}</span>
+        {(agent !== target.tab.label || model) && (
+          <span className="steering-prompt-agent">{[agent !== target.tab.label ? agent : "", model].filter(Boolean).join(" · ")}</span>
+        )}
         <UntestedTag id="steering.agentPrompt" />
       </h2>
       <textarea
@@ -111,11 +120,15 @@ function PromptBox({ draftKey, target, onClose }: { draftKey: string; target: Op
       />
       {error && <ErrorNote id={errorId} role="alert" className="file-delete-path file-delete-error" error={error} />}
       <div className="file-delete-actions">
-        <span className="steering-prompt-hint">{t("steering.prompt.hint")}</span>
+        <span className="steering-prompt-hint">
+          <span><kbd>{t("steering.prompt.keyEnter")}</kbd> {t("steering.prompt.hintSend")}</span>
+          <span><kbd>{t("steering.prompt.keyShiftEnter")}</kbd> {t("steering.prompt.hintNewLine")}</span>
+          <span><kbd>{t("steering.prompt.keyEsc")}</kbd> {t("steering.prompt.hintBack")}</span>
+        </span>
         <button type="button" onClick={onClose} disabled={busy}>
           {t("common.cancel")}
         </button>
-        <button type="button" onClick={() => void submit()} disabled={!submittable}>
+        <button type="button" className="btn-primary" onClick={() => void submit()} disabled={!submittable}>
           {t("steering.prompt.send")}
         </button>
       </div>

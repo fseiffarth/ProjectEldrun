@@ -11,6 +11,7 @@ import {
 } from "../../components/header/DevBuildIndicator";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusStore } from "../../stores/headerStatus";
+import { BRAND } from "../../lib/brand";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -28,7 +29,7 @@ const idle = {
   adoptable: null,
   canRelaunch: false,
   paused: false,
-  logPath: "/h/.local/share/eldrun/package-dev-auto.log",
+  logPath: `/h/.local/share/${BRAND.slug}/package-dev-auto.log`,
 };
 
 function answer(status: unknown) {
@@ -117,7 +118,7 @@ describe("DevBuildIndicator", () => {
       command === "dev_build_status"
         ? Promise.resolve({ ...idle, adoptable: "30ed347", canRelaunch: true })
         : command === "dev_build_relaunch"
-          ? Promise.reject("this window is not the frozen Eldrun (dev) binary")
+          ? Promise.reject(`this window is not the frozen ${BRAND.display} (dev) binary`)
           : Promise.resolve(null),
     );
     render(<DevBuildIndicator />);
@@ -125,7 +126,7 @@ describe("DevBuildIndicator", () => {
     expect(await screen.findByText(/A newer snapshot \(30ed347\) is built/)).toBeTruthy();
     fireEvent.click(screen.getByText("Relaunch now"));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("dev_build_relaunch"));
-    expect(await screen.findByText("this window is not the frozen Eldrun (dev) binary")).toBeTruthy();
+    expect(await screen.findByText(`this window is not the frozen ${BRAND.display} (dev) binary`)).toBeTruthy();
     expect(screen.getByText("Relaunch now")).toBeTruthy();
   });
 

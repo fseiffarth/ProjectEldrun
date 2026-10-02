@@ -1,5 +1,6 @@
 import { BUNDLE_VERSION } from "../buildInfo";
-import { EldrunMark } from "../EldrunMark";
+import { AppMark } from "../AppMark";
+import { BRAND } from "../../../src/lib/brand";
 
 /**
  * Home's own header, drawn behind the lock sheet while the app is locked.
@@ -10,9 +11,9 @@ import { EldrunMark } from "../EldrunMark";
 export function LockedHomeShell() {
   return <main className="screen home-screen" aria-hidden="true">
     <header className="home-header">
-      <div className="home-brand" aria-label="Eldrun">
-        <span className="home-logo-frame" aria-hidden="true"><EldrunMark className="home-logo" /></span>
-        <span className="home-brand-copy"><strong>Eldrun</strong><small>{BUNDLE_VERSION}</small></span>
+      <div className="home-brand" aria-label={BRAND.display}>
+        <span className="home-logo-frame" aria-hidden="true"><AppMark className="home-logo" /></span>
+        <span className="home-brand-copy"><strong>{BRAND.display}</strong><small>{BUNDLE_VERSION}</small></span>
       </div>
     </header>
     <div className="projects-row"><h1>Projects</h1></div>

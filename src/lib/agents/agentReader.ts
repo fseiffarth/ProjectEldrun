@@ -1,6 +1,7 @@
 import type { TranslationKey } from "../i18n";
 import type { SessionTranscript } from "../../../mobile-web/src/api";
 import type { TabEntry } from "../../stores/tabs";
+import { storageKey } from "../brand";
 
 /**
  * The desktop agent pane's Reader: the phone's Focus Reader — the agent's
@@ -18,7 +19,7 @@ export type { SessionTranscript };
 const READER_AGENTS = new Set(["claude", "codex", "opencode"]);
 
 /** Whether `tab` can be shown as a Reader: an agent tab whose CLI keeps a
- * transcript Eldrun reads. A local-model tab keeps none. */
+ * transcript Tabtivity reads. A local-model tab keeps none. */
 export function readerOffered(tab: Pick<TabEntry, "kind" | "cmd"> | undefined): boolean {
   return !!tab && tab.kind === "agent" && READER_AGENTS.has(tab.cmd);
 }
@@ -64,15 +65,42 @@ export function readerReasonKey(transcript: SessionTranscript | null): Translati
   }
 }
 
+/** The prompts ↑ walks in the Reader's composer, oldest first — what ↑ does
+ * in the CLI's own input box: the session's prompts as its transcript records
+ * them, then any still showing as sending. A prompt sent twice in a row is
+ * kept once, as a shell's history keeps it. */
+export function composerHistory(
+  entries: readonly { kind: string; text?: string }[],
+  sending: readonly string[] = [],
+): string[] {
+  const history: string[] = [];
+  const add = (text: string | undefined) => {
+    const prompt = text?.trim();
+    if (prompt && history[history.length - 1] !== prompt) history.push(prompt);
+  };
+  for (const entry of entries) if (entry.kind === "prompt") add(entry.text);
+  for (const text of sending) add(text);
+  return history;
+}
+
+/** Shortens `path` for the facts row: its last `keep` segments behind `…/`
+ * (the whole path stays in the fact's tooltip). */
+export function shortPath(path: string, keep = 2): string {
+  const trimmed = path.replace(/[/\\]+$/u, "") || path;
+  const parts = trimmed.split(/[/\\]/u).filter(Boolean);
+  if (parts.length <= keep) return trimmed;
+  return `…/${parts.slice(-keep).join("/")}`;
+}
+
 /** A fresh read merged over the last one: `unchanged` keeps what is shown. */
 export function mergeTranscript(previous: SessionTranscript | null, next: SessionTranscript): SessionTranscript {
   return next.unchanged && previous ? previous : next;
 }
 
-const STORAGE_KEY = "eldrun.agentReader.byAgent";
+const STORAGE_KEY = storageKey("agentReader.byAgent");
 /** The one window-wide choice that briefly replaced the per-CLI one: a CLI
  * without its own choice yet starts from it. */
-const SHARED_KEY = "eldrun.agentReader.open";
+const SHARED_KEY = storageKey("agentReader.open");
 
 function readChoices(): Record<string, boolean> {
   try {
@@ -107,5 +135,48 @@ export function rememberReader(agent: string, on: boolean): void {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(choices));
   } catch {
     // A convenience only: without storage every tab opens on its terminal.
+  }
+}
+
+const CHANGES_KEY = storageKey("agentReader.changes");
+const CHANGES_WIDTH_KEY = storageKey("agentReader.changesWidth");
+/** The Changes panel's width before the user drags it. */
+export const CHANGES_DEFAULT_WIDTH = 520;
+export const CHANGES_MIN_WIDTH = 260;
+
+/** Every CLI's remembered choice for the Reader's Changes panel (the diffs
+ * beside the chat): shown or not, closed unless picked. */
+export function rememberedChanges(): Record<string, boolean> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(CHANGES_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function rememberChanges(agent: string, on: boolean): void {
+  try {
+    localStorage.setItem(CHANGES_KEY, JSON.stringify({ ...rememberedChanges(), [agent]: on }));
+  } catch {
+    // A convenience only: without storage the panel starts closed.
+  }
+}
+
+/** The Changes panel's width as last dragged, in px. */
+export function rememberedChangesWidth(): number {
+  try {
+    const width = Number(localStorage.getItem(CHANGES_WIDTH_KEY));
+    return Number.isFinite(width) && width >= CHANGES_MIN_WIDTH ? width : CHANGES_DEFAULT_WIDTH;
+  } catch {
+    return CHANGES_DEFAULT_WIDTH;
+  }
+}
+
+export function rememberChangesWidth(width: number): void {
+  try {
+    localStorage.setItem(CHANGES_WIDTH_KEY, String(Math.round(width)));
+  } catch {
+    // A convenience only.
   }
 }

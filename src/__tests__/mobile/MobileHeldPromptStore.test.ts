@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { ScheduledPrompt } from "../../../mobile-web/src/api";
 import { onHeldPatched, patchHeld, readHeld, stillHeld, writeHeld } from "../../../mobile-web/src/terminal/heldPrompts";
 import { pendingPrompt, type PendingPrompt } from "../../../mobile-web/src/terminal/pendingPrompts";
+import { storageKey } from "../../lib/brand";
 
 const NOW = Date.parse("2026-09-30T12:00:00.000Z");
 const held = (id: number, text: string, heldId: string, sentAt = "2026-09-30T11:59:50.000Z"): PendingPrompt =>
@@ -27,9 +28,9 @@ describe("held prompt store", () => {
   });
 
   it("ignores what is not a held prompt in storage", () => {
-    localStorage.setItem("eldrun.mobile.heldPrompts", JSON.stringify({ a: [{ id: "x" }, 5], b: "no" }));
+    localStorage.setItem(storageKey("mobile.heldPrompts"), JSON.stringify({ a: [{ id: "x" }, 5], b: "no" }));
     expect(readHeld("a")).toEqual([]);
-    localStorage.setItem("eldrun.mobile.heldPrompts", "{not json");
+    localStorage.setItem(storageKey("mobile.heldPrompts"), "{not json");
     expect(readHeld("a")).toEqual([]);
   });
 

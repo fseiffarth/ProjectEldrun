@@ -6,7 +6,7 @@
 //! `core.hooksPath`, `core.sshCommand`, filter drivers), `.git/hooks/*`, and
 //! the `.git` entry itself (swap the directory for a `gitdir:` pointer file and
 //! every one of those comes from wherever the pointer says) are instructions
-//! the *next unsandboxed* git follows: Eldrun's own calls, and the user's
+//! the *next unsandboxed* git follows: Tabtivity's own calls, and the user's
 //! terminal. That is the sandbox "trust handoff" escape (Pillar Security,
 //! CSA, 2026) — the agent never leaves the box; the host runs what it wrote.
 //!
@@ -23,7 +23,7 @@
 //! dir itself stays writable, and an agent can still *create* a
 //! `commondir` in a main `.git` (git then reads config and hooks from where it
 //! points — verified: a plain `git add` runs the target's `post-index-change`),
-//! or `git init` a repo where there was none. Eldrun's own local git is not
+//! or `git init` a repo where there was none. Tabtivity's own local git is not
 //! steered by either (#862): every call pins `GIT_COMMON_DIR` to a main `.git`
 //! (`commands::git::pin_common_dir`), so a planted `commondir` is ignored, and
 //! runs with hooks off except the verbs `services::exec_trust` gates. A plain
@@ -31,10 +31,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// Where Eldrun puts agent worktrees inside a project (`commands::git`'s
+/// Where Tabtivity puts agent worktrees inside a project (`commands::git`'s
 /// `worktrees_root`). Each holds a `.git` pointer file the occupant could
 /// otherwise rewrite.
-const WORKTREES_DIR: [&str; 2] = [".eldrun", "worktrees"];
+const WORKTREES_DIR: [&str; 2] = [crate::brand::PROJECT_DIR, "worktrees"];
 
 /// Files in a git dir that name programs git runs, or redirect where git reads
 /// them from.
@@ -67,9 +67,14 @@ pub fn guard_paths(roots: &[PathBuf], cwd: Option<&Path>) -> GuardPaths {
             starts.push(dir.to_path_buf());
         }
     }
+    // A project not opened since a rename still keeps its worktrees in the
+    // app's folder under the old name; they are guarded the same.
+    let legacy_dir = crate::brand::PAIR.legacy(crate::brand::Name::PROJECT_DIR);
     for root in &roots {
-        if let Ok(entries) = std::fs::read_dir(root.join(WORKTREES_DIR[0]).join(WORKTREES_DIR[1])) {
-            starts.extend(entries.flatten().map(|e| e.path()));
+        for app_dir in std::iter::once(WORKTREES_DIR[0]).chain(legacy_dir.as_deref()) {
+            if let Ok(entries) = std::fs::read_dir(root.join(app_dir).join(WORKTREES_DIR[1])) {
+                starts.extend(entries.flatten().map(|e| e.path()));
+            }
         }
     }
 
@@ -171,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn an_eldrun_worktree_guards_its_pointer_and_its_git_dir() {
+    fn an_app_worktree_guards_its_pointer_and_its_git_dir() {
         let (_tmp, root) = repo();
         let wt = root.join(WORKTREES_DIR[0]).join(WORKTREES_DIR[1]).join("feat");
         // Relative: git can't parse the `\\?\` verbatim root Windows canonicalizes to.

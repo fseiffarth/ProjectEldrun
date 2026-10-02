@@ -24,7 +24,7 @@
  *
  * SHAPE OF THE SOLUTION. One fixed-position layer per window holds every thumb;
  * the app's own DOM is never wrapped or restructured (a wrapper element around
- * arbitrary scroll containers is what breaks React reconciliation, and Eldrun
+ * arbitrary scroll containers is what breaks React reconciliation, and Tabtivity
  * has scroll containers in dozens of components). A container opts IN simply by
  * being scrollable — discovery is automatic — and opts OUT by already setting
  * `scrollbar-width: none`, which is how the app already says "this strip
@@ -50,14 +50,14 @@ const SIZE = 8;
 /** A thumb never shrinks below this, however long the content is. */
 const MIN_THUMB = 24;
 /** Marks a container whose bar we have taken over; the CSS hides the native one. */
-const TAKEOVER_ATTR = "data-eldrun-scrollbar";
+const TAKEOVER_ATTR = "data-app-scrollbar";
 /**
  * Where a window parks its uninstall, so a dev hot-reload of this module tears
  * the previous layer down instead of stacking a second one on top of it. A
  * string key rather than a module-level flag on purpose: replacing the module
  * replaces the flag, which is exactly the case that would double up.
  */
-const INSTALL_KEY = "__eldrunCustomScrollbars";
+const INSTALL_KEY = "__appCustomScrollbars";
 /**
  * How long a container is followed frame by frame after a motion starts on an
  * ancestor, if no end event ever retires it. Well past the app's longest
@@ -237,7 +237,7 @@ export function largestOverlap(spans: Span[], start: number, end: number): Span 
  * and no thumb of ours either. The tab strip, the project pill row and the
  * address display are the surfaces that mean it.
  *
- * The signal is `--eldrun-scrollbar: none`, a property registered in themes.css
+ * The signal is `--tabtivity-scrollbar: none`, a property registered in themes.css
  * so it does not inherit. It used to be `scrollbar-width: none`, which read the
  * decision straight off the stylesheet where it was made — but that stopped
  * distinguishing anything once every element had to be born with the native bar
@@ -246,7 +246,7 @@ export function largestOverlap(spans: Span[], start: number, end: number): Span 
  * overloading a value the engine now needs for something else.
  */
 function optedOut(style: CSSStyleDeclaration): boolean {
-  return style.getPropertyValue("--eldrun-scrollbar").trim() === "none";
+  return style.getPropertyValue("--app-scrollbar").trim() === "none";
 }
 
 /**
@@ -331,7 +331,7 @@ export function installCustomScrollbars(): () => void {
   host[INSTALL_KEY]?.();
 
   const layer = document.createElement("div");
-  layer.className = "eldrun-scrollbar-layer";
+  layer.className = "app-scrollbar-layer";
   layer.setAttribute("aria-hidden", "true");
   document.body.appendChild(layer);
 
@@ -362,7 +362,7 @@ export function installCustomScrollbars(): () => void {
 
   function makeThumb(axis: "vertical" | "horizontal", el: HTMLElement): HTMLElement {
     const thumb = document.createElement("div");
-    thumb.className = `eldrun-scrollbar-thumb eldrun-scrollbar-${axis}`;
+    thumb.className = `app-scrollbar-thumb app-scrollbar-${axis}`;
     thumb.setAttribute("role", "presentation");
     bindDrag(thumb, el, axis);
     layer.appendChild(thumb);
@@ -742,7 +742,7 @@ export function installCustomScrollbars(): () => void {
       };
       thumb.setPointerCapture(e.pointerId);
       thumb.classList.add("dragging");
-      document.body.classList.add("eldrun-scrollbar-dragging");
+      document.body.classList.add("app-scrollbar-dragging");
 
       const onMove = (move: PointerEvent) => {
         const delta = (vertical ? move.clientY : move.clientX) - startPointer;
@@ -752,7 +752,7 @@ export function installCustomScrollbars(): () => void {
       };
       const onUp = () => {
         thumb.classList.remove("dragging");
-        document.body.classList.remove("eldrun-scrollbar-dragging");
+        document.body.classList.remove("app-scrollbar-dragging");
         thumb.removeEventListener("pointermove", onMove);
         thumb.removeEventListener("pointerup", onUp);
         thumb.removeEventListener("pointercancel", onUp);

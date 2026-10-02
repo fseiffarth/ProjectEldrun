@@ -3,11 +3,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use eldrun_lib::commands::project_transfer::{
+use app_lib::commands::project_transfer::{
     export_project_blocking, import_project_export_blocking, inspect_project_export,
     preview_project_export, ExportProjectRequest, ImportBundleRequest,
 };
-use eldrun_lib::commands::projects::{
+use app_lib::commands::projects::{
     archive_project_blocking, create_project_blocking, delete_archived_project, get_projects,
     import_project_blocking, list_archived_projects, load_project,
     restore_archived_project_blocking, save_projects,
@@ -15,7 +15,7 @@ use eldrun_lib::commands::projects::{
     set_project_sandbox, set_project_sandbox_spec, CreateProjectRequest, ImportProjectRequest,
     CLAUDE_SETTINGS, GITIGNORE_DEFAULT, SCAFFOLD_FILES,
 };
-use eldrun_lib::schema::project::{
+use app_lib::schema::project::{
     RemoteSpec, SandboxScope, SandboxSourceDecision, SandboxSpec, SandboxToggleOutcome,
 };
 use tempfile::{Builder, TempDir};
@@ -51,7 +51,7 @@ fn test_lock() -> &'static Mutex<()> {
 /// `paths::home_dir`/`storage::state_dir` on Unix; on Windows `home_dir` reads
 /// `USERPROFILE` (then `HOMEDRIVE`/`HOMEPATH`) and `state_dir` reads `APPDATA` —
 /// overriding only `HOME` there sent every test write into the REAL
-/// `~\eldrun\projects` and `%APPDATA%\eldrun\projects.json` (junk projects in
+/// `~\tabtivity\projects` and `%APPDATA%\tabtivity\projects.json` (junk projects in
 /// the user's live store). All of them must point into the temp home.
 const HOME_ENV_KEYS: &[&str] = &["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA"];
 
@@ -168,7 +168,7 @@ fn assert_project_registered(expected_local_file: &Path, expected_name: &str) {
 #[test]
 fn corrupt_projects_registry_is_never_replaced_with_a_default() {
     with_isolated_home("corrupt-registry-home", |_| {
-        let path = eldrun_lib::storage::state_dir().join("projects.json");
+        let path = app_lib::storage::state_dir().join("projects.json");
         fs::create_dir_all(path.parent().unwrap()).expect("state dir");
         fs::write(&path, b"{broken").expect("corrupt registry fixture");
 
@@ -325,7 +325,7 @@ fn create_remote_project_enables_lockstep_when_git_backed() {
         };
 
         let entry = create_project_blocking(req).expect("create remote git project");
-        let state = eldrun_lib::services::git_peer::load_state(&entry.id);
+        let state = app_lib::services::git_peer::load_state(&entry.id);
         assert!(
             state.enabled,
             "a git-backed remote project should start with lockstep enabled"
@@ -365,7 +365,7 @@ fn create_remote_project_leaves_lockstep_off_without_git() {
         };
 
         let entry = create_project_blocking(req).expect("create remote non-git project");
-        let state = eldrun_lib::services::git_peer::load_state(&entry.id);
+        let state = app_lib::services::git_peer::load_state(&entry.id);
         assert!(
             !state.enabled,
             "a non-git remote project has nothing to keep in step; lockstep stays off"
@@ -733,7 +733,7 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
 /// A registered local project over a seeded tree. `create_project` refuses a
 /// folder that already exists, so the tree is registered the way any existing
 /// folder is: an in-place (`keep`) import.
-fn new_local_project(name: &str, target: &Path) -> eldrun_lib::schema::projects::ProjectEntry {
+fn new_local_project(name: &str, target: &Path) -> app_lib::schema::projects::ProjectEntry {
     seed_project(target, name);
     import_project_blocking(ImportProjectRequest {
         source_dir: target.to_string_lossy().to_string(),
@@ -832,7 +832,7 @@ fn export_import_roundtrip_carries_files_settings_and_tabs() {
         // layout that only lives in the state dir.
         set_project_description(id.clone(), Some("carried across".to_string()))
             .expect("set description");
-        let tabs = vec![eldrun_lib::schema::project::TabEntry {
+        let tabs = vec![app_lib::schema::project::TabEntry {
             key: "t1".to_string(),
             label: "shell".to_string(),
             cmd: String::new(),
@@ -840,7 +840,7 @@ fn export_import_roundtrip_carries_files_settings_and_tabs() {
             session_id: None,
             extra: Default::default(),
         }];
-        eldrun_lib::services::terminal_service::save_tab_layout(
+        app_lib::services::terminal_service::save_tab_layout(
             Some(&id),
             &entry.local_file,
             &tabs,
@@ -854,9 +854,9 @@ fn export_import_roundtrip_carries_files_settings_and_tabs() {
         assert!(preview.blocked.is_none());
         assert!(preview.files > 0, "the seeded tree has files");
         assert_eq!(preview.tabs, 1);
-        assert!(preview.suggested_file_name.ends_with(".eldrunproj"));
+        assert!(preview.suggested_file_name.ends_with(concat!(".", app_lib::app_slug!(), "proj")));
 
-        let bundle = home.join("transfer-project.eldrunproj");
+        let bundle = home.join(concat!("transfer-project.", app_lib::app_slug!(), "proj"));
         let report = export_project_blocking(full_export(&id, &bundle), &mut |_, _| {})
             .expect("export");
         assert!(bundle.is_file(), "the bundle must exist");
@@ -895,7 +895,7 @@ fn export_import_roundtrip_carries_files_settings_and_tabs() {
         // The tab came back, and its cwd was re-pointed at the new folder — a
         // layout still naming the old machine's paths would spawn into nothing.
         assert_eq!(result.tabs_restored, 1);
-        let session = eldrun_lib::services::terminal_service::load_terminal_session(&result.entry.id);
+        let session = app_lib::services::terminal_service::load_terminal_session(&result.entry.id);
         assert_eq!(session.tab_layout.len(), 1);
         assert_eq!(
             session.tab_layout[0].cwd,
@@ -921,7 +921,7 @@ fn export_import_roundtrip_carries_files_settings_and_tabs() {
 }
 
 /// A bundle is a file that can be mailed, so its tab layout is untrusted input:
-/// a tab naming a command Eldrun does not know is restored as a plain shell with
+/// a tab naming a command Tabtivity does not know is restored as a plain shell with
 /// its argv and environment stripped, and `open_apps` never comes back at all.
 #[test]
 fn imported_tabs_are_sanitized_and_open_apps_never_return() {
@@ -930,14 +930,14 @@ fn imported_tabs_are_sanitized_and_open_apps_never_return() {
         let entry = new_local_project("hostile-project", target.path());
         let id = entry.id.clone();
 
-        let bundle = home.join("hostile.eldrunproj");
+        let bundle = home.join(concat!("hostile.", app_lib::app_slug!(), "proj"));
         export_project_blocking(full_export(&id, &bundle), &mut |_, _| {}).expect("export");
 
         // Rewrite the bundle's manifest with a hostile session, the way a
         // handcrafted file that arrived by mail would carry one.
         let mut manifest: serde_json::Value = {
             let mut zip = zip::ZipArchive::new(fs::File::open(&bundle).unwrap()).unwrap();
-            let entry = zip.by_name("eldrun-export.json").unwrap();
+            let entry = zip.by_name(concat!(app_lib::app_slug!(), "-export.json")).unwrap();
             serde_json::from_reader(entry).unwrap()
         };
         manifest["session"] = serde_json::json!({
@@ -962,7 +962,7 @@ fn imported_tabs_are_sanitized_and_open_apps_never_return() {
         assert_eq!(result.tabs_downgraded, 1);
         assert!(result.notes.iter().any(|n| n == "sessionSanitized"));
 
-        let session = eldrun_lib::services::terminal_service::load_terminal_session(&result.entry.id);
+        let session = app_lib::services::terminal_service::load_terminal_session(&result.entry.id);
         let tab = &session.tab_layout[0];
         assert_eq!(tab.cmd, "", "an unknown command is downgraded to a shell");
         assert!(!tab.extra.contains_key("env"), "env must not survive");
@@ -974,7 +974,7 @@ fn imported_tabs_are_sanitized_and_open_apps_never_return() {
     });
 }
 
-/// Replace `eldrun-export.json` inside an existing bundle, keeping every other
+/// Replace `tabtivity-export.json` inside an existing bundle, keeping every other
 /// entry — the test harness for "what if this file was written by someone else".
 fn rewrite_bundle_manifest(bundle: &Path, manifest: &serde_json::Value) {
     use std::io::Write;
@@ -986,7 +986,7 @@ fn rewrite_bundle_manifest(bundle: &Path, manifest: &serde_json::Value) {
         for i in 0..src.len() {
             let mut entry = src.by_index(i).unwrap();
             let name = entry.name().to_string();
-            if name == "eldrun-export.json" {
+            if name == concat!(app_lib::app_slug!(), "-export.json") {
                 continue;
             }
             if entry.is_dir() {
@@ -998,7 +998,7 @@ fn rewrite_bundle_manifest(bundle: &Path, manifest: &serde_json::Value) {
             out.start_file(name, opts).unwrap();
             out.write_all(&bytes).unwrap();
         }
-        out.start_file("eldrun-export.json", opts).unwrap();
+        out.start_file(concat!(app_lib::app_slug!(), "-export.json"), opts).unwrap();
         out.write_all(&serde_json::to_vec(manifest).unwrap()).unwrap();
         out.finish().unwrap();
     }
@@ -1018,7 +1018,7 @@ fn export_refuses_vm_projects() {
         // Tag it as a VM project the way `create_project` would. Written
         // straight to the registry: `save_projects` is the frontend's
         // status/order channel and deliberately ignores everything else.
-        let registry = eldrun_lib::storage::state_dir().join("projects.json");
+        let registry = app_lib::storage::state_dir().join("projects.json");
         let mut list: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&registry).unwrap()).unwrap();
         for project in list.as_array_mut().unwrap() {
@@ -1031,7 +1031,7 @@ fn export_refuses_vm_projects() {
         let preview = preview_project_export(id.clone()).expect("preview");
         assert_eq!(preview.blocked.as_deref(), Some("vm"));
 
-        let bundle = home.join("vm.eldrunproj");
+        let bundle = home.join(concat!("vm.", app_lib::app_slug!(), "proj"));
         let err = export_project_blocking(full_export(&id, &bundle), &mut |_, _| {})
             .expect_err("a VM project must be refused");
         assert!(err.contains("VM"), "{err}");
@@ -1048,7 +1048,7 @@ fn a_metadata_only_export_imports_as_an_empty_folder_with_a_note() {
         let entry = new_local_project("meta-project", target.path());
         let id = entry.id.clone();
 
-        let bundle = home.join("meta.eldrunproj");
+        let bundle = home.join(concat!("meta.", app_lib::app_slug!(), "proj"));
         let mut req = full_export(&id, &bundle);
         req.include_files = false;
         let report = export_project_blocking(req, &mut |_, _| {}).expect("export");
@@ -1209,7 +1209,7 @@ fn set_project_sandbox_preserves_spec_and_confirms_dockerfile() {
         assert!(mirrored.enabled && mirrored.readonly_rootfs);
         assert_eq!(mirrored.pids_limit, Some(256));
 
-        let project: eldrun_lib::schema::project::Project = serde_json::from_str(
+        let project: app_lib::schema::project::Project = serde_json::from_str(
             &fs::read_to_string(&entry.local_file).expect("read project.json"),
         )
         .expect("parse project.json");
@@ -1311,7 +1311,7 @@ fn set_project_remote_control_writes_both_stores_and_clears() {
             Some(false),
             "the projects.json mirror is what the spawn path reads"
         );
-        let project: eldrun_lib::schema::project::Project = serde_json::from_str(
+        let project: app_lib::schema::project::Project = serde_json::from_str(
             &fs::read_to_string(&mirrored.local_file).expect("read project.json"),
         )
         .expect("parse project.json");

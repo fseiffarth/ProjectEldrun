@@ -258,43 +258,73 @@ fn make_private_dir(dir: &Path) {
     }
 }
 
-/// State directory for Eldrun's JSON files.
+/// State directory for Tabtivity's JSON files.
 ///
-/// Linux: `~/.local/share/eldrun/` — matches the Python app's hard-coded path
-/// so that Python rollback finds the same files Rust wrote.
-/// Windows: `%APPDATA%\eldrun\`
-/// macOS:   `~/Library/Application Support/eldrun/`
+/// Linux: `~/.local/share/tabtivity/`
+/// Windows: `%APPDATA%\tabtivity\`
+/// macOS:   `~/Library/Application Support/tabtivity/`
+///
+/// An install made before the app was renamed has the folder under the old
+/// name until `services::brand_migration` has moved it; until then that
+/// folder is the state dir (`resolve_named_dir`).
 pub fn state_dir() -> std::path::PathBuf {
     // Test/sandbox override. The state dir is written to by tests (the
     // per-project session state moved here out of the project tree), and a test
-    // suite that writes into the developer's real `~/.local/share/eldrun/` is
-    // not a test suite. `start-eldrun-dev-sandbox.sh` sets it too, paired with
-    // `ELDRUN_HOME` (see `paths::eldrun_home`), so a dev window keeps its state
+    // suite that writes into the developer's real `~/.local/share/tabtivity/` is
+    // not a test suite. `start-tabtivity-dev-sandbox.sh` sets it too, paired with
+    // `TABTIVITY_HOME` (see `paths::app_home`), so a dev window keeps its state
     // away from the packaged daily-driver instance's. Still not a user-facing
     // knob — whatever sets it for the app already owns the process.
-    if let Ok(dir) = std::env::var("ELDRUN_STATE_DIR") {
-        if !dir.is_empty() {
-            return std::path::PathBuf::from(dir);
-        }
+    if let Some(dir) = state_dir_override() {
+        return dir;
     }
+    crate::services::brand_migration::resolve_named_dir(
+        &crate::brand::PAIR,
+        crate::brand::Name::STATE_DIR_NAME,
+        &state_dir_base(),
+        "state-dir",
+    )
+}
+
+/// The folder the environment names as the state dir, if it names one.
+pub fn state_dir_override() -> Option<std::path::PathBuf> {
+    crate::brand::env("STATE_DIR").map(std::path::PathBuf::from)
+}
+
+/// The per-OS folder the state dir sits in.
+pub fn state_dir_base() -> std::path::PathBuf {
     if cfg!(target_os = "windows") {
-        let base = std::env::var("APPDATA")
+        std::env::var("APPDATA")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| paths::home_dir());
-        base.join("eldrun")
+            .unwrap_or_else(|_| paths::home_dir())
     } else if cfg!(target_os = "macos") {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         std::path::PathBuf::from(home)
             .join("Library")
             .join("Application Support")
-            .join("eldrun")
     } else {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-        std::path::PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("eldrun")
+        std::path::PathBuf::from(home).join(".local").join("share")
     }
+}
+
+/// `~/.local/share`, the folder [`home_share_dir`] sits in on every OS.
+pub fn home_share_base() -> std::path::PathBuf {
+    paths::home_dir().join(".local").join("share")
+}
+
+/// `~/.local/share/<state dir name>` on every OS, whatever the state-dir
+/// override says. The local-model CLI homes and the frozen dev build's files
+/// have always lived there — fixed per user, outside a sandboxed state dir —
+/// so this is the one place that path is built. On Linux without an override
+/// it is [`state_dir`].
+pub fn home_share_dir() -> std::path::PathBuf {
+    crate::services::brand_migration::resolve_named_dir(
+        &crate::brand::PAIR,
+        crate::brand::Name::STATE_DIR_NAME,
+        &home_share_base(),
+        "share-dir",
+    )
 }
 
 /// The scope id of the root terminal — the one scope that is not a project and
@@ -664,10 +694,22 @@ mod tests {
     // ── state_dir ─────────────────────────────────────────────────────────
 
     #[test]
-    fn state_dir_ends_with_eldrun() {
+    fn state_dir_ends_with_app() {
         let dir = state_dir();
         let last = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        assert_eq!(last, "eldrun", "state_dir must end in 'eldrun': {:?}", dir);
+        // The current name — or the old one on a machine whose state dir has
+        // not been moved yet (a developer's, whose installed build predates
+        // the rename): the lookup falls back to it rather than start empty.
+        let base = state_dir_base();
+        let expected = if state_dir_override().is_none()
+            && !base.join(crate::brand::STATE_DIR_NAME).exists()
+            && base.join(crate::brand::LEGACY_STATE_DIR_NAME).exists()
+        {
+            crate::brand::LEGACY_STATE_DIR_NAME
+        } else {
+            crate::brand::STATE_DIR_NAME
+        };
+        assert_eq!(last, expected, "state_dir must end in '{expected}': {dir:?}");
     }
 
     // ── private state files ───────────────────────────────────────────────
@@ -683,7 +725,7 @@ mod tests {
     fn make_private_dir_creates_and_tightens_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
-        let fresh = tmp.path().join("a").join("eldrun");
+        let fresh = tmp.path().join("a").join(crate::app_slug!());
         make_private_dir(&fresh);
         assert_eq!(mode_of(&fresh), 0o700);
 
@@ -730,14 +772,24 @@ mod tests {
     }
 
     #[test]
-    fn root_work_dir_parent_is_eldrun() {
+    fn root_work_dir_parent_is_app() {
         let dir = root_work_dir();
         let parent = dir
             .parent()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("");
-        assert_eq!(parent, "eldrun");
+        // The home tree: the current name, or the old one where an install
+        // made before the rename keeps it.
+        let home = paths::home_dir();
+        let expected = if !home.join(crate::brand::HOME_DIR_NAME).exists()
+            && home.join(crate::brand::LEGACY_HOME_DIR_NAME).exists()
+        {
+            crate::brand::LEGACY_HOME_DIR_NAME
+        } else {
+            crate::brand::HOME_DIR_NAME
+        };
+        assert_eq!(parent, expected);
     }
 
     // ── write_json / read_json ─────────────────────────────────────────────

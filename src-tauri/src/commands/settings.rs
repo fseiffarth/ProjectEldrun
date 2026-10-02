@@ -155,7 +155,7 @@ fn default_global_apps(
 /// candidate is a binary name resolved via `PATH` (`crate::paths::resolve_executable`,
 /// which already covers the GUI-launched-process PATH gap). Mail, calendar,
 /// file-manager, system-monitor, notes and media-player roles are deliberately
-/// absent, for the same reason as the other two platforms: Eldrun has its own
+/// absent, for the same reason as the other two platforms: Tabtivity has its own
 /// of each. There is no app guaranteed present on every distro, so — unlike
 /// macOS (Safari) — the toolbar can still come back empty on a minimal
 /// install; a role can always be set by hand in the Global Apps settings panel.
@@ -246,7 +246,7 @@ fn env_join(var: &str, tail: &str) -> String {
 /// Probe well-known install locations for the common global-app roles on
 /// Windows. Every role is included only when found, so the toolbar can come
 /// back empty. Mail, calendar, file-manager, system-monitor, notes and
-/// media-player roles are deliberately absent: Eldrun has its own of each (the
+/// media-player roles are deliberately absent: Tabtivity has its own of each (the
 /// Monitor tab, the editable file viewers, the in-tab media viewer), so seeding
 /// an external app for them only offered a second, worse copy.
 #[cfg(target_os = "windows")]
@@ -316,7 +316,7 @@ fn detect_windows_global_apps(
 /// Roles whose app is absent (e.g. iTerm) are skipped; the toolbar is never empty
 /// on a stock install since Safari is always present. Mail, calendar,
 /// file-manager, system-monitor, notes and media-player roles are deliberately
-/// absent — Eldrun has its own of each (the Monitor tab, the editable file
+/// absent — Tabtivity has its own of each (the Monitor tab, the editable file
 /// viewers, the in-tab media viewer), so seeding Mail/Finder/Activity Monitor/
 /// Notes/QuickTime here only offered a second, worse copy.
 #[cfg(target_os = "macos")]

@@ -50,6 +50,7 @@ class FakeWebSocket {
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { BRAND, NAMES, storageKey } from "../../lib/brand";
 
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, available: true, viewer_busy: false };
 
@@ -90,7 +91,7 @@ function pick(files: File[]) {
   fireEvent.change(input);
 }
 
-describe("Eldrun Mobile composer + and the frozen reading view", () => {
+describe(`${BRAND.display} Mobile composer + and the frozen reading view`, () => {
   beforeEach(() => {
     // The composer's draft is kept on the phone now (`drafts.ts`), and the
     // unmount that flushes it runs in Testing Library's own cleanup — after this
@@ -101,8 +102,8 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     // These read the Focus view; the phone opens on Terminal until the
     // reader chose Focus for the agent, so the stored choice is preset.
-    localStorage.setItem("eldrun.mobile.view.agent", "focus");
-    localStorage.setItem("eldrun.mobile.view.shell", "focus");
+    localStorage.setItem(storageKey("mobile.view.agent"), "focus");
+    localStorage.setItem(storageKey("mobile.view.shell"), "focus");
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
   });
 
@@ -136,7 +137,7 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
 
   it("offers the gallery as its own entry: a media-only picker over the same inbox drop", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, {
-      attachment: { name: "20260917-120000-IMG_0099.jpg", reference: ".eldrun/inbox/20260917-120000-IMG_0099.jpg", size: 3 },
+      attachment: { name: "20260917-120000-IMG_0099.jpg", reference: `${NAMES.inboxDir}/20260917-120000-IMG_0099.jpg`, size: 3 },
     }));
     vi.stubGlobal("fetch", routeOutbox(fetchMock));
     render(<Terminal tab={TAB} back={() => {}} />);
@@ -159,12 +160,12 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
     fireEvent.change(gallery);
     await settle(0);
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe("/api/v1/tabs/tab-7/inbox?name=IMG_0099.jpg");
-    expect(composer().value).toContain("@.eldrun/inbox/20260917-120000-IMG_0099.jpg");
+    expect(composer().value).toContain(`@${NAMES.inboxDir}/20260917-120000-IMG_0099.jpg`);
   });
 
   it("sends a picked file into the project inbox and writes the desktop's reference into the draft", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, {
-      attachment: { name: "20260831-120000-IMG_0042.jpg", reference: ".eldrun/inbox/20260831-120000-IMG_0042.jpg", size: 3 },
+      attachment: { name: "20260831-120000-IMG_0042.jpg", reference: `${NAMES.inboxDir}/20260831-120000-IMG_0042.jpg`, size: 3 },
     }));
     vi.stubGlobal("fetch", routeOutbox(fetchMock));
     render(<Terminal tab={TAB} back={() => {}} />);
@@ -184,7 +185,7 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
     expect(init.body).toBeInstanceOf(File);
 
     // Delivered: the reference is in the draft and the pending row is gone.
-    expect(composer().value).toBe("look at this @.eldrun/inbox/20260831-120000-IMG_0042.jpg ");
+    expect(composer().value).toBe(`look at this @${NAMES.inboxDir}/20260831-120000-IMG_0042.jpg `);
     expect(screen.queryByRole("status")).toBeNull();
     // The picker is reset so the same photo can be picked again.
     expect(fileInput().value).toBe("");
@@ -221,7 +222,7 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
         { id: "0123456789abcdef0123456789abcdef", name: "Screenshot_2026-09-03.png", source: "Screenshots", size: 1_300_000, age_secs: 200 },
       ] }))
       .mockResolvedValueOnce(jsonResponse(201, {
-        attachment: { name: "20260903-100000-Screenshot_2026-09-03.png", reference: ".eldrun/inbox/20260903-100000-Screenshot_2026-09-03.png", size: 1_300_000 },
+        attachment: { name: "20260903-100000-Screenshot_2026-09-03.png", reference: `${NAMES.inboxDir}/20260903-100000-Screenshot_2026-09-03.png`, size: 1_300_000 },
       }));
     vi.stubGlobal("fetch", routeOutbox(fetchMock));
     render(<Terminal tab={TAB} back={() => {}} />);
@@ -251,7 +252,7 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
     expect(url).toBe("/api/v1/tabs/tab-7/desktop-images");
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({ image_id: "0123456789abcdef0123456789abcdef" });
-    expect(composer().value).toBe("fix this @.eldrun/inbox/20260903-100000-Screenshot_2026-09-03.png ");
+    expect(composer().value).toBe(`fix this @${NAMES.inboxDir}/20260903-100000-Screenshot_2026-09-03.png `);
     expect(screen.queryByRole("status")).toBeNull();
   });
 

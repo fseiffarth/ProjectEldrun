@@ -3,13 +3,13 @@
 //!
 //! A fenced agent tab can commit but cannot push: the project's access token
 //! lives in the keyring, and nothing readable from inside the fence may hold
-//! it. So the agent *asks*, and Eldrun pushes from outside the fence under
+//! it. So the agent *asks*, and Tabtivity pushes from outside the fence under
 //! rules read from the trusted `projects.json` entry — never from anything in
 //! the project folder. Two phases keep project code and the token apart:
 //!
 //! 1. **Preflight, fenced, no token.** The repo's `pre-push` hook runs inside
 //!    the tab's own fence with git's normal arguments and stdin line, plus
-//!    `ELDRUN_PUSH_PREFLIGHT=1`. Its commits (a version bump) are picked up.
+//!    `TABTIVITY_PUSH_PREFLIGHT=1`. Its commits (a version bump) are picked up.
 //! 2. **Transport, host, hooks off.** One explicit refspec to one pinned URL
 //!    through `commands::git::push_transport`, the token offered only to the
 //!    project's token origins. No repo hook runs while the token is in `env`.
@@ -30,13 +30,13 @@ use serde_json::{json, Value};
 use super::root_mcp::{Caller, Session};
 use crate::commands::git::{hardened_git_command_in, push_transport_command, resolve_pre_push_hook, scoped_token_config};
 
-pub const SERVER_NAME: &str = "eldrun-git";
+pub const SERVER_NAME: &str = crate::brand::MCP_GIT_SERVER;
 /// Emitted whenever a proposal is created or changes state.
 pub const CHANGED_EVENT: &str = "git-push-mcp-changed";
-pub const CONTRACT: &str = "Pushes the branch checked out in this tab's project, fast-forward only, to its existing upstream branch — never a tag, a force-push, a delete, a new remote branch or the remote's default branch. Eldrun pushes from outside your sandbox with the user's stored token; you never see it. The repo's pre-push hook runs first, inside your sandbox and without any token (ELDRUN_PUSH_PREFLIGHT=1); other hooks do not run. Depending on the project's level the push is applied at once or staged for the user's approval — then poll git_push_status for the outcome. Every refusal is a normal result with a fixed `category` and a `message` saying what to do next. Budget: six pushes per hour and two pending proposals per tab.";
+pub const CONTRACT: &str = concat!("Pushes the branch checked out in this tab's project, fast-forward only, to its existing upstream branch — never a tag, a force-push, a delete, a new remote branch or the remote's default branch. ", crate::app_name!(), " pushes from outside your sandbox with the user's stored token; you never see it. The repo's pre-push hook runs first, inside your sandbox and without any token (", crate::app_upper!(), "_PUSH_PREFLIGHT=1); other hooks do not run. Depending on the project's level the push is applied at once or staged for the user's approval — then poll git_push_status for the outcome. Every refusal is a normal result with a fixed `category` and a `message` saying what to do next. Budget: six pushes per hour and two pending proposals per tab.");
 /// The server's `instructions`: the push contract plus the release and CI
 /// tools that share the lane.
-pub const INSTRUCTIONS: &str = "Pushes, release tags and CI for the project this tab works in, done by Eldrun outside your sandbox with the user's stored token (you never see it). git_push pushes the checked-out branch fast-forward to its existing upstream (never a tag, force-push, delete, new remote branch or the remote's default branch); the repo's pre-push hook runs first inside your sandbox without a token. git_release proposes an annotated release tag on the checked-out branch's tip once that tip is on the remote; it always waits for the user to press Release on the card. Staged requests: poll git_push_status for the outcome. ci_runs, ci_run and ci_security_alerts read GitHub Actions runs, failed-job logs and annotations, and open code-scanning alerts of this repo — read-only, sixty reads per tab per hour. Every refusal is a normal result with a fixed `category` and a `message` saying what to do next. Budget: six push or release requests per hour and two pending per tab.";
+pub const INSTRUCTIONS: &str = concat!("Pushes, release tags and CI for the project this tab works in, done by ", crate::app_name!(), " outside your sandbox with the user's stored token (you never see it). git_push pushes the checked-out branch fast-forward to its existing upstream (never a tag, force-push, delete, new remote branch or the remote's default branch); the repo's pre-push hook runs first inside your sandbox without a token. git_release proposes an annotated release tag on the checked-out branch's tip once that tip is on the remote; it always waits for the user to press Release on the card. Staged requests: poll git_push_status for the outcome. ci_runs, ci_run and ci_security_alerts read GitHub Actions runs, failed-job logs and annotations, and open code-scanning alerts of this repo — read-only, sixty reads per tab per hour. Every refusal is a normal result with a fixed `category` and a `message` saying what to do next. Budget: six push or release requests per hour and two pending per tab.");
 
 /// How long the whole request may block the tool call before it answers
 /// `running` and lets the agent poll — inside the listener's 30 s socket life.
@@ -427,7 +427,7 @@ pub(crate) fn ls_remote_raw(dir: &Path, url: &str, refs: &[String], token: Optio
     args.extend(["ls-remote", "--symref", "--", url].map(str::to_string));
     args.extend(refs.iter().cloned());
     let mut cmd = hardened_git_command_in(dir, &args);
-    if let Some(tok) = token { cmd.env("ELDRUN_GIT_TOKEN", tok); }
+    if let Some(tok) = token { cmd.env(crate::app_env!("GIT_TOKEN"), tok); }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     let ran = match run_capped(cmd, None, REMOTE_TIMEOUT) {
         Ok(ran) => ran,
@@ -519,10 +519,10 @@ fn preflight_command(tab: &str, hook: &Path, dir: &Path, remote: &str, url: &str
             cmd
         }
     };
-    for var in ["ELDRUN_GIT_TOKEN", super::root_mcp::TOKEN_ENV, super::root_mcp::SCHEDULE_TOKEN_ENV, super::root_mcp::GIT_TOKEN_ENV, super::root_mcp::HELP_TOKEN_ENV, "GIT_CONFIG_PARAMETERS", "GIT_DIR", "GIT_WORK_TREE"] {
+    for var in [crate::app_env!("GIT_TOKEN"), super::root_mcp::TOKEN_ENV, super::root_mcp::SCHEDULE_TOKEN_ENV, super::root_mcp::GIT_TOKEN_ENV, super::root_mcp::HELP_TOKEN_ENV, "GIT_CONFIG_PARAMETERS", "GIT_DIR", "GIT_WORK_TREE"] {
         cmd.env_remove(var);
     }
-    cmd.env("ELDRUN_PUSH_PREFLIGHT", "1");
+    cmd.env(crate::app_env!("PUSH_PREFLIGHT"), "1");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     Ok(cmd)
 }
@@ -936,14 +936,14 @@ pub fn tools() -> Value {
     json!([
         {"name":"git_push_status","description":"This project's push state: the checked-out branch, its upstream, ahead/behind, the project's agent-push level, which local branches the policy allows, and this tab's push requests with their outcome (pending, running, pushed, failed, dismissed, expired). Read-only.",
          "inputSchema":object(json!({}),json!([])),"annotations":{"readOnlyHint":true}},
-        {"name":"git_push","description":format!("Ask Eldrun to push this tab's checked-out branch. {CONTRACT}"),
+        {"name":"git_push","description":format!("Ask {app} to push this tab's checked-out branch. {CONTRACT}", app = crate::brand::DISPLAY),
          "inputSchema":object(json!({
             "branch":{"type":"string","maxLength":200,"description":"The branch to push. Optional; defaults to the checked-out branch, and must be the checked-out branch."},
             "note":{"type":"string","maxLength":NOTE_MAX,"description":"One line for the user's approval card saying why this push is wanted. Optional; at most 200 characters."}
          }),json!([]))},
         {"name":"git_push_cancel","description":"Withdraw one of this tab's own pending push or release requests. A request already running or decided cannot be withdrawn.",
          "inputSchema":object(json!({"id":{"type":"string","maxLength":64,"description":"The request id git_push, git_release or git_push_status returned."}}),json!(["id"]))},
-        {"name":"git_release","description":"Ask Eldrun to tag a release: an annotated tag on the checked-out branch's tip, pushed as that one tag. The tip must already be on the remote (git_push first, and wait until git_push_status says pushed). The tag must be new on the remote. Always staged: the user presses Release on the card; poll git_push_status for the outcome. Counts against the push budget.",
+        {"name":"git_release","description":concat!("Ask ", crate::app_name!(), " to tag a release: an annotated tag on the checked-out branch's tip, pushed as that one tag. The tip must already be on the remote (git_push first, and wait until git_push_status says pushed). The tag must be new on the remote. Always staged: the user presses Release on the card; poll git_push_status for the outcome. Counts against the push budget."),
          "inputSchema":object(json!({
             "tag":{"type":"string","maxLength":100,"description":"The tag, e.g. v1.2.3. Optional; defaults to v<version> from package.json / tauri.conf.json / Cargo.toml / pyproject.toml at the tip, else the latest v* tag counted up."},
             "note":{"type":"string","maxLength":NOTE_MAX,"description":"One line for the user's approval card. Optional."}
@@ -1294,7 +1294,7 @@ mod tests {
         assert_eq!(&args[push..], &["push", "--no-verify", "--porcelain", "--", "https://github.com/o/r.git", "refs/heads/develop:refs/heads/develop"]);
         assert!(!joined.contains("zzsecretzz"), "the token is never in argv");
         let env: Vec<(String, Option<String>)> = cmd.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect();
-        assert!(env.contains(&("ELDRUN_GIT_TOKEN".into(), Some("zzsecretzz".into()))));
+        assert!(env.contains(&(crate::app_env!("GIT_TOKEN").into(), Some("zzsecretzz".into()))));
         assert!(env.contains(&("GIT_TERMINAL_PROMPT".into(), Some("0".into()))));
         assert!(args.iter().all(|a| !a.starts_with('+') && !a.contains("--tags") && !a.contains("--force")));
     }
@@ -1493,15 +1493,15 @@ mod tests {
         let hooks = work.join(".githooks");
         std::fs::create_dir_all(&hooks).unwrap();
         let hook = hooks.join("pre-push");
-        std::fs::write(&hook, "#!/bin/sh\nset -e\nread line\nprintf '%s\\n' \"$1 $2\" \"$line\" \"pf=${ELDRUN_PUSH_PREFLIGHT:-unset}\" \"tok=${ELDRUN_GIT_TOKEN:-unset}\" > \"$(git rev-parse --show-toplevel)/seen.txt\"\necho bumped > bump.txt\ngit add bump.txt seen.txt\ngit -c user.name=h -c user.email=h@example.invalid commit -q -m bump\necho 'hook says hi'\nexit ${HOOK_EXIT:-0}\n").unwrap();
+        std::fs::write(&hook, concat!("#!/bin/sh\nset -e\nread line\nprintf '%s\\n' \"$1 $2\" \"$line\" \"pf=${", crate::app_upper!(), "_PUSH_PREFLIGHT:-unset}\" \"tok=${", crate::app_upper!(), "_GIT_TOKEN:-unset}\" > \"$(git rev-parse --show-toplevel)/seen.txt\"\necho bumped > bump.txt\ngit add bump.txt seen.txt\ngit -c user.name=h -c user.email=h@example.invalid commit -q -m bump\necho 'hook says hi'\nexit ${HOOK_EXIT:-0}\n")).unwrap();
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         sh(&work, &["config", "core.hooksPath", ".githooks"]);
         assert_eq!(resolve_pre_push_hook(&work).unwrap(), hook);
         let policy = ProjectPolicy { confirmed_url: Some(format!("file://{}", remote.display())), ..propose_policy() };
         let before = plan(&work, &policy, None, None, &[]).unwrap();
-        std::env::set_var("ELDRUN_GIT_TOKEN", "leak-me-not");
+        std::env::set_var(crate::app_env!("GIT_TOKEN"), "leak-me-not");
         let (after, output) = preflight(&work, "tab:not-fenced", before.clone()).unwrap();
-        std::env::remove_var("ELDRUN_GIT_TOKEN");
+        std::env::remove_var(crate::app_env!("GIT_TOKEN"));
         assert!(output.contains("hook says hi"), "{output}");
         let seen = std::fs::read_to_string(work.join("seen.txt")).unwrap();
         assert!(seen.contains(&format!("origin file://{}", remote.display())), "{seen}");
@@ -1524,7 +1524,7 @@ mod tests {
         if !have_git() { eprintln!("git not on PATH — skipping"); return; }
         if !super::super::agent_fence::bwrap_available() { eprintln!("bubblewrap unavailable — skipping the fenced preflight test"); return; }
         let home = crate::paths::home_dir();
-        let marker = home.join(format!(".eldrun-preflight-marker-{}", std::process::id()));
+        let marker = home.join(format!(concat!(".", crate::app_slug!(), "-preflight-marker-{}"), std::process::id()));
         let _ = std::fs::remove_file(&marker);
         let hook = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(hook.path(), format!("#!/bin/sh\ntouch {} 2>/dev/null; echo done\n", marker.display())).unwrap();

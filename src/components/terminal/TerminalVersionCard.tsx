@@ -8,7 +8,7 @@ import { SIGN_IN_CARD_CLASS } from "./TerminalSignInCard";
 
 /**
  * The card an agent pane shows when the host's CLI is newer than the release
- * Eldrun's flags and parsers were verified with (`agentVersionNotice`). The
+ * Tabtivity's flags and parsers were verified with (`agentVersionNotice`). The
  * sign-in card's look and place, and its class, so the pane's own mouse
  * handling leaves clicks inside it alone.
  */

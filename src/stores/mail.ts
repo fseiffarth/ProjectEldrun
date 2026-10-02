@@ -86,7 +86,7 @@ let composeSeq = 0;
 /**
  * The mail client's store: accounts, folders, the header index page, the
  * selected message and its body — one global set, backed by
- * `~/.local/share/eldrun/mail/`.
+ * `~/.local/share/tabtivity/mail/`.
  *
  * Modeled on `stores/calendar/calendar.ts`, and deliberately **global** — one mailbox, no
  * matter which project is active. That is also what retired the mail *tab*: a tab
@@ -1258,7 +1258,7 @@ export function unreadTotal(folders: MailFolder[] | undefined): number {
  * failure mode that teaches a user to ignore a badge.
  *
  * Derived rather than accumulated, so it is right the moment the app starts
- * (mail that arrived while Eldrun was closed is in the index and therefore in
+ * (mail that arrived while Tabtivity was closed is in the index and therefore in
  * this number), it survives a relaunch, and it falls as messages are read
  * instead of needing to be dismissed.
  */

@@ -4,6 +4,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockRejectedValue(new E
 import { SettingsDialog } from "../../components/layout/SettingsPanel";
 import { useSettingsStore } from "../../stores/settings";
 import { SETTINGS_ANCHORS } from "../../components/layout/settingsUi";
+import { DEFAULT_PDF_MARKUP_APPLY, DEFAULT_PDF_MARKUP_INSTRUCTION } from "../../lib/viewers/pdfMarkup";
 
 beforeEach(() => {
   useSettingsStore.setState({ settings: {} } as never);
@@ -31,6 +32,29 @@ describe("settings category navigation", () => {
     await act(async () => { fireEvent.click(toggle); });
     expect(document.documentElement.classList.contains("show-untested-tags")).toBe(false);
     expect(toggle.checked).toBe(false);
+    act(() => { useSettingsStore.setState({ updateSettings: originalUpdateSettings }); });
+  });
+
+  it("keeps the desktop's own PDF markup prompts, starting from the defaults", async () => {
+    const originalUpdateSettings = useSettingsStore.getState().updateSettings;
+    const updateSettings = vi.fn().mockImplementation(async (patch: Record<string, unknown>) => {
+      useSettingsStore.setState({ settings: { ...useSettingsStore.getState().settings, ...patch } });
+    });
+    useSettingsStore.setState({ settings: {}, updateSettings } as never);
+    await act(async () => { render(<SettingsDialog onClose={() => {}} initialAnchor="settings-anchor-pdfMarkup" />); });
+    const instruction = screen.getByLabelText("Mark up prompt") as HTMLTextAreaElement;
+    expect(instruction.value).toBe(DEFAULT_PDF_MARKUP_INSTRUCTION);
+    const apply = screen.getByLabelText("“Make these changes” prompt") as HTMLTextAreaElement;
+    expect(apply.value).toBe(DEFAULT_PDF_MARKUP_APPLY);
+    await act(async () => { fireEvent.change(apply, { target: { value: "Apply all and rebuild." } }); });
+    expect(updateSettings).toHaveBeenLastCalledWith({ pdf_markup_apply: "Apply all and rebuild." });
+    // Typed back to the default, or emptied: the default stands, unsaved.
+    await act(async () => { fireEvent.change(instruction, { target: { value: ` ${DEFAULT_PDF_MARKUP_INSTRUCTION}` } }); });
+    expect(updateSettings).toHaveBeenLastCalledWith({ pdf_markup_instruction: undefined });
+    const resets = screen.getAllByRole("button", { name: "Use the default" }) as HTMLButtonElement[];
+    expect(resets[0].disabled).toBe(true);
+    await act(async () => { fireEvent.click(resets[1]); });
+    expect(updateSettings).toHaveBeenLastCalledWith({ pdf_markup_apply: undefined });
     act(() => { useSettingsStore.setState({ updateSettings: originalUpdateSettings }); });
   });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { HIGHLIGHT_MAX_CHARS, highlight, languageForPath } from "../../lib/viewers/highlight";
+import { HIGHLIGHT_MAX_CHARS, escapeHtml, highlight, languageForPath } from "../../lib/viewers/highlight";
+import { BRAND } from "../../lib/brand";
 
 describe("languageForPath", () => {
   it("maps extensions to languages", () => {
@@ -87,9 +88,9 @@ describe("highlight", () => {
   });
 
   it("treats JSON object keys as props, not strings", () => {
-    const html = highlight('{ "name": "eldrun" }', "json")!;
+    const html = highlight(`{ "name": "${BRAND.slug}" }`, "json")!;
     expect(html).toContain('<span class="tok-prop">&quot;name&quot;</span>');
-    expect(html).toContain('<span class="tok-string">&quot;eldrun&quot;</span>');
+    expect(html).toContain(`<span class="tok-string">&quot;${BRAND.slug}&quot;</span>`);
   });
 
   it("escapes HTML so source can never inject markup", () => {
@@ -250,5 +251,56 @@ describe("highlight", () => {
     const html = highlight("some_var_name and 2 * 3 * 4", "markdown")!;
     expect(html).not.toContain("tok-md-em");
     expect(html).not.toContain("tok-md-strong");
+  });
+});
+
+describe("escapeHtml", () => {
+  it("escapes all five specials in one pass, never double-escaping its own output", () => {
+    expect(escapeHtml(`<a href="x" title='y'>&amp;</a>`)).toBe(
+      "&lt;a href=&quot;x&quot; title=&#39;y&#39;&gt;&amp;amp;&lt;/a&gt;",
+    );
+    for (const [c, e] of [["&", "&amp;"], ["<", "&lt;"], [">", "&gt;"], ['"', "&quot;"], ["'", "&#39;"]]) {
+      expect(escapeHtml(c)).toBe(e);
+    }
+  });
+
+  it("hands back text with nothing to escape unchanged", () => {
+    expect(escapeHtml("")).toBe("");
+    expect(escapeHtml("x")).toBe("x");
+    expect(escapeHtml("plain prose, no specials")).toBe("plain prose, no specials");
+  });
+
+  it("escapes a run the same as its characters one by one", () => {
+    const s = `if (a < b && c > "d") return 'e';`;
+    expect(escapeHtml(s)).toBe([...s].map(escapeHtml).join(""));
+  });
+});
+
+describe("highlight — prose runs", () => {
+  // The TeX and markdown scanners take a run of plain text in one piece; the
+  // run must stop at exactly the characters that can open a token, and still
+  // escape what it carries.
+  it("ends a TeX prose run at a command, a comment, math and a number", () => {
+    const html = highlight(`a < b & "c" \\emph{x} d 12 e $y$ f % g`, "tex")!;
+    expect(html).toBe(
+      "a &lt; b &amp; &quot;c&quot; " +
+        '<span class="tok-keyword">\\emph</span>{<span class="tok-arg">x</span>}' +
+        ' d <span class="tok-num">12</span> e ' +
+        '<span class="tok-math">$y$</span> f <span class="tok-comment">% g</span>',
+    );
+  });
+
+  it("ends a markdown prose run at every inline opener", () => {
+    const html = highlight("a<b `c` d [e](f) g *h* i_j k", "markdown")!;
+    expect(html).toBe(
+      'a&lt;b <span class="tok-md-code">`c`</span> d [<span class="tok-md-link">e</span>](' +
+        '<span class="tok-md-url">f</span>) g <span class="tok-md-em">*h*</span> i_j k',
+    );
+  });
+
+  it("passes whitespace runs through code untouched", () => {
+    expect(highlight("let  x\t=\n\n  1;", "js")).toBe(
+      '<span class="tok-keyword">let</span>  x\t=\n\n  <span class="tok-num">1</span>;',
+    );
   });
 });

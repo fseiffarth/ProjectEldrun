@@ -37,7 +37,7 @@ vi.mock("../../stores/projects", () => {
     loaded: true,
     // A project is active, so the panel has a target and the edge rail mounts.
     activeId: "proj-1",
-    rootDir: "/home/u/eldrun/root",
+    rootDir: "/home/u/app/root",
     switchToast: null,
     clearSwitchToast: vi.fn(),
     connToast: null,

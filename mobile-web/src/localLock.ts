@@ -1,4 +1,5 @@
 import { openAuthDatabase } from "./auth";
+import { BRAND } from "../../src/lib/brand";
 
 const STORE = "keys";
 const KEY = "local-unlock-v1";
@@ -153,11 +154,11 @@ async function enrollBiometric(): Promise<string | null> {
   if (!await platformBiometricAvailable()) return null;
   const publicKey: WithHints<PublicKeyCredentialCreationOptions> = {
     challenge: arrayBuffer(randomBytes(32)),
-    rp: { name: "Eldrun Mobile", id: location.hostname },
+    rp: { name: `${BRAND.display} Mobile`, id: location.hostname },
     user: {
       id: arrayBuffer(randomBytes(32)),
-      name: "eldrun-mobile",
-      displayName: "Eldrun Mobile local unlock",
+      name: `${BRAND.slug}-mobile`,
+      displayName: `${BRAND.display} Mobile local unlock`,
     },
     pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
     authenticatorSelection: BIOMETRIC_SELECTION,
@@ -248,7 +249,7 @@ export async function maybeEnrollBiometric(): Promise<boolean> {
  * factor and the way back in for a locked-out legitimate user. */
 export async function unlockLocalBiometric(signal?: AbortSignal): Promise<void> {
   const record = await readRecord();
-  if (!record) throw new Error("Set up the app lock before unlocking Eldrun Mobile.");
+  if (!record) throw new Error(`Set up the app lock before unlocking ${BRAND.display} Mobile.`);
   if (!record.biometricCredentialId) throw new Error("Device biometric unlock is not set up on this phone.");
   await verifyBiometric(record.biometricCredentialId, signal);
   if (record.failedAttempts || record.lockedUntil) {
@@ -263,7 +264,7 @@ export async function unlockLocalBiometric(signal?: AbortSignal): Promise<void> 
  * fingerprint sensor with no way in at all. */
 export async function unlockLocal(pin: string, now = Date.now()): Promise<void> {
   const record = await readRecord();
-  if (!record) throw new Error("Set up the app lock before unlocking Eldrun Mobile.");
+  if (!record) throw new Error(`Set up the app lock before unlocking ${BRAND.display} Mobile.`);
   if (typeof record.lockedUntil === "number" && record.lockedUntil > now) {
     throw new Error(`Too many attempts. Try again in ${describeWait(record.lockedUntil - now)}.`);
   }

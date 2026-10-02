@@ -1,8 +1,9 @@
 use std::{
     collections::HashMap,
     fs,
+    io::Read,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
 
@@ -29,8 +30,9 @@ struct ProjectRecord {
     sandbox: Option<Value>,
     #[serde(default)]
     vm: Option<Value>,
-    #[serde(default)]
-    eldrun_mobile_access: bool,
+    // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
+    #[serde(default, rename = "tabtivity_mobile_access")]
+    app_mobile_access: bool,
 }
 
 /// The slice of `boxes.json` the catalog reads (#31aa). A box is listed as a
@@ -45,8 +47,9 @@ struct BoxRecord {
     member_ids: Vec<String>,
     #[serde(default)]
     folder: Option<String>,
-    #[serde(default)]
-    eldrun_mobile_access: bool,
+    // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
+    #[serde(default, rename = "tabtivity_mobile_access")]
+    app_mobile_access: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -223,8 +226,8 @@ pub struct PublicTab {
 pub struct ResolvedTab {
     pub public: PublicTab,
     pub tmux_name: String,
-    /// The desktop's session id for an agent tab — the `ELDRUN_TAB_UID` its
-    /// processes run with, which `eldrun-send` stamps on what it sends. Never
+    /// The desktop's session id for an agent tab — the `TABTIVITY_TAB_UID` its
+    /// processes run with, which `tabtivity-send` stamps on what it sends. Never
     /// crosses the browser API.
     pub session_id: Option<String>,
     /// The tab's `agent_tasks.json` binding, for answering its schedules with
@@ -274,13 +277,36 @@ pub struct Catalog {
 /// upgrade *and* the periodic authorization re-check of each open terminal
 /// (every fifth second of `pty_bridge`'s tick), so without a TTL an idle phone
 /// with one terminal open kept the workstation at roughly 1.7 tmux forks per
-/// second forever.
-const CATALOG_TTL: Duration = Duration::from_millis(1_000);
+/// second forever. At 1 s nearly every phone request still missed (its polls
+/// run every 5 s and 8 s, the re-check every 5 s), so each paid a fork and the
+/// session-file reads; 3 s lets a poll's burst of requests share one load.
+/// The cost is staleness: a change made on the desktop (a tab opened or
+/// closed there, phone access switched off) reaches the phone up to 3 s later.
+/// Changes the phone makes itself go through `load_fresh` / `invalidate`.
+const CATALOG_TTL: Duration = Duration::from_millis(3_000);
+
+/// How long `tmux ls` may take before it is killed. It answers in
+/// milliseconds; one that has not in this long is talking to a hung server,
+/// and the load — which runs under the catalog mutex, in front of every
+/// catalog-backed route — must not wait on it forever.
+const TMUX_LS_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// After tmux could not be asked, how long before it is asked again. Without
+/// this every load in the meantime would pay `TMUX_LS_TIMEOUT` again, one
+/// after another under the mutex, and a hung tmux would still stall the
+/// phone — just three seconds at a time.
+const TMUX_RETRY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Default)]
 pub struct CatalogCache {
     last_valid: Option<Catalog>,
     loaded_at: Option<Instant>,
+    /// What tmux last *answered*. Carried forward while it cannot be asked
+    /// (see `live`), so a failed or hung `tmux ls` changes no tab's
+    /// availability.
+    last_live: Option<HashMap<String, LiveTmux>>,
+    /// When tmux last could not be asked; cleared by the next answer.
+    tmux_failed_at: Option<Instant>,
 }
 
 impl CatalogCache {
@@ -297,7 +323,55 @@ impl CatalogCache {
     /// Bypasses the TTL, for the one caller that is waiting on a change it knows
     /// is not in the snapshot yet (a tab the desktop has just been told to open).
     pub fn load_fresh(&mut self, state_dir: &Path, host_key: &[u8]) -> Result<Catalog, String> {
-        match Catalog::load(state_dir, host_key) {
+        self.load_fresh_with(state_dir, host_key, live_tmux)
+    }
+
+    /// The live tmux sessions for this load: tmux's answer, or — when it could
+    /// not be asked — the last answer it gave.
+    ///
+    /// "Could not be asked" (the spawn failed, the listing errored, it hung
+    /// past `TMUX_LS_TIMEOUT`) used to read as "no sessions": every tab went
+    /// `available: false`, and each open terminal's re-check then closed it
+    /// with `access_revoked`, which does not retry — one failed fork took down
+    /// every terminal on every phone. The previous answer is carried forward
+    /// rather than the whole previous snapshot served, because the rest of the
+    /// load is files and must stay current: a project whose phone access was
+    /// just switched off is revoked on time even while tmux is wedged. With no
+    /// previous answer at all the load fails, and the routes say
+    /// `catalog_unavailable` instead of presenting every session as gone.
+    fn live(
+        &mut self,
+        ask_tmux: impl FnOnce() -> Result<HashMap<String, LiveTmux>, String>,
+    ) -> Result<HashMap<String, LiveTmux>, String> {
+        if self.tmux_failed_at.is_some_and(|at| at.elapsed() < TMUX_RETRY) {
+            return self
+                .last_live
+                .clone()
+                .ok_or_else(|| "tmux could not be asked".to_string());
+        }
+        match ask_tmux() {
+            Ok(live) => {
+                self.tmux_failed_at = None;
+                self.last_live = Some(live.clone());
+                Ok(live)
+            }
+            Err(error) => {
+                self.tmux_failed_at = Some(Instant::now());
+                self.last_live.clone().ok_or(error)
+            }
+        }
+    }
+
+    fn load_fresh_with(
+        &mut self,
+        state_dir: &Path,
+        host_key: &[u8],
+        ask_tmux: impl FnOnce() -> Result<HashMap<String, LiveTmux>, String>,
+    ) -> Result<Catalog, String> {
+        let loaded = self
+            .live(ask_tmux)
+            .and_then(|live| Catalog::load_with(state_dir, host_key, &RootEnv::live(), &live));
+        match loaded {
             Ok(next) => {
                 self.last_valid = Some(next.clone());
                 self.loaded_at = Some(Instant::now());
@@ -393,7 +467,7 @@ impl RootEnv {
 /// so flipping any of its inputs needs no sidecar restart and an open root
 /// terminal detaches at `pty_bridge`'s next re-check.
 ///
-/// Off unless `eldrun_mobile_host.root_access` is set. Then: a root agent
+/// Off unless `tabtivity_mobile_host.root_access` is set. Then: a root agent
 /// without the MCP tools holds no right a project agent lacks, so root is
 /// open; with them, only while every write is staged (`root_mcp_review` =
 /// all, the default and the reading of any unknown value) behind a fence the
@@ -408,7 +482,7 @@ fn root_open(state_dir: &Path, env: &RootEnv) -> bool {
         return false;
     };
     let switched_on = settings
-        .get("eldrun_mobile_host")
+        .get(crate::brand::MOBILE_HOST_KEY)
         .and_then(|host| host.get("root_access"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
@@ -445,9 +519,16 @@ fn project_key(id: &str) -> String {
 }
 
 fn expected_tmux(project_id: &str, kind: &str, name: &str) -> bool {
-    let prefix = format!("eldrun-{}--{kind}-", project_key(project_id));
-    name.starts_with(&prefix)
-        && name.len() > prefix.len() + 8
+    expected_tmux_for(&crate::brand::PAIR, project_id, kind, name)
+}
+
+/// [`expected_tmux`] for a brand pair: the session may carry the prefix an
+/// older build minted (a saved tab keeps its session's name, and a remote
+/// session keeps running across an update).
+fn expected_tmux_for(pair: &crate::brand::Pair, project_id: &str, kind: &str, name: &str) -> bool {
+    let scoped = format!("{}--{kind}-", project_key(project_id));
+    crate::services::brand_migration::compat::tmux_session_rest(pair, name)
+        .is_some_and(|rest| rest.starts_with(&scoped) && rest.len() > scoped.len() + 8)
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -511,7 +592,7 @@ fn mobile_local(project: &ProjectRecord) -> bool {
         && !enabled(&project.vm)
 }
 
-/// `tmux ls` through Eldrun's effective PATH, the one the desktop's own tmux
+/// `tmux ls` through Tabtivity's effective PATH, the one the desktop's own tmux
 /// spawns use (`services::tmux_local`). A headless sidecar (launchd/systemd
 /// user service) inherits a bare PATH, so a bare `tmux` misses Homebrew's on a
 /// Mac, or picks `/usr/bin/tmux` against a server a `~/.local/bin/tmux` started
@@ -522,23 +603,76 @@ fn tmux_ls_command(format: &str) -> Command {
     command
 }
 
-fn live_tmux() -> HashMap<String, LiveTmux> {
-    // Windows has no tmux, and local tabs there are never wrapped in one
-    // (`CenterPanel` disables local persistence on Windows), so there is nothing
-    // to list — and a spawn per catalog read would only ever fail. The desktop's
-    // Mobile settings say so rather than leaving an empty terminal list to explain
-    // itself.
-    if cfg!(target_os = "windows") {
-        return HashMap::new();
+/// `Command::output` with a deadline: the child is killed and reaped once
+/// `limit` has passed, and that is reported as `TimedOut`. Both pipes are
+/// drained on their own threads meanwhile, so a child that fills one cannot
+/// block on it; the threads end when the child's ends of the pipes close,
+/// which killing it does.
+fn output_within(mut command: Command, limit: Duration) -> std::io::Result<Output> {
+    fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
     }
-    let format ="#{session_name}\t#{session_activity}\t#{pane_current_path}";
-    let Ok(out) = tmux_ls_command(format).output() else {
-        return HashMap::new();
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+            waited => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(match waited {
+                    Err(error) => error,
+                    _ => std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out"),
+                });
+            }
+        }
     };
-    if !out.status.success() {
-        return HashMap::new();
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
+/// Whether a failed `tmux ls` is tmux saying there is no server — which is
+/// how it says "zero sessions": the server exits with its last session, and a
+/// client that finds none exits non-zero. The same three wordings the
+/// desktop's own tmux calls take for "already gone"
+/// (`tmux_local::kill_failure_is_already_gone`): `no server running on …`
+/// (the socket is there, nobody behind it), `error connecting to … (No such
+/// file or directory)` (no socket at all, tmux ≥ 3.x), and the older `failed
+/// to connect to server`. Any other failure — a permission error, an
+/// exhausted table, a server too busy to accept — is tmux not answering.
+fn tmux_says_no_server(stderr: &str) -> bool {
+    stderr.contains("no server running")
+        || stderr.contains("failed to connect to server")
+        || (stderr.contains("error connecting to")
+            && (stderr.contains("No such file or directory") || stderr.contains("Connection refused")))
+}
+
+/// One `tmux ls` exit, read as an answer or as a failure to get one.
+fn live_from_ls(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<HashMap<String, LiveTmux>, String> {
+    if !success {
+        let stderr = String::from_utf8_lossy(stderr);
+        if tmux_says_no_server(&stderr) {
+            return Ok(HashMap::new());
+        }
+        return Err(format!("tmux ls failed: {}", stderr.trim()));
     }
-    String::from_utf8_lossy(&out.stdout)
+    Ok(String::from_utf8_lossy(stdout)
         .lines()
         .filter_map(|line| {
             let mut p = line.splitn(3, '\t');
@@ -547,15 +681,56 @@ fn live_tmux() -> HashMap<String, LiveTmux> {
             let cwd = PathBuf::from(p.next()?);
             Some((name, LiveTmux { activity, cwd }))
         })
-        .collect()
+        .collect())
+}
+
+/// The live tmux sessions, or `Err` when tmux could not be asked. The two
+/// are different facts and are kept apart all the way up (`CatalogCache::live`):
+/// an empty map is tmux answering "none".
+fn live_tmux() -> Result<HashMap<String, LiveTmux>, String> {
+    // Windows has no tmux, and local tabs there are never wrapped in one
+    // (`CenterPanel` disables local persistence on Windows), so there is nothing
+    // to list — and a spawn per catalog read would only ever fail. The desktop's
+    // Mobile settings say so rather than leaving an empty terminal list to explain
+    // itself.
+    if cfg!(target_os = "windows") {
+        return Ok(HashMap::new());
+    }
+    let format ="#{session_name}\t#{session_activity}\t#{pane_current_path}";
+    match output_within(tmux_ls_command(format), TMUX_LS_TIMEOUT) {
+        Ok(out) => live_from_ls(out.status.success(), &out.stdout, &out.stderr),
+        // No tmux on Tabtivity's PATH: no session was ever started in one.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(format!("tmux ls: {error}")),
+    }
+}
+
+/// Whether a paired phone may see and open shell tabs. Off unless
+/// `tabtivity_mobile_host.shell_tabs` is set: a shell is the whole account with
+/// nothing between it and a lost phone, so Mobile is agents-only by default.
+/// Read per catalog load, like `root_open`, so turning it off unlists every
+/// shell and detaches an open one at `pty_bridge`'s next re-check.
+/// Unreadable settings refuse.
+pub fn shells_open(state_dir: &Path) -> bool {
+    fs::read(state_dir.join("settings.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|settings| settings.get(crate::brand::MOBILE_HOST_KEY)?.get("shell_tabs")?.as_bool())
+        .unwrap_or(false)
 }
 
 impl Catalog {
+    #[cfg(test)]
     pub fn load(state_dir: &Path, host_key: &[u8]) -> Result<Self, String> {
-        Self::load_with(state_dir, host_key, &RootEnv::live())
+        Self::load_with(state_dir, host_key, &RootEnv::live(), &live_tmux().unwrap_or_default())
     }
 
-    fn load_with(state_dir: &Path, host_key: &[u8], root: &RootEnv) -> Result<Self, String> {
+    fn load_with(
+        state_dir: &Path,
+        host_key: &[u8],
+        root: &RootEnv,
+        live: &HashMap<String, LiveTmux>,
+    ) -> Result<Self, String> {
         let bytes =
             fs::read(state_dir.join("projects.json")).map_err(|e| format!("read projects: {e}"))?;
         let projects: Vec<ProjectRecord> =
@@ -567,7 +742,6 @@ impl Catalog {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        let live = live_tmux();
         let mut sources = Vec::new();
         if root_open(state_dir, root) {
             sources.push(ScopeSource {
@@ -579,7 +753,7 @@ impl Catalog {
             });
         }
         for project in &projects {
-            if !project.eldrun_mobile_access || !mobile_local(project) {
+            if !project.app_mobile_access || !mobile_local(project) {
                 continue;
             }
             // Root is listed above, by its own switch and gate, and is not a
@@ -603,7 +777,7 @@ impl Catalog {
             // A box never opened on the desktop has no folder and so no tabs;
             // the desktop's switch resolves the folder on enable, so this only
             // skips a bit hand-edited onto a folder-less record.
-            if !b.eldrun_mobile_access {
+            if !b.app_mobile_access {
                 continue;
             }
             let Some(folder) = b.folder.as_deref() else {
@@ -635,9 +809,10 @@ impl Catalog {
                 roots,
             });
         }
+        let shells = shells_open(state_dir);
         let resolved = sources
             .into_iter()
-            .filter_map(|source| resolve_scope(state_dir, host_key, &live, source))
+            .filter_map(|source| resolve_scope(state_dir, host_key, live, shells, source))
             .collect();
         Ok(Self { projects: resolved })
     }
@@ -650,6 +825,15 @@ impl Catalog {
             .iter()
             .find_map(|p| p.tabs.iter().find(|t| t.public.id == id).map(|t| (p, t)))
     }
+
+    /// Whether this snapshot still grants an open terminal its tab: the tab is
+    /// listed (its scope's phone access is on, its row is in the session
+    /// file), its session is live, and it is still the session the terminal
+    /// attached to.
+    pub fn grants(&self, tab_id: &str, tmux_name: &str) -> bool {
+        self.tab(tab_id)
+            .is_some_and(|(_, tab)| tab.public.available && tab.tmux_name == tmux_name)
+    }
 }
 
 /// Read one scope's saved tabs and join them to the live tmux rows. `None`
@@ -659,6 +843,7 @@ fn resolve_scope(
     state_dir: &Path,
     host_key: &[u8],
     live: &HashMap<String, LiveTmux>,
+    shells: bool,
     source: ScopeSource,
 ) -> Option<ResolvedProject> {
     let mut roots: Vec<PathBuf> = Vec::new();
@@ -696,7 +881,7 @@ fn resolve_scope(
         // started with — and while the tmux session lives, both reattach.
         let local_agent = tab.kind == "local_agent";
         let agent = tab.kind == "agent" || local_agent;
-        let eligible_kind = tab.kind == "shell"
+        let eligible_kind = (shells && tab.kind == "shell")
             || (agent && (resumable(&tab) || tab.sign_in || tab.cloud))
             || (local_agent
                 && tab.local_launch.as_ref().is_some_and(|launch| {
@@ -776,10 +961,57 @@ fn resolve_scope(
 
 #[cfg(test)]
 mod tests {
+    /// A saved tab keeps the session name it was created with, and a remote
+    /// session keeps running across an update: the name an older build
+    /// minted still matches its tab, and is counted.
+    #[test]
+    fn a_session_minted_under_the_old_prefix_still_matches_its_tab() {
+        use crate::brand::{Name, LEGACY};
+        use crate::services::brand_migration::{hits, testing::RENAMED};
+        let _ = hits::taken();
+        let old = format!("{}p1--agent-123456789", LEGACY.name(Name::TMUX_PREFIX));
+        assert!(super::expected_tmux_for(&RENAMED, "p1", "agent", &old));
+        assert_eq!(hits::taken(), ["tmux-prefix"]);
+        assert!(super::expected_tmux_for(&RENAMED, "p1", "agent", "newname-p1--agent-123456789"));
+        assert!(!super::expected_tmux_for(&RENAMED, "p2", "agent", &old));
+        assert!(!super::expected_tmux_for(&RENAMED, "p1", "agent", "other-p1--agent-123456789"));
+    }
+
+    /// The serde keys are literals in the attributes; this ties them to the
+    /// brand module so they cannot drift.
+    #[test]
+    fn the_mobile_access_key_is_the_brand_constant() {
+        let key = crate::brand::MOBILE_ACCESS_KEY;
+        let project: super::ProjectRecord =
+            serde_json::from_str(&format!(r#"{{"id":"p","name":"P","status":"active","{key}":true}}"#)).unwrap();
+        assert!(project.app_mobile_access);
+        let b: super::BoxRecord = serde_json::from_str(&format!(r#"{{"id":"b","name":"B","{key}":true}}"#)).unwrap();
+        assert!(b.app_mobile_access);
+    }
+
+    /// The phone's access is read under the current key only. A key an older
+    /// build left behind must not open a project the window (which reads the
+    /// current key) shows as closed; and a record with both keys still parses.
+    #[test]
+    fn a_leftover_old_access_key_opens_nothing() {
+        if !crate::brand::PAIR.renamed() {
+            return;
+        }
+        let old = crate::brand::LEGACY_MOBILE_ACCESS_KEY;
+        let new = crate::brand::MOBILE_ACCESS_KEY;
+        let project: super::ProjectRecord =
+            serde_json::from_str(&format!(r#"{{"id":"p","name":"P","status":"active","{old}":true}}"#)).unwrap();
+        assert!(!project.app_mobile_access);
+        let b: super::BoxRecord =
+            serde_json::from_str(&format!(r#"{{"id":"b","name":"B","{old}":true,"{new}":false}}"#)).unwrap();
+        assert!(!b.app_mobile_access);
+    }
+
+    use crate::brand::SLUG;
     use super::*;
 
     #[test]
-    fn tmux_ls_runs_through_eldrun_path() {
+    fn tmux_ls_runs_through_app_path() {
         let command = tmux_ls_command("#{session_name}");
         let path = command
             .get_envs()
@@ -813,15 +1045,16 @@ mod tests {
 
     #[test]
     fn exact_session_names_only() {
-        assert!(expected_tmux("p1", "shell", "eldrun-p1--shell-123456789"));
-        assert!(!expected_tmux("p1", "shell", "eldrun-p2--shell-123456789"));
-        assert!(!expected_tmux("p1", "shell", "eldrun-p1--agent-123456789"));
+        assert!(expected_tmux("p1", "shell", concat!(crate::app_slug!(), "-p1--shell-123456789")));
+        assert!(!expected_tmux("p1", "shell", concat!(crate::app_slug!(), "-p2--shell-123456789")));
+        assert!(!expected_tmux("p1", "shell", concat!(crate::app_slug!(), "-p1--agent-123456789")));
     }
 
     #[test]
     fn one_corrupt_session_file_costs_that_project_its_tabs_not_the_whole_catalog() {
         let dir = tempfile::tempdir().expect("state dir");
         let state = dir.path();
+        allow_shells(state);
         let root_a = state.join("a");
         let root_b = state.join("b");
         fs::create_dir_all(&root_a).expect("root a");
@@ -832,7 +1065,7 @@ mod tests {
                 "name": name,
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             })
         };
         fs::write(
@@ -855,7 +1088,7 @@ mod tests {
                     "cmd": "bash",
                     "cwd": root_a.to_string_lossy(),
                     "kind": "shell",
-                    "tmuxSession": "eldrun-p-a--shell-123456789",
+                    "tmuxSession": concat!(crate::app_slug!(), "-p-a--shell-123456789"),
                 }]
             }))
             .expect("session"),
@@ -881,6 +1114,7 @@ mod tests {
     fn an_invalidated_cache_re_reads_within_the_ttl() {
         let dir = tempfile::tempdir().expect("state dir");
         let state = dir.path();
+        allow_shells(state);
         let root = state.join("p");
         fs::create_dir_all(&root).expect("root dir");
         fs::write(
@@ -890,7 +1124,7 @@ mod tests {
                 "name": "P",
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             }]))
             .expect("projects"),
         )
@@ -909,7 +1143,7 @@ mod tests {
             "cmd": "bash",
             "cwd": root.to_string_lossy(),
             "kind": "shell",
-            "tmuxSession": "eldrun-p-1--shell-123456789",
+            "tmuxSession": concat!(crate::app_slug!(), "-p-1--shell-123456789"),
         }]));
 
         let mut cache = CatalogCache::default();
@@ -939,6 +1173,7 @@ mod tests {
     fn a_tab_publishes_a_palette_colour_and_drops_anything_else() {
         let dir = tempfile::tempdir().expect("state dir");
         let state = dir.path();
+        allow_shells(state);
         let root = state.join("p");
         fs::create_dir_all(&root).expect("root dir");
         fs::write(
@@ -948,7 +1183,7 @@ mod tests {
                 "name": "P",
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             }]))
             .expect("projects"),
         )
@@ -961,7 +1196,7 @@ mod tests {
                 "cmd": "bash",
                 "cwd": root.to_string_lossy(),
                 "kind": "shell",
-                "tmuxSession": format!("eldrun-p-1--shell-10000000{suffix}"),
+                "tmuxSession": format!("{SLUG}-p-1--shell-10000000{suffix}"),
                 "color": color,
             })
         };
@@ -1004,7 +1239,7 @@ mod tests {
                 "name": "Borrowed",
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             }]))
             .expect("projects"),
         )
@@ -1019,7 +1254,7 @@ mod tests {
                     "cwd": root.to_string_lossy(),
                     "kind": "agent",
                     "sessionId": "s1",
-                    "tmuxSession": "eldrun-root--agent-123456789",
+                    "tmuxSession": concat!(crate::app_slug!(), "-root--agent-123456789"),
                 }]
             }))
             .expect("session"),
@@ -1032,19 +1267,19 @@ mod tests {
                 Some(value) => fs::write(state.join("settings.json"), value.to_string()).expect("settings"),
                 None => { let _ = fs::remove_file(state.join("settings.json")); }
             }
-            Catalog::load_with(state, &[7; 32], env).expect("catalog").projects
+            Catalog::load_with(state, &[7; 32], env, &HashMap::new()).expect("catalog").projects
         };
         let host = |on: bool| serde_json::json!({ "enabled": true, "root_access": on });
 
         // No settings, or the switch unset/off: the borrowed record is refused
         // and nothing else lists root.
         assert!(load(None, &fenced).is_empty());
-        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": { "enabled": true } })), &fenced).is_empty());
-        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(false) })), &fenced).is_empty());
+        assert!(load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): { "enabled": true } })), &fenced).is_empty());
+        assert!(load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(false) })), &fenced).is_empty());
 
         // Switched on, default review, fenced: one Root row — the gate's, not
         // the borrowed record's — with its tab and a pending count.
-        let listed = load(Some(serde_json::json!({ "eldrun_mobile_host": host(true) })), &fenced);
+        let listed = load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(true) })), &fenced);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].public.kind, ScopeKind::Root);
         assert_eq!(listed[0].public.label, "Root");
@@ -1052,24 +1287,24 @@ mod tests {
         assert_eq!(listed[0].tabs.len(), 1);
         assert_eq!(listed[0].public.pending_reviews, Some(0));
         // An unknown review value reads as `all`, as it does for the tools.
-        assert_eq!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp_review": "later" })), &fenced).len(), 1);
+        assert_eq!(load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(true), "root_mcp_review": "later" })), &fenced).len(), 1);
 
         // Tools on but writes not staged behind a fence: closed.
-        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(true) })), &unfenced).is_empty());
+        assert!(load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(true) })), &unfenced).is_empty());
         for level in ["destructive", "off"] {
             assert!(
-                load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp_review": level })), &fenced).is_empty(),
+                load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(true), "root_mcp_review": level })), &fenced).is_empty(),
                 "{level}"
             );
         }
         // Tools off: a root agent holds nothing extra, so neither matters.
         assert_eq!(
-            load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp": false, "root_mcp_review": "off" })), &unfenced).len(),
+            load(Some(serde_json::json!({ concat!(crate::app_slug!(), "_mobile_host"): host(true), "root_mcp": false, "root_mcp_review": "off" })), &unfenced).len(),
             1
         );
         // Unreadable settings refuse.
         fs::write(state.join("settings.json"), b"{").expect("corrupt settings");
-        assert!(Catalog::load_with(state, &[7; 32], &fenced).expect("catalog").projects.is_empty());
+        assert!(Catalog::load_with(state, &[7; 32], &fenced, &HashMap::new()).expect("catalog").projects.is_empty());
 
         assert!(is_root_scope_id("root"));
         assert!(!is_root_scope_id("rooted"));
@@ -1106,7 +1341,7 @@ mod tests {
     }
 
     /// Local-model tabs reach the phone as agent tabs (#31bl): Mistral's by its
-    /// resumable session, the other drivers by a `localLaunch` line Eldrun
+    /// resumable session, the other drivers by a `localLaunch` line Tabtivity
     /// builds — never by one it does not, and never without the `agent` token
     /// every agent tab's tmux name carries.
     #[test]
@@ -1122,7 +1357,7 @@ mod tests {
                 "name": "P",
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             }]))
             .expect("projects"),
         )
@@ -1135,7 +1370,7 @@ mod tests {
                 "cmd": cmd,
                 "cwd": root.to_string_lossy(),
                 "kind": "local_agent",
-                "tmuxSession": format!("eldrun-p-1--agent-10000000{n}"),
+                "tmuxSession": format!("{SLUG}-p-1--agent-10000000{n}"),
             });
             row.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
             row
@@ -1145,14 +1380,14 @@ mod tests {
         };
         // The wrong token.
         let mut wrong_token = tab("5", "vibe", serde_json::json!({ "sessionId": "s5" }));
-        wrong_token["tmuxSession"] = serde_json::json!("eldrun-p-1--local_agent-100000005");
+        wrong_token["tmuxSession"] = serde_json::json!(concat!(crate::app_slug!(), "-p-1--local_agent-100000005"));
         fs::write(
             sessions.join("terminals.json"),
             serde_json::to_vec(&serde_json::json!({
                 "tabLayout": [
                     tab("1", "vibe", serde_json::json!({ "sessionId": "s1" })),
                     tab("2", "ollama", launch(serde_json::json!(["launch", "claude", "--model", "qwen3:8b"]))),
-                    // Not a line Eldrun builds.
+                    // Not a line Tabtivity builds.
                     tab("3", "ollama", launch(serde_json::json!(["serve"]))),
                     // Neither resumable nor relaunchable.
                     tab("4", "ollama", serde_json::json!({})),
@@ -1193,7 +1428,7 @@ mod tests {
                 "name": "P",
                 "status": "active",
                 "directory": root.to_string_lossy(),
-                "eldrun_mobile_access": true,
+                concat!(crate::app_slug!(), "_mobile_access"): true,
             }]))
             .expect("projects"),
         )
@@ -1206,7 +1441,7 @@ mod tests {
                 "cmd": "claude",
                 "cwd": root.to_string_lossy(),
                 "kind": "agent",
-                "tmuxSession": format!("eldrun-p-1--agent-10000000{n}"),
+                "tmuxSession": format!("{SLUG}-p-1--agent-10000000{n}"),
             });
             row.as_object_mut().unwrap().extend(marker.as_object().unwrap().clone());
             row
@@ -1243,6 +1478,7 @@ mod tests {
     fn a_mobile_enabled_box_is_a_scope_with_the_folder_and_local_member_roots() {
         let dir = tempfile::tempdir().expect("state dir");
         let state = dir.path();
+        allow_shells(state);
         let folder = state.join("boxes").join("paper");
         let member = state.join("lib");
         let remote_mirror = state.join("mirror");
@@ -1266,9 +1502,9 @@ mod tests {
             state.join("boxes.json"),
             serde_json::to_vec(&serde_json::json!([
                 { "id": "b1", "name": "Paper", "member_ids": ["p-lib", "p-remote", "p-gone"],
-                  "folder": folder.to_string_lossy(), "eldrun_mobile_access": true },
+                  "folder": folder.to_string_lossy(), concat!(crate::app_slug!(), "_mobile_access"): true },
                 { "id": "b2", "name": "Off", "folder": folder.to_string_lossy() },
-                { "id": "b3", "name": "Unopened", "eldrun_mobile_access": true },
+                { "id": "b3", "name": "Unopened", concat!(crate::app_slug!(), "_mobile_access"): true },
             ]))
             .expect("boxes"),
         )
@@ -1284,10 +1520,10 @@ mod tests {
         fs::write(
             sessions.join("terminals.json"),
             serde_json::to_vec(&serde_json::json!({ "tabLayout": [
-                tab("Box shell", &folder, "eldrun-box_b1--shell-123456789"),
-                tab("Lib shell", &member, "eldrun-box_b1--shell-223456789"),
-                tab("Remote shell", &remote_mirror, "eldrun-box_b1--shell-323456789"),
-                tab("Foreign", &folder, "eldrun-p-lib--shell-423456789"),
+                tab("Box shell", &folder, concat!(crate::app_slug!(), "-box_b1--shell-123456789")),
+                tab("Lib shell", &member, concat!(crate::app_slug!(), "-box_b1--shell-223456789")),
+                tab("Remote shell", &remote_mirror, concat!(crate::app_slug!(), "-box_b1--shell-323456789")),
+                tab("Foreign", &folder, concat!(crate::app_slug!(), "-p-lib--shell-423456789")),
             ]}))
             .expect("session"),
         )
@@ -1305,6 +1541,209 @@ mod tests {
         let labels: Vec<&str> = b.tabs.iter().map(|t| t.public.label.as_str()).collect();
         assert_eq!(labels, vec!["Box shell", "Lib shell"]);
         assert!(!b.public.id.contains("b1"), "the opaque id must not carry the box id");
+    }
+
+    #[test]
+    fn no_tmux_server_is_an_answer_and_any_other_failure_is_not() {
+        // tmux's ways of saying "no server", i.e. zero sessions.
+        for stderr in [
+            "no server running on /tmp/tmux-1000/default",
+            "error connecting to /tmp/tmux-1000/default (No such file or directory)",
+            "error connecting to /tmp/tmux-1000/default (Connection refused)",
+            "failed to connect to server: Connection refused",
+        ] {
+            let live = live_from_ls(false, b"", stderr.as_bytes());
+            assert!(live.is_ok_and(|live| live.is_empty()), "{stderr}");
+        }
+        // tmux not answering: never "zero sessions".
+        for stderr in [
+            "error connecting to /tmp/tmux-1000/default (Permission denied)",
+            "error connecting to /tmp/tmux-1000/default (Resource temporarily unavailable)",
+            "server exited unexpectedly",
+            "lost server",
+            "",
+        ] {
+            assert!(live_from_ls(false, b"", stderr.as_bytes()).is_err(), "{stderr:?}");
+        }
+        // An answer: its rows, and a malformed one costs only itself.
+        let live = live_from_ls(
+            true,
+            concat!(crate::app_slug!(), "-p--shell-1\t1700000000\t/home/u/p\nbroken row\nwork\t5\t/tmp\n").as_bytes(),
+            b"",
+        )
+        .expect("listing");
+        assert_eq!(live.len(), 2);
+        assert_eq!(live[concat!(crate::app_slug!(), "-p--shell-1")].activity, 1_700_000_000);
+        assert_eq!(live["work"].cwd, PathBuf::from("/tmp"));
+        assert!(live_from_ls(true, b"", b"").expect("empty listing").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_hangs_is_killed_at_its_deadline() {
+        let mut hung = Command::new("sleep");
+        hung.arg("30");
+        let started = Instant::now();
+        let error = output_within(hung, Duration::from_millis(150)).expect_err("deadline");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(10), "returned at the deadline, not the child's exit");
+
+        // One that answers in time is read whole, both pipes and its status.
+        let mut quick = Command::new("sh");
+        quick.args(["-c", "printf out; printf err >&2; exit 3"]);
+        let out = output_within(quick, Duration::from_secs(10)).expect("output");
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(out.stdout, b"out");
+        assert_eq!(out.stderr, b"err");
+
+        let missing = Command::new("no-such-binary-for-this-test");
+        let error = output_within(missing, Duration::from_secs(1)).expect_err("spawn");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn shell_tabs_are_off_the_phone_unless_switched_on() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let (live, _) = live_tab_fixture(state);
+        let kinds = |state: &Path| {
+            Catalog::load_with(state, &[7; 32], &RootEnv { dir: state.join("root"), fenced: || true }, &live)
+                .expect("catalog")
+                .projects
+                .iter()
+                .flat_map(|p| p.tabs.iter().map(|t| t.public.kind.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(kinds(state), vec!["shell"]);
+        for settings in [
+            serde_json::json!({ crate::brand::MOBILE_HOST_KEY: { "enabled": true } }),
+            serde_json::json!({ crate::brand::MOBILE_HOST_KEY: { "enabled": true, "shell_tabs": false } }),
+        ] {
+            fs::write(state.join("settings.json"), settings.to_string()).expect("settings");
+            assert!(kinds(state).is_empty(), "{settings}");
+        }
+        fs::write(state.join("settings.json"), b"{").expect("corrupt settings");
+        assert!(kinds(state).is_empty(), "unreadable settings refuse");
+        fs::remove_file(state.join("settings.json")).expect("remove");
+        assert!(kinds(state).is_empty(), "no settings is the default");
+    }
+
+    /// Shell tabs are off the phone by default; the fixtures that list them
+    /// switch them on.
+    fn allow_shells(state: &Path) {
+        fs::write(
+            state.join("settings.json"),
+            serde_json::json!({ crate::brand::MOBILE_HOST_KEY: { "enabled": true, "shell_tabs": true } }).to_string(),
+        )
+        .expect("settings");
+    }
+
+    /// One project with one shell tab, and the tmux row that makes it live.
+    fn live_tab_fixture(state: &Path) -> (HashMap<String, LiveTmux>, impl Fn(bool) + '_) {
+        const TMUX: &str = concat!(crate::app_slug!(), "-p-1--shell-123456789");
+        allow_shells(state);
+        let root = state.join("p");
+        fs::create_dir_all(&root).expect("root dir");
+        let sessions = state.join("sessions").join("p-1");
+        fs::create_dir_all(&sessions).expect("session dir");
+        fs::write(
+            sessions.join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({ "tabLayout": [{
+                "label": "Shell",
+                "cmd": "bash",
+                "cwd": root.to_string_lossy(),
+                "kind": "shell",
+                "tmuxSession": TMUX,
+            }] }))
+            .expect("session"),
+        )
+        .expect("write session");
+        let live = HashMap::from([(TMUX.to_string(), LiveTmux { activity: 7, cwd: root.clone() })]);
+        let write_project = move |access: bool| {
+            fs::write(
+                state.join("projects.json"),
+                serde_json::to_vec(&serde_json::json!([{
+                    "id": "p-1",
+                    "name": "P",
+                    "status": "active",
+                    "directory": root.to_string_lossy(),
+                    crate::brand::MOBILE_ACCESS_KEY: access,
+                }]))
+                .expect("projects"),
+            )
+            .expect("write projects");
+        };
+        write_project(true);
+        (live, write_project)
+    }
+
+    #[test]
+    fn a_tmux_that_cannot_be_asked_changes_no_tabs_availability() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let (live, write_project) = live_tab_fixture(state);
+        const TMUX: &str = concat!(crate::app_slug!(), "-p-1--shell-123456789");
+        let key = [7u8; 32];
+        let mut cache = CatalogCache::default();
+        let available = |catalog: &Catalog| catalog.projects[0].tabs[0].public.available;
+
+        let first = cache
+            .load_fresh_with(state, &key, || Ok(live.clone()))
+            .expect("tmux answered");
+        assert!(available(&first));
+        let tab_id = first.projects[0].tabs[0].public.id.clone();
+        assert!(first.grants(&tab_id, TMUX));
+        assert!(!first.grants(&tab_id, concat!(crate::app_slug!(), "-p-1--shell-other6789")), "another session");
+        assert!(!first.grants("no-such-tab", TMUX));
+
+        // The fork failed, or the server hung: the tab is still what tmux last
+        // said it was — and an open terminal on it is still granted.
+        let next = cache
+            .load_fresh_with(state, &key, || Err("tmux ls: timed out".into()))
+            .expect("carried forward");
+        assert!(available(&next));
+        assert!(next.grants(&tab_id, TMUX));
+
+        // Inside the retry window tmux is not asked again at all…
+        let again = cache
+            .load_fresh_with(state, &key, || panic!("asked a tmux that just failed"))
+            .expect("carried forward");
+        assert!(available(&again));
+        // …but the files are still read: switching phone access off revokes
+        // on time, wedged tmux or not.
+        write_project(false);
+        let revoked = cache
+            .load_fresh_with(state, &key, || panic!("asked a tmux that just failed"))
+            .expect("load");
+        assert!(revoked.projects.is_empty());
+        assert!(!revoked.grants(&tab_id, TMUX));
+        write_project(true);
+
+        // Once it may be asked again, its answer stands — including "no
+        // sessions", which is an answer.
+        cache.tmux_failed_at = None;
+        let gone = cache
+            .load_fresh_with(state, &key, || Ok(HashMap::new()))
+            .expect("tmux answered");
+        assert!(!available(&gone));
+        assert!(!gone.grants(&tab_id, TMUX));
+    }
+
+    #[test]
+    fn with_no_tmux_answer_yet_the_load_fails_rather_than_listing_every_session_as_gone() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let (live, _write_project) = live_tab_fixture(state);
+        let mut cache = CatalogCache::default();
+        assert!(cache
+            .load_fresh_with(state, &[7; 32], || Err("tmux ls: timed out".into()))
+            .is_err());
+        // The failure is not pinned past the retry window.
+        cache.tmux_failed_at = None;
+        let catalog = cache
+            .load_fresh_with(state, &[7; 32], || Ok(live))
+            .expect("tmux answered");
+        assert!(catalog.projects[0].tabs[0].public.available);
     }
 
     #[test]

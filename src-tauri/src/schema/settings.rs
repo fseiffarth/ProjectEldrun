@@ -32,7 +32,7 @@ pub struct GlobalAppEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct EldrunMobileHostSettings {
+pub struct AppMobileHostSettings {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -71,9 +71,15 @@ pub struct EldrunMobileHostSettings {
     /// the quit path (`commands::mobile_control::stop_host_for_exit`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stay_after_quit: Option<bool>,
+    /// May a paired phone see and open shell tabs? Default off — Mobile is
+    /// agents-only unless this is set. Read by the sidecar per catalog load
+    /// (`mobile_control::discovery::shells_open`) and repeated by the desktop
+    /// bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_tabs: Option<bool>,
 }
 
-/// Cloud completion authority lives in Eldrun's settings, never project.json.
+/// Cloud completion authority lives in Tabtivity's settings, never project.json.
 /// Bind consent to a directory as well as the id so moving/repointing a project
 /// cannot silently authorize a different tree. Unknown fields round-trip.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -87,7 +93,7 @@ pub struct CompletionProjectPolicy {
     pub extra: HashMap<String, Value>,
 }
 
-/// `~/.local/share/eldrun/settings.json`.
+/// `~/.local/share/tabtivity/settings.json`.
 ///
 /// Ollama fields (ollama_host, ollama_model, ollama_autostart) are preserved
 /// as optional so existing files round-trip cleanly and the Python app can
@@ -102,7 +108,7 @@ pub struct Settings {
     pub git_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_scheme: Option<String>,
-    /// UI language for Eldrun's interface (`en`/`de`/`es`/`fr`/`it`). Frontend
+    /// UI language for Tabtivity's interface (`en`/`de`/`es`/`fr`/`it`). Frontend
     /// logic only (`lib/i18n`); the backend just round-trips the value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
@@ -175,7 +181,7 @@ pub struct Settings {
     /// `mail_client`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo_board: Option<bool>,
-    /// Root console: whether Eldrun serves its own MCP tools (projects,
+    /// Root console: whether Tabtivity serves its own MCP tools (projects,
     /// calendar, to-do board, the overlays) to root agents at all
     /// (`services::root_mcp`). **Absent means on** — the tools shipped on, so an
     /// existing `settings.json` needs no migration — and a stored `false` is a
@@ -274,7 +280,7 @@ pub struct Settings {
     pub files_alerts_muted: Option<Vec<String>>,
     /// Mail: the experimental gate for the embedded mail client
     /// (`src/lib/experimental.ts` — unset falls back to debug mode, so a flag
-    /// still moving is invisible to someone *using* Eldrun and on by default
+    /// still moving is invisible to someone *using* Tabtivity and on by default
     /// for someone building it).
     ///
     /// It is the ONE mail switch, and it gates the whole feature: the header's
@@ -354,7 +360,7 @@ pub struct Settings {
     /// directory. `None`/empty means Ollama's own default (`~/.ollama/models`,
     /// or the system-service dir when one holds models).
     ///
-    /// It reaches only a server **Eldrun starts itself** (`ensure_ollama_running`
+    /// It reaches only a server **Tabtivity starts itself** (`ensure_ollama_running`
     /// passes it as `OLLAMA_MODELS`): an already-running or systemd-managed
     /// server keeps whatever location it was launched with, which is why the
     /// Settings panel offers a one-click systemd drop-in
@@ -395,13 +401,24 @@ pub struct Settings {
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_autostart: Option<bool>,
-    /// The agent Eldrun picks on its own when a feature needs exactly one and
+    /// The agent Tabtivity picks on its own when a feature needs exactly one and
     /// the user hasn't chosen per-instance — an `AgentInfo.id`/`AGENT_ITEMS`
     /// `cmd` such as `"claude"` or `"codex"`. Set from the 🧠 menu's Agents
     /// section (each installed agent's "Default" chip); every reader falls
     /// back to `"claude"` when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_agent_cmd: Option<String>,
+    /// The desktop PDF viewer's Mark up prompts (`docs/pdf_markup_rounds_plan.md`
+    /// §2.8), the desktop's own as the phone keeps its own: what a Submit tells
+    /// the agent after the file references (`None`/blank = `markup::
+    /// DEFAULT_INSTRUCTION`), and what **Make these changes** sends once the
+    /// agent has listed them (`None`/blank = the viewer's default). Free text
+    /// the user typed; the viewer passes the first to `pdf_markup_submit`,
+    /// which bounds it like the phone's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_markup_instruction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_markup_apply: Option<String>,
     /// Built-in agent registry ids shown before a search in the compact Agents
     /// group of the + tab menu. Chosen through the 🧠 menu's "+ tab" chips.
     /// Unset is interpreted by the frontend as Claude/Codex/Gemini; an empty
@@ -475,7 +492,7 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_preface_commands: Option<HashMap<String, Vec<String>>>,
     /// Model names offered by that same composer, keyed by agent command. The
-    /// pick is typed as the agent's own `/model <name>` — Eldrun never passes a
+    /// pick is typed as the agent's own `/model <name>` — Tabtivity never passes a
     /// model flag at launch. Editable because model names change far faster than
     /// this app ships.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -598,16 +615,16 @@ pub struct Settings {
     pub browser_live_pages: Option<bool>,
     /// Persistent LOCAL (tmux) sessions (TODO #85): when true (the default on Unix),
     /// a local project's shell/script tabs run inside a tmux session on the machine,
-    /// so a long run survives an Eldrun crash and the tab reattaches on restart.
+    /// so a long run survives a Tabtivity crash and the tab reattaches on restart.
     /// `None`/`Some(true)` = on; `Some(false)` = off. No effect on Windows (no tmux):
     /// `services::tmux_local` no-ops there. Read via `persist_local_sessions()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persist_local_sessions: Option<bool>,
     /// When true (the default), remote SSH/OpenVPN connections are made headlessly
-    /// in the background, with Eldrun handling the password transiently (sshpass /
+    /// in the background, with Tabtivity handling the password transiently (sshpass /
     /// askpass). When false, those connections are launched as interactive
-    /// terminal tabs in the Eldrun **root** scope so the password is typed directly
-    /// into the live terminal and Eldrun never handles it at all. Default ON
+    /// terminal tabs in the Tabtivity **root** scope so the password is typed directly
+    /// into the live terminal and Tabtivity never handles it at all. Default ON
     /// (headless) so existing behaviour is preserved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connections_headless: Option<bool>,
@@ -625,7 +642,7 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_encrypt_store: Option<bool>,
     /// Hosts marked **careful**: "this machine is shared and policed, so keep
-    /// Eldrun's background load off it." An HPC login node is the case it exists
+    /// Tabtivity's background load off it." An HPC login node is the case it exists
     /// for — CPU there is watched, its `$HOME` usually sits on a parallel
     /// filesystem whose metadata server a recursive `du` hammers, and its account
     /// database is a shared directory service.
@@ -641,7 +658,7 @@ pub struct Settings {
     ///
     /// The stored value is the user's **explicit** answer. A target *absent* from
     /// the map has not been answered and is treated as **careful** — the default
-    /// for every remote machine, since Eldrun cannot tell whose machine a host is
+    /// for every remote machine, since Tabtivity cannot tell whose machine a host is
     /// and the two wrong guesses do not cost the same. Which is why this is a map
     /// to `bool` and not a set of careful hosts: an explicit `false` ("this one is
     /// mine") has to be distinguishable from an unanswered host, or the careful
@@ -658,8 +675,8 @@ pub struct Settings {
     /// menu (`src/lib/remote/hpc/hpcHost.ts`). Same SSH-target key as [`Self::careful_hosts`],
     /// for the same reason.
     ///
-    /// Where `careful_hosts` says how much Eldrun may *look at*, this says what
-    /// Eldrun may *do*, and it is a strictly stronger statement: a tagged host is
+    /// Where `careful_hosts` says how much Tabtivity may *look at*, this says what
+    /// Tabtivity may *do*, and it is a strictly stronger statement: a tagged host is
     /// careful whatever `careful_hosts` says (the monitor's Detailed switch cannot
     /// override it), and four further behaviours turn off — the disk-usage scan
     /// and giant-folder census (a recursive `du` over a parallel filesystem's
@@ -676,7 +693,7 @@ pub struct Settings {
     /// key from a settings blob the frontend saves whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hpc_hosts: Option<HashMap<String, bool>>,
-    /// Path of the stored `.ovpn` config Eldrun brings up **on launch**, with no
+    /// Path of the stored `.ovpn` config Tabtivity brings up **on launch**, with no
     /// project behind it. Unset (the default) = no tunnel is started by itself.
     ///
     /// One config, not a list: a tunnel reroutes the whole machine, so arming two
@@ -685,7 +702,7 @@ pub struct Settings {
     /// it can't (see `lib/remote/vpn/vpnAutoConnect.ts`); the backend only round-trips this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpn_auto_connect: Option<String>,
-    /// The `.ovpn` configs the user asked Eldrun to **remember the credentials of**
+    /// The `.ovpn` configs the user asked Tabtivity to **remember the credentials of**
     /// (the VPN menu's "Save login credentials"). No secret lives here — the secrets
     /// are in the OS keychain; this is only the *intent*, and it exists because the
     /// keychain cannot always be asked.
@@ -699,7 +716,7 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpn_saved_configs: Option<Vec<String>>,
     /// Energy-saver mode: "off" | "battery" (default) | "always". When active
-    /// (mode "always", or "battery" while discharging) Eldrun pauses the blob
+    /// (mode "always", or "battery" while discharging) Tabtivity pauses the blob
     /// auto-spin, collapses idle animations, and widens always-on UI timers.
     /// Read entirely on the frontend; kept here only so it round-trips.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -774,20 +791,21 @@ pub struct Settings {
     pub steering_keys: Option<HashMap<String, Vec<String>>>,
     /// Download *source* folders scanned by the side-panel Downloads section
     /// (fast-copy of freshly downloaded files into a project). A machine-wide
-    /// list, read-only — Eldrun never changes any browser's download path.
+    /// list, read-only — Tabtivity never changes any browser's download path.
     /// Unset/empty → the frontend falls back to the user's `~/Downloads`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_sources: Option<Vec<String>>,
-    /// Where the MAIN window was when Eldrun last ran, so it reopens on the same
+    /// Where the MAIN window was when Tabtivity last ran, so it reopens on the same
     /// monitor in the same place. Unset (fresh install, or a saved rect no live
     /// monitor can host) → the window opens as `tauri.conf.json` configures it:
     /// maximized, wherever the WM puts it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_state: Option<WindowState>,
     /// Private, tailnet-published companion host. Absent means fully disabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub eldrun_mobile_host: Option<EldrunMobileHostSettings>,
-    /// Whether the Eldrun Mobile host-status control is visible in the desktop
+    // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_HOST_KEY
+    #[serde(default, rename = "tabtivity_mobile_host", skip_serializing_if = "Option::is_none")]
+    pub app_mobile_host: Option<AppMobileHostSettings>,
+    /// Whether the Tabtivity Mobile host-status control is visible in the desktop
     /// header. Unset means visible whenever the Mobile host is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mobile_indicator: Option<bool>,
@@ -939,7 +957,7 @@ pub struct AlertSources {
 
 impl Settings {
     pub fn color_scheme(&self) -> &str {
-        self.color_scheme.as_deref().unwrap_or("dark")
+        self.color_scheme.as_deref().unwrap_or("light_lavender")
     }
 
     /// Whether Claude agent tabs should be spawned with `--remote-control`.
@@ -979,7 +997,7 @@ impl Settings {
     }
 
     /// The rule every experimental flag follows (mirrors `src/lib/experimental.ts`):
-    /// unset means **debug mode decides**, so someone building Eldrun gets each new
+    /// unset means **debug mode decides**, so someone building Tabtivity gets each new
     /// experiment without re-ticking a list, and everyone else gets none of them. An
     /// explicit value always wins, in both directions — otherwise "turn this off"
     /// would silently fail for exactly the people most likely to hit a broken one.
@@ -1071,7 +1089,7 @@ impl Settings {
         self.persist_local_sessions.unwrap_or(true)
     }
 
-    /// Whether remote SSH/OpenVPN connections are made headlessly (Eldrun handles
+    /// Whether remote SSH/OpenVPN connections are made headlessly (Tabtivity handles
     /// the password) rather than as interactive root-terminal tabs. Defaults ON
     /// (headless) when unset so existing behaviour is preserved.
     pub fn connections_headless(&self) -> bool {
@@ -1081,6 +1099,45 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    /// The serde key is a literal in the attribute; this ties it to the brand
+    /// module so the two cannot drift.
+    #[test]
+    fn the_mobile_host_key_is_the_brand_constant() {
+        let json = format!(r#"{{"{}":{{"enabled":true}}}}"#, crate::brand::MOBILE_HOST_KEY);
+        let s: super::Settings = serde_json::from_str(&json).unwrap();
+        assert!(s.app_mobile_host.is_some());
+        let back = serde_json::to_value(&s).unwrap();
+        assert!(back.get(crate::brand::MOBILE_HOST_KEY).is_some());
+    }
+
+    /// The old key is NOT read here, and that is deliberate (no serde `alias`):
+    /// the migrator's `persisted-names` step renames it in the file before
+    /// anything reads it. Should a file still hold it — an older build wrote
+    /// the file afterwards — it is carried along untouched, never dropped, and
+    /// a file with BOTH keys still parses: with an alias it would fail as a
+    /// whole, and every reader falls back to empty defaults on a parse error.
+    #[test]
+    fn the_old_phone_host_key_is_carried_along_and_never_breaks_the_file() {
+        if !crate::brand::PAIR.renamed() {
+            return;
+        }
+        let old = crate::brand::LEGACY_MOBILE_HOST_KEY;
+        let new = crate::brand::MOBILE_HOST_KEY;
+        let only_old = format!(r#"{{"{old}":{{"enabled":true,"port":8742}},"theme":"dark"}}"#);
+        let s: super::Settings = serde_json::from_str(&only_old).unwrap();
+        assert!(s.app_mobile_host.is_none());
+        let back = serde_json::to_value(&s).unwrap();
+        assert_eq!(back[old]["port"], 8742, "an unknown key round-trips");
+        assert!(back.get(new).is_none());
+
+        let both = format!(r#"{{"{new}":{{"enabled":true}},"{old}":{{"enabled":false}},"theme":"dark"}}"#);
+        let s: super::Settings = serde_json::from_str(&both).expect("both keys parse");
+        assert!(s.app_mobile_host.is_some());
+        let back = serde_json::to_value(&s).unwrap();
+        assert_eq!(back[new]["enabled"], true);
+        assert_eq!(back["theme"], "dark");
+    }
+
     use super::Settings;
 
     /// The experimental rule, backend side (the frontend twin lives in
@@ -1285,7 +1342,7 @@ mod default_rule_tests {
         assert!(absent.connections_headless());
         assert!(absent.agent_remote_control());
         assert!(absent.daily_stats_recap());
-        assert_eq!(absent.color_scheme(), "dark");
+        assert_eq!(absent.color_scheme(), "light_lavender");
 
         let off: Settings = serde_json::from_str(
             r#"{"persist_local_sessions":false,"connections_headless":false,
@@ -1371,7 +1428,7 @@ mod default_rule_tests {
     /// its mail gates only when they have been set.
     #[test]
     fn mobile_host_settings_default_off_and_omit_unset_gates() {
-        let m: EldrunMobileHostSettings = serde_json::from_str("{}").unwrap();
+        let m: AppMobileHostSettings = serde_json::from_str("{}").unwrap();
         assert!(!m.enabled);
         assert!(m.mail_actions.is_none() && m.mail_reply.is_none());
         assert_eq!(
@@ -1379,10 +1436,10 @@ mod default_rule_tests {
             serde_json::json!({"enabled": false})
         );
         let s: Settings = serde_json::from_str(
-            r#"{"eldrun_mobile_host":{"enabled":true,"port":8443,"mail_reply":true}}"#,
+            concat!(r#"{""#, crate::app_slug!(), r#"_mobile_host":{"enabled":true,"port":8443,"mail_reply":true}}"#),
         )
         .unwrap();
-        let host = s.eldrun_mobile_host.unwrap();
+        let host = s.app_mobile_host.unwrap();
         assert_eq!(host.port, Some(8443));
         assert_eq!(host.mail_reply, Some(true));
         assert!(host.mail_actions.is_none(), "reply and actions are independent");

@@ -42,13 +42,13 @@ pub fn detached_label(scope: &str, group_id: &str) -> String {
 }
 
 /// Human-friendly, per-session-unique OS window title for a detached group,
-/// e.g. "Eldrun win-1". This string is load-bearing on X11: the resolver in
+/// e.g. "Tabtivity win-1". This string is load-bearing on X11: the resolver in
 /// `platform::x11::find_window_for_title` matches on it exactly to recover the
 /// native window id, so it must stay unique among live detached windows.
 /// Uniqueness comes from the caller assigning a distinct sequence number per
 /// live window (lowest free positive int); see `detach_subwindow`.
 pub fn detached_title(seq: u32) -> String {
-    format!("Eldrun win-{seq}")
+    format!("{app} win-{seq}", app = crate::brand::DISPLAY)
 }
 
 /// The query string the DetachedApp renderer reads to mount a single group.
@@ -94,7 +94,7 @@ pub fn detached_decorations(os: crate::paths::OsKind) -> bool {
     os == crate::paths::OsKind::Macos
 }
 
-/// Reserve the lowest free display number for `label` (the N in "Eldrun
+/// Reserve the lowest free display number for `label` (the N in "Tabtivity
 /// win-N"). Must run under the registry lock so a concurrent detach (or a
 /// restart batch respawning several popouts) can't pick the same one.
 pub fn reserve_detached_seq(reg: &mut WindowRegistry, label: &str) -> u32 {
@@ -255,7 +255,7 @@ pub async fn detach_subwindow(
     // Wayland) is waited out, bounded, before the rebuild.
     //
     // The reservation carries the lowest free display number. It becomes the
-    // OS title "Eldrun win-N" and, on X11, the resolver key — hence it must be
+    // OS title "Tabtivity win-N" and, on X11, the resolver key — hence it must be
     // unique per live window. It's freed on dock-back/close
     // (`attach_subwindow`) AND on any other destruction via the
     // `WindowEvent::Destroyed` hook in `lib.rs` (the popout self-destroys on
@@ -370,7 +370,7 @@ pub async fn detach_subwindow(
 
     if let Some(wid) = window_id {
         // Opt the detached window into the parkable override so the switch path
-        // can actually park it despite its `eldrun` WM_CLASS. The MAIN window id
+        // can actually park it despite its `tabtivity` WM_CLASS. The MAIN window id
         // can never enter this set (structural guard in the backend).
         workspace.lock().unwrap().backend.set_parkable(wid);
     }
@@ -382,7 +382,7 @@ pub async fn detach_subwindow(
     let scope = project_id.clone();
     let win = TrackedWindow {
         id: label.clone(),
-        exec: "eldrun-detached".to_string(),
+        exec: concat!(crate::app_slug!(), "-detached").to_string(),
         file: None,
         pid: std::process::id(),
         project_id: Some(project_id),
@@ -1246,6 +1246,24 @@ pub fn snap_detached_window(app: AppHandle, label: String) -> bool {
     snap_detached_to_screen(&app, &label)
 }
 
+/// Raise one of the active scope's popouts and give it the keyboard —
+/// steering's J (the main window walks no popout itself). Popout labels only,
+/// so this can never bring up the main window or a presenter. Wayland's
+/// `set_focus` presents the surface (`gtk_window_present_with_time`), which
+/// also undoes a minimize there.
+#[tauri::command]
+pub fn focus_detached_window(app: AppHandle, label: String) -> bool {
+    if !label.starts_with("detached-") {
+        return false;
+    }
+    let Some(win) = app.get_webview_window(&label) else {
+        return false;
+    };
+    let _ = win.unminimize();
+    let _ = win.show();
+    win.set_focus().is_ok()
+}
+
 /// How often the monitor-arrangement watcher re-reads the connected displays.
 /// One cheap runtime query; the cost of noticing an unplug late is a popout the
 /// user cannot reach, so this stays in the "within a breath" range rather than
@@ -1474,8 +1492,8 @@ mod tests {
 
     #[test]
     fn title_is_a_human_friendly_sequence_name() {
-        assert_eq!(detached_title(1), "Eldrun win-1");
-        assert_eq!(detached_title(2), "Eldrun win-2");
+        assert_eq!(detached_title(1), concat!(crate::app_name!(), " win-1"));
+        assert_eq!(detached_title(2), concat!(crate::app_name!(), " win-2"));
         // Distinct numbers produce distinct titles (the X11 resolver key must be
         // unique per live window).
         assert_ne!(detached_title(1), detached_title(2));
@@ -1544,7 +1562,7 @@ mod tests {
     fn tracked(label: &str, window_id: Option<u64>) -> TrackedWindow {
         TrackedWindow {
             id: label.to_string(),
-            exec: "eldrun-detached".to_string(),
+            exec: concat!(crate::app_slug!(), "-detached").to_string(),
             file: None,
             pid: 1,
             project_id: Some("p1".to_string()),

@@ -12,7 +12,7 @@ export interface ProjectJumpDetail {
  *  jump mode — open projects listed too, not only the inactive ones — so
  *  steering can switch to any project by name. The search box is that bar's
  *  local state, hence an event rather than a store. */
-export const PROJECT_JUMP_EVENT = "eldrun:project-jump";
+export const PROJECT_JUMP_EVENT = "app:project-jump";
 
 /** Ask the project search to take the keyboard; false when none is mounted. */
 export function requestProjectJump(level: SteeringBaseLevel): boolean {

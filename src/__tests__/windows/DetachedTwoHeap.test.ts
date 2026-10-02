@@ -17,6 +17,7 @@ import {
   resetTabs,
   type EventBus,
 } from "../helpers/detachedHarness";
+import { BRAND } from "../../lib/brand";
 
 // Hoisted so both heaps' mocked modules reach the SAME doubles: that shared bus
 // is what makes one window's emit arrive at the other window's listener.
@@ -185,14 +186,14 @@ describe("Group B — two heaps, one protocol", () => {
     const { main, b, groupId, label } = await setup();
     const popout = await popoutHeapFor("p", groupId, label);
 
-    popout.tabs.useTabsStore.getState().setTabTmuxName("p", b.key, "eldrun-p--shell-renamed");
+    popout.tabs.useTabsStore.getState().setTabTmuxName("p", b.key, `${BRAND.slug}-p--shell-renamed`);
     popout.tabs.useTabsStore.getState().setTabFolder(b.key, "src/deep");
 
     const payload = main.tabs.useTabsStore
       .getState()
       .tabsByScope["p"]!.find((t) => t.key === b.key);
     // Without the forward, a renamed session reattached to its OLD name.
-    expect(payload?.tmuxSession).toBe("eldrun-p--shell-renamed");
+    expect(payload?.tmuxSession).toBe(`${BRAND.slug}-p--shell-renamed`);
     expect(payload?.folder).toBe("src/deep");
   });
 

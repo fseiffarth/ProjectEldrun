@@ -853,7 +853,7 @@ function ArchiveConfirmWindow({
   );
 }
 
-/** Confirm for **Remove from Eldrun**: the project leaves the pill list and Eldrun's
+/** Confirm for **Remove from Tabtivity**: the project leaves the pill list and Tabtivity's
  *  state dirs about it are purged, but its folder stays exactly where it is with
  *  everything in it — `project.json`, scaffold files, the user's own files. This is
  *  the "undo a botched import" verb: afterwards the folder can be imported again
@@ -1446,7 +1446,7 @@ export function ProjectPill({
   const selectedPills = usePillSelectionStore((s) => s.selected);
   const isSelected = selectedPills.includes(project.id);
   const boxesForMenu = useBoxesStore((s) => s.boxes);
-  // With `connections_headless` off Eldrun handles no passwords at all, so neither
+  // With `connections_headless` off Tabtivity handles no passwords at all, so neither
   // key auth nor a saved password can ever be the answer — auto-connect there means
   // the login opens in the root terminal instead (see `autoConnectInteractive` in
   // stores/projects). One of the inputs to `autoConnectEligibility` below; the
@@ -2461,7 +2461,7 @@ export function ProjectPill({
               >
                 {project.remote.auto_connect && autoConnectEligible ? "✓ " : ""}
                 {t("pill.autoConnectOnLaunch")}
-                {/* Named, not just greyed: a tagged host is never dialled by Eldrun
+                {/* Named, not just greyed: a tagged host is never dialled by Tabtivity
                     itself, and the remedy (untag the machine) is nothing like the
                     other one (save a password). Matches the Machines menu. */}
                 {autoConnectState.reason === "hpc" && (
@@ -2471,7 +2471,7 @@ export function ProjectPill({
             )}
             {/* Persistent remote sessions (TODO #85): shell/script AND agent tabs run
                 inside a tmux session on the host, so a long run (or a live agent)
-                survives an SSH drop, a laptop sleep, or Eldrun quitting. Default ON —
+                survives an SSH drop, a laptop sleep, or Tabtivity quitting. Default ON —
                 this opts out. */}
             {project.remote && (
               <button
@@ -2505,7 +2505,7 @@ export function ProjectPill({
               </button>
             )}
             {/* The explicit half of the layout move: a project's tabs now live in
-                Eldrun's state dir, not in the project folder, so a folder that was
+                Tabtivity's state dir, not in the project folder, so a folder that was
                 byte-synced from another machine (or copied by hand) no longer
                 brings its layout back on its own. It still SAVES one there, and
                 this is how it is adopted — deliberately a click rather than an
@@ -2803,7 +2803,7 @@ export function ProjectPill({
         />
       )}
 
-      {/* Remove from Eldrun (folder stays on disk; simple confirm) */}
+      {/* Remove from Tabtivity (folder stays on disk; simple confirm) */}
       {showForget && (
         <ForgetConfirmWindow
           project={project}

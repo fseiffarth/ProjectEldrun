@@ -1,6 +1,6 @@
 //! Native calendar — a single global, local store of calendars, events and tasks.
 //!
-//! Everything lives in `~/.local/share/eldrun/calendar.json` (like `boxes.json`),
+//! Everything lives in `~/.local/share/tabtivity/calendar.json` (like `boxes.json`),
 //! read/written through the shared `storage` helpers. Reads go through
 //! `schema::calendar::CalendarFile`, so a version-1 file (a bare array of
 //! start-time-only events) still loads and is migrated on the way in; writes are
@@ -31,7 +31,7 @@ use crate::storage;
 /// Calendar CRUD and CalDAV merges are read-modify-write transactions over the
 /// same file. Atomic replacement protects readers; this lock protects edits
 /// from overwriting one another between their read and rename — within this
-/// process. A second process (a second Eldrun window, the Mobile sidecar) is
+/// process. A second process (a second Tabtivity window, the Mobile sidecar) is
 /// what the revision check in [`transact`] is for (#171).
 static CALENDAR_RMW_LOCK: Mutex<()> = Mutex::new(());
 
@@ -69,7 +69,7 @@ fn write_data(path: &Path, data: &CalendarData) -> Result<(), String> {
 // ── Compare-and-swap (#171) ─────────────────────────────────────────────────
 //
 // Every edit is a read-modify-write of the whole file. `CALENDAR_RMW_LOCK`
-// serialises those within one process, and nothing else: a second Eldrun
+// serialises those within one process, and nothing else: a second Tabtivity
 // window on the same machine, or the Mobile sidecar, reads the same file from
 // another process and the loser's edit silently vanished under the winner's
 // rename. So the file carries a revision (`CalendarData::rev`), a transaction
@@ -1000,7 +1000,7 @@ fn merge_caldav_calendar_in(
                 Some(&slot) => {
                     let local = &data.tasks[slot];
                     task.id = local.id.clone();
-                    // **The board state, kept.** These are Eldrun's own fields;
+                    // **The board state, kept.** These are Tabtivity's own fields;
                     // the server has never heard of them and a sync that
                     // overwrote them would move the user's cards on a timer.
                     task.column = local.column.clone();

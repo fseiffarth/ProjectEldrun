@@ -259,7 +259,7 @@ pub struct Context<T: UserEvent> {
   pub window_id_map: WindowIdStore,
   main_thread_id: ThreadId,
   pub proxy: TaoEventLoopProxy<Message<T>>,
-  // ELDRUN PATCH: behind an Arc. `Context` is cloned and dropped on every
+  // TABTIVITY PATCH: behind an Arc. `Context` is cloned and dropped on every
   // thread (each `AppHandle`/`Window` clone), and cloning the context itself
   // clones tao's `EventLoopWindowTarget`, whose Linux `windows` field is an
   // `Rc`. Racing non-atomic `Rc` counts freed that set while it was still in

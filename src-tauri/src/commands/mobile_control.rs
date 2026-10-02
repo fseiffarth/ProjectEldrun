@@ -25,7 +25,7 @@ use crate::{
     storage,
 };
 
-pub const MOBILE_DESKTOP_EVENT: &str = "eldrun-mobile-desktop-request";
+pub const MOBILE_DESKTOP_EVENT: &str = crate::brand::MOBILE_DESKTOP_EVENT;
 #[cfg(not(windows))]
 const INSTALL_PHONE_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -256,9 +256,9 @@ pub struct MobileHostRuntimeStatus {
 
 /// The leaf name every install writes and every start looks for.
 #[cfg(windows)]
-const HOST_BINARY_NAME: &str = "eldrun-mobile-host.exe";
+const HOST_BINARY_NAME: &str = crate::brand::MOBILE_HOST_EXE;
 #[cfg(not(windows))]
-const HOST_BINARY_NAME: &str = "eldrun-mobile-host";
+const HOST_BINARY_NAME: &str = crate::brand::MOBILE_HOST_BIN;
 
 /// Whether the installed sidecar is a *superseded copy of the same version*.
 ///
@@ -352,16 +352,16 @@ pub async fn mobile_host_status() -> MobileHostRuntimeStatus {
     }
 }
 
-/// The sidecar is the Eldrun binary itself, run with `--mobile-host`. A
-/// separate `eldrun-mobile-host` bin target used to exist, but it linked the
-/// whole `eldrun_lib` anyway (same size, nothing gained) and Tauri's
+/// The sidecar is the Tabtivity binary itself, run with `--mobile-host`. A
+/// separate `tabtivity-mobile-host` bin target used to exist, but it linked the
+/// whole `app_lib` anyway (same size, nothing gained) and Tauri's
 /// `universal-apple-darwin` build never lipo-merges secondary cargo binaries,
 /// which broke every macOS bundle at the copy step.
 ///
 /// On Linux that source is the magic link itself, not the path
 /// `std::env::current_exe()` resolves it to. The two differ exactly when the
 /// running image's path no longer holds it — a dev rebuild over
-/// `target/debug/eldrun`, a re-run of `package:dev`, an in-app update swapping
+/// `target/debug/tabtivity`, a re-run of `package:dev`, an in-app update swapping
 /// the AppImage — where the kernel appends ` (deleted)` and the resolved path
 /// opens as `ENOENT`. [`mobile_host_apply`] then fails at its copy step with
 /// `read mobile host: No such file or directory (os error 2)` *before* it
@@ -430,17 +430,17 @@ fn systemd_path(path: &Path) -> Result<String, String> {
 /// `on-failure` does not restart.
 #[cfg(target_os = "linux")]
 fn systemd_unit(binary: &Path, state_dir: &Path) -> Result<String, String> {
-    Ok(format!("[Unit]\nDescription=Eldrun Mobile Host\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart={} --mobile-host\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={}\n\n[Install]\nWantedBy=default.target\n", systemd_path(binary)?, systemd_path(state_dir)?))
+    Ok(format!(concat!("[Unit]\nDescription=", crate::app_name!(), " Mobile Host\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart={} --mobile-host\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={}\n\n[Install]\nWantedBy=default.target\n"), systemd_path(binary)?, systemd_path(state_dir)?))
 }
 
 /// Delete every `bin/<version>/` directory except `keep`.
 ///
 /// The sidecar is versioned per directory so an install can never write over the
 /// executable a running host is executing (see [`install_mobile_binary`]) — but
-/// nothing removed the superseded ones, so every Eldrun version the user has
+/// nothing removed the superseded ones, so every Tabtivity version the user has
 /// ever enabled Mobile under left a full copy of the binary behind forever. On a
 /// packaged build that is ~40 MB apiece; in a dev session it is whatever
-/// `target/debug/eldrun` weighs, because [`mobile_binary_source`] is
+/// `target/debug/tabtivity` weighs, because [`mobile_binary_source`] is
 /// `current_exe` and a debug binary carries its DWARF — 700 MB each, three of
 /// them, 2.0 GB of the 3.3 GB state dir measured on 2026-09-01.
 ///
@@ -521,7 +521,7 @@ fn install_mobile_binary(source: &Path, target_dir: &Path) -> Result<PathBuf, St
 }
 
 #[cfg(target_os = "macos")]
-const LAUNCHD_LABEL: &str = "io.github.fseiffarth.eldrun.mobile-host";
+const LAUNCHD_LABEL: &str = crate::brand::MOBILE_HOST_LAUNCHD_LABEL;
 
 #[cfg(target_os = "macos")]
 fn plist_escape(raw: &str) -> String {
@@ -564,7 +564,7 @@ fn launchd_plist(binary: &Path) -> String {
 #[cfg(windows)]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
-const RUN_VALUE: &str = "EldrunMobileHost";
+const RUN_VALUE: &str = crate::brand::MOBILE_HOST_RUN_VALUE;
 
 #[cfg(windows)]
 fn run_command_line(binary: &Path) -> Result<String, String> {
@@ -599,14 +599,14 @@ async fn disable_host_service() -> Result<(), String> {
     // unavailable; the unit command then prevents it returning at login.
     let shutdown = mobile_admin(AdminRequest::Shutdown).await;
     let stop = crate::paths::command_no_window("systemctl")
-        .args(["--user", "disable", "--now", "eldrun-mobile-host.service"])
+        .args(["--user", "disable", "--now", crate::brand::MOBILE_HOST_UNIT])
         .status()
         .map_err(|error| error.to_string())?;
     if !stop.success() {
         return Err(if shutdown.is_ok() {
             "Mobile host stopped, but its systemd user service could not be disabled".into()
         } else {
-            "Could not stop or disable the Eldrun Mobile user service".into()
+            concat!("Could not stop or disable the ", crate::app_name!(), " Mobile user service").into()
         });
     }
     Ok(())
@@ -617,7 +617,7 @@ async fn enable_host_service(target: &Path, config: &HostConfig) -> Result<(), S
     let unit_dir = crate::paths::home_dir().join(".config/systemd/user");
     std::fs::create_dir_all(&unit_dir).map_err(|e| e.to_string())?;
     std::fs::write(
-        unit_dir.join("eldrun-mobile-host.service"),
+        unit_dir.join(crate::brand::MOBILE_HOST_UNIT),
         systemd_unit(target, &config.state_dir)?,
     )
     .map_err(|e| e.to_string())?;
@@ -629,18 +629,18 @@ async fn enable_host_service(target: &Path, config: &HostConfig) -> Result<(), S
         return Err("systemd user daemon-reload failed".into());
     }
     let start = crate::paths::command_no_window("systemctl")
-        .args(["--user", "enable", "eldrun-mobile-host.service"])
+        .args(["--user", "enable", crate::brand::MOBILE_HOST_UNIT])
         .status()
         .map_err(|e| e.to_string())?;
     if !start.success() {
-        return Err("could not enable the Eldrun Mobile user service".into());
+        return Err(concat!("could not enable the ", crate::app_name!(), " Mobile user service").into());
     }
     let restart = crate::paths::command_no_window("systemctl")
-        .args(["--user", "restart", "eldrun-mobile-host.service"])
+        .args(["--user", "restart", crate::brand::MOBILE_HOST_UNIT])
         .status()
         .map_err(|e| e.to_string())?;
     if !restart.success() {
-        return Err("could not start the Eldrun Mobile user service".into());
+        return Err(concat!("could not start the ", crate::app_name!(), " Mobile user service").into());
     }
     Ok(())
 }
@@ -668,7 +668,7 @@ async fn disable_host_service() -> Result<(), String> {
             return Err(if shutdown.is_ok() {
                 "Mobile host stopped, but its launch agent could not be unloaded".into()
             } else {
-                "Could not stop or unload the Eldrun Mobile launch agent".into()
+                concat!("Could not stop or unload the ", crate::app_name!(), " Mobile launch agent").into()
             });
         }
     }
@@ -701,7 +701,7 @@ async fn enable_host_service(target: &Path, _config: &HostConfig) -> Result<(), 
         .status()
         .map_err(|e| e.to_string())?;
     if !bootstrap.success() {
-        return Err("could not start the Eldrun Mobile launch agent".into());
+        return Err(concat!("could not start the ", crate::app_name!(), " Mobile launch agent").into());
     }
     Ok(())
 }
@@ -715,7 +715,7 @@ async fn disable_host_service() -> Result<(), String> {
         .args(["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])
         .status();
     if shutdown.is_err() && mobile_admin(AdminRequest::Status).await.is_ok() {
-        return Err("Could not stop the Eldrun Mobile host".into());
+        return Err(concat!("Could not stop the ", crate::app_name!(), " Mobile host").into());
     }
     Ok(())
 }
@@ -730,7 +730,7 @@ async fn enable_host_service(target: &Path, _config: &HostConfig) -> Result<(), 
         .status()
         .map_err(|e| e.to_string())?;
     if !add.success() {
-        return Err("could not register the Eldrun Mobile autostart entry".into());
+        return Err(concat!("could not register the ", crate::app_name!(), " Mobile autostart entry").into());
     }
     let mut child = crate::paths::command_no_window(target)
         .arg("--mobile-host")
@@ -747,11 +747,11 @@ async fn enable_host_service(target: &Path, _config: &HostConfig) -> Result<(), 
             break;
         }
     }
-    Err("the Eldrun Mobile host did not start".into())
+    Err(concat!("the ", crate::app_name!(), " Mobile host did not start").into())
 }
 
 /// The Mobile host's lifetime is the app's, and these two are the pair that
-/// make it so. The service manager still supervises the sidecar *while Eldrun
+/// make it so. The service manager still supervises the sidecar *while Tabtivity
 /// runs* (a Tailscale Serve verification failure exits non-zero and
 /// `Restart=on-failure` brings it back), but a host with no desktop behind it
 /// can create no tab and — since the clean quit now reaps every local tmux
@@ -875,7 +875,7 @@ async fn stop_installed_host(_shutdown_ok: bool) {
     // shutdown, and a wedged one should not hold the app's exit for systemd's
     // stop timeout.
     let _ = crate::paths::command_no_window("systemctl")
-        .args(["--user", "stop", "--no-block", "eldrun-mobile-host.service"])
+        .args(["--user", "stop", "--no-block", crate::brand::MOBILE_HOST_UNIT])
         .status();
 }
 
@@ -884,7 +884,7 @@ async fn start_installed_host(_config: &HostConfig) -> Result<(), String> {
     // `start`, not `restart`: idempotent against a host the login already
     // brought up between the status probe and here.
     let status = crate::paths::command_no_window("systemctl")
-        .args(["--user", "start", "eldrun-mobile-host.service"])
+        .args(["--user", "start", crate::brand::MOBILE_HOST_UNIT])
         .status()
         .map_err(|e| e.to_string())?;
     if !status.success() {
@@ -951,14 +951,14 @@ async fn start_installed_host(config: &HostConfig) -> Result<(), String> {
     let bin_dir = config.control_dir.join("bin");
     let current = bin_dir
         .join(env!("CARGO_PKG_VERSION"))
-        .join("eldrun-mobile-host.exe");
+        .join(HOST_BINARY_NAME);
     let target = if current.is_file() {
         current
     } else {
         let mut candidates: Vec<PathBuf> = std::fs::read_dir(&bin_dir)
             .map_err(|e| format!("mobile host is not installed: {e}"))?
             .flatten()
-            .map(|entry| entry.path().join("eldrun-mobile-host.exe"))
+            .map(|entry| entry.path().join(HOST_BINARY_NAME))
             .filter(|path| path.is_file())
             .collect();
         candidates.sort();
@@ -1053,7 +1053,7 @@ mod tests {
     use std::path::Path;
 
     /// The install must read the running *image*, not a path that may no longer
-    /// name it: a rebuild or an update over a live Eldrun makes
+    /// name it: a rebuild or an update over a live Tabtivity makes
     /// `current_exe()` resolve to `… (deleted)`, and the reinstall behind
     /// Reconnect then dies at its copy step with `os error 2` before the
     /// service manager is asked for anything.
@@ -1085,7 +1085,7 @@ mod tests {
     #[test]
     fn systemd_unit_never_hides_the_tmux_socket_behind_a_private_tmp() {
         let unit =
-            systemd_unit(Path::new("/opt/eldrun-mobile-host"), Path::new("/state")).expect("unit");
+            systemd_unit(Path::new(concat!("/opt/", crate::app_slug!(), "-mobile-host")), Path::new("/state")).expect("unit");
         // tmux listens on /tmp/tmux-$UID/default. A private /tmp makes every tab
         // report `available: false` with nothing in the log to explain it, on
         // exactly those systems that permit unprivileged user namespaces.
@@ -1103,7 +1103,7 @@ mod tests {
     #[test]
     fn systemd_unit_survives_a_transient_tailscale_outage() {
         let unit =
-            systemd_unit(Path::new("/opt/eldrun-mobile-host"), Path::new("/state")).expect("unit");
+            systemd_unit(Path::new(concat!("/opt/", crate::app_slug!(), "-mobile-host")), Path::new("/state")).expect("unit");
         // The sidecar exits non-zero while tailscaled is down so it is
         // restarted — but systemd's default start limit (5 in 10s) turns a
         // fast crash loop into a permanently `failed` unit. The limit must be
@@ -1227,7 +1227,7 @@ mod unix_install_tests {
         let target_dir = temp.path().join("bin");
         std::fs::create_dir(&target_dir).expect("target directory");
         std::fs::write(&source, b"new mobile host").expect("source");
-        std::fs::write(target_dir.join("eldrun-mobile-host"), b"old mobile host")
+        std::fs::write(target_dir.join(concat!(crate::app_slug!(), "-mobile-host")), b"old mobile host")
             .expect("existing target");
 
         let target = install_mobile_binary(&source, &target_dir).expect("install");
@@ -1269,7 +1269,7 @@ mod launchd_tests {
 
     #[test]
     fn launchd_plist_restarts_on_failure_but_not_on_a_disabled_exit() {
-        let plist = launchd_plist(Path::new("/opt/eldrun-mobile-host"));
+        let plist = launchd_plist(Path::new(concat!("/opt/", crate::app_slug!(), "-mobile-host")));
         // The disabled configuration exits 0 and must stay down; a Serve
         // verification failure exits non-zero and must come back.
         assert!(plist.contains("<key>SuccessfulExit</key>"));
@@ -1286,9 +1286,9 @@ mod windows_service_tests {
 
     #[test]
     fn run_command_line_quotes_the_binary_and_refuses_quote_smuggling() {
-        let line = run_command_line(Path::new(r"C:\Users\a b\eldrun-mobile-host.exe"))
+        let line = run_command_line(Path::new(concat!(r"C:\Users\a b\", crate::app_slug!(), r"-mobile-host.exe")))
             .expect("command line");
-        assert_eq!(line, "\"C:\\Users\\a b\\eldrun-mobile-host.exe\" --mobile-host");
+        assert_eq!(line, concat!("\"C:\\Users\\a b\\", crate::app_slug!(), "-mobile-host.exe\" --mobile-host"));
         assert!(run_command_line(Path::new("C:\\a\"b.exe")).is_err());
     }
 }
@@ -1322,6 +1322,7 @@ where
     // own deadline so a slow answer is stated, not lost; every other control
     // request keeps its short SLA.
     let response_timeout = request.desktop_timeout();
+    let mutation = request.is_mutation();
     let (tx, rx) = oneshot::channel();
     state.pending.lock().unwrap().insert(id.clone(), tx);
     if app.emit_to("main", MOBILE_DESKTOP_EVENT, request).is_err() {
@@ -1345,8 +1346,16 @@ where
             message: "Desktop did not answer".into(),
         });
     state.pending.lock().unwrap().remove(&id);
-    let _ = write_frame(&mut stream, &response).await;
+    // Under the response cap, not the request one; an answer too large even
+    // for that is stated to the sidecar rather than dropped — and for a
+    // mutation, stated as applied: the window has made the change by now, so
+    // the phone must reload rather than be invited to send it again.
+    let _ = admin::write_desktop_response(&mut stream, &response, mutation).await;
 }
+
+/// Binds of the desktop bridge's socket before it gives up, a second apart.
+#[cfg(unix)]
+const DESKTOP_BRIDGE_BIND_TRIES: u32 = 5;
 
 #[cfg(unix)]
 pub fn start_desktop_bridge(app: AppHandle, state: MobileDesktopState) {
@@ -1357,9 +1366,29 @@ pub fn start_desktop_bridge(app: AppHandle, state: MobileDesktopState) {
             let _ = std::fs::create_dir_all(parent);
             let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
         }
-        let _ = std::fs::remove_file(&socket);
-        let Ok(listener) = tokio::net::UnixListener::bind(&socket) else {
-            return;
+        // A bridge that never listens leaves every phone request that needs
+        // the desktop reading `desktop_unavailable` for the whole session, and
+        // it used to give up on the first failed bind without a word. A few
+        // tries a second apart ride out a state dir or a stale socket file
+        // that is still settling — the `remove_file` goes before each one —
+        // and a bind that still fails is said on stderr.
+        let mut tries = 0;
+        let listener = loop {
+            let _ = std::fs::remove_file(&socket);
+            match tokio::net::UnixListener::bind(&socket) {
+                Ok(listener) => break listener,
+                Err(error) => {
+                    tries += 1;
+                    if tries >= DESKTOP_BRIDGE_BIND_TRIES {
+                        eprintln!(
+                            "mobile host: desktop bridge cannot listen on {} after {tries} tries: {error}",
+                            socket.display()
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
         };
         let _ = std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600));
         loop {
@@ -1392,11 +1421,21 @@ pub fn start_desktop_bridge(app: AppHandle, state: MobileDesktopState) {
     tauri::async_runtime::spawn(async move {
         use tokio::net::windows::named_pipe::ServerOptions;
         let name = pipe::pipe_name(&socket);
-        let Ok(token) = pipe::create_token(&socket) else {
-            return;
+        // Either failure leaves every phone request that needs the desktop
+        // reading `desktop_unavailable` for the whole session; say why.
+        let token = match pipe::create_token(&socket) {
+            Ok(token) => token,
+            Err(error) => {
+                eprintln!("mobile host: desktop bridge cannot write its pipe token: {error}");
+                return;
+            }
         };
-        let Ok(mut server) = ServerOptions::new().first_pipe_instance(true).create(&name) else {
-            return;
+        let mut server = match ServerOptions::new().first_pipe_instance(true).create(&name) {
+            Ok(server) => server,
+            Err(error) => {
+                eprintln!("mobile host: desktop bridge cannot create its pipe: {error}");
+                return;
+            }
         };
         loop {
             if server.connect().await.is_err() {
@@ -1442,7 +1481,7 @@ mod prune_tests {
         for version in ["0.1.52", "0.1.57", "0.1.58"] {
             let dir = bin.join(version);
             std::fs::create_dir_all(&dir).expect("version directory");
-            std::fs::write(dir.join("eldrun-mobile-host"), b"host").expect("binary");
+            std::fs::write(dir.join(concat!(crate::app_slug!(), "-mobile-host")), b"host").expect("binary");
         }
         // A stray file beside the version directories — the control dir also
         // holds sockets and json, and a sweep here must not reach outside its

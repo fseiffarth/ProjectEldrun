@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// One entry in `~/.local/share/eldrun/projects.json`.
+/// One entry in `~/.local/share/tabtivity/projects.json`.
 /// Unknown fields are preserved so Python rollback can still read the file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectEntry {

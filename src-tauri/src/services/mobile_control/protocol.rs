@@ -4,14 +4,25 @@ use crate::schema::{
 };
 use serde::{Deserialize, Serialize};
 
+/// The cap on one control frame: every request on both local planes, every
+/// admin answer, and anything read from a peer that has not yet been answered.
 pub const MAX_CONTROL_MESSAGE: usize = 64 * 1024;
+/// The cap on one desktop → sidecar *answer*, the only direction that carries
+/// content rather than an instruction. At 64 KiB an ordinary answer did not
+/// fit — a default 120-entry transcript, a board with long notes, a busy
+/// calendar month — and the dropped frame read as a closed desktop. 16 MiB
+/// holds the largest transcript the desktop will build (`MAX_LIMIT` 1000
+/// entries of up to 12,000 characters, about 12 MB as ASCII) with room for the
+/// JSON around it. The sidecar reads this much only from the desktop's own
+/// same-user socket, on a connection it opened itself.
+pub const MAX_DESKTOP_RESPONSE: usize = 16 * 1024 * 1024;
 pub const MIN_COLS: u16 = 20;
 pub const MAX_COLS: u16 = 400;
 pub const MIN_ROWS: u16 = 5;
 pub const MAX_ROWS: u16 = 200;
 pub const MAX_INPUT_FRAME: usize = 64 * 1024;
 pub const MAX_OUTPUT_QUEUE: usize = 1024 * 1024;
-pub const TERMINAL_PROTOCOL: &str = "eldrun-terminal.v1";
+pub const TERMINAL_PROTOCOL: &str = crate::brand::TERMINAL_PROTOCOL;
 /// The catalog truncates a tab label to this many characters when it
 /// publishes one, so a rename that came back longer would silently disagree
 /// with the row the phone is looking at. Rejected at the edge instead.
@@ -220,7 +231,7 @@ pub struct MobileLocalAgent {
 }
 
 /// One agent the phone's ＋ can sign in to (`agent_id` is the catalog's
-/// opaque agent id). `signed_in` is `None` where Eldrun cannot tell (a CLI
+/// opaque agent id). `signed_in` is `None` where Tabtivity cannot tell (a CLI
 /// whose login it does not keep); `account` is the account the shared login
 /// names, when it names one; `alternate` names the CLI's other way in
 /// (`"console"`, `"browser"`) when it has one.
@@ -955,7 +966,7 @@ pub enum DesktopRequest {
     /// tmux through the sidecar's own client, so the desktop never sees the
     /// words; the phone knows them before they leave, and the desktop records
     /// them in the tab's prompt history — the one list of what a session was
-    /// asked for an agent whose transcript Eldrun does not read (OpenCode).
+    /// asked for an agent whose transcript Tabtivity does not read (OpenCode).
     TabPrompt {
         request_id: String,
         project_id: String,
@@ -1033,7 +1044,7 @@ pub enum DesktopRequest {
         project_id: String,
     },
     /// Copy one of those images into the project's inbox — the same
-    /// `.eldrun/inbox/` drop box a file sent from the phone lands in — and
+    /// `.tabtivity/inbox/` drop box a file sent from the phone lands in — and
     /// answer with the project-relative reference. `image_id` is one the
     /// desktop listed; a path never crosses.
     AttachDesktopImage {
@@ -1130,6 +1141,54 @@ impl DesktopRequest {
             Self::GitStates { .. } => 2,
             _ => 8,
         })
+    }
+
+    /// Whether the desktop changes its own state to answer this — the requests
+    /// the window queues per domain (`mutationDomain` in
+    /// `MobileBridgeHost.tsx`; `MobileMutationList.test.ts` holds the two
+    /// lists in step). Once the window has answered one of these the change is
+    /// made, so an answer that cannot be relayed must not read as a failed
+    /// write (`admin::write_desktop_response`). No wildcard arm: a new request
+    /// has to be placed on one side or the other.
+    pub fn is_mutation(&self) -> bool {
+        match self {
+            Self::Activate { .. }
+            | Self::Create { .. }
+            | Self::AlertResolve { .. }
+            | Self::CalendarMutate { .. }
+            | Self::TodoMutate { .. }
+            | Self::MailMark { .. }
+            | Self::MailReply { .. }
+            | Self::ScheduleMutate { .. }
+            | Self::RenameTab { .. }
+            | Self::ColorTab { .. }
+            | Self::ReorderTab { .. }
+            | Self::CloseTab { .. }
+            | Self::ReopenTab { .. }
+            | Self::PromptMutate { .. }
+            | Self::HoldPrompt { .. }
+            | Self::EditHeldPrompt { .. } => true,
+            Self::Catalog { .. }
+            | Self::Activity { .. }
+            | Self::GitStates { .. }
+            | Self::LaunchOptions { .. }
+            | Self::Todo { .. }
+            | Self::Alerts { .. }
+            | Self::Calendar { .. }
+            | Self::MailOverview { .. }
+            | Self::MailFolder { .. }
+            | Self::MailMessage { .. }
+            | Self::Schedules { .. }
+            | Self::Prompts { .. }
+            | Self::TabSeen { .. }
+            | Self::TabInput { .. }
+            | Self::TabPrompt { .. }
+            | Self::UndoClear { .. }
+            | Self::AgentStatus { .. }
+            | Self::AgentTranscript { .. }
+            | Self::DesktopImages { .. }
+            | Self::AttachDesktopImage { .. } => false,
+        }
     }
 }
 
@@ -1309,7 +1368,7 @@ pub struct MobileAgentStatus {
     pub usage: MobileAgentUsage,
 }
 
-/// A file that landed in a project's `.eldrun/inbox/`, as the phone sees it:
+/// A file that landed in a project's `.tabtivity/inbox/`, as the phone sees it:
 /// the stored name, the project-relative reference it puts after an `@`, and
 /// the size. Mirrors `inbox::Stored` on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1344,7 +1403,7 @@ pub fn git_dot(state: &str) -> Option<&'static str> {
 /// What the desktop answers a [`DesktopRequest`] with.
 ///
 /// **This enum and everything it carries are deliberately NOT
-/// `deny_unknown_fields`.** Strictness here guards nothing — the peer is Eldrun
+/// `deny_unknown_fields`.** Strictness here guards nothing — the peer is Tabtivity
 /// itself over a private socket in the state dir, not the paired browser, whose
 /// every input type above stays strict — and it made the two halves of one app
 /// version-fragile in exactly the direction this repo's dev workflow produces
@@ -1559,6 +1618,10 @@ pub struct AdminDevice {
     pub name: String,
     pub created_at: u64,
     pub last_seen_at: Option<u64>,
+    /// It holds a live session right now: signed in, not locked or timed out.
+    /// Defaulted, so a sidecar from before the field still answers.
+    #[serde(default)]
+    pub online: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1568,6 +1631,14 @@ pub enum TerminalControl {
     Resize { cols: u16, rows: u16 },
     Ping,
     Detached,
+    /// Whether the phone's page is in front of someone. A pocketed phone keeps
+    /// its socket — closing it would cost a full history replay on every app
+    /// switch — so the socket being open says nothing about anyone watching;
+    /// this does, and agent notices are held back only for a viewer that is
+    /// (`TerminalRegistry::is_watched`). Sent only to a bridge that announced
+    /// it (`TerminalEvent::Features`): an older one closes the socket on a
+    /// control it does not know.
+    Visibility { visible: bool },
 }
 
 /// Server → client control frames. The phone needs four things it cannot infer
@@ -1581,6 +1652,12 @@ pub enum TerminalControl {
 /// link keeps a socket OPEN while every byte sent into it is lost; the phone
 /// marks a prompt whose frames were never acked as not delivered instead of
 /// showing it as sent forever.
+///
+/// `Features` is how the vocabulary grows without breaking a phone bundle of
+/// another age (in dev the bundle can be newer than the installed sidecar, and
+/// a cached one older): the bridge says which optional controls it accepts in
+/// its opening frames, and the phone sends one only after reading its name
+/// there. A phone ignores an event type it does not know.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TerminalEvent {
@@ -1589,6 +1666,8 @@ pub enum TerminalEvent {
     Replay,
     Closing { reason: String, retry: bool },
     Ack { seq: u64 },
+    /// `visibility`: this bridge accepts `TerminalControl::Visibility`.
+    Features { visibility: bool },
 }
 
 impl TerminalEvent {
@@ -1620,7 +1699,7 @@ mod tests {
         let response = DesktopResponse::Catalog {
             agents: vec![],
             statuses: vec![AgentTabStatus {
-                tmux_session: "eldrun-project-0--agent-123456789".into(),
+                tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
                 status: "question".into(),
                 model: Some("opus-4-1".into()),
                 plan: true,
@@ -1629,7 +1708,7 @@ mod tests {
                 done_at: None,
             }],
             schedules: vec![AgentTabSchedules {
-                tmux_session: "eldrun-project-0--agent-123456789".into(),
+                tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
                 total: 3,
                 enabled: 2,
                 next: Some("2026-09-03T09:00".into()),
@@ -1639,14 +1718,14 @@ mod tests {
                 }],
             }],
             prompts: vec![AgentTabPrompts {
-                tmux_session: "eldrun-project-0--agent-123456789".into(),
+                tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
                 prompts: vec![AgentTabPrompt {
                     text: "fix the failing tests".into(),
                     at: Some("2026-09-17T08:12:00Z".into()),
                 }],
             }],
             timings: vec![AgentTabTiming {
-                tmux_session: "eldrun-project-0--agent-987654321".into(),
+                tmux_session: concat!(crate::app_slug!(), "-project-0--agent-987654321").into(),
                 model: None,
                 plan: false,
                 goal: true,
@@ -1677,7 +1756,7 @@ mod tests {
         // the sidecar is what turns the tmux name into the phone's tab id.
         assert_eq!(
             response_json["prompts"][0]["tmux_session"],
-            "eldrun-project-0--agent-123456789"
+            concat!(crate::app_slug!(), "-project-0--agent-123456789")
         );
         assert_eq!(
             response_json["prompts"][0]["prompts"][0]["text"],
@@ -1704,7 +1783,7 @@ mod tests {
             "status": "catalog",
             "agents": [{ "id": "agent-0", "label": "Claude", "modes": [] }],
             "statuses": [{
-                "tmux_session": "eldrun-project-0--agent-123456789",
+                "tmux_session": concat!(crate::app_slug!(), "-project-0--agent-123456789"),
                 "status": "working",
                 "working_at": 1_700_000_000_000u64,
                 "a_field_this_build_has_never_heard_of": "…",
@@ -1826,7 +1905,7 @@ mod tests {
         let request = DesktopRequest::TabPrompt {
             request_id: "request-prompt".into(),
             project_id: "raw-project".into(),
-            tmux_session: "eldrun-project-0--agent-123456789".into(),
+            tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
             message: "fix the tests".into(),
         };
         assert_eq!(request.request_id(), "request-prompt");
@@ -1843,7 +1922,7 @@ mod tests {
         let request = DesktopRequest::EditHeldPrompt {
             request_id: "request-held".into(),
             project_id: "raw-project".into(),
-            tmux_session: "eldrun-project-0--agent-123456789".into(),
+            tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
             held_id: "held-1".into(),
             message: "fix the tests, then the docs".into(),
         };
@@ -1873,7 +1952,7 @@ mod tests {
         let request = DesktopRequest::TabSeen {
             request_id: "request-seen".into(),
             project_id: "raw-project".into(),
-            tmux_session: "eldrun-project-0--agent-123456789".into(),
+            tmux_session: concat!(crate::app_slug!(), "-project-0--agent-123456789").into(),
         };
         assert_eq!(request.request_id(), "request-seen");
         let json = serde_json::to_value(&request).expect("serialize seen request");
@@ -2017,7 +2096,7 @@ mod tests {
                     kind: "task".into(),
                     severity: "soon".into(),
                     title: "Ship mobile alerts".into(),
-                    detail: "Eldrun".into(),
+                    detail: crate::brand::DISPLAY.into(),
                     at: Some("2026-08-25T17:00".into()),
                     all_day: false,
                     minutes_away: Some(30),
@@ -2142,6 +2221,10 @@ mod tests {
             control(r#"{"type":"resize","cols":80,"rows":24}"#),
             Ok(TerminalControl::Resize { cols: 80, rows: 24 })
         ));
+        assert!(matches!(
+            control(r#"{"type":"visibility","visible":false}"#),
+            Ok(TerminalControl::Visibility { visible: false })
+        ));
         // Anything the protocol does not name is refused, never guessed at.
         // The one gap is serde's, and documented here so nobody relies on the
         // `deny_unknown_fields` on the enum for it: an internally tagged enum
@@ -2157,6 +2240,8 @@ mod tests {
             r#"{"type":"resize","cols":-1,"rows":24}"#,
             r#"{"type":"resize","cols":80,"rows":24,"pixel_width":1}"#,
             r#"{"type":"exec","cmd":"id"}"#,
+            r#"{"type":"visibility"}"#,
+            r#"{"type":"visibility","visible":"no"}"#,
             r#"{}"#,
             "[]",
             "",
@@ -2174,6 +2259,7 @@ mod tests {
                 reason: "replaced".into(),
                 retry: false,
             },
+            TerminalEvent::Features { visibility: true },
         ] {
             let restored: TerminalEvent =
                 serde_json::from_str(&event.to_frame()).expect("server frame round trip");

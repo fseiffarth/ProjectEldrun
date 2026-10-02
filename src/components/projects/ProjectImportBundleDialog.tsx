@@ -14,9 +14,10 @@ import type {
   ProjectEntry,
 } from "../../types";
 import { ErrorNote } from "../common/ErrorNote";
+import { exportExtensions } from "../../lib/brandMigration";
 
 /**
- * "Import project file…" — register a `.eldrunproj` bundle written by
+ * "Import project file…" — register a `.tabtivityproj` bundle written by
  * `ProjectExportDialog`, on this or any other machine.
  *
  * Two-step on purpose: the bundle is read (manifest only, nothing unpacked)
@@ -53,7 +54,7 @@ export function ProjectImportBundleDialog({
       filters: [
         {
           name: t("transfer.bundleFilter"),
-          extensions: ["eldrunproj", "zip"],
+          extensions: [...exportExtensions(), "zip"],
         },
       ],
     });

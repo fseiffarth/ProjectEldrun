@@ -12,6 +12,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Project } from "../../../mobile-web/src/screens/Project";
 import type { TabRow } from "../../../mobile-web/src/api";
+import { NAMES } from "../../lib/brand";
 
 const fetchMock = vi.fn();
 
@@ -30,6 +31,7 @@ const DETAIL = {
   desktop_available: true,
   tabs: [{ id: "a", label: "claude 1", kind: "agent", available: true, viewer_busy: false }],
   agents: [{ id: "claude", label: "Claude", modes: ["plan", "auto"] }],
+  shells: true,
 };
 
 beforeEach(() => {
@@ -84,7 +86,7 @@ describe("Mobile project screen — the ＋", () => {
     serve(DETAIL);
     const base = fetchMock.getMockImplementation();
     fetchMock.mockImplementation((url: string, init?: RequestInit) => String(url).includes("/inbox")
-      ? Promise.resolve(new Response(JSON.stringify({ attachment: { name: "20260923-120000-notes.pdf", reference: ".eldrun/inbox/20260923-120000-notes.pdf", size: 3 } }), { status: 201 }))
+      ? Promise.resolve(new Response(JSON.stringify({ attachment: { name: "20260923-120000-notes.pdf", reference: `${NAMES.inboxDir}/20260923-120000-notes.pdf`, size: 3 } }), { status: 201 }))
       : base?.(url, init));
     render(<Project id="p" back={() => {}} terminal={() => {}} />);
     await screen.findByText("claude 1");
@@ -97,7 +99,7 @@ describe("Mobile project screen — the ＋", () => {
     Object.defineProperty(input, "files", { value: [new File(["pdf"], "notes.pdf", { type: "application/pdf" })], configurable: true });
     fireEvent.change(input);
 
-    expect(await screen.findByText("In the project as @.eldrun/inbox/20260923-120000-notes.pdf")).toBeTruthy();
+    expect(await screen.findByText(`In the project as @${NAMES.inboxDir}/20260923-120000-notes.pdf`)).toBeTruthy();
     const post = fetchMock.mock.calls.find(([url]) => String(url).includes("/inbox"));
     expect(String(post?.[0])).toBe("/api/v1/projects/p/inbox?name=notes.pdf");
     expect((post?.[1] as RequestInit).method).toBe("POST");
@@ -131,5 +133,19 @@ describe("Mobile project screen — the ＋", () => {
     expect(shell.nextElementSibling).toBe(file);
     // A bare input is media-only to Android Chrome: camera and photos, no files.
     expect(screen.getByTestId("project-inbox-input").getAttribute("accept")).toContain("application/*");
+  });
+
+  it("offers no shell while the desktop keeps shells off the phone", async () => {
+    for (const detail of [{ ...DETAIL, shells: false }, { ...DETAIL, shells: undefined }]) {
+      serve(detail);
+      render(<Project id="p" back={() => {}} terminal={() => {}} />);
+      fireEvent.click(await screen.findByRole("button", { name: "New tab" }));
+      const sheet = await screen.findByRole("dialog", { name: "New tab" });
+      expect(screen.queryByRole("button", { name: "New shell" })).toBeNull();
+      // The file row leads the sheet instead, and the agents are untouched.
+      expect(sheet.querySelector(".create")?.firstElementChild?.classList.contains("new-tab-file")).toBe(true);
+      expect(screen.getByRole("button", { name: "Claude" })).toBeTruthy();
+      cleanup();
+    }
   });
 });

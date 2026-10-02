@@ -17,7 +17,7 @@ const DETACHED_ACTIVITY_EVENT = "detached-activity";
 //
 // The tab's OWN HOOKS are the authority where they fire (`turnByPty`, fed by
 // the backend's `agent-turn` event off the record `services::agent_turn`
-// watches): Claude Code and a trusted Codex tell Eldrun when a prompt was
+// watches): Claude Code and a trusted Codex tell Tabtivity when a prompt was
 // submitted, when a tool finished, when they stopped, and (Claude) when they
 // wait on a permission. That is exact, and it is what the bytes could never be:
 // every agent TUI paints something while idle (Codex a braille field and its
@@ -185,7 +185,7 @@ const PTY_MAPS: Record<string, unknown>[] = [
 /// background-colour query (xterm.js does). Counted as text, that animation
 /// kept a commanded Codex tab "working" forever after its turn ended, and
 /// pushed the prompt it was waiting on out of the tail. The cost is a TUI whose
-/// ONLY sign of life is a lone braille spinner cell; every agent Eldrun knows
+/// ONLY sign of life is a lone braille spinner cell; every agent Tabtivity knows
 /// repaints a status word or a timer beside its spinner.
 const BRAILLE_CELLS = /[\u2800-\u28ff]/g;
 
@@ -420,7 +420,7 @@ export function noteUserInput(ptyId: string, interrupt = false) {
   }
 }
 
-/** Record that the tab's previous process died mid-turn — Eldrun quit, crashed
+/** Record that the tab's previous process died mid-turn — Tabtivity quit, crashed
  *  or respawned it while its hooks last said `working` or `decision` (the
  *  backend reads the leftover record at spawn: `pty_spawn`'s `interrupted`).
  *  The resumed agent starts out marked interrupted, the same as a turn cut off
@@ -1223,4 +1223,26 @@ if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
   } catch {
     /* no IPC bridge (tests) */
   }
+}
+
+/** What an agent tab is doing right now, in the three words a markup pill
+ *  needs (`mobile-web/src/markup/submitState.ts`'s `AgentSignal`). */
+export type AgentTabState = "working" | "question" | "idle";
+
+/** An agent tab's live state off this store's lamps: its busy flag, then a
+ *  decision prompt waiting on it. Pure over the two maps, so a component can
+ *  select it (`useActivityStore((s) => agentTabStateOf(s, ptyId))`). */
+export function agentTabStateOf(
+  state: { busyByTab: Record<string, boolean>; attentionByTab: Record<string, AttentionKind> },
+  ptyId: string,
+): AgentTabState {
+  if (state.busyByTab[ptyId]) return "working";
+  if (state.attentionByTab[ptyId] === "decision") return "question";
+  return "idle";
+}
+
+/** {@link agentTabStateOf} on the store as it is now — for the phone's agent
+ *  status (`MobileBridgeHost`) and the desktop markup mode's Submit. */
+export function agentTabState(ptyId: string): AgentTabState {
+  return agentTabStateOf(useActivityStore.getState(), ptyId);
 }

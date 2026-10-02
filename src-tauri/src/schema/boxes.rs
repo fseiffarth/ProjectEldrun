@@ -22,7 +22,7 @@ pub struct BoxRelation {
     pub extra: HashMap<String, Value>,
 }
 
-/// One entry in `~/.local/share/eldrun/boxes.json`.
+/// One entry in `~/.local/share/tabtivity/boxes.json`.
 ///
 /// Named `ProjectBox` (not `Box`) to avoid shadowing `std::boxed::Box`; the file
 /// and JSON name stay `boxes`. Back-compat: only `id`/`name` are required, so an
@@ -41,7 +41,7 @@ pub struct ProjectBox {
     #[serde(default)]
     pub position: i64,
     // ── #41 workspace metadata (Phase 2: stored; Phase 3/4: surfaced) ──
-    /// Absolute path to the box folder under `~/eldrun/boxes/<name>/`. Filled in
+    /// Absolute path to the box folder under `~/tabtivity/boxes/<name>/`. Filled in
     /// lazily on first box open (Phase 2). Absent for grouping-only boxes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
@@ -49,17 +49,18 @@ pub struct ProjectBox {
     /// Phase 4: surfaced + auto-detected).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<BoxRelation>,
-    /// Eldrun Mobile reach (#31aa): whether this box's `box:<id>` scope is
+    /// Tabtivity Mobile reach (#31aa): whether this box's `box:<id>` scope is
     /// listed on a paired phone. Off by default and absent from disk while off,
-    /// exactly like a project's `eldrun_mobile_access` — the sidecar reads this
+    /// exactly like a project's `tabtivity_mobile_access` — the sidecar reads this
     /// file directly, so the bit lives here and nowhere else.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub eldrun_mobile_access: bool,
+    // brand-check: allow — a serde key must be a literal; a test pins it to brand::MOBILE_ACCESS_KEY
+    #[serde(default, rename = "tabtivity_mobile_access", skip_serializing_if = "std::ops::Not::not")]
+    pub app_mobile_access: bool,
     /// Moved by every write that changed this box (headless owner plan, H1).
     /// `save_boxes` — the whole-list save — is refused for a box whose
     /// revision moved since the caller loaded it, so a second window or the
     /// Mobile sidecar editing in between is never erased. `0` until a
-    /// revision-aware Eldrun first rewrites the box, and not serialized then.
+    /// revision-aware Tabtivity first rewrites the box, and not serialized then.
     #[serde(default, skip_serializing_if = "rev_is_zero")]
     pub rev: u64,
     #[serde(flatten)]
@@ -78,6 +79,17 @@ pub type BoxesList = Vec<ProjectBox>;
 mod tests {
     use super::*;
 
+    /// The serde key is a literal in the attribute; this ties it to the brand
+    /// module so the two cannot drift.
+    #[test]
+    fn the_mobile_access_key_is_the_brand_constant() {
+        let json = format!(r#"{{"id":"b","name":"B","{}":true}}"#, crate::brand::MOBILE_ACCESS_KEY);
+        let b: ProjectBox = serde_json::from_str(&json).unwrap();
+        assert!(b.app_mobile_access);
+        let back = serde_json::to_value(&b).unwrap();
+        assert_eq!(back[crate::brand::MOBILE_ACCESS_KEY], true);
+    }
+
     fn json<T: Serialize>(value: &T) -> Value {
         serde_json::to_value(value).expect("serialize")
     }
@@ -91,7 +103,7 @@ mod tests {
         assert_eq!(b.position, 0);
         assert!(b.folder.is_none());
         assert!(b.relations.is_empty());
-        assert!(!b.eldrun_mobile_access);
+        assert!(!b.app_mobile_access);
         assert!(b.extra.is_empty());
     }
 
@@ -105,19 +117,19 @@ mod tests {
             ..Default::default()
         };
         let out = json(&off);
-        assert!(out.get("eldrun_mobile_access").is_none(), "{out}");
+        assert!(out.get(concat!(crate::app_slug!(), "_mobile_access")).is_none(), "{out}");
         assert!(out.get("relations").is_none(), "empty relations are omitted");
         assert!(out.get("folder").is_none());
         assert_eq!(out["member_ids"], serde_json::json!([]));
         assert_eq!(out["position"], 0);
 
         let on = ProjectBox {
-            eldrun_mobile_access: true,
+            app_mobile_access: true,
             ..off
         };
-        assert_eq!(json(&on)["eldrun_mobile_access"], true);
+        assert_eq!(json(&on)[concat!(crate::app_slug!(), "_mobile_access")], true);
         let back: ProjectBox = serde_json::from_value(json(&on)).unwrap();
-        assert!(back.eldrun_mobile_access);
+        assert!(back.app_mobile_access);
     }
 
     /// Relations keep their optional labels only when set, and unknown keys on

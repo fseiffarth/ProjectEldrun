@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentStatusReport, TabRow } from "../../../mobile-web/src/api";
 import { StatusSheet, resetCountdown, resetText } from "../../../mobile-web/src/screens/StatusSheet";
+import { BRAND } from "../../lib/brand";
 
 // `fetch` rather than the api module: `getAgentStatus` calls `api` through its
 // own module-local binding, which a module mock never reaches — and stubbing
@@ -44,7 +45,7 @@ function report(overrides: Partial<AgentStatusReport> = {}): AgentStatusReport {
     state: "working",
     label: tab.label,
     agent: "Claude",
-    project: "ProjectEldrun",
+    project: `Project${BRAND.display}`,
     today: { prompts: 14, worked_s: 4920, decisions: 3, done: 5 },
     usage: {
       label: "Claude Code",
@@ -60,7 +61,7 @@ function answer(value: AgentStatusReport) {
   fetchMock.mockImplementation(() => respond(200, { report: value }));
 }
 
-describe("Eldrun Mobile agent status sheet", () => {
+describe(`${BRAND.display} Mobile agent status sheet`, () => {
   it("shows the session state beside the quota the CLI reported", async () => {
     answer(report());
     render(<StatusSheet tab={tab} live={{ model: "opus", mode: "plan", context: "62%" }} onClose={() => {}} />);
@@ -99,7 +100,7 @@ describe("Eldrun Mobile agent status sheet", () => {
   it("labels the project-wide counters as project-wide, not as this agent's", async () => {
     answer(report());
     render(<StatusSheet tab={tab} live={null} onClose={() => {}} />);
-    await screen.findByText("Today in ProjectEldrun");
+    await screen.findByText(`Today in Project${BRAND.display}`);
     expect(screen.getByText("14 prompts to Claude")).toBeTruthy();
     // 4920s is 1h 22m, and the wording must not claim it for Claude alone.
     expect(screen.getByText(/Across every agent tab in this project: 1h 22m working/u)).toBeTruthy();
@@ -123,16 +124,16 @@ describe("Eldrun Mobile agent status sheet", () => {
       usage: { label: "Codex", supported: false, cached: false, error: "no_usage_readout" },
     }));
     render(<StatusSheet tab={tab} live={null} onClose={() => {}} />);
-    await screen.findByText("Codex has no usage readout Eldrun can ask for without opening a tab.");
+    await screen.findByText(`Codex has no usage readout ${BRAND.display} can ask for without opening a tab.`);
     // The session half still answers — the refusal is about the quota only.
     expect(screen.getByText("Working")).toBeTruthy();
-    expect(screen.getByText("Today in ProjectEldrun")).toBeTruthy();
+    expect(screen.getByText(`Today in Project${BRAND.display}`)).toBeTruthy();
   });
 
   it("points at the raw text when the panel is a shape it cannot read", async () => {
     answer(report({ usage: { label: "Claude Code", supported: true, cached: false, raw: "Plenty left this week." } }));
     render(<StatusSheet tab={tab} live={null} onClose={() => {}} />);
-    await screen.findByText(/Claude Code answered in a shape Eldrun does not recognize/u);
+    await screen.findByText(new RegExp(String.raw`Claude Code answered in a shape ${BRAND.display} does not recognize`, "u"));
     fireEvent.click(screen.getByText("Terminal"));
     expect(screen.getByLabelText("Usage panel as the CLI printed it").textContent).toContain("Plenty left this week.");
   });
@@ -147,10 +148,10 @@ describe("Eldrun Mobile agent status sheet", () => {
     expect(urlOf(fetchMock.mock.calls[1])).toBe("/api/v1/tabs/tab-1/status?refresh=1");
   });
 
-  it("names desktop Eldrun when the bridge is what is missing", async () => {
+  it(`names desktop ${BRAND.display} when the bridge is what is missing`, async () => {
     fetchMock.mockImplementation(() => respond(503, { error: "desktop_unavailable" }));
     render(<StatusSheet tab={tab} live={null} onClose={() => {}} />);
     // The one vocabulary (`connection.ts`): the same sentence every screen uses.
-    await screen.findByText("Eldrun isn't running on your desktop.");
+    await screen.findByText(`${BRAND.display} isn't running on your desktop.`);
   });
 });

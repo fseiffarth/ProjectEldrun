@@ -184,7 +184,9 @@ export function dismissLayer(layer: HTMLElement, after?: () => void): void {
     }
     if (layer.matches(".context-menu, .context-menu-portal, [role='menu'], .tab-new-menu, .project-switcher-add-menu")) {
       const away = document.querySelector<HTMLElement>(".context-menu-catcher") ?? document.body;
-      away.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      const press = new MouseEvent("pointerdown", { bubbles: true });
+      synthetic.add(press);
+      away.dispatchEvent(press);
     }
   }
 }
@@ -306,13 +308,25 @@ const NOT_A_TARGET = ".app-header .project-pill, .wm-controls";
  *  is one. */
 export function regionTargets(root: HTMLElement): HTMLElement[] {
   const out: HTMLElement[] = [];
+  // Every element's cursor is read once: a parent comes before its children
+  // in document order, so its answer is already here when they ask. (The mail
+  // overlay is thousands of elements; each step walks them all.)
+  const pointer = new Map<Element, boolean>();
+  const pointerOf = (el: Element) => {
+    let is = pointer.get(el);
+    if (is === undefined) {
+      is = pointerish(el);
+      pointer.set(el, is);
+    }
+    return is;
+  };
   for (const el of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
     if (el.closest(NOT_A_TARGET)) continue;
     const pressable = el.matches(PRESSABLE);
     if (!pressable) {
-      if (!pointerish(el)) continue;
+      if (!pointerOf(el)) continue;
       const parent = el.parentElement;
-      if (parent && parent !== root && root.contains(parent) && pointerish(parent)) continue;
+      if (parent && parent !== root && root.contains(parent) && pointerOf(parent)) continue;
     }
     if (shown(el)) out.push(el);
   }
@@ -351,6 +365,17 @@ export function resumeRegionCursor(root: HTMLElement): boolean {
     return true;
   }
   return placeRegionCursor(root);
+}
+
+/** Put the cursor on the control of `root` the pointer just pressed — the
+ *  innermost target holding `el`. False when it pressed none. */
+export function pointRegionCursor(root: HTMLElement, el: Element): boolean {
+  let hit: HTMLElement | null = null;
+  // Document order: a target nested in another comes after it.
+  for (const target of regionTargets(root)) if (target.contains(el)) hit = target;
+  if (!hit) return false;
+  setCursor(hit, root);
+  return true;
 }
 
 /** The element under the cursor, if it is still on screen. */

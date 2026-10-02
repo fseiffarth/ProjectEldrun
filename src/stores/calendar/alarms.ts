@@ -20,6 +20,7 @@ import { readUse24h } from "../../lib/timeFormat";
 import { translate, useI18nStore } from "../../lib/i18n";
 import { useCalendarStore } from "./calendar";
 import { holdsTimerLease } from "../timerLease";
+import { storageKey } from "../../lib/brand";
 
 /** How often the ticker looks for due reminders. */
 const TICK_MS = 30_000;
@@ -32,7 +33,7 @@ const TICK_MS = 30_000;
  * "this user already dismissed this" — which is nobody else's business, and would
  * churn the file on every reminder.
  */
-const FIRED_KEY = "eldrun.calendar.firedAlarms";
+const FIRED_KEY = storageKey("calendar.firedAlarms");
 
 /** Cap on remembered keys, so the list cannot grow without bound. */
 const MAX_FIRED = 500;
@@ -115,7 +116,7 @@ async function notifyOs(alarm: DueAlarm) {
 
 /**
  * The same reminder as a push notice on every phone that switched reminders
- * on (Eldrun Mobile's Calendar → Reminders). The sidecar holds the
+ * on (Tabtivity Mobile's Calendar → Reminders). The sidecar holds the
  * subscriptions and encrypts per phone; with Mobile off or no phone
  * subscribed the call has nowhere to go, which is not an error here.
  */
@@ -147,7 +148,7 @@ async function claimFired(keys: string[]): Promise<Set<string>> {
  * The reminder engine.
  *
  * A single ticker scans the calendar for reminders that have come due and shows
- * each one **twice over**: an OS notification (which reaches the user when Eldrun
+ * each one **twice over**: an OS notification (which reaches the user when Tabtivity
  * is not focused, or not even visible) and an in-app popup (which offers snooze
  * and dismiss) — plus a push notice to a subscribed phone. All channels are
  * driven from one fire-once record, so a reminder cannot double-show or re-show

@@ -39,6 +39,8 @@ class FakeWebSocket {
   binaryType = "";
   bufferedAmount = 0;
   sent: string[] = [];
+  /** The input frames' text, in order. */
+  typed: string[] = [];
   onopen: (() => void) | null = null;
   onclose: (() => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
@@ -46,12 +48,16 @@ class FakeWebSocket {
     FakeWebSocket.instances.push(this);
     queueMicrotask(() => this.onopen?.());
   }
-  send(value: unknown) { this.sent.push(typeof value === "string" ? value : "<bytes>"); }
+  send(value: unknown) {
+    this.sent.push(typeof value === "string" ? value : "<bytes>");
+    if (ArrayBuffer.isView(value)) this.typed.push(new TextDecoder().decode(value));
+  }
   close() { this.readyState = FakeWebSocket.CLOSED; this.onclose?.(); }
   get frames() { return this.sent.filter((frame) => frame === "<bytes>").length; }
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
+import { BRAND, storageKey } from "../../lib/brand";
 
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, agent_label: "Claude Code", agent_status: "working" as const, available: true, viewer_busy: false };
 
@@ -74,12 +80,12 @@ const socket = () => FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
 const bubble = (words: string) => screen.getAllByRole("group", { name: "Your prompt" }).find((row) => row.textContent?.includes(words));
 const composer = () => screen.getByRole("textbox", { name: "Message agent" }) as HTMLTextAreaElement;
 
-describe("Eldrun Mobile held prompt edit", () => {
+describe(`${BRAND.display} Mobile held prompt edit`, () => {
   beforeEach(() => {
     vi.useFakeTimers();
     FakeWebSocket.instances = [];
     localStorage.clear();
-    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    localStorage.setItem(storageKey("mobile.view.claude-code"), "focus");
     entries = [
       { kind: "prompt", text: "add a clear button", at: "2026-09-15T05:49:39.013Z" },
       { kind: "answer", text: "Looking at the composer.", at: "2026-09-15T05:49:45.000Z" },
@@ -132,6 +138,39 @@ describe("Eldrun Mobile held prompt edit", () => {
   function openMenu(words: string) {
     fireEvent.contextMenu(bubble(words)!);
   }
+
+  it("holding Send interrupts the working agent and types the prompt straight in, never holding it", async () => {
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await tick(50);
+    fireEvent.change(composer(), { target: { value: "stop and do this" } });
+    const send = screen.getByRole("button", { name: "Send" });
+    fireEvent.pointerDown(send, { button: 0 });
+    await tick(450);
+    // Esc first, alone; the message only after the turn has had time to stop.
+    expect(socket().typed).toEqual(["\u001b"]);
+    expect(bubble("stop and do this")).toBeTruthy();
+    expect(composer().value).toBe("");
+    fireEvent.pointerUp(send);
+    fireEvent.click(send);
+    await tick(1_000);
+    expect(socket().typed[0]).toBe("\u001b");
+    expect(socket().typed.join("")).toContain("stop and do this");
+    expect(socket().typed[socket().typed.length - 1]).toBe("\r");
+    // Once, and never handed to the desktop to hold.
+    expect(socket().typed.filter((frame) => frame.includes("stop and do this"))).toHaveLength(1);
+    expect(calls.some((call) => call.url.endsWith("/held"))).toBe(false);
+  });
+
+  it("the browser's own long press on Send interrupts and sends too", async () => {
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await tick(50);
+    fireEvent.change(composer(), { target: { value: "right now" } });
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Send" }));
+    await tick(1_000);
+    expect(socket().typed[0]).toBe("\u001b");
+    expect(socket().typed.join("")).toContain("right now");
+    expect(calls.some((call) => call.url.endsWith("/held"))).toBe(false);
+  });
 
   it("holds the prompt on the desktop instead of typing it, and shows its bubble at once", async () => {
     await sendWhileWorking();

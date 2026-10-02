@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { screenModeMarks, textScreenModeMarks } from "../../lib/agents/agentModel";
 import { sessionStatus } from "../../../mobile-web/src/terminal/statusLine";
 import type { ReadableBufferLike } from "../../../mobile-web/src/terminal/readableScreen";
+import { BRAND } from "../../lib/brand";
 
 function screen(rows: string[]): ReadableBufferLike {
   return { length: rows.length, getLine: (row) => (rows[row] === undefined ? undefined : { translateToString: () => rows[row] }) };
@@ -32,7 +33,7 @@ describe("an agent tab's plan / goal marks", () => {
       "────────────────────────────────────────────────────────────",
       "❯ ",
       "────────────────────────────────────────────────────────────",
-      "  me@box:~/work/projects/projecteldrun (develop*) · Opus 5.5",
+      `  me@box:~/work/projects/project${BRAND.slug} (develop*) · Opus 5.5`,
       "  [high] ⏵ auto · ctx 64% · 5h 71%/2h10m · 7d 40%/3d2h · +12",
       "  0/-30",
       "  ⏵⏵ auto mode on (shift+tab to cycle)     ◎ /goal active (4m)",

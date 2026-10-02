@@ -2,9 +2,9 @@
 //!
 //! The remote half of persistent sessions runs tmux on the SSH host; this runs it
 //! on the **local machine** so a local project's shell/script tab (a Python run, a
-//! long build) keeps going if Eldrun **crashes** — and reattaches on restart —
+//! long build) keeps going if Tabtivity **crashes** — and reattaches on restart —
 //! instead of dying with the PTY. It works because the tmux **server** is a
-//! daemon: the PTY only holds a tmux *client*, so when Eldrun (and the client)
+//! daemon: the PTY only holds a tmux *client*, so when Tabtivity (and the client)
 //! goes away the session and its processes live on under the server, and a
 //! respawn's `tmux new-session -A` reattaches them.
 //!
@@ -24,13 +24,13 @@ use std::collections::HashMap;
 use crate::services::ssh_exec::{is_valid_env_key, shell_quote, TMUX_HISTORY_LINES};
 use crate::terminal::PtyOptions;
 
-/// Prefix reserved for tmux sessions Eldrun creates on the local machine.
+/// Prefix reserved for tmux sessions Tabtivity creates on the local machine.
 ///
 /// It is deliberately broad enough to include sessions created by a previous
-/// Eldrun run and whose tabs have not been opened in this run yet. A clean app
-/// quit reaps these sessions ([`kill_eldrun_sessions`]), while a crash leaves
+/// Tabtivity run and whose tabs have not been opened in this run yet. A clean app
+/// quit reaps these sessions ([`kill_app_sessions`]), while a crash leaves
 /// them available for restore.
-pub const ELDRUN_LOCAL_TMUX_PREFIX: &str = "eldrun-";
+pub const LOCAL_TMUX_PREFIX: &str = crate::brand::TMUX_PREFIX;
 
 /// What the tmux **client** can hand its server in one message. The argv is
 /// sent as a single imsg and refused with `command too long` (the tab then
@@ -55,12 +55,12 @@ pub fn argv_bytes(args: &[String]) -> usize {
 }
 
 /// Which of a `tmux ls` listing's sessions a clean quit ends: every session
-/// Eldrun minted, and nothing else. Pure, so the ownership rule is tested
+/// Tabtivity minted, and nothing else. Pure, so the ownership rule is tested
 /// without a tmux server.
 pub fn sessions_to_reap<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     names
         .into_iter()
-        .filter(|name| is_eldrun_local_tmux_session(name))
+        .filter(|name| is_app_local_tmux_session(name))
         .map(str::to_string)
         .collect()
 }
@@ -74,14 +74,14 @@ pub fn kill_failure_is_already_gone(stderr: &str) -> bool {
         || stderr.contains("failed to connect to server")
 }
 
-/// End every tmux session Eldrun created on the local machine — the clean-quit
+/// End every tmux session Tabtivity created on the local machine — the clean-quit
 /// reap (TODO #85). Blocking; callers off the main thread wrap it in
 /// `spawn_blocking`, the exit path runs it inline.
 ///
 /// This deliberately lists the daemon rather than only the tabs currently
 /// hydrated in the frontend: a session recovered from an earlier crash may
 /// belong to an inactive project and therefore have no mounted tab in this run
-/// yet. The `eldrun-` prefix is reserved for sessions Eldrun mints, so
+/// yet. The `tabtivity-` prefix is reserved for sessions Tabtivity mints, so
 /// user-managed sessions are never affected.
 ///
 /// Reached from two places on purpose: the frontend's close handler (the
@@ -89,7 +89,7 @@ pub fn kill_failure_is_already_gone(stderr: &str) -> bool {
 /// exits that never run frontend code — a SIGTERM/SIGINT from the dev launcher,
 /// an `app.exit()`. A renderer or process crash reaches neither, leaving the
 /// sessions alive for restore.
-pub fn kill_eldrun_sessions() -> Result<(), String> {
+pub fn kill_app_sessions() -> Result<(), String> {
     if !tmux_available() {
         return Ok(());
     }
@@ -120,25 +120,26 @@ pub fn kill_eldrun_sessions() -> Result<(), String> {
             }
         }
     }
-    // Every Eldrun session is ending here, so every launcher is stale too.
+    // Every Tabtivity session is ending here, so every launcher is stale too.
     let _ = std::fs::remove_dir_all(crate::storage::state_dir().join("tmux-launch"));
     if failures.is_empty() {
         Ok(())
     } else {
         Err(format!(
-            "could not stop every Eldrun local tmux session: {}",
+            concat!("could not stop every ", crate::app_name!(), " local tmux session: {}"),
             failures.join("; ")
         ))
     }
 }
 
-/// Whether a local tmux session is owned by Eldrun.
+/// Whether a local tmux session is owned by Tabtivity.
 ///
-/// Session names are minted by the frontend as `eldrun-<scope>--…`; keeping the
+/// Session names are minted by the frontend as `tabtivity-<scope>--…`; keeping the
 /// ownership rule here means the quit path never touches a user-created session
 /// such as `train` or `work`.
-pub fn is_eldrun_local_tmux_session(session: &str) -> bool {
-    session.starts_with(ELDRUN_LOCAL_TMUX_PREFIX)
+pub fn is_app_local_tmux_session(session: &str) -> bool {
+    // Under the current prefix, or the one an older build minted.
+    crate::services::brand_migration::compat::tmux_session_rest(&crate::brand::PAIR, session).is_some()
 }
 
 /// The tab variables worth putting in a session's environment, sorted so the
@@ -252,7 +253,7 @@ pub fn tmux_available() -> bool {
 /// when the server started), not from the client that creates the session, so
 /// every tab after the first inherited the founding tab's variables. That is what
 /// silently broke agent resume — Claude's `SessionStart` hook keys by
-/// `$ELDRUN_TAB_UID`, saw the wrong value or none, wrote no
+/// `$TABTIVITY_TAB_UID`, saw the wrong value or none, wrote no
 /// `live_sessions/<uid>` record, and `agent_session::resolve_*` then had nothing
 /// to resume but the tab's original launch id (i.e. the conversation as it was
 /// when the tab was first opened). See [`local_tmux_args_with`] for how the
@@ -301,7 +302,7 @@ fn local_tmux_args_with(
 /// Linux that launcher is a shell that `exec`s bwrap, so the fence's own
 /// marker counts as well as the name.
 fn is_fence(cmd: &str, env: &HashMap<String, String>) -> bool {
-    env.contains_key("ELDRUN_AGENT_FENCE")
+    env.contains_key(crate::app_env!("AGENT_FENCE"))
         || matches!(
             cmd.rsplit('/').next().unwrap_or(cmd),
             "bwrap" | "sandbox-exec"
@@ -389,7 +390,7 @@ const SECRET_ENV: &[&str] = &[
     crate::services::copilot_auth::TOKEN_ENV,
 ];
 
-/// First `update-environment` array slot Eldrun claims for [`SECRET_ENV`] (one
+/// First `update-environment` array slot Tabtivity claims for [`SECRET_ENV`] (one
 /// slot per key, fixed, so every tab re-sets the same entries instead of growing
 /// the list). Far above tmux's defaults (0–8) and any hand-written list.
 const SECRET_UPDATE_ENV_SLOT: usize = 8630;
@@ -512,7 +513,7 @@ fn local_tmux_args_for(
         session,
         "allow-passthrough",
         "on",
-        // No prefix key on an Eldrun session: nothing of Eldrun's binds it,
+        // No prefix key on a Tabtivity session: nothing of Tabtivity's binds it,
         // and without one a phone's raw keystrokes reach the pane only, never
         // tmux's own command line (`docs/context/root_console.md`).
         ";",
@@ -715,6 +716,7 @@ pub fn remove_launcher(session: &str) {
 
 #[cfg(test)]
 mod tests {
+    use crate::brand::SLUG;
     use super::*;
 
     fn env_of(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -728,7 +730,7 @@ mod tests {
     fn shell_tab_uses_default_login_shell_and_options() {
         // No target command → bare new-session (tmux's default login shell) so the
         // shell survives a typed command's completion; options chained after `;`.
-        let args = local_tmux_args_with("eldrun-abc", "", &[], &HashMap::new(), false);
+        let args = local_tmux_args_with(concat!(crate::app_slug!(), "-abc"), "", &[], &HashMap::new(), false);
         assert_eq!(
             args,
             vec![
@@ -742,36 +744,36 @@ mod tests {
                 "new-session",
                 "-A",
                 "-s",
-                "eldrun-abc",
+                concat!(crate::app_slug!(), "-abc"),
                 ";",
                 "set-option",
                 "-t",
-                "eldrun-abc",
+                concat!(crate::app_slug!(), "-abc"),
                 "status",
                 "off",
                 ";",
                 "set-option",
                 "-t",
-                "eldrun-abc",
+                concat!(crate::app_slug!(), "-abc"),
                 "mouse",
                 "on",
                 ";",
                 "set-window-option",
                 "-t",
-                "eldrun-abc",
+                concat!(crate::app_slug!(), "-abc"),
                 "window-size",
                 "largest",
                 ";",
                 "set-window-option",
                 "-q",
                 "-t",
-                "eldrun-abc",
+                concat!(crate::app_slug!(), "-abc"),
                 "allow-passthrough",
                 "on",
                 ";",
                 "set-option",
                 "-t",
-                "eldrun-abc",
+                concat!(crate::app_slug!(), "-abc"),
                 "prefix",
                 "None",
             ]
@@ -783,10 +785,10 @@ mod tests {
         // A command tab keeps a login shell AFTER the command so the finished run
         // reattaches (resumable-command-tab guarantee) instead of re-running.
         let args =
-            local_tmux_args_with("eldrun-x", "python", &["train.py".into()], &HashMap::new(), true);
+            local_tmux_args_with(concat!(crate::app_slug!(), "-x"), "python", &["train.py".into()], &HashMap::new(), true);
         let new_session = args.iter().position(|a| a == "new-session").unwrap();
         assert_eq!(args[new_session - 1], ";");
-        assert!(args.iter().any(|a| a == "eldrun-x"));
+        assert!(args.iter().any(|a| a == concat!(crate::app_slug!(), "-x")));
         let target = &args[new_session + 4];
         assert_eq!(
             target,
@@ -804,7 +806,7 @@ mod tests {
         // SERVER's), so the tab's own variables ride on `new-session -e` — sorted,
         // one argv item each, before `-s`.
         let env = env_of(&[
-            ("ELDRUN_TAB_UID", "tab-uid-1"),
+            (crate::app_env!("TAB_UID"), "tab-uid-1"),
             // "sk-test" rather than a bare letter: `scripts/privacy-check.sh`
             // clears an api_key whose value is built out of placeholder words, and
             // reports every other one — a fixture must not need the override.
@@ -813,30 +815,31 @@ mod tests {
             ("TERM", "xterm-256color"),
             ("not a key", "x"),
         ]);
-        let args = local_tmux_args_with("eldrun-x", "claude", &[], &env, true);
+        let args = local_tmux_args_with(concat!(crate::app_slug!(), "-x"), "claude", &[], &env, true);
         let e: Vec<&str> = args
             .windows(2)
             .filter(|w| w[0] == "-e")
             .map(|w| w[1].as_str())
             .collect();
-        assert_eq!(e, vec!["ANTHROPIC_API_KEY=sk-test", "ELDRUN_TAB_UID=tab-uid-1"]);
+        assert_eq!(e, vec!["ANTHROPIC_API_KEY=sk-test", concat!(crate::app_upper!(), "_TAB_UID=tab-uid-1")]);
         // …and the flags precede the session name, as tmux requires.
         let dash_s = args.iter().position(|a| a == "-s").unwrap();
         assert!(args.iter().position(|a| a == "-e").unwrap() < dash_s);
-        assert_eq!(args[dash_s + 1], "eldrun-x");
+        assert_eq!(args[dash_s + 1], concat!(crate::app_slug!(), "-x"));
     }
 
     #[test]
     fn without_session_env_support_a_command_tab_exports_inline() {
         // tmux < 3.2 has no `-e`; an agent tab still gets its key by exporting it
         // at the head of the command line tmux runs.
-        let env = env_of(&[("ELDRUN_TAB_UID", "tab-uid-1"), ("Q", "a'b c")]);
-        let args = local_tmux_args_with("eldrun-x", "claude", &[], &env, false);
+        // `_Q` sorts after the app's variable whatever the app is called.
+        let env = env_of(&[(crate::app_env!("TAB_UID"), "tab-uid-1"), ("_Q", "a'b c")]);
+        let args = local_tmux_args_with(concat!(crate::app_slug!(), "-x"), "claude", &[], &env, false);
         assert!(!args.iter().any(|a| a == "-e"));
         assert_eq!(
             args[9],
-            "export ELDRUN_TAB_UID='tab-uid-1'; export Q='a'\\''b c'; \
-             'claude'; exec \"${SHELL:-/bin/bash}\" -l"
+            concat!("export ", crate::app_upper!(), "_TAB_UID='tab-uid-1'; export _Q='a'\\''b c'; \
+             'claude'; exec \"${SHELL:-/bin/bash}\" -l")
         );
     }
 
@@ -846,7 +849,7 @@ mod tests {
         // the tmux argv — exports first when the tmux lacks `-e`, then the
         // quoted command — behind `exec`, so the command replaces the script's
         // shell the way it replaced nothing inline.
-        let env = env_of(&[("ELDRUN_TAB_UID", "tab-uid-1")]);
+        let env = env_of(&[(crate::app_env!("TAB_UID"), "tab-uid-1")]);
         let args = vec!["--bind".to_string(), "/a b".to_string(), "it's".to_string()];
         assert_eq!(
             launcher_script("bwrap", &args, &env, true),
@@ -854,7 +857,7 @@ mod tests {
         );
         assert_eq!(
             launcher_script("bwrap", &args, &env, false),
-            "#!/bin/sh\nexport ELDRUN_TAB_UID='tab-uid-1'\nexec 'bwrap' '--bind' '/a b' 'it'\\''s'\n"
+            concat!("#!/bin/sh\nexport ", crate::app_upper!(), "_TAB_UID='tab-uid-1'\nexec 'bwrap' '--bind' '/a b' 'it'\\''s'\n")
         );
     }
 
@@ -863,14 +866,14 @@ mod tests {
         let env = env_of(&[]);
         let shell = "exec \"${SHELL:-/bin/bash}\" -l";
         for fence in ["bwrap", "/usr/bin/sandbox-exec"] {
-            let args = local_tmux_args_with("eldrun-x", fence, &["claude".into()], &env, true);
+            let args = local_tmux_args_with(concat!(crate::app_slug!(), "-x"), fence, &["claude".into()], &env, true);
             let line = args.iter().find(|a| a.ends_with(shell)).unwrap();
             assert!(line.contains(&format!("; {FENCE_INPUT_DRAIN}{shell}")), "{line}");
         }
-        let args = local_tmux_args_with("eldrun-x", "claude", &[], &env, true);
+        let args = local_tmux_args_with(concat!(crate::app_slug!(), "-x"), "claude", &[], &env, true);
         assert!(args.iter().any(|a| a == &format!("'claude'; {shell}")));
         // A shell tab has no command line and so no trailing shell to guard.
-        let args = local_tmux_args_with("eldrun-x", "", &[], &env, true);
+        let args = local_tmux_args_with(concat!(crate::app_slug!(), "-x"), "", &[], &env, true);
         assert!(!args.iter().any(|a| a.contains("stty")));
     }
 
@@ -879,7 +882,7 @@ mod tests {
         // A fenced root agent's argv always takes the launcher path, and the
         // script outlives a crash on disk — the token rides on tmux's argv.
         let env = env_of(&[
-            ("ELDRUN_TAB_UID", "tab-uid-1"),
+            (crate::app_env!("TAB_UID"), "tab-uid-1"),
             (crate::services::root_mcp::TOKEN_ENV, "s3cret"),
         ]);
         for session_env in [true, false] {
@@ -889,7 +892,7 @@ mod tests {
         assert_eq!(launcher_line("/l.sh", &env, true), "'/l.sh'");
         assert_eq!(
             launcher_line("/l.sh", &env, false),
-            "env ELDRUN_ROOT_MCP_TOKEN='s3cret' '/l.sh'"
+            concat!("env ", crate::app_upper!(), "_ROOT_MCP_TOKEN='s3cret' '/l.sh'")
         );
         assert_eq!(launcher_line("/l.sh", &env_of(&[("A", "b")]), false), "'/l.sh'");
     }
@@ -902,24 +905,24 @@ mod tests {
         // form of the same tab is a few hundred bytes regardless.
         let mut fence: Vec<String> = Vec::new();
         for i in 0..120 {
-            let p = format!("/home/user/.claude/projects/-home-user-eldrun-projects-project-{i:03}");
+            let p = format!("/home/user/.claude/projects/-home-user-{SLUG}-projects-project-{i:03}");
             fence.extend(["--ro-bind".to_string(), p.clone(), p]);
         }
         fence.extend(["--".to_string(), "claude".to_string()]);
-        let env = env_of(&[("ELDRUN_TAB_UID", "tab-uid-1")]);
-        let inline = local_tmux_args_with("eldrun-x", "bwrap", &fence, &env, true);
+        let env = env_of(&[(crate::app_env!("TAB_UID"), "tab-uid-1")]);
+        let inline = local_tmux_args_with(concat!(crate::app_slug!(), "-x"), "bwrap", &fence, &env, true);
         assert!(argv_bytes(&inline) > TMUX_ARGV_LIMIT, "{}", argv_bytes(&inline));
 
-        let line = shell_quote("/state/tmux-launch/eldrun-x.sh");
-        let launched = local_tmux_args_for("eldrun-x", Some(&line), &env, true, true);
+        let line = shell_quote(concat!("/state/tmux-launch/", crate::app_slug!(), "-x.sh"));
+        let launched = local_tmux_args_for(concat!(crate::app_slug!(), "-x"), Some(&line), &env, true, true);
         assert!(argv_bytes(&launched) < TMUX_ARGV_BUDGET);
         let dash_s = launched.iter().position(|a| a == "-s").unwrap();
         assert_eq!(
             launched[dash_s + 2],
-            format!("'/state/tmux-launch/eldrun-x.sh'; {FENCE_INPUT_DRAIN}exec \"${{SHELL:-/bin/bash}}\" -l")
+            format!("'/state/tmux-launch/{SLUG}-x.sh'; {FENCE_INPUT_DRAIN}exec \"${{SHELL:-/bin/bash}}\" -l")
         );
         // The env still rides `-e`; only the command moved.
-        assert!(launched.iter().any(|a| a == "ELDRUN_TAB_UID=tab-uid-1"));
+        assert!(launched.iter().any(|a| a == concat!(crate::app_upper!(), "_TAB_UID=tab-uid-1")));
         // A shell tab has no command line to move, launcher or not.
         assert!(command_line("", &[], &env, true).is_none());
     }
@@ -930,7 +933,7 @@ mod tests {
         // attached, so a token VALUE must be on no argv item — inline, launcher,
         // or either tmux generation's fallback that does not need the export.
         let env = env_of(&[
-            ("ELDRUN_TAB_UID", "tab-uid-1"),
+            (crate::app_env!("TAB_UID"), "tab-uid-1"),
             (crate::services::root_mcp::TOKEN_ENV, "root-s3cret"),
             (crate::services::root_mcp::SCHEDULE_TOKEN_ENV, "sched-s3cret"),
             (crate::services::root_mcp::HELP_TOKEN_ENV, "help-s3cret"),
@@ -938,17 +941,17 @@ mod tests {
         ]);
         let leaks = |args: &[String]| args.iter().any(|a| a.contains("s3cret"));
         for cmd in ["", "claude", "bwrap"] {
-            let args = local_tmux_args_with("eldrun-x", cmd, &["--x".into()], &env, true);
+            let args = local_tmux_args_with(concat!(crate::app_slug!(), "-x"), cmd, &["--x".into()], &env, true);
             assert!(!leaks(&args), "{args:?}");
             // The non-secret variable still rides `-e`.
-            assert!(args.iter().any(|a| a == "ELDRUN_TAB_UID=tab-uid-1"), "{args:?}");
+            assert!(args.iter().any(|a| a == concat!(crate::app_upper!(), "_TAB_UID=tab-uid-1")), "{args:?}");
         }
         let line = launcher_line("/l.sh", &env, true);
-        let launched = local_tmux_args_for("eldrun-x", Some(&line), &env, true, true);
+        let launched = local_tmux_args_for(concat!(crate::app_slug!(), "-x"), Some(&line), &env, true, true);
         assert!(!leaks(&launched), "{launched:?}");
         // Instead every secret key is listed in `update-environment`, ahead of
         // `new-session`, so tmux copies it from the client's environment.
-        let args = local_tmux_args_with("eldrun-x", "claude", &[], &env, true);
+        let args = local_tmux_args_with(concat!(crate::app_slug!(), "-x"), "claude", &[], &env, true);
         let new_session = args.iter().position(|a| a == "new-session").unwrap();
         for (i, key) in SECRET_ENV.iter().enumerate() {
             let slot = format!("update-environment[{}]", SECRET_UPDATE_ENV_SLOT + i);
@@ -957,10 +960,10 @@ mod tests {
             assert_eq!(args[at - 2..at + 3], ["set-option", "-g", &slot, key, ";"]);
         }
         // A tab without tokens clears them too (no inheriting the founding tab's).
-        let plain = local_tmux_args_with("eldrun-x", "", &[], &env_of(&[]), true);
+        let plain = local_tmux_args_with(concat!(crate::app_slug!(), "-x"), "", &[], &env_of(&[]), true);
         assert!(plain.iter().any(|a| a == &format!("update-environment[{SECRET_UPDATE_ENV_SLOT}]")));
         // The < 3.2 fallback has no update-environment step (unchanged shape).
-        let old = local_tmux_args_with("eldrun-x", "", &[], &env, false);
+        let old = local_tmux_args_with(concat!(crate::app_slug!(), "-x"), "", &[], &env, false);
         assert!(!old.iter().any(|a| a.starts_with("update-environment")));
     }
 
@@ -976,7 +979,7 @@ mod tests {
         if !v.status.success() || !version_supports_session_env(&String::from_utf8_lossy(&v.stdout)) {
             return;
         }
-        let socket = format!("eldrun-test-864-{}", std::process::id());
+        let socket = format!(concat!(crate::app_slug!(), "-test-864-{}"), std::process::id());
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("env.txt");
         let token_env = crate::services::root_mcp::TOKEN_ENV;
@@ -993,9 +996,9 @@ mod tests {
         let founder = vec!["new-session".to_string(), "-d".into(), "-s".into(), "founder".into(), "sleep 30".into()];
         assert!(tmux(&founder, &[(token_env, "founder-token")]).status.success());
 
-        let env = env_of(&[(token_env, "tab-token-value"), ("ELDRUN_TAB_UID", "u1")]);
+        let env = env_of(&[(token_env, "tab-token-value"), (crate::app_env!("TAB_UID"), "u1")]);
         let script = format!("env > '{}'", out.display());
-        let mut args = local_tmux_args_with("eldrun-t", "sh", &["-c".into(), script], &env, true);
+        let mut args = local_tmux_args_with(concat!(crate::app_slug!(), "-t"), "sh", &["-c".into(), script], &env, true);
         assert!(!args.iter().any(|a| a.contains("tab-token-value")), "{args:?}");
         // Detached: a test has no terminal to attach to.
         let at = args.iter().position(|a| a == "-A").unwrap();
@@ -1005,14 +1008,14 @@ mod tests {
         let mut seen = String::new();
         for _ in 0..50 {
             seen = std::fs::read_to_string(&out).unwrap_or_default();
-            if seen.contains("ELDRUN_TAB_UID") {
+            if seen.contains(crate::app_env!("TAB_UID")) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         let _ = tmux(&["kill-server".to_string()], &[]);
         assert!(seen.contains(&format!("{token_env}=tab-token-value")), "{seen}");
-        assert!(seen.contains("ELDRUN_TAB_UID=u1"), "{seen}");
+        assert!(seen.contains(concat!(crate::app_upper!(), "_TAB_UID=u1")), "{seen}");
         assert!(!seen.contains("founder-token"), "{seen}");
     }
 
@@ -1042,8 +1045,8 @@ mod tests {
     fn kill_and_rename_argv() {
         assert_eq!(local_tmux_kill_args("s"), vec!["kill-session", "-t", "s"]);
         assert_eq!(
-            local_tmux_screen_args("eldrun-s"),
-            vec!["-u", "capture-pane", "-p", "-t", "=eldrun-s:"]
+            local_tmux_screen_args(concat!(crate::app_slug!(), "-s")),
+            vec!["-u", "capture-pane", "-p", "-t", concat!("=", crate::app_slug!(), "-s:")]
         );
         assert_eq!(
             local_tmux_rename_args("old", "new"),
@@ -1052,33 +1055,33 @@ mod tests {
     }
 
     #[test]
-    fn identifies_only_eldrun_owned_sessions() {
-        assert!(is_eldrun_local_tmux_session("eldrun-project--shell-123"));
-        assert!(!is_eldrun_local_tmux_session("train"));
-        assert!(!is_eldrun_local_tmux_session("my-eldrun-run"));
+    fn identifies_only_app_owned_sessions() {
+        assert!(is_app_local_tmux_session(concat!(crate::app_slug!(), "-project--shell-123")));
+        assert!(!is_app_local_tmux_session("train"));
+        assert!(!is_app_local_tmux_session(concat!("my-", crate::app_slug!(), "-run")));
     }
 
     #[test]
-    fn quit_reaps_every_eldrun_session_and_no_foreign_one() {
-        // A user's own `train`/`work` sessions are never touched; every Eldrun-
+    fn quit_reaps_every_app_session_and_no_foreign_one() {
+        // A user's own `train`/`work` sessions are never touched; every Tabtivity-
         // minted one goes.
         let listed = [
             "train",
-            "eldrun-p1--shell-1",
-            "eldrun-p2--agent-abc",
+            concat!(crate::app_slug!(), "-p1--shell-1"),
+            concat!(crate::app_slug!(), "-p2--agent-abc"),
             "work",
-            "my-eldrun-run",
+            concat!("my-", crate::app_slug!(), "-run"),
         ];
         assert_eq!(
             sessions_to_reap(listed),
-            vec!["eldrun-p1--shell-1".to_string(), "eldrun-p2--agent-abc".to_string()]
+            vec![concat!(crate::app_slug!(), "-p1--shell-1").to_string(), concat!(crate::app_slug!(), "-p2--agent-abc").to_string()]
         );
         assert!(sessions_to_reap(["train"]).is_empty());
     }
 
     #[test]
     fn already_gone_failures_are_not_errors() {
-        assert!(kill_failure_is_already_gone("can't find session: eldrun-x"));
+        assert!(kill_failure_is_already_gone(concat!("can't find session: ", crate::app_slug!(), "-x")));
         assert!(kill_failure_is_already_gone("no server running on /tmp/tmux-1000/default"));
         assert!(kill_failure_is_already_gone("error connecting to /tmp/tmux-1000/default (failed to connect to server)"));
         assert!(!kill_failure_is_already_gone("permission denied"));

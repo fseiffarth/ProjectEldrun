@@ -11,9 +11,8 @@
   background-color: transparent;
   display: flex;
   align-items: center;
-  /* No left padding: the strip's first item is the root pill, whose own 10px
-     inset is the space after `.header-left`'s hairline. Anything here would be
-     added on top of it and break the leading run's even spacing. */
+  /* No left padding: the strip's first item is the logo box chip, whose own
+     10px inset is its distance from the window's left edge. */
   padding: 0 6px 0 0;
   gap: 4px;
   /* Fill the header-center track and stay shrinkable so the pill row can never
@@ -346,9 +345,8 @@
   /* Anchors the bottom status-bar strip (.pill-status-bars), exactly as
      .project-pill and .root-pill do. */
   position: relative;
-  /* 10px, the leading run's shared inset (see `.header-left`): the chip IS the
-     leading run now (root and the boxes fold into it), so it keeps
-     the inset the run had. */
+  /* 10px: the chip opens the whole bar (root and the boxes fold into it), so
+     this is the logo's distance from the window's left edge too. */
   padding: 0 10px;
   border: none;
   border-top: 3px solid transparent;
@@ -378,7 +376,7 @@
   white-space: nowrap;
 }
 
-/* The Eldrun logo — the bar's one mark, at the full height the drag grip's
+/* The Tabtivity logo — the bar's one mark, at the full height the drag grip's
    copy had before it was dropped — standing for "all projects / the boxes"
    while the chip names no scope. */
 .box-chip-icon {
@@ -412,6 +410,32 @@
   font-size: var(--text-xs);
   line-height: 1;
   opacity: 0.75;
+}
+
+/* The logo is the window's move handle (BoxScopeChip's onLogoMouseDown); a
+   click on it is still "All projects", so the grab cursor shows only while
+   pressed. */
+.box-chip:not(.box-scope-pill) .box-chip-main:active {
+  cursor: var(--cur-grabbing, grabbing);
+}
+
+/* The caret (with the "+N" overflow count) is the list's only trigger: its own
+   button, spanning the chip's height so the hover target is the full column. */
+.box-chip-caret-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding: 0 0 0 5px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: var(--cur-pointer, pointer);
+}
+.box-chip-caret-btn:hover .box-chip-caret,
+.box-chip-caret-btn[aria-expanded="true"] .box-chip-caret {
+  opacity: 1;
 }
 
 /* "+N": the boxes past MAX_BOX_PILLS, which only the chip's list reaches. */
@@ -1215,7 +1239,7 @@
   overflow-x: auto;
   /* Scrolls, shows nothing — not even one of the app's own thumbs; overflow is
      conveyed by the chevrons that flank the strip. */
-  --eldrun-scrollbar: none;
+  --app-scrollbar: none;
 }
 
 /* Chevron buttons that flank the strip when it overflows. */
@@ -2346,7 +2370,7 @@ button.tab-todo-link {
    a menu that actually scrolls; one whose content fits keeps the symmetric
    padding its parent gives it, rather than sitting 8px off-centre for a thumb
    that was never drawn. */
-.menu-scroll-region[data-eldrun-scrollbar] {
+.menu-scroll-region[data-app-scrollbar] {
   padding-right: 8px;
 }
 /* Keep the pinned title from shrinking when the menu hits its max-height — only

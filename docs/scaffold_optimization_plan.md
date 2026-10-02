@@ -17,18 +17,18 @@ it. A pin test on `AGENTS_SCAFFOLD` now forces the old text into
    60395a33 (09-28). `LEGACY_AGENT_STUBS` only knows the pre-08-26 one-line
    stubs, so repair/Migrate never upgrades an untouched copy of any later
    template. The e2ca0458 copy still says the outbox takes images only.
-2. **Eldrun runtime text lives in a user-owned, committed file.** The
-   `eldrun-send` section rides the initial scaffold commit, so it reaches
+2. **Tabtivity runtime text lives in a user-owned, committed file.** The
+   `tabtivity-send` section rides the initial scaffold commit, so it reaches
    collaborators, CI agents and public remotes where the command does not
    exist. Claude reads it twice (the agent hook prints the same hint at
    `SessionStart`). This volatile section is also what causes (1).
 3. **Context cost.** The template is ~1.5 KB (~400 tokens), loaded every
-   session of every project: ~1/3 is the `eldrun-send` section, ~40% two link
+   session of every project: ~1/3 is the `tabtivity-send` section, ~40% two link
    lists that duplicate `PROJECT.md` (including a link to itself).
 4. **Fill prompt** asks for "architecture, workflows" in `AGENTS.md` (overview
-   text agents don't need every turn) and doesn't protect Eldrun-owned text.
+   text agents don't need every turn) and doesn't protect Tabtivity-owned text.
 5. Minor: five heading-only stubs; empty `.claude/settings.json`; Gemini has no
-   Eldrun hook.
+   Tabtivity hook.
 
 ## Changes
 
@@ -40,12 +40,12 @@ it. A pin test on `AGENTS_SCAFFOLD` now forces the old text into
   reported as `upgradeStub` and repaired to the current template.
 - **B. Slim `AGENTS_SCAFFOLD`.** Keep Project / Running / Conventions
   placeholders and one line pointing to `PROJECT.md`; drop the two link lists
-  and the `eldrun-send` section. Keep `project_map_links_every_scaffold_file`
+  and the `tabtivity-send` section. Keep `project_map_links_every_scaffold_file`
   green (the map stays in `PROJECT.md`).
-- **C. Deliver the `eldrun-send` hint from Eldrun, not the project.** Claude:
-  already done by the hook. Codex: Eldrun registers a `SessionStart` hook —
+- **C. Deliver the `tabtivity-send` hint from Tabtivity, not the project.** Claude:
+  already done by the hook. Codex: Tabtivity registers a `SessionStart` hook —
   verify its stdout reaches the model before relying on it, then print the
-  same line for `ELDRUN_TAB_AGENT=codex` (POSIX + PowerShell bodies, and the
+  same line for `TABTIVITY_TAB_AGENT=codex` (POSIX + PowerShell bodies, and the
   hook test at `agent_session.rs` ~2949). Gemini (no hook): note the gap;
   candidate is a hook once Gemini support lands. Until C is verified for
   Codex, B costs Codex/Gemini the hint — land B and C together.

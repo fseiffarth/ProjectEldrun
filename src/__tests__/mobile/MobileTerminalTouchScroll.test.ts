@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installTerminalTouchScroll } from "../../../mobile-web/src/terminal/touchScroll";
+import { BRAND } from "../../lib/brand";
 
-describe("Eldrun Mobile terminal touch scrolling", () => {
+describe(`${BRAND.display} Mobile terminal touch scrolling`, () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("scrolls xterm history from a captured phone pointer drag", () => {

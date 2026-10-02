@@ -1,0 +1,112 @@
+/**
+ * The sealed pdf.js frame (`mobile-web/pdf-frame.html`): PDF bytes in, page
+ * pictures out, nothing else (`docs/mobile_pdf_markup_plan.md` §2.2).
+ *
+ * Loaded as `<iframe sandbox="allow-scripts">`, so this runs in an opaque
+ * origin: no session cookie, no storage, no API, and the sidecar's policy for
+ * this one page allows no network at all. The PWA never parses a PDF itself —
+ * a hostile file can at worst wedge or crash this frame, which the markup
+ * view then removes.
+ *
+ * Built as a classic script (IIFE): a module script from an opaque origin is
+ * a CORS request the static route does not answer. pdf.js runs without a
+ * Worker — an opaque origin cannot start one from the server — through its
+ * main-thread fallback, `globalThis.pdfjsWorker`. The legacy build carries
+ * the polyfills the newest language features pdf.js leans on need on an
+ * older phone browser. Canvas only: no text layer, no annotation layer, no
+ * links, no forms — PDF content never becomes DOM.
+ */
+
+import * as worker from "pdfjs-dist/legacy/build/pdf.worker.mjs";
+import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
+import type { PDFDocumentLoadingTask, PDFDocumentProxy } from "pdfjs-dist";
+import { acceptToFrame, MAX_FRAME_PAGES, MAX_RENDER_WIDTH, type FromFrame } from "../markup/frameProtocol";
+
+(globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = worker;
+// pdf.js paints a page in animation-frame slices, and a browser starves the
+// animation frames of a frame nobody sees; plain tasks keep it drawing.
+window.requestAnimationFrame = (callback) => window.setTimeout(() => callback(performance.now()), 0);
+window.cancelAnimationFrame = (handle) => window.clearTimeout(handle);
+
+/** The tallest page picture the PWA takes, and the most pixels one may have. */
+const MAX_HEIGHT = 4 * MAX_RENDER_WIDTH;
+const MAX_PIXELS = 16_000_000;
+
+let task: PDFDocumentLoadingTask | null = null;
+let doc: PDFDocumentProxy | null = null;
+/** One thing at a time: a page renders on the UI thread the PWA shares. */
+let queue: Promise<void> = Promise.resolve();
+
+function post(message: FromFrame, transfer: Transferable[] = []): void {
+  // The parent is the PWA; an opaque origin has no name to address it by.
+  window.parent.postMessage(message, "*", transfer);
+}
+
+async function open(bytes: ArrayBuffer): Promise<void> {
+  if (task) return;
+  task = pdfjs.getDocument({
+    data: new Uint8Array(bytes),
+    useWorkerFetch: false,
+    enableXfa: false,
+    stopAtErrors: false,
+  });
+  try {
+    doc = await task.promise;
+  } catch (error) {
+    // A failed load still owns its loading task.
+    void task.destroy().catch(() => {});
+    post({ type: "failed", code: (error as { name?: string })?.name === "PasswordException" ? "encrypted" : "unreadable" });
+    return;
+  }
+  const pages: { w: number; h: number }[] = [];
+  try {
+    for (let n = 1; n <= Math.min(doc.numPages, MAX_FRAME_PAGES); n++) {
+      const page = await doc.getPage(n);
+      const { width, height } = page.getViewport({ scale: 1 });
+      pages.push({ w: width, h: height });
+      page.cleanup();
+    }
+  } catch {
+    post({ type: "failed", code: "unreadable" });
+    return;
+  }
+  post({ type: "meta", pages });
+}
+
+async function render(n: number, width: number): Promise<void> {
+  if (!doc || n > doc.numPages) return;
+  const canvas = document.createElement("canvas");
+  try {
+    const page = await doc.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    // As wide as asked, unless that makes a long page taller (or bigger)
+    // than the PWA accepts — then narrower.
+    const scale = Math.min(width / base.width, MAX_HEIGHT / base.height, Math.sqrt(MAX_PIXELS / (base.width * base.height)));
+    const viewport = page.getViewport({ scale });
+    canvas.width = Math.max(1, Math.round(viewport.width));
+    canvas.height = Math.max(1, Math.round(viewport.height));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("no canvas");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+    const bitmap = await createImageBitmap(canvas);
+    page.cleanup();
+    post({ type: "page", n, width, bitmap }, [bitmap]);
+  } catch {
+    post({ type: "failed", code: "render", n });
+  } finally {
+    // Free the backing store now rather than at the next collection.
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+}
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window.parent) return;
+  const message = acceptToFrame(event.data);
+  if (!message) return;
+  queue = queue.then(() => (message.type === "open" ? open(message.bytes) : render(message.n, message.width)));
+});
+
+post({ type: "ready" });

@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { describeFailure } from "../connection";
 import {
+  MAIL_MESSAGE_TIMEOUT,
+  MAIL_REPLY_TIMEOUT,
   api,
+  reloadIfApplied,
+  wasApplied,
   type MailMarkAction,
   type MobileMailAccount,
   type MobileMailFolder,
@@ -11,6 +15,7 @@ import {
 } from "../api";
 import { readChoice, writeChoice } from "../prefs";
 import { isUntested } from "../../../src/lib/untested";
+import { BRAND } from "../../../src/lib/brand";
 
 const PAGE_SIZE = 25;
 const FORMAT_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
@@ -118,7 +123,7 @@ export function Mail() {
     if (!folder) return;
     setBusy(true); setError("");
     try {
-      const { mail } = await api<{ mail: MobileMailView }>(`/api/v1/mail/folders/${encodeURIComponent(folder.folder.id)}/messages/${encodeURIComponent(target.id)}?offset=${folder.offset}`);
+      const { mail } = await api<{ mail: MobileMailView }>(`/api/v1/mail/folders/${encodeURIComponent(folder.folder.id)}/messages/${encodeURIComponent(target.id)}?offset=${folder.offset}`, undefined, MAIL_MESSAGE_TIMEOUT);
       if (mail.view !== "message") throw new Error("unexpected_mail_view");
       setMessage(mail); setReply(""); setConfirmReply(false); setSent(false);
     } catch (reason) { setError(writeError(reason)); } finally { setBusy(false); }
@@ -166,15 +171,20 @@ export function Mail() {
     });
   };
 
+  /** The folder page a write answers with, read by its own route — for a
+   * write the desktop made whose answer did not come back (`reloadIfApplied`). */
+  const reloadPage = (page: { folder: MobileMailFolder; offset: number }) => () =>
+    api<{ mail: MobileMailView }>(`/api/v1/mail/folders/${encodeURIComponent(page.folder.id)}?offset=${page.offset}`);
+
   const mark = async (action: MailMarkAction) => {
     if (!folder || !message) return;
     setBusy(true); setError("");
     try {
-      const { mail } = await api<{ mail: MobileMailView }>(
+      const { mail } = await reloadIfApplied(api<{ mail: MobileMailView }>(
         `/api/v1/mail/folders/${encodeURIComponent(folder.folder.id)}/messages/${encodeURIComponent(message.message.id)}/mark`,
         { method: "POST", body: JSON.stringify({ action, offset: folder.offset }) },
-        40_000,
-      );
+        MAIL_MESSAGE_TIMEOUT,
+      ), reloadPage(folder));
       absorbPage(mail);
     } catch (reason) { setError(writeError(reason)); } finally { setBusy(false); }
   };
@@ -183,14 +193,19 @@ export function Mail() {
     if (!folder || !message) return;
     setBusy(true); setError(""); setConfirmReply(false);
     try {
-      const { mail } = await api<{ mail: MobileMailView }>(
+      const { mail } = await reloadIfApplied(api<{ mail: MobileMailView }>(
         `/api/v1/mail/folders/${encodeURIComponent(folder.folder.id)}/messages/${encodeURIComponent(message.message.id)}/reply`,
         { method: "POST", body: JSON.stringify({ body: reply, offset: folder.offset }) },
-        70_000,
-      );
+        MAIL_REPLY_TIMEOUT,
+      ), reloadPage(folder));
       absorbPage(mail);
       setReply(""); setSent(true);
-    } catch (reason) { setError(writeError(reason)); } finally { setBusy(false); }
+    } catch (reason) {
+      setError(writeError(reason));
+      // Sent, only the folder page did not come back: the draft must not stay
+      // in the box under a Send button.
+      if (wasApplied(reason)) { setReply(""); setSent(true); }
+    } finally { setBusy(false); }
   };
 
   // Mail is a tab now, so the chevron only ever walks its own stack: message →
@@ -209,8 +224,8 @@ export function Mail() {
       <button onClick={refresh} disabled={busy}>↻</button>
     </header>
     <p className="notice">{writes.actions || writes.reply
-      ? `Mail through the connected Eldrun desktop. ${writes.actions ? "Read state and star can be changed here. " : ""}${writes.reply ? "Plain-text replies go to the original sender only. " : ""}No sync, delete, move, links, or downloads.`
-      : "Read-only mail through the connected Eldrun desktop. No sync, reply, state changes, links, or downloads."}</p>
+      ? `Mail through the connected ${BRAND.display} desktop. ${writes.actions ? "Read state and star can be changed here. " : ""}${writes.reply ? "Plain-text replies go to the original sender only. " : ""}No sync, delete, move, links, or downloads.`
+      : `Read-only mail through the connected ${BRAND.display} desktop. No sync, reply, state changes, links, or downloads.`}</p>
     {error && <p className="error">{error}</p>}
     {busy && !accounts && <p className="mail-mobile-empty">Loading…</p>}
 
@@ -296,7 +311,7 @@ export function Mail() {
           <i aria-hidden="true">{KIND_GLYPH[item.kind] ?? "📁"}</i><span>{safeText(item.name)}</span><small>{item.unread} unread · {item.total}</small>
         </button>)}</div>
       </div>}
-      {accounts.length === 0 && <p className="mail-mobile-empty">No mail accounts are configured in Eldrun.</p>}
+      {accounts.length === 0 && <p className="mail-mobile-empty">No mail accounts are configured in {BRAND.display}.</p>}
     </section>}
   </main>;
 }

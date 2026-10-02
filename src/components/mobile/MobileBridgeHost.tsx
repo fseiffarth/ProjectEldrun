@@ -14,7 +14,7 @@ import { ensureRootScopeHydrated, useRootOverlayStore } from "../../stores/rootO
 import { closeTabInScope } from "../../lib/remote/closeRemoteTab";
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
-import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
+import { agentTabState, lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
 import { agentTabModelTag, tabModeMarks, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { holdPhonePrompt } from "../../lib/agents/phoneHolds";
@@ -78,8 +78,9 @@ import {
   type ScheduleRule,
   type ScheduledAgentPrompt,
 } from "../../lib/agents/agentSchedule";
+import { BRAND, MOBILE_ACCESS_KEY, MOBILE_HOST_KEY, NAMES, envName } from "../../lib/brand";
 
-const MOBILE_DESKTOP_EVENT = "eldrun-mobile-desktop-request";
+const MOBILE_DESKTOP_EVENT = NAMES.mobileDesktopEvent;
 
 interface AgentInfo { bin: string; installed: boolean }
 interface CatalogAgent { id: string; label: string; modes: string[] }
@@ -301,7 +302,7 @@ interface ClosedAgentTabRow { id: string; label: string; agent: string; closed_a
 /** One image the desktop offers the phone's composer — an opaque id and a
  * folder label, never a path (`services::desktop_images`). */
 interface DesktopImage { id: string; name: string; source: string; size?: number; age_secs?: number; width?: number; height?: number }
-/** A file that landed in the project's `.eldrun/inbox/`: what the phone's own
+/** A file that landed in the project's `.tabtivity/inbox/`: what the phone's own
  * upload gets back, so the two ways of filling the inbox read alike. */
 interface InboxAttachment { name: string; reference: string; size: number }
 
@@ -334,7 +335,7 @@ async function agentChoices(): Promise<CatalogChoice[]> {
       public: {
         id: await invoke<string>("mobile_opaque_id", { domain: "agent", value: item.cmd }),
         label: item.label,
-        // Always empty: Eldrun no longer launches an agent into a permission
+        // Always empty: Tabtivity no longer launches an agent into a permission
         // mode, so there is no launch mode for the phone to pick. The phone can
         // still change the mode of a *running* session, which it does the way a
         // person would — pressing Shift+Tab and reading the TUI's own status
@@ -356,7 +357,7 @@ function mobileProject(projectId: string | undefined) {
     || project.remote
     || project.sandbox?.enabled
     || project.vm?.enabled
-    || !project.eldrun_mobile_access
+    || !project[MOBILE_ACCESS_KEY]
   ) {
     return undefined;
   }
@@ -405,7 +406,7 @@ function refreshRootFacts(): void {
  * or every write of theirs is staged behind a fence they cannot walk around. */
 function mobileRootScope(): MobileScope | undefined {
   const settings = useSettingsStore.getState().settings;
-  if (settings?.eldrun_mobile_host?.root_access !== true) return undefined;
+  if (settings?.[MOBILE_HOST_KEY]?.root_access !== true) return undefined;
   refreshRootFacts();
   if (settings.root_mcp !== false) {
     const level = settings.root_mcp_review;
@@ -423,7 +424,7 @@ function mobileScope(id: string | undefined): MobileScope | undefined {
     const box = useBoxesStore.getState().boxes.find((entry) => boxScopeId(entry.id) === id);
     // A box never opened has no folder yet; the switch resolves one on enable,
     // so this only refuses a bit hand-edited onto a folder-less record.
-    if (!box?.eldrun_mobile_access || !box.folder) return undefined;
+    if (!box?.[MOBILE_ACCESS_KEY] || !box.folder) return undefined;
     return { id, name: box.name, cwd: box.folder, localFile: "" };
   }
   const project = mobileProject(id);
@@ -473,9 +474,9 @@ function agentStatuses(projectId?: string): AgentTabStatus[] {
  * done on its own evidence.
  */
 function mobileAgentState(ptyId: string): MobileAgentState {
+  const live = agentTabState(ptyId);
+  if (live !== "idle") return live;
   const activity = useActivityStore.getState();
-  if (activity.busyByTab[ptyId]) return "working";
-  if (activity.attentionByTab[ptyId] === "decision") return "question";
   if (activity.attentionByTab[ptyId] === "interrupted") return "interrupted";
   if (activity.attentionByTab[ptyId] === "done") return "done";
   const doneAt = activity.lastDoneByTab[ptyId];
@@ -496,7 +497,7 @@ function agentTurnScopes(): string[] {
     ...useProjectsStore.getState().projects.flatMap((entry) => mobileScope(entry.id) ?? []),
     ...useBoxesStore.getState().boxes.flatMap((entry) => mobileScope(boxScopeId(entry.id)) ?? []),
   ].map((scope) => scope.id);
-  if (useSettingsStore.getState().settings?.eldrun_mobile_host?.root_access === true) scopes.push(ROOT_SCOPE);
+  if (useSettingsStore.getState().settings?.[MOBILE_HOST_KEY]?.root_access === true) scopes.push(ROOT_SCOPE);
   return scopes;
 }
 
@@ -524,7 +525,7 @@ function mobileModelTag(projectId: string, tab: TabEntry): string | undefined {
   void models.refresh(projectId, tab);
   void models.refreshScreen(projectId, tab);
   return agentTabModelTag(projectId, tab, models.byTab, models.screenByTab)
-    ?? (tab.kind === "local_agent" ? tab.env?.ELDRUN_LOCAL_MODEL : undefined);
+    ?? (tab.kind === "local_agent" ? tab.env?.[envName("LOCAL_MODEL")] : undefined);
 }
 
 /** The PLAN / GOAL marks the desktop's tab strip shows for a tab
@@ -688,7 +689,7 @@ function tabPromptRows(projectId: string, tab: TabEntry): AgentTabPrompt[] {
   const ptyId = `${projectId}:${tab.key}`;
   const recent = models.recentByTab[ptyId] ?? [];
   // An agent whose transcript is not read (OpenCode, Gemini, …) is known to
-  // have been asked what Eldrun itself sent it: the composers here and on the
+  // have been asked what Tabtivity itself sent it: the composers here and on the
   // phone and the schedules all record into the prompt history.
   const sent = historyPromptsOf(projectId, tab);
   // Last, the prompt off the pane's own screen (`lib/agents/prompt/echo`); it
@@ -824,6 +825,11 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
     if (!item) return { status: "error", code: "unsupported_sign_in", message: "Sign-in is unavailable for this agent" };
     spec = buildSignInTabSpec(item, signInLaunch(item.cmd, request.sign_in === "alternate"), cwd, t);
   } else if (request.kind === "shell") {
+    // The sidecar's `shells_open` is the perimeter; this repeats it, because
+    // the bridge is reachable without going through it.
+    if (useSettingsStore.getState().settings?.[MOBILE_HOST_KEY]?.shell_tabs !== true) {
+      return { status: "error", code: "shells_off", message: "Shells are off for the phone" };
+    }
     if (request.agent_id || request.mode) {
       return { status: "error", code: "invalid_request", message: "Shell requests cannot name an agent or mode" };
     }
@@ -970,7 +976,7 @@ async function localChoices(scope: MobileScope): Promise<{ model: string; ready:
 }
 
 /** The agents the phone can open a sign-in tab for, each with the state of
- * its shared login where Eldrun keeps one (`services::agent_auth`). Every
+ * its shared login where Tabtivity keeps one (`services::agent_auth`). Every
  * built-in qualifies: one without a login command signs in as it starts. */
 async function signInOptions(): Promise<MobileSignInOption[]> {
   // A login store that cannot be read leaves the states unknown, never the
@@ -1816,7 +1822,7 @@ async function publicMailHeader(header: MailHeader): Promise<MobileMailHeader> {
  * default off and are switched separately — a flag write and an outbound
  * mail are different risks. */
 function mailWriteGates() {
-  const host = useSettingsStore.getState().settings?.eldrun_mobile_host;
+  const host = useSettingsStore.getState().settings?.[MOBILE_HOST_KEY];
   return { actions: host?.mail_actions === true, reply: host?.mail_reply === true };
 }
 
@@ -1824,13 +1830,13 @@ function mailWriteGates() {
  * ON — unset is what pairing has always allowed — so turning it off is an
  * explicit `false`. Off, every mail request is refused here, writes included. */
 function mailReadAllowed() {
-  return useSettingsStore.getState().settings?.eldrun_mobile_host?.mail_read !== false;
+  return useSettingsStore.getState().settings?.[MOBILE_HOST_KEY]?.mail_read !== false;
 }
 
 const MAIL_READ_DISABLED: DesktopResponse = {
   status: "error",
   code: "mail_read_disabled",
-  message: "Mail on the phone is switched off in Eldrun",
+  message: `Mail on the phone is switched off in ${BRAND.display}`,
 };
 
 async function configuredMailAccounts() {
@@ -1936,7 +1942,7 @@ async function mailMessage(folderId: string, messageId: string, offset: number):
  * round trip. Only the four verbs exist; delete and move never reach here. */
 async function mailMark(folderId: string, messageId: string, offset: number, action: MailMarkAction): Promise<DesktopResponse> {
   if (!mailWriteGates().actions) {
-    return { status: "error", code: "mail_actions_disabled", message: "Mail actions from the phone are switched off in Eldrun" };
+    return { status: "error", code: "mail_actions_disabled", message: `Mail actions from the phone are switched off in ${BRAND.display}` };
   }
   const resolved = await resolveMailMessage(folderId, messageId, offset);
   if ("status" in resolved) return resolved;
@@ -1965,7 +1971,7 @@ async function mailReply(
   t: ReturnType<typeof useT>,
 ): Promise<DesktopResponse> {
   if (!mailWriteGates().reply) {
-    return { status: "error", code: "mail_reply_disabled", message: "Replies from the phone are switched off in Eldrun" };
+    return { status: "error", code: "mail_reply_disabled", message: `Replies from the phone are switched off in ${BRAND.display}` };
   }
   if (!text.trim()) return { status: "error", code: "empty_reply", message: "The reply is empty" };
   const resolved = await resolveMailMessage(folderId, messageId, offset);
@@ -2198,7 +2204,7 @@ const TRANSCRIPT_AGENTS = new Set(["claude", "codex", "opencode"]);
  * transcript records it, read by the backend (`agent_tab_transcript`,
  * `services::agent_transcript`) for the tab's launch id — the same resolution
  * the Agents view's model tag and last-prompt line use, live id first. A tab
- * with no session id (an agent Eldrun does not resume) has no transcript to
+ * with no session id (an agent Tabtivity does not resume) has no transcript to
  * name, and says so rather than answering with somebody else's. `subagent`
  * is the handle on one of its `agent` entries, read instead.
  */
@@ -2227,7 +2233,7 @@ async function agentTranscriptFor(
   const transcript = await invoke<MobileAgentTranscript>("agent_tab_transcript", {
     agent: tab.cmd,
     projectId: scope.id,
-    // OpenCode records no session id Eldrun can follow; its session is the
+    // OpenCode records no session id Tabtivity can follow; its session is the
     // newest one of the folder the tab runs in — for a tab opened fresh rather
     // than restored with `--continue`, the newest one begun since it launched,
     // so a new tab is a new chat and not the folder's last conversation.
@@ -2300,7 +2306,17 @@ async function handleRequest(
     case "desktop_images": return desktopImagesFor(request.project_id);
     case "attach_desktop_image": return attachDesktopImage(request.project_id, request.image_id);
     case "refresh": return refreshSlices(request.project_id, request.slices);
+    // A sidecar newer than this window can ask for a kind it does not know.
+    // Answered at once and by name: `undefined` failed to deserialize in
+    // `mobile_desktop_respond`, and the phone sat out the whole desktop
+    // timeout before reading "desktop unavailable". Typed `never`, so a kind
+    // added to `DesktopRequest` without a case here still fails the build.
+    default: return unknownRequest(request);
   }
+}
+
+function unknownRequest(_request: never): DesktopResponse {
+  return { status: "error", code: "unknown_request", message: "This desktop does not know that request" };
 }
 
 /** Desktop mutations run one at a time — but per domain, not on one chain.
@@ -2311,7 +2327,11 @@ async function handleRequest(
  * their own order; nothing in one waits on another. */
 const mutationQueues = new Map<string, Promise<unknown>>();
 
-function mutationDomain(type: DesktopRequest["type"]): string | null {
+/** Which queue a request waits in, or `null` for a read. The sidecar's
+ * `DesktopRequest::is_mutation` (`protocol.rs`) is the same list — it decides
+ * which over-large answers are reported as "applied" — and
+ * `MobileMutationList.test.ts` holds the two in step (exported for it). */
+export function mutationDomain(type: DesktopRequest["type"]): string | null {
   switch (type) {
     case "create": case "activate": case "rename_tab": case "close_tab": case "reopen_tab": case "color_tab": case "reorder_tab": return "tabs";
     case "todo_mutate": case "alert_resolve": case "calendar_mutate": return "board";
@@ -2338,7 +2358,7 @@ export function MobileBridgeHost() {
   // still shared, so the two surfaces never disagree about the rows themselves.
   // Gated on the Mobile host actually being on: with no phone in the picture the
   // feed stays exactly as opt-in as before, arming no timer and reading no store.
-  const mobileHostOn = useSettingsStore((s) => s.settings?.eldrun_mobile_host?.enabled ?? false);
+  const mobileHostOn = useSettingsStore((s) => s.settings?.[MOBILE_HOST_KEY]?.enabled ?? false);
   const alerts = useAlertsFeed({ ignoreVisibility: mobileHostOn });
   const alertsRef = useRef(alerts);
   const tRef = useRef(t);

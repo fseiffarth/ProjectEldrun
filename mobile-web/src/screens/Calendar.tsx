@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type CalendarAction, type MobileCalendar, type MobileCalendarEvent, type MobileCalendarEventInput, type MobileCalendarInfo } from "../api";
+import { api, reloadIfApplied, wasApplied, type CalendarAction, type MobileCalendar, type MobileCalendarEvent, type MobileCalendarEventInput, type MobileCalendarInfo } from "../api";
 import { OptionSheet } from "../components/OptionSheet";
 import { describeFailure } from "../connection";
 import { NotificationsSheet } from "../components/NotificationsSheet";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
+import { BRAND } from "../../../src/lib/brand";
 
 /** A destructive act waiting on a second tap: the shared option sheet, with
  * one option, in place of `window.confirm` — the same sheet the composer's
@@ -60,7 +61,7 @@ export function Calendar() {
   const [reminders, setReminders] = useState(false);
   const load = useCallback(async () => { setBusy(true); setError(""); try { const { calendar } = await api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`); setData(calendar); setSelected((d) => d.startsWith(month) ? d : `${month}-01`); } catch (e) { setError(describeFailure(e)); } finally { setBusy(false); } }, [month]);
   useEffect(() => { void load(); }, [load]);
-  const mutate = async (action: CalendarAction) => { setBusy(true); setError(""); try { const { calendar } = await api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`, { method: "POST", body: JSON.stringify(action) }); setData(calendar); return true; } catch (e) { setError(describeFailure(e)); return false; } finally { setBusy(false); } };
+  const mutate = async (action: CalendarAction) => { setBusy(true); setError(""); try { const { calendar } = await reloadIfApplied(api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`, { method: "POST", body: JSON.stringify(action) }), () => api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`)); setData(calendar); return true; } catch (e) { setError(describeFailure(e)); /* Made on the desktop, only not shown: done, as far as the editor goes. */ return wasApplied(e); } finally { setBusy(false); } };
   const weekStart = data?.week_start ?? 1; const days = useMemo(() => grid(month, weekStart), [month, weekStart]);
   const events = useCallback((date: string) => (data?.events ?? []).filter((event) => happensOn(event, date)), [data]);
   const selectedEvents = useMemo(() => events(selected).sort((a, b) => Number(b.all_day) - Number(a.all_day) || a.start.localeCompare(b.start)), [events, selected]);
@@ -114,7 +115,7 @@ function CalendarEditSheet({ calendar, busy, save, onClose }: { calendar: Mobile
     <section className="option-sheet schedule-sheet" role="dialog" aria-modal="true" aria-label="Edit calendar" onClick={(event) => event.stopPropagation()}>
       <span className="sheet-grip" aria-hidden="true" />
       <header><button className="sheet-close" onClick={onClose} aria-label="Close">✕</button><h2>Edit calendar {isUntested("mobile.calendar.manage") && <small>Untested</small>}</h2><span className="sheet-close" aria-hidden="true" /></header>
-      <p className="sheet-note">The name and colour are the desktop's own — changing them here changes the Eldrun window too.</p>
+      <p className="sheet-note">The name and colour are the desktop's own — changing them here changes the {BRAND.display} window too.</p>
       {error && <p className="sheet-note error" role="alert">{error}</p>}
       <div className="mobile-schedule-form">
         <label>Calendar name<input type="text" value={name} autoFocus maxLength={160} disabled={busy} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void submit(); } }} /></label>

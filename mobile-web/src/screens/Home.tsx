@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, resolveAlert, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow, type TabPlace } from "../api";
-import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
+import { api, resolveAlert, wasApplied, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow, type TabPlace } from "../api";
+import { classifyUnavailable, describeFailure, describeUnavailable, type UnavailableReason } from "../connection";
 import { readFlag, readOrder, writeFlag, writeOrder } from "../prefs";
 import { arrangeProjects, mergeProjectOrder, scopeCaption } from "../projectOrder";
 import { useRowDrag } from "../rowDrag";
@@ -11,12 +11,16 @@ import { BUNDLE_VERSION } from "../buildInfo";
 import { isUntested } from "../../../src/lib/untested";
 import { useT } from "../../../src/lib/i18n";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
+import { ThemeRow, ThemeSheet } from "../components/ThemePicker";
+import { readPhoneTheme, type PhoneTheme } from "../theme";
 import { SendToDesktop } from "../components/SendToDesktop";
 import { GitMark } from "../components/GitMark";
 import { readSpeechLang, type SpeechLang } from "../speechLang";
 import { NotificationsSheet, pushSummary } from "../components/NotificationsSheet";
+import { customMarkupPrompts, MarkupInstructionSheet, markupInstructionSummary } from "../components/MarkupInstructionSheet";
 import { getPushState, pushSupport, type HostPushState } from "../push";
-import { EldrunMark } from "../EldrunMark";
+import { AppMark } from "../AppMark";
+import { BRAND } from "../../../src/lib/brand";
 
 const ALERT_ICON: Record<MobileAlertItem["kind"], string> = {
   mail: SECTION_GLYPH.mail,
@@ -72,8 +76,9 @@ function AlertRows({ alerts, onAlerts, todo, mail }: {
       // to decide, and a card that reappears because it was only 90% done is a
       // truth the phone should show rather than hide.
       onAlerts((await resolveAlert(alertId)).alerts);
-    } catch {
-      setError("That alert could not be completed. Eldrun on the desktop owns it.");
+    } catch (reason) {
+      // Done on the desktop with a feed too large to show is not a failed ✓.
+      setError(wasApplied(reason) ? describeFailure(reason) : `That alert could not be completed. ${BRAND.display} on the desktop owns it.`);
     } finally {
       setFinishing(null);
     }
@@ -143,6 +148,12 @@ export function Home({ open, openTab, todo, mail }: {
    * fix it mid-answer has already been read to in the wrong voice. */
   const [speechLang, setSpeechLang] = useState<SpeechLang>(() => readSpeechLang());
   const [speechLangSheet, setSpeechLangSheet] = useState(false);
+  /** What a Mark up Submit tells the agent — worded here and nowhere else. */
+  const [markupInstruction, setMarkupInstruction] = useState(() => customMarkupPrompts());
+  const [markupInstructionSheet, setMarkupInstructionSheet] = useState(false);
+  /** The phone's own theme (`theme.ts`); unset, it follows the desktop's. */
+  const [theme, setTheme] = useState<PhoneTheme>(() => readPhoneTheme());
+  const [themeSheet, setThemeSheet] = useState(false);
   const [pushSheet, setPushSheet] = useState(false);
   const [push, setPush] = useState<HostPushState | null>(null);
   useEffect(() => {
@@ -251,9 +262,9 @@ export function Home({ open, openTab, todo, mail }: {
   const drag = useRowDrag(listed.map((project) => project.id), moveProject, canReorder);
   return <main className="screen home-screen">
     <header className="home-header">
-      <div className="home-brand" aria-label="Eldrun">
-        <span className="home-logo-frame" aria-hidden="true"><EldrunMark className="home-logo" /></span>
-        <span className="home-brand-copy"><strong>Eldrun</strong><small>{BUNDLE_VERSION}{isUntested("mobile.version.commit") && <span className="untested">Untested</span>}</small></span>
+      <div className="home-brand" aria-label={BRAND.display}>
+        <span className="home-logo-frame" aria-hidden="true"><AppMark className="home-logo" /></span>
+        <span className="home-brand-copy"><strong>{BRAND.display}</strong><small>{BUNDLE_VERSION}{isUntested("mobile.version.commit") && <span className="untested">Untested</span>}</small></span>
       </div>
       {/* The global views used to live here as a header rail; they are tabs of
           their own now, so the bar at the bottom of every screen carries them. */}
@@ -279,9 +290,9 @@ export function Home({ open, openTab, todo, mail }: {
       </p>}
       {!loaded && !offline && <p className="projects-empty" role="status">Loading projects…</p>}
       {loaded && rows.length === 0 && <p className="projects-empty">{view === "search"
-        ? query.trim() ? "No project by that name has Eldrun Mobile access." : "Type a project's name to find it."
-        : "No project is active right now. Search finds any project with Eldrun Mobile access."}</p>}
-      {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this order is kept on this phone, so the Eldrun window's own project pills stay as they are. A project that has only just become active joins the end. {isUntested("mobile.home.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
+        ? query.trim() ? `No project by that name has ${BRAND.display} Mobile access.` : "Type a project's name to find it."
+        : `No project is active right now. Search finds any project with ${BRAND.display} Mobile access.`}</p>}
+      {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this order is kept on this phone, so the {BRAND.display} window's own project pills stay as they are. A project that has only just become active joins the end. {isUntested("mobile.home.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
       {/* A box row says it is one where a project row says its status: a box
           has no status of its own (listing it is what its switch means), and
           a "Paper" box beside a "Paper" project must be tellable apart.
@@ -313,6 +324,7 @@ export function Home({ open, openTab, todo, mail }: {
     <section className="phone-settings" aria-labelledby="phone-settings-heading">
       <h2 id="phone-settings-heading">{t("mobile.home.phoneSettings")}</h2>
       <ul className="option-list">
+        <ThemeRow choice={theme} open={() => setThemeSheet(true)} expanded={themeSheet} />
         <li><button aria-haspopup="dialog" aria-expanded={speechLangSheet} onClick={() => setSpeechLangSheet(true)}>
           <span><strong>{t("mobile.speech.language")}{isUntested("mobile.speech.language") && <span className="untested">Untested</span>}</strong><small>{speechLangSummary(speechLang, t)}</small></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
@@ -321,9 +333,15 @@ export function Home({ open, openTab, todo, mail }: {
           <span><strong>{t("mobile.push.title")}{isUntested("mobile.push.title") && <span className="untested">Untested</span>}</strong><small>{pushSummary(push, t)}</small></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
         </button></li>
+        <li><button aria-haspopup="dialog" aria-expanded={markupInstructionSheet} onClick={() => setMarkupInstructionSheet(true)}>
+          <span><strong>{t("mobile.markup.instruction.title")}{isUntested("mobile.markup.instruction") && <span className="untested">Untested</span>}</strong><small>{markupInstructionSummary(markupInstruction, t)}</small></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+        </button></li>
       </ul>
     </section>
+    {themeSheet && <ThemeSheet chosen={theme} onChoose={setTheme} onClose={() => setThemeSheet(false)} />}
     {speechLangSheet && <SpeechLangSheet chosen={speechLang} onChoose={setSpeechLang} onClose={() => setSpeechLangSheet(false)} />}
     {pushSheet && <NotificationsSheet onChange={setPush} onClose={() => setPushSheet(false)} />}
+    {markupInstructionSheet && <MarkupInstructionSheet onChange={setMarkupInstruction} onClose={() => setMarkupInstructionSheet(false)} />}
   </main>;
 }

@@ -6,6 +6,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Home } from "../../../mobile-web/src/screens/Home";
+import { storageKey } from "../../lib/brand";
 
 const fetchMock = vi.fn();
 
@@ -84,7 +85,7 @@ describe("Mobile home — project list states", () => {
 
     fireEvent.click(row);
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Deutsch" }));
-    expect(localStorage.getItem("eldrun.mobile.speechLang")).toBe("de");
+    expect(localStorage.getItem(storageKey("mobile.speechLang"))).toBe("de");
     expect(screen.getByRole("button", { name: /Voice language/ }).textContent).toContain("Deutsch");
 
     // The agents mode replaces the project list, not the phone's own settings.

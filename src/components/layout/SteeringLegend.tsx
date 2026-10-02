@@ -98,6 +98,7 @@ export function SteeringLegend() {
   const toggleLegend = useKeyboardSteeringStore((s) => s.toggleLegend);
   const handedTo = useKeyboardSteeringStore((s) => s.handedTo);
   const multiPane = useTabsStore((s) => allGroups(s.layout).length >= 2);
+  const popouts = useTabsStore((s) => (s.detachedGroupsByScope[s.scope]?.length ?? 0) > 0);
   const focusedGroupId = useTabsStore((s) => s.focusedGroupId);
   const mail = useSettingsStore((s) => steeringAppEnabled("mail", s.settings));
   const calendar = useSettingsStore((s) => steeringAppEnabled("calendar", s.settings));
@@ -199,7 +200,6 @@ export function SteeringLegend() {
           onClick={toggleLegend}
           title={t("steering.fab.title", { key: legendKey })}
         >
-          <span className="steering-legend-fab-pulse" aria-hidden="true" />
           <KeyboardIcon size={22} />
           <kbd>{legendKey}</kbd>
         </button>
@@ -222,6 +222,7 @@ export function SteeringLegend() {
     apps: { mail, calendar, todo },
     agent: steeringAgentOffer(activeTab),
     terminal: !!activeTab && !!terminalFor(`${tabScope}:${activeTab.key}`),
+    popouts,
     statusCounts,
   });
   const where = level === "region" ? (region ? REGION_LABEL[region] : null) : LEVEL_LABEL[level];

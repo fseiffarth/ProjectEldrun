@@ -1,7 +1,7 @@
 //! Codex's own thread store: `~/.codex/state_<n>.sqlite`.
 //!
 //! Codex used to keep every conversation as a JSONL transcript under
-//! `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`, and Eldrun
+//! `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`, and Tabtivity
 //! read the model tag beside an agent tab out of that file's tail. Codex
 //! 0.153.4 writes its history into a SQLite database instead: the `threads` row
 //! still *names* a `rollout_path`, but no such file is written any more, so the
@@ -102,7 +102,7 @@ pub fn thread_exists(db: &Path, thread_id: &str) -> bool {
 /// The model the thread `thread_id` is running, per the store at `db`.
 ///
 /// Opened strictly read-only: Codex is writing this database while we read it,
-/// and the one thing that must never happen is Eldrun touching another
+/// and the one thing that must never happen is Tabtivity touching another
 /// application's state. A locked, missing, or differently-shaped store is not
 /// an error here — it is simply no tag.
 pub fn thread_model(db: &Path, thread_id: &str) -> Option<String> {
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn picks_the_highest_numbered_store() {
-        let dir = unique_tmp("eldrun-codex-store");
+        let dir = unique_tmp(concat!(crate::app_slug!(), "-codex-store"));
         for name in ["state.sqlite", "state_2.sqlite", "state_10.sqlite", "logs_9.sqlite"] {
             std::fs::write(dir.join(name), b"").unwrap();
         }
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn a_thread_pursues_its_goal_only_while_the_row_says_active() {
-        let dir = unique_tmp("eldrun-codex-goals");
+        let dir = unique_tmp(concat!(crate::app_slug!(), "-codex-goals"));
         std::fs::write(dir.join("goals_1.sqlite"), b"").unwrap();
         let db = newest_db_in(&dir, "goals").unwrap();
         let conn = rusqlite::Connection::open(&db).unwrap();
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn unnumbered_store_is_the_oldest_not_the_newest() {
-        let dir = unique_tmp("eldrun-codex-store");
+        let dir = unique_tmp(concat!(crate::app_slug!(), "-codex-store"));
         std::fs::write(dir.join("state.sqlite"), b"").unwrap();
         assert_eq!(state_db_in(&dir), Some(dir.join("state.sqlite")));
         std::fs::write(dir.join("state_1.sqlite"), b"").unwrap();
@@ -287,13 +287,13 @@ mod tests {
 
     #[test]
     fn no_codex_dir_is_no_store() {
-        let dir = unique_tmp("eldrun-codex-store");
+        let dir = unique_tmp(concat!(crate::app_slug!(), "-codex-store"));
         assert_eq!(state_db_in(&dir.join("nope")), None);
     }
 
     #[test]
     fn reads_a_threads_model() {
-        let dir = unique_tmp("eldrun-codex-store");
+        let dir = unique_tmp(concat!(crate::app_slug!(), "-codex-store"));
         let db = dir.join("state_5.sqlite");
         store_with(
             &db,
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn a_live_thread_exists_an_archived_or_unknown_one_does_not() {
-        let dir = unique_tmp("eldrun-codex-store");
+        let dir = unique_tmp(concat!(crate::app_slug!(), "-codex-store"));
         let db = dir.join("state_5.sqlite");
         store_with_archived(
             &db,
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn a_store_we_cannot_read_holds_no_thread() {
-        let dir = unique_tmp("eldrun-codex-store");
+        let dir = unique_tmp(concat!(crate::app_slug!(), "-codex-store"));
         let junk = dir.join("state_6.sqlite");
         std::fs::write(&junk, b"not a database").unwrap();
         assert!(!thread_exists(&junk, "01a07c18-3a25-7fa1-9ac4-74fa84d4e12a"));
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn a_store_without_the_schema_we_know_is_no_tag() {
-        let dir = unique_tmp("eldrun-codex-store");
+        let dir = unique_tmp(concat!(crate::app_slug!(), "-codex-store"));
         let db = dir.join("state_5.sqlite");
         rusqlite::Connection::open(&db)
             .unwrap()

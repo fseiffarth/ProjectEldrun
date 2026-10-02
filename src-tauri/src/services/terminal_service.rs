@@ -1,3 +1,4 @@
+use crate::brand::SLUG;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -82,7 +83,7 @@ fn write_terminal_session(
     allow_clear: bool,
 ) -> Result<(), String> {
     // An empty layout is DESTRUCTIVE — it drops `tab_layout`/`tab_groups` from
-    // project.json *and* overwrites the `.eldrun` mirror with an empty one, in a
+    // project.json *and* overwrites the `.tabtivity` mirror with an empty one, in a
     // single call. The two are written from the same array, so the mirror is not a
     // backup: one empty save takes both copies, and a persisted agent tab's
     // `sessionId` is the only handle on its conversation.
@@ -183,7 +184,7 @@ pub(crate) fn state_session_path(project_id: &str) -> PathBuf {
     storage::project_session_dir(project_id).join(TERMINALS_FILE)
 }
 
-/// Write the project-tree copy of the layout: `<project>/.eldrun/sessions/
+/// Write the project-tree copy of the layout: `<project>/.tabtivity/sessions/
 /// terminals.json`.
 ///
 /// **Export-only.** Nothing reads this file on its own — not on relaunch, not on
@@ -198,7 +199,7 @@ pub(crate) fn state_session_path(project_id: &str) -> PathBuf {
 /// the entire bug class. Keeping the write and dropping the automatic read costs
 /// nothing and keeps the portability property.
 fn write_export_copy(local_file: &str, session: &TerminalSession) {
-    let Some(sessions_dir) = eldrun_sessions_dir(local_file) else {
+    let Some(sessions_dir) = app_sessions_dir(local_file) else {
         return;
     };
     // A schedule binding is local control-plane state: exporting it would make a
@@ -214,7 +215,7 @@ fn write_export_copy(local_file: &str, session: &TerminalSession) {
     exported.extra.remove(crate::services::workspace::VERSION_KEY);
     exported.extra.remove(crate::services::workspace::CLOSED_KEY);
     if let Err(e) = storage::write_json_atomic(&sessions_dir.join(TERMINALS_FILE), &exported) {
-        eprintln!("terminal_service: write .eldrun export copy: {e}");
+        eprintln!("terminal_service: write .{SLUG} export copy: {e}");
     }
 }
 
@@ -222,7 +223,7 @@ fn write_export_copy(local_file: &str, session: &TerminalSession) {
 /// the state dir. **The only automatic read of layout state there is.**
 ///
 /// It reads `<state_dir>/sessions/<key>/terminals.json` and nothing else — in
-/// particular not `<project>/.eldrun/sessions/terminals.json` and not
+/// particular not `<project>/.tabtivity/sessions/terminals.json` and not
 /// `project.json`, both of which sit inside the project container's writable rw
 /// mount and inside any repository that gets cloned or imported as a project.
 /// That was the escape: the frontend rehydrates `cmd` / `resumeArgs` / `env` /
@@ -275,18 +276,18 @@ pub(crate) fn read_state_session(project_id: &str) -> Option<TerminalSession> {
 /// all (the frontend renders a pane for them), and are listed so a marker tab is
 /// not needlessly downgraded to a shell.
 const PANE_MARKER_CMDS: &[&str] = &[
-    "__eldrun_files__",
-    "__eldrun_project_files__",
-    "__eldrun_blob__",
-    "__eldrun_network__",
-    "__eldrun_monitor__",
-    "__eldrun_diskusage__",
-    "__eldrun_calendar__",
-    "__eldrun_mail__",
-    "__eldrun_browser__",
-    "__eldrun_printing__",
-    "__eldrun_skillslibrary__",
-    "__eldrun_promptchart__",
+    crate::app_tab_command!("files"),
+    crate::app_tab_command!("project_files"),
+    crate::app_tab_command!("blob"),
+    crate::app_tab_command!("network"),
+    crate::app_tab_command!("monitor"),
+    crate::app_tab_command!("diskusage"),
+    crate::app_tab_command!("calendar"),
+    crate::app_tab_command!("mail"),
+    crate::app_tab_command!("browser"),
+    crate::app_tab_command!("printing"),
+    crate::app_tab_command!("skillslibrary"),
+    crate::app_tab_command!("promptchart"),
 ];
 
 /// Agent CLIs a persisted tab may relaunch. Mirrors the frontend's `AGENT_CMDS`
@@ -442,7 +443,7 @@ pub fn sanitize_tab_layout(
 }
 
 /// Drop a persisted `localLaunch` unless it is a local-model tab's launch line
-/// Eldrun itself builds for the driver and model it names
+/// Tabtivity itself builds for the driver and model it names
 /// (`commands::ollama::local_launch_line_ok`). The field is what lets such a
 /// tab restore at all — the frontend relaunches it with `localLaunch.args` —
 /// so, like `resumeArgs`, it is an argv for a host-bound agent CLI and is never
@@ -458,7 +459,7 @@ fn keep_valid_local_launch(tab: &mut TabEntry) {
 }
 
 /// Whether a persisted `localLaunch` value (`{driver, model, args}`) is a line
-/// Eldrun builds for `cmd`. Shared with the phone's catalog, which reads the
+/// Tabtivity builds for `cmd`. Shared with the phone's catalog, which reads the
 /// same file raw.
 pub(crate) fn local_launch_ok(launch: &Value, cmd: &str) -> bool {
     let (Some(driver), Some(model), Some(args)) = (
@@ -532,11 +533,11 @@ pub fn load_open_apps(project_id: &str) -> Vec<OpenApp> {
 // adopt). Both sanitize what they read before it is stored or returned.
 
 /// Read the project-tree export copy, or the legacy `project.json` fields if no
-/// export copy exists (Eldrun wrote both before the move).
+/// export copy exists (Tabtivity wrote both before the move).
 ///
 /// **Untrusted.** Every caller must sanitize.
 fn read_project_tree_session(local_file: &str) -> Option<TerminalSession> {
-    if let Some(dir) = eldrun_sessions_dir(local_file) {
+    if let Some(dir) = app_sessions_dir(local_file) {
         let path = dir.join(TERMINALS_FILE);
         if path.exists() {
             if let Ok(session) = storage::read_json::<TerminalSession>(&path) {
@@ -545,7 +546,7 @@ fn read_project_tree_session(local_file: &str) -> Option<TerminalSession> {
         }
     }
     // Legacy: the layout used to be duplicated into project.json itself, and a
-    // project last written by an older Eldrun may only have that copy.
+    // project last written by an older Tabtivity may only have that copy.
     let project: crate::schema::project::Project =
         storage::read_json(&PathBuf::from(local_file)).ok()?;
     let tab_layout = project.tab_layout.unwrap_or_default();
@@ -697,13 +698,13 @@ const SCHEDULE_TARGET_KEY: &str = "scheduleTargetId";
 /// persisted so it restores. Validated on every load; never adopted.
 const LOCAL_LAUNCH_KEY: &str = "localLaunch";
 
-/// `<project>/.eldrun/sessions/` — where the **export** copies of the session
+/// `<project>/.tabtivity/sessions/` — where the **export** copies of the session
 /// files live (and where `filetabs.json` / `layout.json` / `windows.json` still
 /// live outright; none of those is executable intent).
-pub fn eldrun_sessions_dir(local_file: &str) -> Option<PathBuf> {
+pub fn app_sessions_dir(local_file: &str) -> Option<PathBuf> {
     Path::new(local_file)
         .parent()
-        .map(|p| p.join(".eldrun").join("sessions"))
+        .map(|p| p.join(crate::brand::PROJECT_DIR).join("sessions"))
 }
 
 #[cfg(test)]
@@ -797,8 +798,8 @@ mod tests {
             "claude",
             "codex",
             "vibe",
-            "__eldrun_files__",
-            "__eldrun_mail__",
+            crate::app_tab_command!("files"),
+            crate::app_tab_command!("mail"),
             "zsh",
         ] {
             let mut tabs = vec![entry(cmd)];
@@ -817,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn a_local_launch_survives_only_as_a_line_eldrun_builds() {
+    fn a_local_launch_survives_only_as_a_line_app_builds() {
         let launch = |cmd: &str, args: Value| {
             let mut tab = entry(cmd);
             tab.extra.insert(
@@ -938,7 +939,7 @@ mod tests {
         write_export_copy(&local_file.to_string_lossy(), &session);
 
         let exported: TerminalSession = storage::read_json(
-            &dir.path().join(".eldrun/sessions").join(TERMINALS_FILE),
+            &dir.path().join(concat!(".", crate::app_slug!(), "/sessions")).join(TERMINALS_FILE),
         )
         .expect("read export");
         assert!(!exported.tab_layout[0]

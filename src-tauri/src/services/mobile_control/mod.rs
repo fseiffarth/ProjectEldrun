@@ -1,4 +1,4 @@
-//! Eldrun Mobile's AppHandle-free control plane.
+//! Tabtivity Mobile's AppHandle-free control plane.
 //!
 //! The sidecar reads only the state-dir project/session snapshots, resolves all
 //! client ids through a keyed catalog, and attaches only to exact tmux sessions
@@ -16,6 +16,8 @@ pub mod headless_board;
 pub mod host;
 pub mod inbox;
 pub mod live_pwa;
+pub mod markup;
+pub mod markup_pdf;
 pub mod outbox;
 pub mod limits;
 pub mod protocol;

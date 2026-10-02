@@ -14,7 +14,8 @@
 //! a `/clear` that is the conversation the reader just cleared.
 //!
 //! What is read is deliberately narrow: the prompts the user submitted and
-//! the text the agent answered with. Tool calls and their results, thinking
+//! the text the agent answered with — and, the one tool call kept, a question
+//! the agent put to the user with the answer it got. Other tool calls and their results, thinking
 //! blocks, attachments, the reminders the CLI attaches to a prompt and the
 //! notes it leaves for itself are not the conversation and are stepped over —
 //! on a phone the answer is what is wanted, not the edit-by-edit status the
@@ -61,6 +62,12 @@ const MAX_ANSWER_CHARS: usize = 12_000;
 const MAX_AGENT_CHARS: usize = 200;
 /// Longest subagent kind (`Explore`, a Codex role, an OpenCode agent).
 const MAX_ROLE_CHARS: usize = 48;
+/// Longest command line of a running shell; a heredoc script is cut.
+const MAX_SHELL_CHARS: usize = 8_000;
+/// Longest description of a running shell.
+const MAX_SHELL_DESCRIPTION_CHARS: usize = 200;
+/// Longest question, option label or note of a question the agent asked.
+const MAX_QUESTION_CHARS: usize = 2_000;
 /// How deep a subagent's own subagents are followed.
 pub(crate) const MAX_SUBAGENT_DEPTH: usize = 8;
 
@@ -89,10 +96,58 @@ pub struct TranscriptEntry {
     /// `ExitPlanMode`), which the phone sets apart from its ordinary answers.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plan: bool,
+    /// On an `agent` entry: the subagent has not reported back yet — the call
+    /// that spawned it has no result in the transcript, or (one sent to the
+    /// background) no task notification has ended it (Claude's).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
+    /// On an `agent` entry: the subagent has reported back — its spawn call
+    /// has a result, or its task notification came (Claude's). Neither this
+    /// nor `running` on a CLI whose record does not say, so a missing mark is
+    /// "unknown", never "done".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub finished: bool,
+    /// On an `agent` entry: it runs in the background (Claude's async
+    /// `Agent` launch), so it can be at work while the session's turn is over.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+    /// On an `answer` entry: the questions the agent asked the user (Claude's
+    /// `AskUserQuestion`), each with the answer it got. The entry is written
+    /// once the call has its result, so a question still waiting is the live
+    /// screen's and never in the chat twice; `text` is the same exchange as
+    /// plain text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<AskedQuestion>,
+}
+
+/// One question the agent asked, as answered.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AskedQuestion {
+    /// The short label the dialog's tab row shows for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<AskedOption>,
+    /// What the user answered — a row's label, several joined by `, ` on a
+    /// multi-select, or their own words. Absent when the question was turned
+    /// down rather than answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+}
+
+/// One row a question offered, and whether the answer took it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AskedOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chosen: bool,
 }
 
 /// What a tab's stored session answers with. Always a value, never an error:
-/// an agent that keeps no transcript Eldrun reads comes back `available:
+/// an agent that keeps no transcript Tabtivity reads comes back `available:
 /// false` with the reason, and the phone shows the screen instead.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentTranscript {
@@ -120,6 +175,54 @@ pub struct AgentTranscript {
     /// The session's own usage figures, where its transcript records them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TranscriptUsage>,
+    /// The model the newest record that names one ran on, as its API id
+    /// (`claude-opus-4-1-20250805`, `gpt-5-codex`) — a subagent's own, read
+    /// off its own conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The tokens the newest request that records its usage carried — the
+    /// context it sent plus what came back, the figure Claude Code's own row
+    /// for a subagent counts (Codex's `last_token_usage`). The phone's
+    /// working row in a subagent's conversation shows it; a session's own
+    /// row reads its spinner instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    /// The shell commands the agent is running right now — Claude's `Bash`
+    /// calls since the last prompt that have no result in the transcript
+    /// yet. Desktop Reader only: the phone's API strips it, since a command
+    /// line is not something that crosses to the browser.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shells: Vec<RunningShell>,
+}
+
+/// A shell command the agent started and is waiting on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunningShell {
+    /// The command line as the agent wrote it, cut at its bound.
+    pub command: String,
+    /// The agent's own few words on what it does, when it gave them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// When the call was written (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// The command was cut at its bound.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cut: bool,
+    /// Sent to the background (`run_in_background`, or moved there at its
+    /// timeout): the agent no longer waits on it, and it can outlive the turn.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+}
+
+/// The shells a transcript says are running: calls still waiting on their
+/// result, and background ones that no notification has ended yet — each
+/// with the output file its CLI named, by which [`running_outputs`] tells
+/// whether it still runs.
+#[derive(Debug, Default)]
+struct ShellCalls {
+    waiting: Vec<RunningShell>,
+    background: Vec<(RunningShell, String)>,
 }
 
 /// What Claude's status line shows beside the model — context left, the
@@ -211,9 +314,13 @@ pub fn agent_session_transcript(
 /// so no id of the CLI's — a resume handle — crosses to the phone, and a
 /// handle read back can only be matched against the subagents of the session
 /// asked about, never followed as a name.
+///
+/// The hash's context string is pinned (`PINNED_…`), like `gateway_id_of`'s:
+/// a handle the phone already holds must still match after a rename, and the
+/// string is never shown or written anywhere.
 pub fn subagent_token(id: &str) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(format!("eldrun-subagent:{id}").as_bytes());
+    let digest = Sha256::digest(format!("{}{id}", crate::brand::PINNED_SUBAGENT_TOKEN_CONTEXT).as_bytes());
     digest[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -262,6 +369,35 @@ fn claude_transcript(
     }
 }
 
+/// The file a Claude or Codex tab's conversation is stored in — or, with
+/// `subagent`, that subagent's own — resolved as [`claude_transcript`] and
+/// [`codex_transcript`] resolve it (`services::agent_changes` reads it too).
+pub(crate) fn conversation_file(
+    cmd: &str,
+    project_id: Option<&str>,
+    launch_id: &str,
+    subagent: Option<&str>,
+) -> Option<PathBuf> {
+    let main = session_file(cmd, project_id, launch_id)?;
+    let Some(token) = subagent else {
+        return Some(main);
+    };
+    match cmd {
+        "claude" => claude_subagent_file(&main.with_extension("").join("subagents"), token),
+        "codex" => {
+            let thread = agent_session::read_live_session_for(project_id, launch_id)?;
+            let stores = crate::services::codex_store::state_dbs(Some(project_id.unwrap_or("root")));
+            let child = stores.iter().find_map(|db| {
+                crate::services::codex_store::descendant_threads(db, &thread, MAX_SUBAGENT_DEPTH)
+                    .into_iter()
+                    .find(|child| subagent_token(&child.id) == token)
+            })?;
+            codex_rollout(project_id, &child)
+        }
+        _ => None,
+    }
+}
+
 /// The subagent file in `folder` whose handle is `token`.
 fn claude_subagent_file(folder: &Path, token: &str) -> Option<PathBuf> {
     std::fs::read_dir(folder).ok()?.flatten().map(|entry| entry.path()).find(|path| {
@@ -303,13 +439,33 @@ fn codex_transcript(
 /// A spawned thread's rollout: the path its row names, taken only when it is
 /// a file under the scope's `.codex/sessions` whose name ends in the thread's id.
 fn codex_rollout(project_id: Option<&str>, thread: &crate::services::codex_store::SpawnedThread) -> Option<PathBuf> {
-    let root = std::fs::canonicalize(agent_session::codex_sessions_root(project_id)).ok()?;
-    let path = std::fs::canonicalize(thread.rollout_path.as_deref()?).ok()?;
-    let named = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(&format!("{}.jsonl", thread.id)));
-    (named && path.starts_with(&root) && path.is_file()).then_some(path)
+    codex_rollout_in(&agent_session::codex_sessions_root(project_id), thread)
+}
+
+/// Testable core of [`codex_rollout`] against an explicit sessions root.
+/// Codex records the path as its own tab sees it — inside the fence the agent
+/// home is mounted as `$HOME`, so the row says `/home/<user>/.codex/sessions/…`
+/// while Tabtivity reads the same file under `<state_dir>/agent-homes/<key>` — so
+/// the part after `.codex/sessions/` is re-rooted onto `root` first, and the
+/// recorded path is tried as is only after that.
+fn codex_rollout_in(root: &Path, thread: &crate::services::codex_store::SpawnedThread) -> Option<PathBuf> {
+    let root = std::fs::canonicalize(root).ok()?;
+    let recorded = Path::new(thread.rollout_path.as_deref()?);
+    let parts: Vec<_> = recorded.components().map(|part| part.as_os_str()).collect();
+    let rerooted = parts
+        .windows(2)
+        .position(|pair| pair[0] == ".codex" && pair[1] == "sessions")
+        .map(|at| root.join(parts[at + 2..].iter().collect::<PathBuf>()));
+    let named = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(&format!("{}.jsonl", thread.id)))
+    };
+    rerooted
+        .into_iter()
+        .chain(std::iter::once(recorded.to_path_buf()))
+        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .find(|path| named(path) && path.starts_with(&root) && path.is_file())
 }
 
 /// A Claude session the hook has recorded but Claude has not written yet —
@@ -378,7 +534,7 @@ fn opencode_transcript(
 
 /// The file's fingerprint: its length and modification time. Both move on
 /// every append, and neither costs a read.
-fn fingerprint(meta: &std::fs::Metadata) -> String {
+pub(crate) fn fingerprint(meta: &std::fs::Metadata) -> String {
     let stamp = meta
         .modified()
         .ok()
@@ -435,7 +591,7 @@ fn read_transcript_in(
             current = format!("{current}:{}", fingerprint(&folder));
         }
     }
-    if version == Some(current.as_str()) {
+    if version == Some(current.as_str()) && background_unchanged(path, &current) {
         return Some(AgentTranscript {
             available: true,
             version: Some(current),
@@ -460,7 +616,10 @@ fn read_transcript_in(
         TranscriptKind::Codex => codex_usage(&lines),
         TranscriptKind::Claude => None,
     };
-    let (mut entries, calls) = parse_entries(lines.into_iter(), kind, sidechain);
+    let model = newest_model(&lines, kind);
+    let tokens = newest_tokens(&lines, kind);
+    let (mut entries, calls, shell_calls) = parse_entries(lines.into_iter(), kind, sidechain);
+    let shells = running_shells(path, &current, shell_calls);
     match spawns {
         Spawns::None => {}
         Spawns::Claude(folder) => {
@@ -494,6 +653,90 @@ fn read_transcript_in(
         entries,
         truncated,
         usage,
+        model,
+        tokens,
+        shells,
+    })
+}
+
+/// Each transcript's background shells as last answered: the version, their
+/// output files, and which of those still ran. A shell that died with its CLI
+/// writes nothing to the transcript, so an unchanged file is answered
+/// `unchanged` only while the same ones still run.
+type BackgroundSeen = std::collections::HashMap<PathBuf, (String, Vec<String>, std::collections::HashSet<String>)>;
+static BACKGROUND_SEEN: std::sync::LazyLock<std::sync::Mutex<BackgroundSeen>> = std::sync::LazyLock::new(Default::default);
+/// Transcripts remembered at most; past it the memory starts over, which
+/// costs one full read each.
+const BACKGROUND_SEEN_MAX: usize = 64;
+
+/// Whether `path`'s background shells, at `version`, run as they did when
+/// last answered.
+fn background_unchanged(path: &Path, version: &str) -> bool {
+    let seen = BACKGROUND_SEEN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some((at, outputs, running)) = seen.get(path) else {
+        return true;
+    };
+    if at != version {
+        return true;
+    }
+    let outputs: Vec<&str> = outputs.iter().map(String::as_str).collect();
+    running_outputs(&outputs) == *running
+}
+
+/// The shells to show: every call still waiting on its result, then the
+/// background ones whose output file is still held open — remembered for
+/// [`background_unchanged`].
+fn running_shells(path: &Path, version: &str, calls: ShellCalls) -> Vec<RunningShell> {
+    let outputs: Vec<&str> = calls.background.iter().map(|(_, output)| output.as_str()).collect();
+    let running = running_outputs(&outputs);
+    let mut seen = BACKGROUND_SEEN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if outputs.is_empty() {
+        seen.remove(path);
+    } else {
+        if seen.len() >= BACKGROUND_SEEN_MAX && !seen.contains_key(path) {
+            seen.clear();
+        }
+        seen.insert(path.to_path_buf(), (version.to_string(), outputs.iter().map(|o| o.to_string()).collect(), running.clone()));
+    }
+    drop(seen);
+    let mut shells = calls.waiting;
+    shells.extend(calls.background.into_iter().filter(|(_, output)| running.contains(output)).map(|(shell, _)| shell));
+    shells
+}
+
+/// The model the newest record in `lines` names, as the tab's model tag
+/// reads it ([`agent_session::model_in_record`]).
+fn newest_model(lines: &[&str], kind: TranscriptKind) -> Option<String> {
+    lines.iter().rev().find_map(|line| agent_session::model_in_record(line, kind))
+}
+
+/// The tokens the newest record in `lines` that carries usage counts
+/// ([`AgentTranscript::tokens`]): a Claude assistant message's input, cache
+/// and output tokens together, or a Codex `token_count`'s last request.
+fn newest_tokens(lines: &[&str], kind: TranscriptKind) -> Option<u64> {
+    let needle = match kind {
+        TranscriptKind::Claude => "\"usage\"",
+        TranscriptKind::Codex => "\"token_count\"",
+    };
+    lines.iter().rev().filter(|line| line.contains(needle)).find_map(|line| {
+        let value = serde_json::from_str::<Value>(line).ok()?;
+        match kind {
+            TranscriptKind::Claude => {
+                let message = value.get("message").filter(|_| value.get("type").and_then(Value::as_str) == Some("assistant"))?;
+                let usage = message.get("usage")?;
+                let count = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
+                let total = count("input_tokens")
+                    + count("cache_creation_input_tokens")
+                    + count("cache_read_input_tokens")
+                    + count("output_tokens");
+                (total > 0).then_some(total)
+            }
+            TranscriptKind::Codex => value
+                .get("payload")
+                .filter(|p| p.get("type").and_then(Value::as_str) == Some("token_count"))?
+                .pointer("/info/last_token_usage/total_tokens")?
+                .as_u64(),
+        }
     })
 }
 
@@ -641,14 +884,32 @@ fn codex_context_left(info: &Value) -> Option<u8> {
 /// made in between, and the phone shows them as separate bubbles — joined
 /// into one they ran together ("Let me check…" glued to the final answer).
 /// Beside them, each Claude `Agent` call's entry index and call id, for the
-/// caller to match to its subagent.
+/// caller to match to its subagent, and the shells it has started.
 fn parse_entries<'a>(
     lines: impl Iterator<Item = &'a str>,
     kind: TranscriptKind,
     sidechain: bool,
-) -> (Vec<TranscriptEntry>, Vec<(usize, String)>) {
+) -> (Vec<TranscriptEntry>, Vec<(usize, String)>, ShellCalls) {
     let mut entries: Vec<TranscriptEntry> = Vec::new();
-    let mut calls = Vec::new();
+    let mut calls: Vec<(usize, String)> = Vec::new();
+    // Shell calls since the last prompt, by call id: one an earlier turn
+    // never got a result for (the CLI was killed mid-call) is not running.
+    let mut shells: Vec<(String, RunningShell)> = Vec::new();
+    // Every shell call read, for a background one's command; the calls sent
+    // to the background, with their output files; and those a notification
+    // has since ended.
+    let mut commands: std::collections::HashMap<String, RunningShell> = std::collections::HashMap::new();
+    let mut backgrounded: Vec<(String, String)> = Vec::new();
+    let mut ended = std::collections::HashSet::new();
+    // The tool calls that have their result: a spawn call without one is a
+    // subagent still at work. A background spawn's result comes at once
+    // (`async_launched`); what it does after is replayed in `agents`.
+    let mut returned = std::collections::HashSet::new();
+    let mut agents = BackgroundAgents::default();
+    // Questions asked, by call id, until their result comes: the exchange is
+    // one entry, placed where the result lands — the agent waits on it, so
+    // nothing of its own comes in between.
+    let mut asked: std::collections::HashMap<String, (Vec<AskedQuestion>, Option<String>)> = std::collections::HashMap::new();
     for line in lines {
         let line = line.trim();
         if line.is_empty() {
@@ -662,6 +923,17 @@ fn parse_entries<'a>(
                 record.remove("isSidechain");
             }
         }
+        if kind == TranscriptKind::Claude {
+            for call in claude_tool_results(&value) {
+                if let Some((questions, at)) = asked.remove(&call) {
+                    entries.extend(question_entry(questions, value.get("toolUseResult"), at));
+                }
+                returned.insert(call);
+            }
+            backgrounded.extend(claude_backgrounded(&value));
+            ended.extend(claude_tasks_ended(line));
+            agents.read(&value, line);
+        }
         let records = match kind {
             TranscriptKind::Claude => claude_records(&value),
             TranscriptKind::Codex => codex_entry(&value).map(|(role, raw)| Record::Turn(role, raw)).into_iter().collect(),
@@ -670,10 +942,24 @@ fn parse_entries<'a>(
             .get("timestamp")
             .and_then(Value::as_str)
             .map(str::to_string);
+        let typed = value.get("type").and_then(Value::as_str) == Some("user");
         for record in records {
             match record {
-                Record::Turn(role, raw) => entries.extend(transcript_entry(role, &raw, at.clone())),
+                Record::Turn(role, raw) => {
+                    if typed && role == "prompt" {
+                        shells.clear();
+                    }
+                    entries.extend(transcript_entry(role, &raw, at.clone()));
+                }
+                Record::Shell { call, mut shell } => {
+                    shell.at = at.clone();
+                    commands.insert(call.clone(), shell.clone());
+                    shells.push((call, shell));
+                }
                 Record::Plan(raw) => entries.extend(transcript_entry("answer", &raw, at.clone()).map(|entry| TranscriptEntry { plan: true, ..entry })),
+                Record::Question { call, questions } => {
+                    asked.insert(call, (questions, at.clone()));
+                }
                 Record::Spawn { call, task, kind } => {
                     if let Some(entry) = agent_entry(&task, kind.as_deref(), at.clone()) {
                         calls.push((entries.len(), call));
@@ -683,7 +969,210 @@ fn parse_entries<'a>(
             }
         }
     }
-    (entries, calls)
+    for (index, call) in &calls {
+        let background = agents.at_work.get(call).copied();
+        let finished = background.map_or_else(|| returned.contains(call), |at_work| !at_work);
+        entries[*index].running = !finished;
+        entries[*index].finished = finished;
+        entries[*index].background = background.is_some();
+    }
+    let waiting = shells.into_iter().filter(|(call, _)| !returned.contains(call)).map(|(_, shell)| shell).collect();
+    let background = backgrounded
+        .into_iter()
+        .filter(|(call, _)| !ended.contains(call))
+        .filter_map(|(call, output)| Some((RunningShell { background: true, ..commands.remove(&call)? }, output)))
+        .collect();
+    (entries, calls, ShellCalls { waiting, background })
+}
+
+/// Claude's background subagents (`Agent` calls whose result is only the
+/// launch, `async_launched`), replayed in record order: launched, each is at
+/// work until a task notification says it stopped. Notifications name the
+/// call (`<tool-use-id>`) or only the agent (`<task-id>`, on a later stop);
+/// one that "may be interim" stopped with background work of its own still
+/// running, and works on. A `SendMessage` to a stopped one resumes it, until
+/// its next notification. A notification is recorded more than once (queued,
+/// delivered, absorbed): each counts once, where it is first read, so a copy
+/// delivered after a resume does not end it again.
+#[derive(Default)]
+struct BackgroundAgents {
+    /// By spawn call: whether it is at work.
+    at_work: std::collections::HashMap<String, bool>,
+    /// The spawn call of each agent id.
+    calls: std::collections::HashMap<String, String>,
+    seen: std::collections::HashSet<String>,
+}
+
+impl BackgroundAgents {
+    fn read(&mut self, value: &Value, line: &str) {
+        if let Some((call, agent)) = claude_async_launched(value) {
+            self.at_work.insert(call.clone(), true);
+            if let Some(agent) = agent {
+                self.calls.insert(agent, call);
+            }
+        }
+        for agent in claude_messaged(value) {
+            if let Some(at_work) = self.calls.get(&agent).and_then(|call| self.at_work.get_mut(call)) {
+                *at_work = true;
+            }
+        }
+        for note in claude_task_notes(line) {
+            if !self.seen.insert(note.text.to_string()) || !note.ends || note.interim {
+                continue;
+            }
+            let call = note.call.or_else(|| self.calls.get(note.task.as_deref()?).cloned());
+            if let Some(at_work) = call.and_then(|call| self.at_work.get_mut(&call)) {
+                *at_work = false;
+            }
+        }
+    }
+}
+
+/// The spawn call a Claude `user` record says went to the background
+/// (`toolUseResult.status` `async_launched`): its result is only the launch.
+/// With the agent id its notifications and messages name it by.
+fn claude_async_launched(value: &Value) -> Option<(String, Option<String>)> {
+    let result = value.get("toolUseResult")?;
+    if result.get("status").and_then(Value::as_str) != Some("async_launched") && result.get("isAsync").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let agent = result.get("agentId").and_then(Value::as_str).map(str::to_string);
+    let Some(Value::Array(blocks)) = value.get("message").and_then(|m| m.get("content")) else {
+        return None;
+    };
+    let result = blocks.iter().find(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))?;
+    Some((result.get("tool_use_id")?.as_str()?.to_string(), agent))
+}
+
+/// Whom a Claude `assistant` record's `SendMessage` calls write to (`to`).
+fn claude_messaged(value: &Value) -> Vec<String> {
+    if value.get("type").and_then(Value::as_str) != Some("assistant") {
+        return Vec::new();
+    }
+    let Some(Value::Array(blocks)) = value.get("message").and_then(|m| m.get("content")) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use") && b.get("name").and_then(Value::as_str) == Some("SendMessage"))
+        .filter_map(|b| b.get("input")?.get("to")?.as_str().map(str::to_string))
+        .collect()
+}
+
+/// A Claude `user` record's shell results that went to the background
+/// (`toolUseResult.backgroundTaskId`): the call, and the output file the
+/// result names — `<…>/<task id>.output`, written to while it runs.
+fn claude_backgrounded(value: &Value) -> Option<(String, String)> {
+    let task = value.get("toolUseResult")?.get("backgroundTaskId")?.as_str()?;
+    let Some(Value::Array(blocks)) = value.get("message").and_then(|m| m.get("content")) else {
+        return None;
+    };
+    let result = blocks.iter().find(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))?;
+    let call = result.get("tool_use_id")?.as_str()?;
+    let text = match result.get("content")? {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
+        _ => return None,
+    };
+    let name = format!("/{task}.output");
+    let output = text
+        .split_whitespace()
+        .map(|word| word.trim_end_matches('.'))
+        .find(|word| word.starts_with('/') && word.ends_with(&name))?;
+    Some((call.to_string(), output.to_string()))
+}
+
+/// One `<task-notification>` in a raw Claude record: the call it names
+/// (`<tool-use-id>`, absent on an agent's later stops), the task
+/// (`<task-id>`), whether its status ends the task — every one but
+/// `starting` (`completed`, `failed`, `killed`, `stopped`) — and whether its
+/// note says the result "may be interim". `text` is the whole notification.
+struct TaskNote<'a> {
+    call: Option<String>,
+    task: Option<String>,
+    ends: bool,
+    interim: bool,
+    text: &'a str,
+}
+
+/// The `<task-notification>`s in a raw Claude record — queued, delivered as
+/// a prompt, or absorbed mid-turn.
+fn claude_task_notes(line: &str) -> Vec<TaskNote<'_>> {
+    let tag = |text: &str, name: &str| -> Option<String> {
+        let open = format!("<{name}>");
+        let start = text.find(&open)? + open.len();
+        let end = text[start..].find(&format!("</{name}>"))?;
+        Some(text[start..start + end].to_string())
+    };
+    line.split("<task-notification>")
+        .skip(1)
+        .filter_map(|note| {
+            let text = note.split("</task-notification>").next()?;
+            let status = tag(text, "status")?;
+            Some(TaskNote {
+                call: tag(text, "tool-use-id").filter(|call| call.starts_with("toolu_")),
+                task: tag(text, "task-id"),
+                ends: status != "starting",
+                interim: text.contains("may be interim"),
+                text,
+            })
+        })
+        .collect()
+}
+
+/// The background calls a raw Claude record says have ended: each
+/// notification that names its call and ends it (`claude_task_notes`).
+fn claude_tasks_ended(line: &str) -> Vec<String> {
+    claude_task_notes(line).into_iter().filter(|note| note.ends).filter_map(|note| note.call).collect()
+}
+
+/// Which of `outputs` some process still holds open — a background shell
+/// writes its output file until it exits, and a CLI that quit took its
+/// shells with it without a notification. Read off `/proc/<pid>/fd`, whose
+/// links name the file as the process sees it — the path its CLI wrote down,
+/// inside a fence or a container too. Elsewhere nothing is known to run.
+fn running_outputs(outputs: &[&str]) -> std::collections::HashSet<String> {
+    let mut open = std::collections::HashSet::new();
+    if outputs.is_empty() || !cfg!(target_os = "linux") {
+        return open;
+    }
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return open;
+    };
+    for proc in procs.flatten() {
+        if !proc.file_name().to_str().is_some_and(|name| name.bytes().all(|b| b.is_ascii_digit())) {
+            continue;
+        }
+        let Ok(fds) = std::fs::read_dir(proc.path().join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            if let Ok(target) = std::fs::read_link(fd.path()) {
+                if let Some(output) = outputs.iter().find(|output| target.as_os_str() == **output) {
+                    open.insert(output.to_string());
+                }
+            }
+        }
+        if open.len() == outputs.len() {
+            break;
+        }
+    }
+    open
+}
+
+/// The tool calls a Claude `user` record carries the results of.
+fn claude_tool_results(value: &Value) -> Vec<String> {
+    if value.get("type").and_then(Value::as_str) != Some("user") {
+        return Vec::new();
+    }
+    let Some(Value::Array(blocks)) = value.get("message").and_then(|m| m.get("content")) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str).map(str::to_string))
+        .collect()
 }
 
 /// What one record contributes.
@@ -694,6 +1183,10 @@ enum Record {
     Plan(String),
     /// A subagent spawned by tool call `call`, sent to do `task`.
     Spawn { call: String, task: String, kind: Option<String> },
+    /// A shell command started by tool call `call`.
+    Shell { call: String, shell: RunningShell },
+    /// Questions put to the user by tool call `call`, not yet answered.
+    Question { call: String, questions: Vec<AskedQuestion> },
 }
 
 /// A subagent's entry: its task as one bounded line, its kind beside it.
@@ -751,8 +1244,8 @@ fn clean_text(raw: &str) -> Option<String> {
 /// reading the last-prompt line makes — tool results, meta notes and
 /// reminders are not), a prompt the user queued mid-turn (the prompt chart's
 /// reading), or an `assistant` record's text blocks, the plan its
-/// `ExitPlanMode` call put up and the subagents its `Agent` calls spawned.
-/// Thinking and other tool-use blocks are stepped over, as is a sidechain (a
+/// `ExitPlanMode` call put up, the subagents its `Agent` calls spawned and
+/// the questions its `AskUserQuestion` calls asked. Thinking and other tool-use blocks are stepped over, as is a sidechain (a
 /// subagent's) record.
 fn claude_records(value: &Value) -> Vec<Record> {
     let sidechain = value.get("isSidechain").and_then(Value::as_bool) == Some(true);
@@ -779,7 +1272,10 @@ fn claude_records(value: &Value) -> Vec<Record> {
                         .filter_map(|b| b.get("text").and_then(Value::as_str))
                         .collect::<Vec<_>>()
                         .join("\n\n"),
-                    blocks.iter().filter_map(|b| claude_plan(b).or_else(|| claude_spawn(b))).collect(),
+                    blocks
+                        .iter()
+                        .filter_map(|b| claude_plan(b).or_else(|| claude_spawn(b)).or_else(|| claude_shell(b)).or_else(|| claude_question(b)))
+                        .collect(),
                 ),
                 _ => return Vec::new(),
             };
@@ -803,6 +1299,88 @@ fn claude_plan(block: &Value) -> Option<Record> {
     }
     let plan = block.get("input")?.get("plan")?.as_str()?.trim();
     (!plan.is_empty()).then(|| Record::Plan(plan.to_string()))
+}
+
+/// An `AskUserQuestion` `tool_use` block: the questions, with their rows.
+fn claude_question(block: &Value) -> Option<Record> {
+    if block.get("type").and_then(Value::as_str) != Some("tool_use")
+        || block.get("name").and_then(Value::as_str) != Some("AskUserQuestion")
+    {
+        return None;
+    }
+    let call = block.get("id")?.as_str()?.to_string();
+    let field = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).and_then(bounded_line);
+    let questions: Vec<AskedQuestion> = block
+        .get("input")?
+        .get("questions")?
+        .as_array()?
+        .iter()
+        .filter_map(|q| {
+            Some(AskedQuestion {
+                header: field(q, "header"),
+                question: field(q, "question")?,
+                options: q
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|o| Some(AskedOption { label: field(o, "label")?, description: field(o, "description"), chosen: false }))
+                    .collect(),
+                answer: None,
+            })
+        })
+        .collect();
+    (!questions.is_empty()).then_some(Record::Question { call, questions })
+}
+
+/// A question's text cleaned and cut at its bound; `None` when empty.
+fn bounded_line(raw: &str) -> Option<String> {
+    Some(clean_text(raw)?.chars().take(MAX_QUESTION_CHARS).collect())
+}
+
+/// The entry for questions whose call has its result: each answer read off
+/// the result's `answers` (keyed by the question's text as asked) and the
+/// rows it took marked. A call turned down has no answers, and its questions
+/// none.
+fn question_entry(mut questions: Vec<AskedQuestion>, result: Option<&Value>, at: Option<String>) -> Option<TranscriptEntry> {
+    let answers = result.and_then(|r| r.get("answers")).and_then(Value::as_object);
+    for question in &mut questions {
+        question.answer = answers
+            .and_then(|a| a.iter().find(|(asked, _)| bounded_line(asked).as_deref() == Some(question.question.as_str())))
+            .and_then(|(_, answer)| answer.as_str())
+            .and_then(bounded_line);
+        if let Some(answer) = &question.answer {
+            for option in &mut question.options {
+                option.chosen = *answer == option.label || answer.split(", ").any(|part| part == option.label);
+            }
+        }
+    }
+    let text = questions
+        .iter()
+        .map(|q| format!("{}\n→ {}", q.question, q.answer.as_deref().unwrap_or("—")))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    transcript_entry("answer", &text, at).map(|entry| TranscriptEntry { questions, ..entry })
+}
+
+/// A `Bash` `tool_use` block: the command, and the description Claude gave it.
+fn claude_shell(block: &Value) -> Option<Record> {
+    if block.get("type").and_then(Value::as_str) != Some("tool_use")
+        || block.get("name").and_then(Value::as_str) != Some("Bash")
+    {
+        return None;
+    }
+    let call = block.get("id")?.as_str()?.to_string();
+    let input = block.get("input")?;
+    let raw = clean_text(input.get("command")?.as_str()?)?;
+    let cut = raw.chars().count() > MAX_SHELL_CHARS;
+    let command = if cut { raw.chars().take(MAX_SHELL_CHARS).collect() } else { raw };
+    let description = input
+        .get("description")
+        .and_then(Value::as_str)
+        .and_then(clean_text)
+        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(MAX_SHELL_DESCRIPTION_CHARS).collect());
+    Some(Record::Shell { call, shell: RunningShell { command, description, cut, ..Default::default() } })
 }
 
 /// A `tool_use` block that spawns a subagent — `Agent`, `Task` before it was
@@ -895,6 +1473,45 @@ mod tests {
         let wire = serde_json::to_value(&read.entries[2]).unwrap();
         assert_eq!(wire["plan"], true);
         assert!(serde_json::to_value(&read.entries[1]).unwrap().get("plan").is_none());
+    }
+
+    #[test]
+    fn a_claude_question_stays_in_the_chat_with_its_answer_once_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let ask = |id: &str, question: &str| {
+            format!(
+                "{{\"type\":\"assistant\",\"timestamp\":\"2026-10-02T10:00:00Z\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"AskUserQuestion\",\"input\":{{\"questions\":[{{\"question\":\"{question}\",\"header\":\"Pick\",\"options\":[{{\"label\":\"Red\",\"description\":\"Warm\"}},{{\"label\":\"Blue\"}}],\"multiSelect\":true}}]}}}}]}}}}\n"
+            )
+        };
+        let mut text = String::from("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"ask me\"}}\n");
+        text += &ask("toolu_A", "Which colours?");
+        text += "{\"type\":\"user\",\"timestamp\":\"2026-10-02T10:01:00Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_A\",\"content\":\"Your questions have been answered\"}]},\"toolUseResult\":{\"answers\":{\"Which colours?\":\"Red, Blue\"}}}\n";
+        text += &ask("toolu_B", "Which one?");
+        text += "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_B\",\"content\":\"The user doesn't want to proceed\",\"is_error\":true}]},\"toolUseResult\":\"User rejected tool use\"}\n";
+        text += "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Noted.\"}]}}\n";
+        // Still waiting: the live screen shows it, the chat does not yet.
+        text += &ask("toolu_C", "Still open?");
+        std::fs::write(&path, text).unwrap();
+        let read = read_transcript(&path, TranscriptKind::Claude, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(
+            kinds(&read),
+            vec![("prompt", "ask me"), ("answer", "Which colours?\n→ Red, Blue"), ("answer", "Which one?\n→ —"), ("answer", "Noted.")]
+        );
+        let answered = &read.entries[1];
+        // Placed at the question's own time, not the answer's.
+        assert_eq!(answered.at.as_deref(), Some("2026-10-02T10:00:00Z"));
+        assert_eq!(answered.questions.len(), 1);
+        let question = &answered.questions[0];
+        assert_eq!(question.header.as_deref(), Some("Pick"));
+        assert_eq!(question.answer.as_deref(), Some("Red, Blue"));
+        assert_eq!(question.options.iter().map(|o| (o.label.as_str(), o.chosen)).collect::<Vec<_>>(), vec![("Red", true), ("Blue", true)]);
+        assert_eq!(question.options[0].description.as_deref(), Some("Warm"));
+        // Turned down: the question stays, with no answer and no row taken.
+        let declined = &read.entries[2].questions[0];
+        assert_eq!(declined.answer, None);
+        assert!(declined.options.iter().all(|o| !o.chosen));
+        assert!(serde_json::to_value(&read.entries[3]).unwrap().get("questions").is_none());
     }
 
     #[test]
@@ -1182,6 +1799,211 @@ mod tests {
     }
 
     #[test]
+    fn a_background_claude_subagent_runs_until_its_task_notification() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        let spawn = |id: &str| format!("{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Agent\",\"input\":{{\"description\":\"scout {id}\",\"run_in_background\":true}}}}]}}}}\n");
+        let launched = |id: &str| format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":[{{\"type\":\"text\",\"text\":\"Async agent launched successfully.\"}}]}}]}},\"toolUseResult\":{{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"a1\"}}}}\n");
+        let note = |id: &str, status: &str| format!("{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"<task-notification>\\n<task-id>a1</task-id>\\n<tool-use-id>{id}</tool-use-id>\\n<status>{status}</status>\\n</task-notification>\"}}\n");
+        std::fs::write(&main, [spawn("toolu_A"), launched("toolu_A"), spawn("toolu_B"), launched("toolu_B"), note("toolu_A", "completed")].concat()).unwrap();
+        let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        // The launch result is not the report: B is still at work, A is done.
+        assert_eq!(read.entries.iter().map(|e| (e.running, e.finished, e.background)).collect::<Vec<_>>(), vec![(false, true, true), (true, false, true)]);
+        let wire = serde_json::to_value(&read).unwrap();
+        assert_eq!(wire["entries"][1]["background"], true);
+
+        std::fs::write(&main, [spawn("toolu_A"), launched("toolu_A"), note("toolu_A", "starting")].concat()).unwrap();
+        let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        assert!(read.entries[0].running && !read.entries[0].finished);
+    }
+
+    #[test]
+    fn a_background_claude_subagent_works_on_past_an_interim_stop_and_after_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        let spawn = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_A\",\"name\":\"Agent\",\"input\":{\"description\":\"scout\"}}]}}\n";
+        let launched = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_A\",\"content\":\"launched\"}]},\"toolUseResult\":{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"a1\"}}\n";
+        // Queued, then delivered: the same notification twice.
+        let note = |body: &str| {
+            let content = format!("<task-notification>\\n<task-id>a1</task-id>\\n{body}<status>completed</status>\\n</task-notification>");
+            format!("{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"{content}\"}}\n{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{content}\"}}}}\n")
+        };
+        let interim = note("<tool-use-id>toolu_A</tool-use-id>\\n<note>the result below may be interim.</note>\\n");
+        let done = note("<usage>1</usage>\\n");
+        let message = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_M\",\"name\":\"SendMessage\",\"input\":{\"to\":\"a1\",\"message\":\"more\"}}]}}\n";
+        let state = |parts: &[&str]| {
+            std::fs::write(&main, parts.concat()).unwrap();
+            let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+            (read.entries[0].running, read.entries[0].finished)
+        };
+        // An interim stop leaves it at work; the later stop, naming only the
+        // agent, ends it.
+        assert_eq!(state(&[spawn, launched, &interim]), (true, false));
+        assert_eq!(state(&[spawn, launched, &interim, &done]), (false, true));
+        // A message resumes it until it stops again.
+        assert_eq!(state(&[spawn, launched, &done, message]), (true, false));
+        let again = note("<usage>2</usage>\\n");
+        assert_eq!(state(&[spawn, launched, &done, message, &again]), (false, true));
+    }
+
+    #[test]
+    fn a_claude_subagent_runs_until_its_call_has_a_result_and_names_its_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        let spawn = |id: &str| format!("{{\"type\":\"assistant\",\"message\":{{\"model\":\"claude-opus-4-1-20250805\",\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Agent\",\"input\":{{\"description\":\"scout {id}\"}}}}]}}}}\n");
+        let result = |id: &str| format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"done\"}}]}}}}\n");
+        std::fs::write(&main, [spawn("toolu_A"), spawn("toolu_B"), result("toolu_A")].concat()).unwrap();
+        let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(read.entries.iter().map(|e| e.running).collect::<Vec<_>>(), vec![false, true]);
+        assert_eq!(read.model.as_deref(), Some("claude-opus-4-1-20250805"));
+        let wire = serde_json::to_value(&read).unwrap();
+        assert_eq!(wire["entries"][1]["running"], true);
+        assert!(wire["entries"][0].get("running").is_none());
+        assert_eq!(wire["entries"][0]["finished"], true);
+        assert!(wire["entries"][1].get("finished").is_none());
+
+        // A subagent's own file names the model it ran on; Claude's own
+        // `<synthetic>` notes are not one.
+        let sub = dir.path().join("agent-x.jsonl");
+        std::fs::write(
+            &sub,
+            concat!(
+                "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"looking\"}]}}\n",
+                "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"note\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript_in(&sub, TranscriptKind::Claude, &Spawns::None, true, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(read.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(read.tokens, None);
+    }
+
+    #[test]
+    fn a_transcript_counts_the_tokens_of_its_newest_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("agent-x.jsonl");
+        std::fs::write(
+            &sub,
+            concat!(
+                "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":0,\"output_tokens\":5},\"content\":[{\"type\":\"text\",\"text\":\"looking\"}]}}\n",
+                "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":300,\"cache_read_input_tokens\":12000,\"output_tokens\":40},\"content\":[{\"type\":\"text\",\"text\":\"found\"}]}}\n",
+                // A tool result carries no usage of its own.
+                "{\"type\":\"user\",\"isSidechain\":true,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t\",\"content\":\"usage\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript_in(&sub, TranscriptKind::Claude, &Spawns::None, true, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(read.tokens, Some(12_342));
+        assert_eq!(serde_json::to_value(&read).unwrap()["tokens"], 12_342);
+
+        let rollout = dir.path().join("rollout.jsonl");
+        std::fs::write(
+            &rollout,
+            concat!(
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"total_tokens\":800}}}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"total_tokens\":90259}}}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":null}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript_in(&rollout, TranscriptKind::Codex, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(read.tokens, Some(90_259));
+    }
+
+    #[test]
+    fn a_claude_shell_runs_until_its_call_has_a_result_since_the_last_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        let prompt = |text: &str| format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n");
+        let bash = |id: &str, command: &str| format!("{{\"type\":\"assistant\",\"timestamp\":\"2026-10-01T10:00:00Z\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"{command}\",\"description\":\"Run  the\\ntests\"}}}}]}}}}\n");
+        let result = |id: &str| format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"ok\"}}]}}}}\n");
+        std::fs::write(
+            &main,
+            [
+                prompt("first"),
+                // Killed mid-call: never answered, and a new prompt came since.
+                bash("toolu_dead", "sleep 999"),
+                prompt("second"),
+                bash("toolu_done", "ls"),
+                result("toolu_done"),
+                bash("toolu_live", "npm test -- --reporter=dot"),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(read.shells.len(), 1);
+        let shell = &read.shells[0];
+        assert_eq!(shell.command, "npm test -- --reporter=dot");
+        assert_eq!(shell.description.as_deref(), Some("Run the tests"));
+        assert_eq!(shell.at.as_deref(), Some("2026-10-01T10:00:00Z"));
+        assert!(!shell.cut);
+        // A shell call is no bubble of the conversation.
+        assert_eq!(kinds(&read), vec![("prompt", "first"), ("prompt", "second")]);
+        let wire = serde_json::to_value(&read).unwrap();
+        assert_eq!(wire["shells"][0]["command"], "npm test -- --reporter=dot");
+
+        assert!(wire["shells"][0].get("background").is_none());
+
+        std::fs::write(&main, [prompt("first"), bash("toolu_live", "ls"), result("toolu_live")].concat()).unwrap();
+        let read = read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        assert!(read.shells.is_empty());
+        assert!(serde_json::to_value(&read).unwrap().get("shells").is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_claude_background_shell_runs_while_its_output_is_held_open_and_no_notification_ended_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        let output = dir.path().join("tasks").join("b1.output");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        let output_text = output.to_str().unwrap().to_string();
+        let lines = |extra: &str| {
+            [
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"run the server\"}}\n".to_string(),
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-10-01T10:00:00Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_bg\",\"name\":\"Bash\",\"input\":{\"command\":\"npm run dev\",\"run_in_background\":true}}]}}\n".to_string(),
+                format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_bg\",\"content\":\"Command running in background with ID: b1. Output is being written to: {output_text}. You will be notified when it completes.\"}}]}},\"toolUseResult\":{{\"backgroundTaskId\":\"b1\"}}}}\n"),
+                // A later prompt does not end a background shell.
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"and now?\"}}\n".to_string(),
+                extra.to_string(),
+            ]
+            .concat()
+        };
+        let read = |version: Option<&str>| read_transcript_in(&main, TranscriptKind::Claude, &Spawns::None, false, version, DEFAULT_LIMIT).unwrap();
+        std::fs::write(&main, lines("")).unwrap();
+
+        // Nobody holds the output open: its CLI quit and took the shell along.
+        assert!(read(None).shells.is_empty());
+
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::fs::File::create(&output).unwrap())
+            .spawn()
+            .unwrap();
+        let running = read(None);
+        assert_eq!(running.shells.len(), 1);
+        assert_eq!(running.shells[0].command, "npm run dev");
+        assert!(running.shells[0].background);
+        assert!(read(running.version.as_deref()).unchanged);
+
+        // A notification ends it, held open or not.
+        let note = "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"<task-notification>\\n<task-id>b1</task-id>\\n<tool-use-id>toolu_bg</tool-use-id>\\n<status>killed</status>\\n</task-notification>\"}\n";
+        std::fs::write(&main, lines(note)).unwrap();
+        assert!(read(None).shells.is_empty());
+
+        // The shell exits without one: an unchanged file is read again.
+        std::fs::write(&main, lines("")).unwrap();
+        let running = read(None);
+        assert_eq!(running.shells.len(), 1);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let gone = read(running.version.as_deref());
+        assert!(!gone.unchanged);
+        assert!(gone.shells.is_empty());
+    }
+
+    #[test]
     fn a_codex_subagent_is_placed_when_its_thread_was_created() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("state_5.sqlite");
@@ -1227,6 +2049,37 @@ mod tests {
         let bare = dir.path().join("bare.sqlite");
         rusqlite::Connection::open(&bare).unwrap().execute_batch("CREATE TABLE threads (id TEXT)").unwrap();
         assert!(crate::services::codex_store::spawned_threads(&bare, "root").is_empty());
+    }
+
+    #[test]
+    fn a_codex_subagent_rollout_named_as_the_fence_sees_it_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("agent-homes/p1/.codex/sessions");
+        let day = root.join("2026/10/01");
+        std::fs::create_dir_all(&day).unwrap();
+        let id = "01a0f8c9-becb-7461-8d94-0f88165a3b65";
+        let file = day.join(format!("rollout-2026-10-01T20-46-06-{id}.jsonl"));
+        std::fs::write(&file, "").unwrap();
+        let thread = |rollout: &str, id: &str| crate::services::codex_store::SpawnedThread {
+            id: id.into(),
+            task: String::new(),
+            role: None,
+            nickname: Some("Lorentz".into()),
+            created_ms: None,
+            rollout_path: Some(rollout.into()),
+        };
+        let fenced = format!("/home/u/.codex/sessions/2026/10/01/rollout-2026-10-01T20-46-06-{id}.jsonl");
+        let found = codex_rollout_in(&root, &thread(&fenced, id));
+        assert_eq!(found, Some(std::fs::canonicalize(&file).unwrap()));
+        // The path as Tabtivity itself sees it still works.
+        assert!(codex_rollout_in(&root, &thread(file.to_str().unwrap(), id)).is_some());
+        // Never a file of another thread, nor one outside the root.
+        assert!(codex_rollout_in(&root, &thread(&fenced, "01a0f8c9-0000-7461-8d94-0f88165a3b65")).is_none());
+        let outside = dir.path().join(format!("rollout-x-{id}.jsonl"));
+        std::fs::write(&outside, "").unwrap();
+        assert!(codex_rollout_in(&root, &thread(outside.to_str().unwrap(), id)).is_none());
+        let escape = format!("/home/u/.codex/sessions/../../../rollout-x-{id}.jsonl");
+        assert!(codex_rollout_in(&root, &thread(&escape, id)).is_none());
     }
 
     #[test]

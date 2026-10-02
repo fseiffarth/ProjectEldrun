@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
 import { promptClock, promptLines, promptsFromTranscript, scheduleClock } from "../agentPrompts";
-import { ApiError, api, closeTab, deleteOutboxFile, listOutbox, openOutside, outboxFileUrl, reopenTab, reorderTab, type AgentRow, type ClosedTabRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
+import { ApiError, TAB_CREATE_TIMEOUT, api, closeTab, deleteOutboxFile, listOutbox, reopenTab, reorderTab, type AgentRow, type ClosedTabRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
 import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readChoice, writeChoice } from "../prefs";
 import { useRowDrag } from "../rowDrag";
@@ -22,6 +22,7 @@ import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
 import { describeFailure } from "../connection";
 import { installFocusSwipe } from "../terminal/focusSwipe";
+import { BRAND } from "../../../src/lib/brand";
 
 /** The orders this list offers, in the words this screen can use for them. The
  * cross-project Agents list calls `native` "Status", because there the arrival
@@ -87,7 +88,7 @@ function PromptLines({ tab }: { tab: TabRow }) {
     {lines.length === 0
       ? <p className="tab-card-prompt empty">{promptsFromTranscript(tab)
         ? "Nothing read from this session's transcript yet."
-        : "OpenCode's own history is not read yet — prompts sent from Eldrun show here."}</p>
+        : `OpenCode's own history is not read yet — prompts sent from ${BRAND.display} show here.`}</p>
       : lines.map((prompt, index) => {
         const when = promptClock(prompt.at);
         return <p className={index === 0 ? "tab-card-prompt latest" : "tab-card-prompt"} key={`${prompt.at ?? ""}-${index}`}>
@@ -144,7 +145,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** The agent tab being renamed. The desktop owns the tab layout, so the sheet
    * writes through the bridge and the next poll brings the new label back. */
   const [renameTab, setRenameTab] = useState<TabRow | null>(null);
-  /** What the agent sent this project (`eldrun-send` → `.eldrun/outbox/`),
+  /** What the agent sent this project (`tabtivity-send` → `.tabtivity/outbox/`),
    * newest first, behind the header's 🖼. The files belong to the project, not
    * to a session, so this screen reads them by the project: a file sent from a
    * tab that has since been closed is still here. */
@@ -280,12 +281,10 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [fileOpen, galleryOpen]);
-  /** A PDF opens in the browser's own viewer; a picture or text full screen
-   * here — the Focus screen's gallery does the same with the same files. */
-  const openFile = useCallback((file: OutboxFile) => {
-    if (file.kind === "application/pdf") void openOutside(outboxFileUrl({ project: id }, file.name));
-    else setFileOpen(file);
-  }, [id]);
+  /** A picture, a text or a PDF opens full screen here — the Focus screen's
+   * gallery does the same with the same files. A PDF handed to the phone's
+   * own viewer left no way back into the installed app. */
+  const openFile = useCallback((file: OutboxFile) => setFileOpen(file), []);
   /** Removes one file the desktop sent, from the tile's own confirm. The row is
    * dropped here rather than by the next poll — an 8 s wait on a tile that has
    * already been answered reads as the delete not having worked — and the sheet
@@ -305,7 +304,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     const idempotencyKey = pendingKeys.current.get(action) ?? crypto.randomUUID();
     pendingKeys.current.set(action, idempotencyKey);
     try {
-      const body = await api<{ tab: TabRow }>(`/api/v1/projects/${encodeURIComponent(id)}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, ...launch, idempotency_key: idempotencyKey }) });
+      const body = await api<{ tab: TabRow }>(`/api/v1/projects/${encodeURIComponent(id)}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, ...launch, idempotency_key: idempotencyKey }) }, TAB_CREATE_TIMEOUT);
       pendingKeys.current.delete(action);
       terminal(body.tab, launch?.sign_in ? { signIn: true } : undefined);
     } catch (reason) { setError(describeFailure(reason)); void load(); } finally { setCreating(false); }
@@ -320,7 +319,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   };
   /** Close on the tap, as the desktop's × does — no sheet in between. It is the
    *  same act on both surfaces, through the same desktop seam: the tab leaves
-   *  the Eldrun window and the local tmux session it minted ends with it (a
+   *  the Tabtivity window and the local tmux session it minted ends with it (a
    *  session on a remote host keeps running). */
   const close = async (tab: TabRow) => {
     setClosingId(tab.id);
@@ -332,7 +331,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       if (tab.kind === "agent") void load();
     } catch (cause) {
       setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
-        ? "Open desktop Eldrun to close a tab."
+        ? `Open desktop ${BRAND.display} to close a tab.`
         : "The tab could not be closed.");
     } finally {
       setClosingId(null);
@@ -380,7 +379,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     } catch (cause) {
       setDetail((prev) => prev ? { ...prev, tabs: applyServerOrder(prev.tabs, (row) => row.id, before) } : prev);
       setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
-        ? "Open desktop Eldrun to rearrange tabs."
+        ? `Open desktop ${BRAND.display} to rearrange tabs.`
         : "The tab could not be moved.");
     } finally {
       moving.current = false;
@@ -467,7 +466,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {detail && !detail.desktop_available && <p className="notice">{t("mobile.project.desktopUnavailable")} {isUntested("mobile.headless.tabs") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
     {error && <p className="error">{error}</p>}
     {projectInbox.view}
-    {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the Eldrun window follows. {isUntested("mobile.project.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
+    {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the {BRAND.display} window follows. {isUntested("mobile.project.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
     <section className="cards">{tabs.map((tab) => <div
       className={`tab-card${tabColorCss(tab.color) ? " has-tab-color" : ""}${agentModeClass(tab)}${drag.rowClass(tab.id)}`}
       key={tab.id}
@@ -557,6 +556,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {newTabOpen && detail && <NewTabSheet
       projectId={id}
       agents={detail.agents}
+      shells={detail.shells === true}
       busy={creating}
       headless={!detail.desktop_available}
       onClose={() => setNewTabOpen(false)}

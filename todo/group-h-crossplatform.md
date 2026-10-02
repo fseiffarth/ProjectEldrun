@@ -27,7 +27,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     unhandled-exception crash hook (30g) are all built now. Remaining:
     validate a real build/runtime on Win 10 1903+ and Win 11 (incl. ConPTY
     behavior in xterm.js). (Browser download-preference editing was removed —
-    Eldrun no longer touches any browser's download path; see #60.)
+    Tabtivity no longer touches any browser's download path; see #60.)
 
     **Cross-platform detection audit (2026-06-27).** A sweep for Linux-only code
     paths that broke on Windows, fixing the directly-portable ones and tracking
@@ -131,14 +131,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [x] **30f — VPN-gated projects on Windows.** ✅ Done — and since upgraded
       twice: first from the original graceful-degradation stub to a **real
       backend** (direct `openvpn.exe` spawn — worked only from an elevated
-      Eldrun), then (2026-07-16) to an **unelevated interactive-service flow**:
+      Tabtivity), then (2026-07-16) to an **unelevated interactive-service flow**:
       `connect_streaming` now asks `OpenVPNServiceInteractive` over
       `\\.\pipe\openvpn\service` first (UTF-16LE startup message; the SYSTEM
       service spawns `openvpn.exe` with the user's token and does the
       privileged adapter/route work itself via `--msg-channel`), readiness is
       tailed from `--log` via the shared `wait_for_ready_logfile`, and teardown
       is a user-level `taskkill` + dropping the control pipe (the service
-      reverts routes via its undo lists — and kills the tunnel if Eldrun dies,
+      reverts routes via its undo lists — and kills the tunnel if Tabtivity dies,
       so it can't outlive the app). Non-admins need one-time membership in the
       "OpenVPN Administrators" local group (the refusal message says exactly
       that, with the `net localgroup` one-liner); the direct spawn remains only
@@ -148,7 +148,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `cargo test --lib openvpn` passes on Windows
         (svc startup-message encoding, reply parsing, cmdline quoting)
       - [ ] 🖐️ Manual test — connect a VPN-gated project from an *unelevated*
-        Eldrun with `OpenVPNServiceInteractive` running (expect the group-
+        Tabtivity with `OpenVPNServiceInteractive` running (expect the group-
         membership refusal first if not in "OpenVPN Administrators")
         - [ ] ✅ Works on Linux (X11)
         - [ ] ❌ Doesn't work on Linux (X11)
@@ -221,9 +221,9 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       🧪 CI-unverified). Password auth no longer hard-requires `sshpass`: when
       the installed OpenSSH honors `SSH_ASKPASS_REQUIRE` (≥ 8.4 —
       `parse_openssh_version` + `version_supports_askpass_require`, probed once
-      via `ssh -V` in `ssh_supports_askpass`), Eldrun writes an
+      via `ssh -V` in `ssh_supports_askpass`), Tabtivity writes an
       `ap-{pid}-{seq}.cmd` shim that echoes the secret through **PowerShell**
-      from the child-only `ELDRUN_ASKPASS` env var (never `@echo %VAR%` — cmd
+      from the child-only `TABTIVITY_ASKPASS` env var (never `@echo %VAR%` — cmd
       would re-parse `& | < > ^` in a password). Win10-inbox OpenSSH 8.1 falls
       back to `sshpass`; with neither, a clear "needs OpenSSH 8.4+ or sshpass"
       error. All three password branches (probe, one-shot SFTP, pooled master)
@@ -266,7 +266,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       ✅ Done). The lone-Meta panel toggle was enabled on Windows, but the lone
       Win key belongs to the OS: Start opens on key *release* at the shell
       level (`preventDefault()` can't stop it), and every global Win+X shortcut
-      pressed while Eldrun is focused fired a lone "Meta" keydown first,
+      pressed while Tabtivity is focused fired a lone "Meta" keydown first,
       spuriously toggling the panels. Lone Super is now Linux-only; Windows
       uses **F9** (`useKeyboard.ts`), and the onboarding/help copy
       (`hints.ts PANEL_TOGGLE_KEY`, `SettingsPanel.tsx`) says so.
@@ -325,7 +325,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       Desktop exists) for nothing on Windows. Now gated on `cfg!(unix)`.
       **Superseded 2026-09-16 by 32a:** the premise went stale when the
       2026-09-03 parity sweep gave containers a Windows path — `up()` has had no
-      OS gate since, so the `cfg!(unix)` guard left crashed-Eldrun containers
+      OS gate since, so the `cfg!(unix)` guard left crashed-Tabtivity containers
       running. The no-spawn intent is preserved by gating on
       `binary_on_path("docker")`, which walks PATH without spawning.
       - [x] 🤖 Automated test — compile-covered; behavior is an early return
@@ -391,7 +391,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         (protected-name matrix, structural main-window guard, park/show pid
         round-trip, `frontmost_at_point` occlusion cases)
       - [ ] 🖐️ Manual test — on a mac: project switch hides/shows foreign apps;
-        Eldrun/Finder/Dock never hidden; quitting Eldrun unhides everything
+        Tabtivity/Finder/Dock never hidden; quitting Tabtivity unhides everything
         - [ ] ✅ Works on Linux (X11)
         - [ ] ❌ Doesn't work on Linux (X11)
         - [ ] ✅ Works on Linux (Wayland)
@@ -484,8 +484,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       skipped Windows on a premise that went stale (see 30o); now gated on
       `binary_on_path("docker")`.
       - [x] 🤖 Automated test — `sweep_should_probe`
-      - [ ] 🖐️ Manual test — kill Eldrun from Task Manager with a container up,
-        relaunch, `docker ps` shows no `eldrun-*`
+      - [ ] 🖐️ Manual test — kill Tabtivity from Task Manager with a container up,
+        relaunch, `docker ps` shows no `tabtivity-*`
         - [ ] ✅ Works on Linux (X11)
         - [ ] ❌ Doesn't work on Linux (X11)
         - [ ] ✅ Works on Linux (Wayland)
@@ -543,7 +543,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         - [ ] ✅ Works on macOS
         - [ ] ❌ Doesn't work on macOS
     - [x] **32e — the phone's sidecar finds tmux.** It spawned bare `tmux`
-      without Eldrun's augmented PATH, so a Homebrew tmux was invisible and the
+      without Tabtivity's augmented PATH, so a Homebrew tmux was invisible and the
       phone's tab list came back empty. The attach keeps its `CommandBuilder`
       with an absolute tmux and no creation flags (they would detach a ConPTY
       child). Windows now short-circuits and says so in Mobile settings.
@@ -602,15 +602,15 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         - [ ] ❌ Doesn't work on Windows
         - [ ] ✅ Works on macOS
         - [ ] ❌ Doesn't work on macOS
-    - [x] **32i — the presenter's sleep inhibitor dies with Eldrun.** It
+    - [x] **32i — the presenter's sleep inhibitor dies with Tabtivity.** It
       spawned `systemd-inhibit … sleep infinity` with nothing tying it to
-      Eldrun and no release on exit, so a quit or crash mid-talk kept the
+      Tabtivity and no release on exit, so a quit or crash mid-talk kept the
       machine awake until logout. Now `systemd-inhibit … cat` holding a piped
       stdin (PDEATHSIG follows the forking *thread*, so it was the wrong tool),
       plus a release in `RunEvent::Exit`.
       - [x] 🤖 Automated test — argv builder; a pipe-close test proving the tie
-      - [ ] 🖐️ Manual test — present, `kill -9` Eldrun, then
-        `systemd-inhibit --list` shows no Eldrun row
+      - [ ] 🖐️ Manual test — present, `kill -9` Tabtivity, then
+        `systemd-inhibit --list` shows no Tabtivity row
         - [ ] ✅ Works on Linux (X11)
         - [ ] ❌ Doesn't work on Linux (X11)
         - [ ] ✅ Works on Linux (Wayland)
@@ -766,7 +766,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       sheet's advertised key follows, one probe per session) and cargo tests on
       `desktop_claims_super`.
     - [ ] 🖐️ Manual test — on GNOME: press Super for the overview and come back
-      to Eldrun with the side panel still there; F9 still toggles it; the F1
+      to Tabtivity with the side panel still there; F9 still toggles it; the F1
       sheet lists F9, not Super. On Cinnamon: Super still toggles.
       - [ ] ✅ Works on Linux (X11)
       - [ ] ❌ Doesn't work on Linux (X11)
@@ -807,7 +807,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] ❌ Doesn't work on macOS
 
 209. **Getting the app onto a machine, and keeping it current.** The two ends
-    of distribution that were never Eldrun's own: what the installer looks
+    of distribution that were never Tabtivity's own: what the installer looks
     like, and how a user learns a newer build exists. Both landed 2026-08-26,
     both code-complete and **live-unverified** — the Windows half cannot be
     checked on Linux at all, and the Linux half needs an AppImage install and a
@@ -827,7 +827,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       rewrite would corrupt a build input.
       - [x] 🤖 Automated test — none possible; the bundler is the only consumer
       - [ ] 🖐️ Manual test — run the CI-built `.exe` on Windows: the setup
-        program wears the Eldrun icon, the welcome/finish page shows the
+        program wears the Tabtivity icon, the welcome/finish page shows the
         sidebar, and the inner pages show the header
         - [ ] ✅ Works on Linux (X11)
         - [ ] ❌ Doesn't work on Linux (X11)
@@ -849,8 +849,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       release-download prefix (the JSON is network input), and **no command
       takes a URL or a path** — the download re-checks for itself and the
       install acts on what the download staged. **Restarting is never
-      Eldrun's**: the AppImage path swaps the running file and says so, the
-      NSIS path hands over to the installer (which offers to close Eldrun), a
+      Tabtivity's**: the AppImage path swaps the running file and says so, the
+      NSIS path hands over to the installer (which offers to close Tabtivity), a
       `.deb`/package-manager copy is only told where the file went.
       - [x] 🤖 Automated test — `services::app_update` (13: version compare,
         pre-release ordering, the URL allowlist incl. a look-alike host, asset
@@ -923,19 +923,19 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         - [ ] ✅ Works on macOS
         - [ ] ❌ Doesn't work on macOS
 
-- [~] **31ad — `eldrun-send`: files from agent terminals to the phone** (2026-09-14;
+- [~] **31ad — `tabtivity-send`: files from agent terminals to the phone** (2026-09-14;
   implemented, pending live QA). Local and
   container tabs get an installed command, scoped root env, and read-only
   mounts. Focus previews images/text/PDF and offers downloads and file sharing.
-  After deliberately restarting Eldrun, verify on the tailnet:
+  After deliberately restarting Tabtivity, verify on the tailnet:
   1. Ask fenced Claude from Focus to render and show a plot; it should run
-     `eldrun-send` itself and the thumbnail should arrive within about 8 s.
-  2. Pipe a test log with `eldrun-send -n tests.log`; open the text chip.
+     `tabtivity-send` itself and the thumbnail should arrive within about 8 s.
+  2. Pipe a test log with `tabtivity-send -n tests.log`; open the text chip.
   3. Send a PDF; it opens a new browser tab.
-  4. Copy a PNG into `.eldrun/outbox/` manually; its thumbnail still appears.
+  4. Copy a PNG into `.tabtivity/outbox/` manually; its thumbnail still appears.
   5. Repeat the log from a container tab.
   6. Send a ZIP; Save downloads and Share offers other apps where supported.
-  7. `eldrun-send --clear` empties the strip; with the desktop closed, existing
+  7. `tabtivity-send --clear` empties the strip; with the desktop closed, existing
      outbox files still list through the sidecar.
   8. Send text named `.png` and an SVG; both preview as inert text.
   9. Focus posts each file into the chat as an agent message (2026-09-15,
@@ -945,7 +945,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
      composer shows only in the Terminal view.
   Windows PowerShell and macOS runtime behavior also require platform QA.
 
-- [ ] **31bs — Every agent CLI learns `eldrun-send` from Eldrun, not the
+- [ ] **31bs — Every agent CLI learns `tabtivity-send` from Tabtivity, not the
   project** (2026-10-01; implemented, never live; the backend needs a restart).
   The hint left the scaffold's `AGENTS.md`. Codex now gets it from the session
   hook like Claude; `services::agent_hint` registers a SessionStart hook for
@@ -955,7 +955,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   hook shape was probed against Copilot CLI 1.0.88 in a fenced tab (the model
   read the context); the rest is from each CLI's hook docs.
   - [ ] 🖐️ In a fresh project tab of each installed CLI, ask "How do you show
-    me a file on my phone?" — it should name `eldrun-send <file>` without
+    me a file on my phone?" — it should name `tabtivity-send <file>` without
     reading any file. Codex needs its `/hooks` trust first; Cursor is known
     upstream to drop session-start context now and then.
     - [ ] ✅ Works on Linux (X11)
@@ -1052,7 +1052,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     swallows the prompt above it, and a columned status row is told from
     prose by *columns* carrying status rather than fields (`classify` reads a
     branch out of the same segment as the path, which scored the ordinary
-    sentence `~/eldrun/projects/app (main)` two and handed the prompt to the
+    sentence `~/tabtivity/projects/app (main)` two and handed the prompt to the
     agent). The same parser feeds the desktop's last-prompt line, so both
     directions reach the prompt chart too.
     Gates: 202 mobile tests, 46 `agent_session` + 4 `agent_transcript` Rust
@@ -1088,9 +1088,9 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   changed). A box was the one scope with its own tabs the phone could not
   see: the sidecar walked `projects.json` only, and the plan listed box scopes
   under "excluded". A box is a scope of its own on the desktop — `box:<id>`,
-  its own `sessions/box_<id>/` file, its own `eldrun-box_<id>--…` tmux names,
+  its own `sessions/box_<id>/` file, its own `tabtivity-box_<id>--…` tmux names,
   tabs that run locally whatever its members are — so it now reaches the
-  phone as one, behind a switch of its own: `eldrun_mobile_access` on the box
+  phone as one, behind a switch of its own: `tabtivity_mobile_access` on the box
   record in `boxes.json`, a **Box access** list under Project access in Mobile
   settings (`set_box_mobile_access`, which also resolves the box folder). The
   sidecar lists an enabled box as a `kind: "box"` row (always "active"; the
@@ -1104,7 +1104,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   so a resumable agent opened in a box becomes attachable like a project's.
   Locked by `MobileBoxAccess.test.tsx`, the `MobileHome` badge case, and the
   `discovery.rs` / `host.rs` box tests.
-  - [ ] 🖐️ Manual phone QA — Settings → Eldrun Mobile → Box access: switch a
+  - [ ] 🖐️ Manual phone QA — Settings → Tabtivity Mobile → Box access: switch a
     box on (a never-opened box gets its folder); the phone's Projects list
     shows it with "▣ box"; open it: the box's shell tabs and a Claude tab
     opened in the box after the switch are listed and attach; a member with
@@ -1183,7 +1183,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     → the row goes and the desktop's Urgent list no longer holds it (the
     message itself untouched, unread state unchanged). Tap the ✓ on the meeting
     → the row goes and the appointment is still in the desktop calendar,
-    listed under the strip's 🔕 count. Then close Eldrun on the desktop and tap
+    listed under the strip's 🔕 count. Then close Tabtivity on the desktop and tap
     a ✓ → "could not be completed", the row still there.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
@@ -1194,14 +1194,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
-- [~] **31g — Eldrun Mobile sidecar on macOS & Windows** (2026-08-26; ✅
+- [~] **31g — Tabtivity Mobile sidecar on macOS & Windows** (2026-08-26; ✅
   Code-complete, ⚠️ needs live QA on real macOS/Windows machines).
-  The separate `eldrun-mobile-host` cargo bin is gone — the sidecar is a copy
-  of the Eldrun binary run with `--mobile-host`, which is also what fixed the
+  The separate `tabtivity-mobile-host` cargo bin is gone — the sidecar is a copy
+  of the Tabtivity binary run with `--mobile-host`, which is also what fixed the
   `package-macos` CI job (Tauri never lipo-merges secondary binaries into a
   `universal-apple-darwin` bundle, so the copy step failed on every macOS
   build). macOS installs a launchd LaunchAgent
-  (`io.github.fseiffarth.eldrun.mobile-host`, `KeepAlive.SuccessfulExit=false`
+  (`io.github.fseiffarth.tabtivity.mobile-host`, `KeepAlive.SuccessfulExit=false`
   ≙ `Restart=on-failure`); Windows registers an HKCU Run-key autostart and
   speaks the admin/desktop control planes over tokio named pipes with a
   same-user token handshake (`services/mobile_control/admin.rs::pipe`) because
@@ -1286,7 +1286,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     project; tap one and land in the session, back out to the list still in
     Agents mode; leave to To-do and return (still Agents); switch to Active and
     return (Projects again); watch a tab's pill follow the desktop as it goes
-    working → question → done; close desktop Eldrun and see the "Desktop
+    working → question → done; close desktop Tabtivity and see the "Desktop
     unavailable" line instead of an empty-and-quiet reading; with everything
     idle, confirm the list is empty and says so
     - [ ] ✅ Works on Linux (X11)
@@ -1443,9 +1443,9 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - **+ → "From this phone"** opens the phone's own picker (camera / photo
     library / files, multiple). Each file is `POST`ed raw to
     `/api/v1/tabs/{id}/inbox` (own 24 MiB body limit) and lands in the tab's
-    project under `.eldrun/inbox/<UTC stamp>-<safe name>` — a folder the
+    project under `.tabtivity/inbox/<UTC stamp>-<safe name>` — a folder the
     desktop already git-ignores, hides from the tree and skips in sync — and
-    the phone writes `@.eldrun/inbox/<file>` into the draft as each one lands.
+    the phone writes `@.tabtivity/inbox/<file>` into the draft as each one lands.
     The reference is *project-relative* on purpose: no host path crosses the
     browser API, and it is what the agent needs from its own cwd. "A project
     file (@)" is the old + behaviour. A pending/failed row sits above the
@@ -1462,8 +1462,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     (the sheet lists the picker, the walk confirms against it) but not painted
     behind it. Closing the sheet resumes the live view.
   - [ ] 🖐️ Manual test — on the phone: + → From this phone → pick a photo →
-    "Sending…" row appears, then `@.eldrun/inbox/….jpg ` lands in the draft and
-    the file is in `<project>/.eldrun/inbox/` on the desktop; send the message
+    "Sending…" row appears, then `@.tabtivity/inbox/….jpg ` lands in the draft and
+    the file is in `<project>/.tabtivity/inbox/` on the desktop; send the message
     and Claude reads the image; pick a >24 MB video → refused without upload;
     + → A project file inserts a bare `@`. Open the Model sheet → the picker
     text does not appear behind the sheet; close it → the view resumes
@@ -1496,10 +1496,10 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     /api/v1/tabs/{id}/desktop-images`): the clipboard's image when there is
     one, then the newest 40 images of the platform's screenshot/picture
     folders (Linux honours `user-dirs.dirs`; macOS lists the Desktop first)
-    and Eldrun's own screenshot staging area — name, folder label, age, size.
+    and Tabtivity's own screenshot staging area — name, folder label, age, size.
     Picking one (`POST …/desktop-images` `{image_id}`) has the desktop copy it
-    into the same `.eldrun/inbox/` a phone upload lands in, and the phone
-    writes `@.eldrun/inbox/<file>` into the draft as it lands, with the same
+    into the same `.tabtivity/inbox/` a phone upload lands in, and the phone
+    writes `@.tabtivity/inbox/<file>` into the draft as it lands, with the same
     pending/failed row as a phone file.
   - **No path crosses.** Each file is named by an opaque id (a hash of its
     path, `services::desktop_images`); attaching re-scans the same folders for
@@ -1509,11 +1509,11 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     transfer timeout cannot exhaust the bridge deadline) and encoded to PNG.
   - [ ] 🖐️ Manual test — take a screenshot on the desktop (or copy an image);
     on the phone: + → From the desktop → the sheet lists "Clipboard image ·
-    W×H" first and the screenshot under "Screenshots"/"Eldrun screenshots" →
-    pick one → "Copying from the desktop…" row, then `@.eldrun/inbox/….png `
-    lands in the draft and the file is in `<project>/.eldrun/inbox/`; send and
+    W×H" first and the screenshot under "Screenshots"/"Tabtivity screenshots" →
+    pick one → "Copying from the desktop…" row, then `@.tabtivity/inbox/….png `
+    lands in the draft and the file is in `<project>/.tabtivity/inbox/`; send and
     Claude reads it. Clear the clipboard, reopen the sheet → no clipboard row.
-    With Eldrun closed → the sheet says the desktop is not answering.
+    With Tabtivity closed → the sheet says the desktop is not answering.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -1530,7 +1530,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   phone serves the bundle baked into the binary). What the Claude Code remote
   app does when its agent reads a screenshot — shows it — done without a
   transcript: a terminal carries no images, so the agent copies the picture
-  into the project's `.eldrun/outbox/` (the inbox's mirror; git-ignored,
+  into the project's `.tabtivity/outbox/` (the inbox's mirror; git-ignored,
   hidden from the tree, skipped by sync, writable under the agent fence) and
   the phone lists that folder.
   - **Sidecar** (`services::mobile_control::outbox`): `GET
@@ -1550,11 +1550,11 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     on the host into a project tree — the thing the inbox's consent design
     guards against); the scaffold's `AGENTS.md` tells agents about the folder.
   - [ ] 🖐️ Manual test — in an agent tab: "take a screenshot of the window
-    and copy it to .eldrun/outbox/" (or `cp` any PNG there) → within ~8 s the
+    and copy it to .tabtivity/outbox/" (or `cp` any PNG there) → within ~8 s the
     phone's Focus view shows a **From the agent** strip with the thumbnail;
     tap → full screen, Close returns; ✕ → strip gone; copy a second image →
     strip returns with only the new one. Put a `.txt` renamed to `.png` there
-    → not listed. With Eldrun closed → the strip still lists what is there.
+    → not listed. With Tabtivity closed → the strip still lists what is there.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -1568,25 +1568,25 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   window** (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ not
   live-verified — the fix reaches the running window only after a deliberate
   restart). Reconnect (and Settings → Mobile's enable) reinstalls the sidecar
-  by copying the running Eldrun binary, and it took its source from
+  by copying the running Tabtivity binary, and it took its source from
   `std::env::current_exe()` — which on Linux is `/proc/self/exe` *resolved to a
   path*. Replace the running image and that path comes back
-  `…/eldrun (deleted)`: `mobile_host_apply` then died at its copy step with
+  `…/tabtivity (deleted)`: `mobile_host_apply` then died at its copy step with
   `read mobile host: No such file or directory (os error 2)` before the service
   manager was asked for anything, so the journal recorded nothing at all and
-  Mobile could not be brought back without relaunching Eldrun. Every way the
+  Mobile could not be brought back without relaunching Tabtivity. Every way the
   binary is replaced under a live window hits it — any `cargo build`/`cargo
-  test` relinking `target/debug/eldrun` under the hot-reload window, the
-  post-commit auto-freeze rewriting `~/.local/share/eldrun/eldrun-dev` under the
+  test` relinking `target/debug/tabtivity` under the hot-reload window, the
+  post-commit auto-freeze rewriting `~/.local/share/tabtivity/tabtivity-dev` under the
   frozen one, an in-app update — i.e. exactly when the user reaches for
   Reconnect, and now on every commit. The source is now the magic link
   itself, which opens the running inode whether or not a path still names it;
   other platforms have no such link and keep `current_exe`. Locked by
   `the_sidecar_is_copied_from_the_running_image_not_a_path_that_can_vanish`.
-  - [ ] 🖐️ Manual test — with Eldrun running, rebuild it (or re-run
+  - [ ] 🖐️ Manual test — with Tabtivity running, rebuild it (or re-run
     `npm run package:dev`) so its binary is replaced, then press Reconnect in
     the Mobile menu: the host restarts (`journalctl --user -u
-    eldrun-mobile-host` shows a fresh `Started`) instead of reporting
+    tabtivity-mobile-host` shows a fresh `Started`) instead of reporting
     `os error 2`, and the phone reaches it again.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
@@ -1602,7 +1602,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   restart first, since the phone serves the bundle baked into the binary).
   Prompted by a real outage: the phone had dropped off the tailnet for a day,
   and the only thing the app could say was "Host unavailable" with a Retry
-  button, which is equally true when the sidecar is dead, when Eldrun itself is
+  button, which is equally true when the sidecar is dead, when Tabtivity itself is
   closed, and when the browser blocked the key store — four different fixes
   behind one sentence.
   - `mobile-web/src/connection.ts` classifies a failed request into one of nine
@@ -1612,7 +1612,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     HTTP error means something *did* answer, and only the sidecar sends a JSON
     `error` code — so a gateway status carrying the bare `request_failed`
     fallback is the proxy's, i.e. the sidecar is not listening, whereas a `503`
-    reading `desktop_unavailable` is the sidecar's own report that Eldrun is
+    reading `desktop_unavailable` is the sidecar's own report that Tabtivity is
     closed. Where the phone genuinely cannot tell two causes apart it names
     both rather than blaming one.
   - Shown on the unavailable splash (title + what to do + the raw `status code`
@@ -1625,8 +1625,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] 🖐️ Manual test — on the phone: turn Tailscale off → "Can't reach your
     desktop" naming Tailscale *and* a sleeping desktop, not "Host unavailable";
     turn airplane mode on → "This phone is offline" instead; with Tailscale up
-    but Eldrun closed on the desktop → an error naming *Eldrun Mobile* /
-    *Eldrun* rather than the phone; each shows a `status code` line
+    but Tabtivity closed on the desktop → an error naming *Tabtivity Mobile* /
+    *Tabtivity* rather than the phone; each shows a `status code` line
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -1712,7 +1712,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   (2026-08-30; ✅ Code-complete, ⚠️ needs live QA on a phone).
   Four changes to `mobile-web/src/screens/Todo.tsx`. **"Hide done" is
   remembered** (`mobile-web/src/prefs.ts`, `localStorage` under
-  `eldrun.mobile.*`) — the screen is remounted by every tab switch, so the
+  `tabtivity.mobile.*`) — the screen is remounted by every tab switch, so the
   toggle was being re-ticked a dozen times a session; the search and the two
   pickers stay transient on purpose, since a filter that outlives the visit
   hides cards nobody chose to hide. **"Hide archived" is new and defaults
@@ -1767,7 +1767,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] 🖐️ Manual phone QA — rename an agent tab from the project screen and
     watch the desktop tab title follow; reopen the PWA and see the new name;
     confirm a blank name cannot be saved and an over-long one is refused; with
-    desktop Eldrun closed the sheet says to open it rather than failing
+    desktop Tabtivity closed the sheet says to open it rather than failing
     silently; no ✎ appears on a shell tab; check the Model/mode/Schedule chips
     read centered in a narrow terminal.
     - [ ] ✅ Works on Linux (X11)
@@ -1822,9 +1822,9 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     nothing; Close tab drops the row and the tab disappears from the desktop
     window; the same for an agent tab, in a project the desktop is *not*
     currently showing, and the desktop's tab strip loses it there too; relaunch
-    Eldrun and the closed tab does not come back; with a phone terminal open on
+    Tabtivity and the closed tab does not come back; with a phone terminal open on
     a tab, close that tab from the desktop and watch the phone say the session
-    is gone rather than hanging; with desktop Eldrun closed the sheet says to
+    is gone rather than hanging; with desktop Tabtivity closed the sheet says to
     open it rather than failing silently.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
@@ -1876,8 +1876,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     already reads, and the 5h + weekly bars with their resets; Terminal shows
     the same panel as the CLI printed it; Refresh re-reads (and says "Cached"
     when it did not); on a Codex tab the sheet still shows the state and the
-    tally but says Codex has no readable usage; with desktop Eldrun closed it
-    names Eldrun rather than "request failed"
+    tally but says Codex has no readable usage; with desktop Tabtivity closed it
+    names Tabtivity rather than "request failed"
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -1976,7 +1976,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ phone QA
   pending). Mail was the one companion surface with no write at all, and the
   reason was the outbound threat model, not the architecture. Two writes now
-  exist behind two separate default-off switches in Settings → Eldrun Mobile
+  exist behind two separate default-off switches in Settings → Tabtivity Mobile
   → *Mail from the phone*: `mail_actions` (mark read/unread, star/unstar via
   `POST …/messages/:id/mark`) and `mail_reply` (a plain-text reply via
   `POST …/messages/:id/reply` where the phone supplies only the text — the
@@ -1997,7 +1997,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       desktop's Sent folder threaded under the original, and the mail to
       arrive at the sender.
     - [ ] 🖐️ Manual test — flip a switch off while the phone has the message
-      open; tap the control; expect the "Switched off in Eldrun" explanation.
+      open; tap the control; expect the "Switched off in Tabtivity" explanation.
 - [x] **31bh — The phone's `done` tag clears when the tab is read** (2026-09-02;
   ✅ verified live on the phone 2026-09-20). The
   `done` pill on the project screen is the desktop's own attention flag, and
@@ -2022,7 +2022,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     finished ring was gone on the desktop tab bar. Traced with a same-user
     client on `desktop-control.sock`: a hand-sent `TabSeen` answers `seen` and
     retires the tag, and the phone's own attach does the same. Still unchecked:
-    a `question` pill surviving a look, and attaching with desktop Eldrun
+    a `question` pill surviving a look, and attaching with desktop Tabtivity
     closed.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
@@ -2033,7 +2033,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 - [~] **31r — The phone comes back where it was** (2026-09-02; ✅ code-complete
-  and automated tests passing, ⚠️ phone QA pending). Eldrun Mobile saved only
+  and automated tests passing, ⚠️ phone QA pending). Tabtivity Mobile saved only
   the terminal it was last *sent into* (`rememberLastTab` fired on the way in
   and nothing ever fired on the way out), so one visit to a terminal became
   every later cold open's landing screen — backing out of it, or spending the
@@ -2074,7 +2074,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] 🖐️ Manual phone QA — add/edit/delete a prompt and see the desktop
     Agents view follow; Send now to an idle agent and watch it typed on the
     desktop; Schedule… lands in the tab sheet with the text; with desktop
-    Eldrun closed the sheet disables writes and says so.
+    Tabtivity closed the sheet disables writes and says so.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -2089,8 +2089,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   button, which manage one-time/daily/weekday definitions through authenticated
   opaque-tab endpoints. The phone sees the desktop time zone but never the raw
   project id, tmux name, path, or schedule target id. With the sidecar still
-  reachable and desktop Eldrun closed, terminal access remains available while
-  the sheet disables writes and says to open desktop Eldrun.
+  reachable and desktop Tabtivity closed, terminal access remains available while
+  the sheet disables writes and says to open desktop Tabtivity.
   - 2026-09-02 fix: "Schedules could not be loaded" / save failing on the phone
     was the desktop answering `tab_not_found` for every restored agent tab —
     the restore path computed the schedule target id on its resume-check helper
@@ -2105,7 +2105,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     desktop restart: both the sidecar and the bridge changed.
   - [ ] 🖐️ Manual phone QA — CRUD a schedule and see the desktop dialog/indicator
     refresh; edit it on desktop and see the open sheet refresh; close desktop
-    Eldrun and verify the explanatory disabled state without losing terminal
+    Tabtivity and verify the explanatory disabled state without losing terminal
     access; verify auth/origin rejection from an unpaired client.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
@@ -2133,8 +2133,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     `target/` rather than `$HOME` on purpose: commits come from agent tabs, where
     `agent_fence` replaces `$HOME` with a tmpfs that dies with the tab — the same
     trap that made the binary install silently evaporate (2026-09-04).
-  - Three guards: opt-in at compile time (`ELDRUN_MOBILE_LIVE_DIR`, set only by
-    `package-dev.sh` and `start-eldrun-tauri-hotreload.sh`, so a released binary
+  - Three guards: opt-in at compile time (`TABTIVITY_MOBILE_LIVE_DIR`, set only by
+    `package-dev.sh` and `start-tabtivity-tauri-hotreload.sh`, so a released binary
     has no overlay path at all); never backwards (an overlay older than
     `MOBILE_ASSETS_BUILT_AT` is refused, so a stale branch cannot shadow a fresh
     binary); all-or-nothing (a bundle missing its shell or its stamped entry is
@@ -2306,7 +2306,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     move could be expressed in. A tab dropped on itself is refused before any
     desktop call.
   - The list rearranges on the drop and reconciles with the order the desktop
-    answers with; a refusal puts the row back and says to open desktop Eldrun.
+    answers with; a refusal puts the row back and says to open desktop Tabtivity.
     The 5 s poll is paused across the write, or a reply carrying the pre-drop
     order would yank the card back for a second.
   - The grip's arrow keys move a tab one place, since a drag is reachable by
@@ -2317,12 +2317,12 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - Needs a rebuild **and** a desktop restart: the sidecar, the bridge and the
     PWA all changed.
   - [ ] 🖐️ Manual phone QA — open a project with three or more tabs, pick
-    **Manual (tab order)**, drag a card to the top and confirm the Eldrun
+    **Manual (tab order)**, drag a card to the top and confirm the Tabtivity
     window's tab bar moved with it; confirm the order survives a pull-to-refresh
     and a relaunch; drag a card past the bottom of the screen and confirm the
     page scrolls under the finger; switch to **Last working** and confirm the
-    grips disappear; close desktop Eldrun and confirm a drag reports "Open
-    desktop Eldrun to rearrange tabs" and puts the card back.
+    grips disappear; close desktop Tabtivity and confirm a drag reports "Open
+    desktop Tabtivity to rearrange tabs" and puts the card back.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -2352,7 +2352,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     OpenCode. Instead the phone reports each composer prompt as it sends it
     (`POST /api/v1/tabs/{id}/prompt` → `DesktopRequest::TabPrompt`), the desktop
     records it in the tab's prompt history, and a tab whose transcript is not
-    read lists its history rows. Empty, the card says prompts sent from Eldrun
+    read lists its history rows. Empty, the card says prompts sent from Tabtivity
     show there. Claude/Codex rows dedupe against transcript adoption.
   - Needs a rebuild **and** a desktop restart (backend + embedded PWA).
   - [ ] 🖐️ Manual phone QA — prompt a Claude tab, open it in Focus → Session:
@@ -2374,7 +2374,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
 
 - [~] **31am — The agent's files live in a gallery, not in the chat** (2026-09-20;
   ✅ code-complete, automated tests passing, ⚠️ not verified on a phone).
-  - What `eldrun-send` puts in `.eldrun/outbox/` no longer renders in the
+  - What `tabtivity-send` puts in `.tabtivity/outbox/` no longer renders in the
     Focus chat, and the **From the agent** strip above the composer is gone:
     a picture between the turns buried the answer that mentioned it, and the
     chat rewrote itself every time a file arrived.
@@ -2390,7 +2390,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     wording the composer and the gallery share.
   - Needs a rebuild of the embedded PWA (`npm run build` did it) and a
     desktop restart to serve it.
-  - [ ] 🖐️ Manual phone QA — on a tab whose agent ran `eldrun-send`: the chat
+  - [ ] 🖐️ Manual phone QA — on a tab whose agent ran `tabtivity-send`: the chat
     holds turns only (no pictures, no cards), and the button beside the tab
     name shows the count. Tap it → the grid, newest first → tap a picture →
     full screen → ✕ → back on the grid → ✕ → back to the chat. Switch to
@@ -2413,7 +2413,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   **⠿ grip** the tab cards wear, and drags into place.
   - The order is **this phone's**, not the desktop's: it is a `localStorage`
     preference (`prefs.ts` → `readOrder`/`writeOrder`, `projectOrder.ts`), so a
-    drag needs no desktop Eldrun, cannot be refused, and leaves the Eldrun
+    drag needs no desktop Tabtivity, cannot be refused, and leaves the Tabtivity
     window's own project pills exactly where their owner put them. Unlike 31ak
     (tab order), nothing crosses the bridge — no route, no sidecar, no protocol
     change, and no desktop restart is needed for it.
@@ -2552,7 +2552,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   way to the desk — the long ones are exactly the ones typed away from it — was
   gone by the time the reader came back to finish it.
   - The draft is now kept on the phone (`mobile-web/src/drafts.ts`,
-    `eldrun.mobile.drafts`), **keyed by tab**: two agent tabs each hold their own
+    `tabtivity.mobile.drafts`), **keyed by tab**: two agent tabs each hold their own
     half-finished thought, and a draft never surfaces in the session it was not
     meant for. Opening a tab restores its own text; an empty composer — sent or
     cleared — forgets it, because there is then nothing to come back to.
@@ -2845,7 +2845,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   needs a rebuild + restart first: the sidecar gained two routes and the phone
   serves the bundle baked into the binary). 31x put the agent's files behind
   the gallery button on one tab's Focus screen, which is where they are least
-  findable: `eldrun-send` is run from whichever tab is to hand, and the reader
+  findable: `tabtivity-send` is run from whichever tab is to hand, and the reader
   who wants the file opened the *project*. A shelf under the tab cards shows
   them where the project is.
   - **Sidecar**: `GET /api/v1/projects/{id}/outbox` and `…/outbox/{name}`,
@@ -2860,13 +2860,13 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     the gallery's own tiles (`OutboxGrid`), newest six, a picture full screen,
     a PDF in the browser's viewer, anything else saved. Past six, **All N
     files** opens the same gallery sheet the Focus button does.
-  - [ ] 🖐️ Manual phone QA — run `eldrun-send <file>` in a project tab (a PNG,
+  - [ ] 🖐️ Manual phone QA — run `tabtivity-send <file>` in a project tab (a PNG,
     a PDF and a `.zip`), open that project on the phone: within ~8 s the shelf
     stands under the tab cards with the newest first; tap the picture → full
     screen, Close returns; the PDF opens in the browser; the zip saves. Send
     seven more → the shelf still shows six and **All 10 files** opens the
     sheet with all of them. Close the tab the files were sent from → the shelf
-    is unchanged. With Eldrun closed → the shelf still lists what is there.
+    is unchanged. With Tabtivity closed → the shelf still lists what is there.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -2884,7 +2884,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   sidecar's catalog changed and the phone serves the bundle baked into the
   binary). Rationale:
   `docs/context/root_console.md` ("On the phone"). Root is a phone scope behind
-  its own default-off switch (Settings → Eldrun Mobile → Root console) and a
+  its own default-off switch (Settings → Tabtivity Mobile → Root console) and a
   gate: with the root MCP tools on it is listed only while write review is
   "all" and root agents are fenced. Approvals stay on the desktop; the phone's
   root row shows the count of waiting proposals.
@@ -2922,7 +2922,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     arrow keys; the head reads `2 / 5 · 48 KB`. PDFs, texts and downloads are
     skipped: they open their own way. The neighbours are fetched ahead so a
     step does not land on a blank. Sizes read `1.4 MB` rather than `1434 KB`.
-  - [ ] 🖐️ Manual phone QA — `eldrun-send` three PNGs and a PDF from one tab,
+  - [ ] 🖐️ Manual phone QA — `tabtivity-send` three PNGs and a PDF from one tab,
     open the gallery: the three pictures are cropped tiles of one shape, none
     squashed. Tap the newest → `1 / 3`, no ‹; tap › → `2 / 3`; swipe left →
     `3 / 3`, no ›; swipe right → back; drag down instead → nothing moves;
@@ -2944,14 +2944,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   verified on a phone — needs a rebuild + restart, the PWA is baked in).
   - The ＋ sheet ends in **Send a file from this phone** (native picker, any
     type, several at once). Each file goes raw to the new
-    `POST /api/v1/projects/{id}/inbox` — the same `.eldrun/inbox/` drop box
+    `POST /api/v1/projects/{id}/inbox` — the same `.tabtivity/inbox/` drop box
     and limits as the Focus composer's + (31n), named by the project because
     that screen has no tab. A row per pick under the header says
-    *In the project as @.eldrun/inbox/<stamp>-<name>* with **Copy** (puts the
+    *In the project as @.tabtivity/inbox/<stamp>-<name>* with **Copy** (puts the
     `@reference ` on the clipboard for an agent's prompt) and ✕.
   - [ ] 🖐️ Manual phone QA — open a project, ＋ → Send a file from this
     phone, pick a PDF and a photo: the sheet closes, two rows say *Sending…*
-    then *In the project as @.eldrun/inbox/…*. Copy → paste into an agent
+    then *In the project as @.tabtivity/inbox/…*. Copy → paste into an agent
     tab's composer → the agent reads the file. Also from a project with every
     tab closed. A >24 MB pick fails at once with *is larger than 24 MB.*
     - [ ] ✅ Works on Linux (X11)
@@ -3013,9 +3013,45 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   sidecar socket, the history replay in ≤64 KB frames, a flooding pane sheds its
   oldest output instead of closing the link (7); the Home list reloads on
   show/online and on a slow retry (8); per-domain bridge mutation queues (9);
-  tmux `prefix None` on Eldrun sessions (decision 5). Not done from the plan:
+  tmux `prefix None` on Tabtivity sessions (decision 5). Not done from the plan:
   the optional `calendar_writes`/`todo_writes` desktop switches (6, "consider")
   — a CalDAV delete from the phone is still guarded by the confirm sheet alone.
+  - [ ] 🖐️ Manual phone QA — slow answers are waited for, and a wedged tmux costs no terminal (2026-10-01; `api.ts` `TAB_CREATE_TIMEOUT` / `MAIL_MESSAGE_TIMEOUT` / `SIGN_IN_CALLBACK_TIMEOUT`, `discovery.rs` `TMUX_LS_TIMEOUT` + carried-forward live map, `pty_bridge.rs` `catalog_unavailable`; ⚠️ never run on a phone; sidecar + PWA rebuild first): (a) open a large mail message for the first time on a slow IMAP account, and ＋ a new agent tab while the desktop is busy → each lands, or fails with its own reason — never "Your desktop didn't answer" followed by the thing having happened anyway. (b) With a terminal open on the phone, `kill -STOP "$(tmux display-message -p '#{pid}')"` for ~20 s, then `kill -CONT` the same pid: the phone's project list keeps its tabs as they were, the open terminal is not closed with "access was withdrawn", and everything resumes. Switching the project's phone access off during the stop still closes the terminal within ~5 s.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — a dead terminal link lets go at once, and a final close looks closed (2026-10-01; `Terminal.tsx` `abandon` / `dropLink` / `reconnectLater`; ⚠️ never run on a phone; PWA rebuild first): (a) with a terminal open, make the link silent without closing it (switch Tailscale off on the phone, or change networks) → within about a minute the composer disables and shows "Reconnecting…", and the session reconnects once the path is back. Lock the phone during such an outage, unlock: within ~5 s the link reconnects rather than the screen staying "connected" with typing going nowhere. (b) Open the same tab from a second phone or browser → the first shows "This session was opened on another device or tab.", its composer is disabled, a prompt still waiting for its ack reads "Not delivered", and it does not reconnect. Known leftover: the disabled composer's placeholder still reads "Reconnecting…" under that sentence.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — a closed desktop is named quickly, and a sidecar restart mid sign-in is ridden out (2026-10-01; `auth.ts` `PROXY_DOWN_RETRIES` / `STALE_CHALLENGE_RETRIES`, `start_desktop_bridge` bind retry + log; ⚠️ never run on a phone; PWA + backend rebuild first): (a) quit desktop Eldrun, then open or unlock Eldrun Mobile → "Eldrun Mobile isn't running on your desktop" after about 3 s, not about 10. (b) Hard to provoke: switch Mobile off and on in Settings while the phone is unlocking on a slow link → the sign-in still lands, no "Your desktop reported an error"; the connect trace on the slow splash shows `session 401 invalid_challenge` followed by a second challenge. (c) With `mobile-control/` made read-only before launch, Eldrun's stderr says `mobile host: desktop bridge cannot listen on …` after about 5 s (Windows: the block only needs to compile — never compile-checked).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — large desktop answers arrive, and a slow upload is not cut (2026-10-01; `protocol.rs` `MAX_DESKTOP_RESPONSE`, `admin.rs` `write_desktop_response`, `limits.rs` `BODY_TIMEOUT`; ⚠️ never run on a phone; backend rebuild + sidecar update first): (a) with the desktop open, open an agent tab with a long session in Focus → the chat loads; open a large To-do board and a busy Calendar month → no "read-only" notice, and adding a card answers with the board rather than "Eldrun isn't running on your desktop" (no duplicate card). (b) On mobile data, ＋ → From this phone → a photo of 10 MB or more → it arrives instead of failing after about 15 s with "Eldrun Mobile isn't running on your desktop".
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - [ ] 🖐️ Manual phone QA — "every second unlock fails, Retry works" (2026-09-27, `mobile.link.unlockRetry`): leave the PWA past the 3-minute lock with the screen off for a few minutes, come back, unlock ten times in a row: each one connects (Connecting… may run ~10 s on a dead connection, then lands) and none shows the failure splash; when a splash does show, Retry connects without asking for the fingerprint again. Phone-bundle-only change: commit, let the dev build publish, pull to refresh.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
@@ -3043,7 +3079,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
-  - [ ] 🖐️ Manual phone QA — open the PWA with the desktop closed: the app's own "Eldrun Mobile isn't running on your desktop" splash, never the proxy's 502 page (step 3).
+  - [ ] 🖐️ Manual phone QA — open the PWA with the desktop closed: the app's own "Tabtivity Mobile isn't running on your desktop" splash, never the proxy's 502 page (step 3).
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -3088,7 +3124,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
-  - [ ] 🖐️ Manual phone QA — quit the desktop with the sidecar up, then open a project: prose ("Eldrun isn't running on your desktop."), never `Error: desktop_unavailable`; the status sheet's usage error reads as a sentence too (step 4).
+  - [ ] 🖐️ Manual phone QA — quit the desktop with the sidecar up, then open a project: prose ("Tabtivity isn't running on your desktop."), never `Error: desktop_unavailable`; the status sheet's usage error reads as a sentence too (step 4).
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -3129,7 +3165,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   ✅ code-complete, automated tests passing — `MobileOutboxPosts.test.ts`,
   `MobileFocusOutboxGallery.test.tsx`; ⚠️ not verified on a phone). Reverses
   31am's "never in the chat" at the user's request, but not back to 31bd's
-  file cards: what `eldrun-send` puts out shows in the Focus chat (stored
+  file cards: what `tabtivity-send` puts out shows in the Focus chat (stored
   session) as a picture bubble — thin rim, no filename, the time over its
   corner — and one send of several files is one album bubble (2 side by
   side, 3 as one wide over two, 4+ as a 2×2 whose last tile reads "+N").
@@ -3273,7 +3309,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   agent. For that, in a Mobile-access project/box: local tabs are tmux-wrapped
   (`agent` token), and the `ollama launch` tabs record their launch line
   (`TabEntry.localLaunch`) and so **restore after a desktop restart** — as a
-  fresh conversation after a clean quit (which reaps Eldrun's tmux
+  fresh conversation after a clean quit (which reaps Tabtivity's tmux
   sessions); after a crash the tmux session still holds the agent. The
   backend re-validates the line against its driver table on every load
   (`ollama::local_launch_line_ok`); a folder copy never brings one back.
@@ -3285,7 +3321,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] 🖐️ Manual phone QA — set a "tabs" local model; in a Mobile project
     Project ＋ → Local model group lists Mistral + the installed drivers →
     Claude Code → the tab opens on the phone and answers; it shows on the
-    desktop as "<model> · Claude Code". Quit and restart desktop Eldrun →
+    desktop as "<model> · Claude Code". Quit and restart desktop Tabtivity →
     the tab is back (a fresh conversation) and the phone lists it again;
     a Mistral tab comes back resumed. With
     the model unloaded, the group says it isn't on the GPU and a start loads
@@ -3309,7 +3345,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   engine sends each fresh reminder (not snooze wake-ups, not muted calendars)
   through admin `notify`; the sidecar encrypts per phone and POSTs to the
   vendor push service; `sw.js` shows it and a tap opens Calendar. First use of
-  the Web Push channel from `docs/eldrun_mobile_future_plan.md` §A — agent
+  the Web Push channel from `docs/tabtivity_mobile_future_plan.md` §A — agent
   `question`/`done` edges can ride it next.
   - Needs the sidecar updated (Settings → Mobile offers it after a rebuild)
     and the PWA rebuilt (`npm run mobile:bundle`). Untested id
@@ -3318,10 +3354,20 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     whether iOS delivers while the Home Screen app is fully closed.
   - [ ] 🖐️ Manual phone QA — phone Calendar → Reminders → On, with event
     details → allow notifications. On the desktop make an event 16 min out
-    with a 15-minute reminder; close Eldrun Mobile on the phone; within a
+    with a 15-minute reminder; close Tabtivity Mobile on the phone; within a
     minute of the reminder the phone shows title · time · place. Tap → app
     unlocks onto Calendar. Switch to "without details" → next reminder says
     only "Calendar reminder". Revoke the phone on the desktop → no more.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+  - [ ] 🖐️ Manual phone QA — a lapsed subscription comes back by itself (2026-10-01; `push.rs` lapsed records, `refreshPush`; ⚠️ never run on a phone; sidecar + PWA rebuild first): with Reminders on, drop the browser's subscription behind Eldrun's back — in the phone's site settings for Eldrun Mobile switch Notifications off and on again (permission is granted again, the subscription is gone) — then trigger one reminder: nothing arrives, and `mobile-control/push.json` shows the row with `"lapsed": true` and empty keys. Reopen Eldrun Mobile and sign in — no prompt — and the next reminder arrives with the same details choice as before. Reminders → Off still removes the row whole.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -3363,12 +3409,22 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+  - [ ] 🖐️ Manual phone QA — a pocketed phone still gets the notice (2026-10-01; `TerminalControl::Visibility` / `TerminalEvent::Features`, `TerminalRegistry::is_watched`; ⚠️ never run on a phone; sidecar + PWA rebuild first): Agents → "Also when one finishes a turn". Open an agent tab on the phone, send a prompt, switch to another app (or lock the screen) before the turn ends → the "Finished …" notice arrives, and the tab's row still reads unread/done on the desktop until the phone is looked at again. Back in the tab, with the page in front: the next finished turn does not notify. Coming back from the other app must not replay the history (the socket was kept).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 - [~] **31bo — Read-only project files on the phone** (2026-09-28;
   ✅ code-complete, automated tests passing — `files.rs` (sealed tokens bound
   to the project, no link anywhere on the path, hidden names, 500-entry cap,
   24 MiB head for text), host test `the_file_browser_is_off_by_default_and_…`,
   `MobileProjectFiles.test.tsx`; ⚠️ never run on a phone). Plan §D of
-  `docs/eldrun_mobile_future_plan.md`, re-evaluated: one host-wide switch
+  `docs/tabtivity_mobile_future_plan.md`, re-evaluated: one host-wide switch
   **Settings → Mobile → Project access → Project files on the phone** (default
   off) instead of a per-project flag; files open in the outbox's viewer.
   Untested ids `mobile.projectFiles`, `mobile.files.browse`.
@@ -3404,8 +3460,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   the old copy as before. Why: 31bo's project files stayed invisible behind an old copy
   until Update host was clicked. A debug window copies its ~700 MB image on
   each launch that is behind.
-  - [ ] 🖐️ Manual QA — with Mobile on, relaunch Eldrun after a new build →
-    `journalctl --user -u eldrun-mobile-host` shows a restart right after the
+  - [ ] 🖐️ Manual QA — with Mobile on, relaunch Tabtivity after a new build →
+    `journalctl --user -u tabtivity-mobile-host` shows a restart right after the
     launch, Settings → Mobile no longer offers Update host, and a new route
     (e.g. 31bo's project files) works without clicking anything. Relaunch again with no new
     build → no restart.
@@ -3477,6 +3533,119 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     "Interrupted", the status
     sheet says "Interrupted"; no push notice arrives. Send a new prompt → back
     to ▶. With the phone's reduce-motion setting on, nothing moves.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bt — Mark up a PDF or picture on the phone for the agent** (2026-10-01;
+  ✅ code-complete, automated tests passing — `markup.rs`/`markup_pdf.rs` units,
+  host tests `a_markup_submit_bakes_a_copy_…` and `only_the_pdf_frame_may_be_framed_…`,
+  `MobileMarkup.test.ts`, `MobileMarkupView.test.tsx`; ⚠️ never run on a phone
+  or an iPad). Plan `docs/mobile_pdf_markup_plan.md`; its §4.0 spike (the
+  sealed frame and the Pencil on the iPad) was not run first — the checks
+  below are that spike. The bake is Tabtivity's own incremental-update writer,
+  not `lopdf` (no crate could be fetched in the fenced tab). Untested ids
+  `mobile.markup`, `mobile.markup.frame`, `mobile.markup.send`.
+  - Needs the sidecar rebuilt and the PWA rebuilt (`npm run backend:stale`).
+  - [ ] 🖐️ Manual QA, iPad (Home Screen PWA) and Android Chrome — the PWA pairs
+    and runs on the iPad at all. An agent tab on a LaTeX project → swipe right
+    from the left third → open the built PDF → **Mark up**: pages render (no
+    Mark up from the project screen's drawer). A dense page renders in well
+    under ~1 s (else fall back to desktop-rendered pages, plan §4.0); 100+
+    pages scroll without the tab reloading; a PDF with JPX images shows them
+    blank, nothing else broken. With the Pencil: strike a word and write its
+    replacement, circle a figure and write "smaller", highlight a sentence; the
+    page never scrolls or selects text while writing, a resting palm draws
+    nothing, fingers scroll and pinch (the page re-sharpens after the pinch).
+    On the phone without a pen: ✋/✎ switch, in ✎ one finger draws, two scroll.
+    Close and reopen — the ink is still there; the desktop's `.tabtivity/inbox/`
+    has nothing new and the PDF's mtime is unchanged. **Submit** → the chat shows
+    the prompt naming the PDF; the inbox holds `…-marked.pdf` (ink, highlight
+    and note visible in the desktop viewer and another PDF reader) and one
+    layer PNG per marked page; reopening shows no layer. The agent edits the
+    `.tex`, rebuilds and sends the PDF back with `tabtivity-send` into the same
+    chat. Same on a picture (`…-marked.png` + layer) and on a PDF the agent sent
+    (chat bubble → viewer → Mark up). Submit while the agent works → held and
+    delivered like a typed message.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA, iPad (Pencil) and a pen-less phone — markup that handles like the phone's own (2026-10-01; untested id `mobile.markup.native`; ⚠️ never run on a phone; PWA rebuild first): open a PDF from an agent tab, scroll to page 3 and pinch in → **Mark up**: the floating palette appears and the page and zoom stay where they were; **Done** → the palette goes, the marks stay on show, Mark up carries a red dot; ✕ closes the viewer. On the pen-less phone one finger draws at once and two fingers scroll and pinch. On the iPad the first Pencil stroke makes fingers scroll again; ⋯ → "Draw with the pen only" off lets a finger draw, and the choice survives a reload. The colour dot opens the colour choice; ⋯ also holds Clear page. Note tool: tap → new note; tap a note → edit it; drag a note → it follows the finger or Pencil and stays on the page at the edges (with "pen only" on, a finger drag on a note moves it, a finger drag elsewhere scrolls); Undo puts it back. Type a note and tap Done without Add → the note is kept. A picture: Mark up → Done returns to the picture.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA — the Submit prompt is worded only in the phone's settings (2026-10-02; untested id `mobile.markup.instruction`; ⚠️ never run on a phone; PWA rebuild + `backend:stale` first): Home → This phone → **Mark up prompt** reads "Default: list the changes, edit nothing until asked"; mark up a PDF built from a `.tex` beside it and Submit → the agent lists the changes and touches no file (not the `.tex`, not the PDF) until told. Edit the prompt (e.g. "Apply them to the .tex and rebuild"), Save → the row says "Your own" and the next Submit ends with that text instead; **Use the default** brings the default back. The Mark up view itself has no place to edit it.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA, phone — markup rounds: Submit keeps the view open (2026-10-02; plan `docs/pdf_markup_rounds_plan.md`, handoff `docs/pdf_markup_rounds_handoff.md`; untested id `mobile.markup.rounds`; ✅ automated: `MobileMarkupRoundsCore.test.ts`, `MobileMarkupRounds.test.tsx`; ⚠️ never run on a phone; PWA rebuild + `backend:stale` first): an agent tab on a LaTeX project → files drawer → the built PDF → **Mark up** → strike a word → **Submit**: the view stays open, the stroke dims, the pill reads Sent → Agent is working… → Agent finished — PDF unchanged (the default instruction only lists). While it works circle another word and Submit → the pill says Queued, and only the new circle goes out (the chat shows the second prompt). Tell the agent in the chat to make the changes and rebuild → back in the view the pill goes working → "Agent finished — PDF changed" with **Reload PDF** → Reload: the rebuilt pages appear under the layer at the same place, the sent marks stay on show, dimmed, to check each change against — the eraser removes a checked one (⋯ **Show sent marks** hides them, ⋯ **Clear sent marks** drops them; nothing removes one automatically), unsent marks stay. Same on a PDF the agent sent with `eldrun-send` (chat bubble → viewer): Reload picks the newer copy, and closing and reopening that copy shows the layer.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA, desktop — **Mark up** in the desktop PDF viewer (2026-10-02; untested id `desktop.markup`; ✅ automated: `PdfMarkupCore.test.ts`, `PdfMarkupLayer.test.tsx`, `PdfMarkupSubmit.test.tsx`, `PdfMarkupViewer.test.tsx`, Rust `commands::pdf_markup`; ⚠️ never run live; needs a rebuilt Eldrun for `pdf_markup_submit` — `npm run backend:stale`): a local project with an agent tab → open its PDF (or the TeX workspace's PDF) → the toolbar's **✎ Mark up** (beside ▮) → a strip opens under the toolbar; draw with the mouse (pen ✎, highlighter ▭, note T: click to type, Enter adds, drag a note to move it; eraser ⌫ takes whole marks), colours, ↶/↷ and Ctrl+Z / Ctrl+Shift+Z undo strokes (not page edits), Clear page; zoom in/out — marks stay put and sharp; remarks stay visible but don't react, right-click places none; ▮ and the rail are off. **Submit** → the agent tab receives the prompt (`.eldrun/inbox/…-marked.pdf` beside the layer PNGs; open it — the marks are annotations), the strokes dim, the pill follows the tab (Sent / working / asking / Agent finished). While it works add marks and Submit again → typed into its queue at once. Let the agent rebuild the PDF: the pages do **not** repaint under the marks — the status line says the PDF changed → **Reload PDF** brings it at the same zoom and scroll, sent marks still shown dimmed; the eraser removes a checked one, nothing removes one automatically. Two agent tabs: a "Send to" picker lists both, defaulting to the one you looked at last; the pick receives the prompt. No agent tab: Submit disabled with "Open an agent tab in this project to send". The same PDF in a second pane: its Mark up says it is being marked up in another pane. Pending page edits (rail) → Mark up disabled with the reason. Remote project, root console, a box and a popout window: no Mark up button. Quit and restart Eldrun → the unsent marks are still there. A pen tablet draws with pressure; touch draws.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA — **Make these changes** + the desktop's own markup prompts (2026-10-02; plan §2.8; untested ids `mobile.markup.apply`, `desktop.markup.apply`; ✅ automated: `MobileMarkupRounds.test.tsx`, `MobileMarkupRoundsCore.test.ts`, `PdfMarkupSubmit.test.tsx`, `DesktopSettings.test.tsx`, `pdf_markup.rs` tests; ⚠️ never live). Phone: Submit marks → the agent lists the changes → the pill says Agent finished and offers **Make these changes** → tap: the go-ahead appears in the chat as your prompt, the pill follows that turn and offers no second Make these changes; when it finishes, **Reload PDF** leads. Home → This phone → Mark up prompt: the second field changes what the button sends; Use the default resets both. Desktop: Settings → Agents → **PDF markup** shows both prompts starting from the defaults; a changed Mark up prompt ends the next Submit's prompt in the agent tab; **Make these changes** in the markup strip queues the go-ahead into the target tab.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bu — A plain `opencode` tab's chat fills its facts and shows it working** (2026-10-01;
+  ✅ code-complete, automated tests passing — `MobileOpenCodeMini.test.ts`
+  "full TUI composer", `MobileAgentBusy.test.ts`; ⚠️ never run on a phone;
+  untested id `mobile.focus.openCodeComposer`). The phone's chat for a plain
+  (full-screen) OpenCode tab showed `Status Model Mode` placeholders and no
+  working row while it answered: everything read the `--mini` status row
+  only. `openCodeComposer`/`openCodeFullFooter` (`openCodeMini.ts`) now read
+  the full TUI's composer — agent row `Build · <model> <provider> · <variant>`
+  (the provider cut off by its muted colour) and the footer under it
+  (`… esc interrupt …  12.3K (5%)  ctrl+p commands`); `agentBusy` accepts the
+  interrupt hint as a mid-row column. Both OpenCode readers now flip the
+  printed share *used* into context *left*, which the fact button says.
+  Shapes are read from the 1.18.34 source, not a capture (no OpenCode in the
+  fence).
+  - [ ] 🖐️ Manual phone QA (PWA rebuild + restart first) — on a plain
+    `opencode` tab, Chat view: the fact buttons show the model (without its
+    provider), the agent (`build`/`plan`) and, after a first answer, the
+    context left; send a prompt → a "… is working" row shows until the answer
+    lands; the status-line swipe shows the composer's two rows. Tab in the
+    terminal to Plan → the mode follows.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)

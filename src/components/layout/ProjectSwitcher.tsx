@@ -19,7 +19,7 @@ import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useRootOverlayStore } from "../../stores/rootOverlay";
-import { useGitDirtyStore } from "../../stores/gitDirty";
+import { GIT_DOT_TICK_MS, gitDotsDue, useGitDirtyStore } from "../../stores/gitDirty";
 import { useAgentFenceMarksStore } from "../../stores/agentFenceMarks";
 import { projectStations, useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useQuiesce, saverInterval } from "../../stores/power";
@@ -116,17 +116,17 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     };
     // Steering's Escape out of the settings region closes the dialog again.
     const onCloseSettings = () => setShowSettings(false);
-    window.addEventListener("eldrun:open-settings", onOpenSettings);
-    window.addEventListener("eldrun:close-settings", onCloseSettings);
+    window.addEventListener("app:open-settings", onOpenSettings);
+    window.addEventListener("app:close-settings", onCloseSettings);
     return () => {
-      window.removeEventListener("eldrun:open-settings", onOpenSettings);
-      window.removeEventListener("eldrun:close-settings", onCloseSettings);
+      window.removeEventListener("app:open-settings", onOpenSettings);
+      window.removeEventListener("app:close-settings", onCloseSettings);
     };
   }, []);
 
   // The intro wizard's New / Import / Clone buttons open the very dialogs the
   // + menu opens — this bar owns them, so they arrive as a window event (the
-  // `eldrun:open-settings` pattern above) rather than a second copy.
+  // `tabtivity:open-settings` pattern above) rather than a second copy.
   useEffect(() => {
     const onOpenProjectDialog = (e: Event) => {
       const kind = (e as CustomEvent).detail;
@@ -189,16 +189,39 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   );
   const quiesce = useQuiesce();
   // Fast mode withdraws the dots entirely: this is a `git status` per local
-  // project every 12 s, for projects the user is not currently in, and the dot
+  // project every 12–36 s, for projects the user is not currently in, and the dot
   // it feeds is the definition of an aid — the project's own file view says the
   // same thing, on the project being worked in, for free.
   const fastMode = useFastMode();
+  // When each project's dot was last probed. A ref, not effect-local: the effect
+  // re-arms on every focus change (`quiesce`), and probing every project on each
+  // re-arm made an alt-tab cost one `git status` per open project.
+  const gitDotProbedAt = useRef(new Map<string, number>());
   useEffect(() => {
     if (gitDotTargets.length === 0 || fastMode) return;
     const refresh = useGitDirtyStore.getState().refresh;
-    const run = () => gitDotTargets.forEach((t) => void refresh(t.id, t.dir));
+    const tickMs = saverInterval(GIT_DOT_TICK_MS, quiesce);
+    // The project on screen (or every member of the open box) keeps the 12 s
+    // cadence; the rest are probed every third tick (`gitDotsDue`). Read at each
+    // tick, so a switch needs no re-arm.
+    const foreground = (): Set<string> => {
+      const scope = useTabsStore.getState().scope;
+      const box = useBoxesStore.getState().boxes.find((b) => `${BOX_SCOPE_PREFIX}${b.id}` === scope);
+      return new Set(box ? box.member_ids : [scope]);
+    };
+    const run = () => {
+      const now = Date.now();
+      const due = new Set(
+        gitDotsDue(gitDotTargets.map((t) => t.id), foreground(), gitDotProbedAt.current, now, tickMs),
+      );
+      for (const t of gitDotTargets) {
+        if (!due.has(t.id)) continue;
+        gitDotProbedAt.current.set(t.id, now);
+        void refresh(t.id, t.dir);
+      }
+    };
     run();
-    const id = window.setInterval(run, saverInterval(12000, quiesce));
+    const id = window.setInterval(run, tickMs);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gitDotSignature, quiesce, fastMode]);
@@ -516,13 +539,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         // right-click only ever surfaces our own pill context menu.
         onContextMenu={(e) => e.preventDefault()}
       >
-        {/* No leading divider here any more. There used to be one, describing
-            itself as the line between the header's global cluster and the
-            project strip — but that cluster moved to the right of the strip, and
-            `.header-left` draws exactly that line at its own trailing edge. Two
-            hairlines ten pixels apart with nothing between them read as a
-            rendering fault, and the doubling is also what made the clock sit
-            noticeably further from the clock than the pills sit from each other. */}
+        {/* No leading divider: this strip opens the whole bar — its box chip
+            (the Tabtivity logo) is the leftmost thing in the window — so there is
+            nothing on its left to divide it from. */}
         <div
           className={`project-pills-region${pillOverflow.left ? " overflow-left" : ""}${
             pillOverflow.right ? " overflow-right" : ""
@@ -562,7 +581,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           {/* Hairline between the fixed leading segment (★ · ⬡) and the
               scrolling project strip, so the two zones read as two zones. */}
           {/* The pending-proposals count used to stand here as a second copy of
-              the console's own badge. Eldrun's tools and what they propose are
+              the console's own badge. Tabtivity's tools and what they propose are
               the root console's subject, so both live there and only there
               (RootOverlay's ⚿ chip and the ✓ button beside it); the project bar
               keeps its width for the projects. */}

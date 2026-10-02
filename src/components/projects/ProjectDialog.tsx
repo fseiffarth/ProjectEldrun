@@ -37,6 +37,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { IS_WINDOWS, IS_MAC } from "../../lib/platform";
 import { useT } from "../../lib/i18n";
 import { ErrorNote } from "../common/ErrorNote";
+import { NAMES } from "../../lib/brand";
 
 /** OS-appropriate command to install git, used by the one-click "Install git"
  *  prompt shown when creating/importing a git-backed project on a machine with
@@ -89,7 +90,7 @@ export function ProjectDialog({
 }) {
   const t = useT();
   const defaultAgentCmd = useSettingsStore((s) => s.settings?.default_agent_cmd ?? "claude");
-  // A GitHub/GitLab "connection through Eldrun" = a global access token saved in
+  // A GitHub/GitLab "connection through Tabtivity" = a global access token saved in
   // Settings → Git Hosting (the credential publishing actually uses). Used to
   // decide whether picking a "Push to GitHub/GitLab" git type can proceed or
   // should first send the user to set the connection up.
@@ -153,7 +154,7 @@ export function ProjectDialog({
   // so a pending probe never blocks submit or flashes the install banner.
   const [forkCliAvailable, setForkCliAvailable] = useState<boolean | null>(null);
   // Which hosting provider a "Push to GitHub/GitLab" project is published to.
-  // "" follows the Eldrun connection — the Settings → Git Hosting profile URL is
+  // "" follows the Tabtivity connection — the Settings → Git Hosting profile URL is
   // the only provider signal a *global* token carries, same sniff the pill's
   // publish window makes.
   const [publishProvider, setPublishProvider] = useState("");
@@ -265,7 +266,7 @@ export function ProjectDialog({
     : kind === "new" || isCloneImport || mode === "copy"
       ? targetDir
       : sourceDir;
-  // "Push to GitHub/GitLab" was chosen, but no Eldrun connection is set up yet.
+  // "Push to GitHub/GitLab" was chosen, but no Tabtivity connection is set up yet.
   // Here "remote" is the git push target (a hosting service), distinct from the
   // SSH host the files may live on — see the git-hosting hint below.
   const wantsRemoteGit = gitType === "remote-private" || gitType === "remote-public";
@@ -389,7 +390,7 @@ export function ProjectDialog({
   // lost); once a token is saved the `needsGitConnection` notice clears live.
   // Git Hosting is its own settings sub-panel, so open it directly.
   const openGitHostingSettings = () => {
-    window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "git" }));
+    window.dispatchEvent(new CustomEvent("app:open-settings", { detail: "git" }));
   };
 
   useEffect(() => {
@@ -658,7 +659,7 @@ export function ProjectDialog({
     const tabsStore = useTabsStore.getState();
     tabsStore.setScope(project.id);
     for (const [cmd, files] of filesByAgent) {
-      const promptPath = `.eldrun/scaffold-fill-${cmd.replace(/[^a-z0-9_-]/gi, "-")}.md`;
+      const promptPath = `${NAMES.projectDir}/scaffold-fill-${cmd.replace(/[^a-z0-9_-]/gi, "-")}.md`;
       await invoke("write_project_file", {
         projectDir: projectCwd,
         relPath: promptPath,
@@ -681,7 +682,7 @@ export function ProjectDialog({
     const projectCwd = resolveProjectDirectory(project);
     if (!projectCwd) return;
 
-    const promptPath = `.eldrun/project-description-${cmd.replace(/[^a-z0-9_-]/gi, "-")}.md`;
+    const promptPath = `${NAMES.projectDir}/project-description-${cmd.replace(/[^a-z0-9_-]/gi, "-")}.md`;
     await invoke("write_project_file", {
       projectDir: projectCwd,
       relPath: promptPath,
@@ -750,7 +751,7 @@ export function ProjectDialog({
       }
       // House convention: the clone is a visible one-click tab, not a hidden
       // backend call — and this tab runs in the VM (the project is remote, so
-      // the spawn wraps over ssh into /home/eldrun/project).
+      // the spawn wraps over ssh into /home/tabtivity/project).
       const tabsStore = useTabsStore.getState();
       tabsStore.setScope(project.id);
       tabsStore.addTab({
@@ -970,7 +971,7 @@ export function ProjectDialog({
     !conflict &&
     // A new project's folder already exists; the backend would refuse it.
     !(folderExists && newFolderToCheck !== "") &&
-    // "Push to GitHub/GitLab" requires an Eldrun connection first — block submit
+    // "Push to GitHub/GitLab" requires a Tabtivity connection first — block submit
     // until a token is saved (the notice above links to Settings → Git Hosting).
     !needsGitConnection &&
     // git must be installed before a git-backed project (or a clone import) is

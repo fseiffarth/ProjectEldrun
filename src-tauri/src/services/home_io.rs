@@ -1,11 +1,11 @@
 //! Directory-handle-relative I/O inside an agent-writable home.
 //!
-//! Eldrun prepares every agent home **unfenced** — laying in the Eldrun-wide
+//! Tabtivity prepares every agent home **unfenced** — laying in the Tabtivity-wide
 //! layer, registering its hooks, reconciling logins, scrubbing leftovers —
 //! while a fenced agent of that scope may be rewriting the same tree. A path
 //! checked and then used is a race: between `lstat(~/.claude)` and
 //! `rename(tmp, ~/.claude/settings.json)` the agent can swap `.claude` for a
-//! link to the user's real home, and Eldrun's write lands there. Exclusive
+//! link to the user's real home, and Tabtivity's write lands there. Exclusive
 //! temporaries and a `O_NOFOLLOW` on the final component do not close that
 //! window; only doing every operation relative to a directory handle does.
 //!
@@ -93,7 +93,7 @@ impl HomeDir {
 
     #[cfg(unix)]
     fn open_root(path: &Path) -> io::Result<Self> {
-        // The home's own path is Eldrun's (under the state dir); a link in the
+        // The home's own path is Tabtivity's (under the state dir); a link in the
         // middle of *that* path — a symlinked temp dir on macOS, say — is the
         // user's own doing, so the root itself is opened by name.
         let c = cstr(path.as_os_str())?;
@@ -383,7 +383,7 @@ impl HomeFile {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.subsec_nanos())
                     .unwrap_or(0);
-                let tmp = OsString::from(format!(".{name}.eldrun-{pid}-{n}-{nanos:x}.tmp"));
+                let tmp = OsString::from(format!(".{name}.{}-{pid}-{n}-{nanos:x}.tmp", crate::brand::SLUG));
                 let mut file = match self.open_at(
                     &tmp,
                     libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
@@ -547,12 +547,12 @@ mod tests {
         std::fs::rename(home.join(".claude"), home.join(".claude.moved")).unwrap();
         std::os::unix::fs::symlink(&outside, home.join(".claude")).unwrap();
 
-        file.write(b"eldrun").unwrap();
+        file.write(crate::app_slug!().as_bytes()).unwrap();
         file.set_exec_bits(0o111).unwrap();
 
         assert_eq!(std::fs::read_to_string(outside.join("settings.json")).unwrap(), "host");
-        assert_eq!(std::fs::read_to_string(home.join(".claude.moved/settings.json")).unwrap(), "eldrun");
-        assert_eq!(file.read().unwrap(), b"eldrun");
+        assert_eq!(std::fs::read_to_string(home.join(".claude.moved/settings.json")).unwrap(), crate::app_slug!());
+        assert_eq!(file.read().unwrap(), crate::app_slug!().as_bytes());
         file.remove().unwrap();
         assert!(outside.join("settings.json").exists());
         assert!(!home.join(".claude.moved/settings.json").exists());

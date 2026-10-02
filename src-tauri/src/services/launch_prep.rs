@@ -15,6 +15,7 @@
 //! successful spawn; a `PreparedLaunch` dropped without it releases the MCP
 //! token and the Codex resume claim, as a failed spawn always did.
 
+use crate::brand::UPPER;
 use crate::storage;
 use crate::terminal::PtyOptions;
 
@@ -106,7 +107,7 @@ fn scope_root_for<'a>(local: &'a str, remote: Option<&'a str>, mirror: &'a str, 
 /// the no-local-fallback guard is testable: for a VM project a local spawn is
 /// refused outright (the untrusted agent stepping outside the boundary, never
 /// a downgrade), and a spawn while the VM is down refuses with the
-/// `ELDRUN_VM_DOWN` sentinel the frontend turns into a boot action. `None`
+/// `TABTIVITY_VM_DOWN` sentinel the frontend turns into a boot action. `None`
 /// (spawn proceeds) for every non-VM project.
 fn vm_spawn_refusal(
     is_vm: bool,
@@ -126,7 +127,7 @@ fn vm_spawn_refusal(
     }
     if !vm_running {
         return Some(format!(
-            "ELDRUN_VM_DOWN: the VM for this project is not running; tab '{tab_id}' was not spawned. Boot the VM (activate the project or click its lamp) and retry."
+            "{UPPER}_VM_DOWN: the VM for this project is not running; tab '{tab_id}' was not spawned. Boot the VM (activate the project or click its lamp) and retry."
         ));
     }
     None
@@ -184,7 +185,7 @@ pub async fn prepare(
     session_name: Option<String>,
     pool: Option<&crate::services::remote::RemotePoolState>,
 ) -> Result<PreparedLaunch, String> {
-    // Resolve empty cwd to Eldrun's root workspace directory.
+    // Resolve empty cwd to Tabtivity's root workspace directory.
     if opts.cwd.is_empty() {
         let root_dir = storage::root_work_dir();
         std::fs::create_dir_all(&root_dir).map_err(|e| {
@@ -195,6 +196,11 @@ pub async fn prepare(
         })?;
         opts.cwd = root_dir.to_string_lossy().into_owned();
     }
+
+    // A tab saved by an older build names the app's variables by the old
+    // prefix; everything below reads the current names. Nothing to move while
+    // the prefix is unchanged.
+    crate::brand::PAIR.adopt_legacy_env(&mut opts.env);
 
     // The renderer's two authority flags (`sandbox`, `local_only`) are re-derived
     // here from `projects.json` in the state dir — the one project record a
@@ -291,7 +297,7 @@ pub async fn prepare(
     // The tab's scope, for the agent shims a shell tab may run
     // (`services::agent_shim`): its project or box, else the root console.
     opts.env
-        .entry("ELDRUN_SCOPE".into())
+        .entry(crate::app_env!("SCOPE").into())
         .or_insert_with(|| crate::services::agent_home::scope_of(opts.project_id.as_deref()));
     if let Some(pid) = opts.project_id.as_deref() {
         let box_folder = crate::commands::boxes::box_id_of_scope(pid).and_then(|id|
@@ -301,7 +307,7 @@ pub async fn prepare(
         let mirror = crate::services::remote_sync::mirror_dir(pid).to_string_lossy().into_owned();
         let root = scope_root_for(&local, remote.as_ref().map(|r| r.spec.remote_path.as_str()), &mirror, box_folder.as_deref(), opts.local_only);
         if !root.is_empty() {
-            opts.env.entry("ELDRUN_PROJECT_DIR".into()).or_insert_with(|| root.into());
+            opts.env.entry(crate::app_env!("PROJECT_DIR").into()).or_insert_with(|| root.into());
         }
     }
 
@@ -428,12 +434,12 @@ pub async fn prepare(
     // The agent's hooks report its turn state under its tab uid; bind that uid
     // to this PTY so the report reaches the tab's own marks, and drop any
     // record a previous run of the same tab left behind (see agent_turn).
-    let interrupted = match opts.env.get("ELDRUN_TAB_UID").cloned() {
+    let interrupted = match opts.env.get(crate::app_env!("TAB_UID")).cloned() {
         Some(uid) => crate::services::agent_turn::bind_tab(&uid, &opts.id, opts.project_id.as_deref()),
         None => false,
     };
 
-    // Codex resume, without the hook. Codex will not run Eldrun's SessionStart
+    // Codex resume, without the hook. Codex will not run Tabtivity's SessionStart
     // hook until the user trusts it (`/hooks`), and an untrusted hook fails
     // silently — so nothing recorded a tab's live session id and every restored
     // Codex tab came back blank. Follow Codex's own rollout logs instead and
@@ -453,7 +459,7 @@ pub async fn prepare(
                 .is_some_and(|id| crate::services::remote::remote_target_for(id).is_some());
         if let Some(uid) = opts
             .env
-            .get("ELDRUN_TAB_UID")
+            .get(crate::app_env!("TAB_UID"))
             .filter(|_| !is_remote)
             .cloned()
         {
@@ -485,7 +491,7 @@ pub async fn prepare(
     // duplicates so a re-spawn never stacks the flag.
     // Never for the root console: `--remote-control` is what puts a session in
     // the Claude phone app, and the root scope's rights must not be reachable
-    // from a phone by any route (it is absent from Eldrun Mobile's catalog too).
+    // from a phone by any route (it is absent from Tabtivity Mobile's catalog too).
     // Nor for a subcommand (`claude auth login`, a sign-in tab), which refuses
     // the session's flags.
     if opts.cmd == "claude"
@@ -513,6 +519,12 @@ pub async fn prepare(
         // respawn replaces — reap it (cheap no-op for never-containerized tabs).
         crate::services::sandbox::kill_tab_process(&opts.id);
     }
+    // What runs in the tab may still read the app's variables by their old
+    // names (a hook an older build registered in a config the app does not
+    // own, a user's script): export both, here before a wrapper turns the
+    // environment into an argv, and once more before the spawn for what the
+    // wrappers add. A no-op while the prefix is unchanged.
+    crate::brand::PAIR.export_both(&mut opts.env);
     if opts.sandbox && !opts.local_only {
         // Every host, Windows included: the mount destinations and `-w` are
         // spelled for the container by `sandbox::container_path`, so a `C:\`
@@ -571,7 +583,7 @@ pub async fn prepare(
     // Claude's `--name` rather than a `/rename` line typed a few seconds in —
     // which is what anything the user typed meanwhile ran into. Only a spawn
     // still running `claude` here reaches this, i.e. the host's own binary
-    // (fenced or not), the one whose version Eldrun has read; a container or
+    // (fenced or not), the one whose version Tabtivity has read; a container or
     // remote host has its own, and an older one exits on the unknown option.
     // Those, and a host CLI that is too old or not read yet, keep the typed line.
     let named = opts.cmd == "claude"
@@ -626,7 +638,7 @@ pub async fn prepare(
         let scope_id = crate::services::agent_home::scope_of(opts.project_id.as_deref());
         match decision {
             crate::services::agent_fence::FenceDecision::Fenced { .. } if local_agent => {
-                // The scope's Eldrun-owned home (`services::agent_home`), the
+                // The scope's Tabtivity-owned home (`services::agent_home`), the
                 // agent's `$HOME` from here on: bound by the Linux fence, set
                 // by environment where the fence cannot redirect a path.
                 let home = crate::services::agent_home::prepare_scope_home(&scope_id, roots)
@@ -649,7 +661,7 @@ pub async fn prepare(
                 };
                 fenced_registration = Some((opts.id.clone(), scope_id));
             }
-            // The root console's Host session: unfenced, in Eldrun's own
+            // The root console's Host session: unfenced, in Tabtivity's own
             // `host` home, sharing the logins. Never a project's default.
             crate::services::agent_fence::FenceDecision::NotApplicable {
                 reason: crate::services::agent_fence::HOST_SESSION_REASON,
@@ -660,9 +672,9 @@ pub async fn prepare(
                     opts.env.entry(k).or_insert(v);
                 }
                 crate::services::agent_auth::apply_fence_env(&opts.cmd, &mut opts.env);
-                opts.env.insert("ELDRUN_HOST_SESSION".into(), "1".into());
+                opts.env.insert(crate::app_env!("HOST_SESSION").into(), "1".into());
             }
-            // No fence on this platform (Windows): the same Eldrun-owned home
+            // No fence on this platform (Windows): the same Tabtivity-owned home
             // and shared logins, by environment; the rights are the user's.
             crate::services::agent_fence::FenceDecision::NotApplicable { reason: "platform" }
                 if local_agent =>
@@ -694,9 +706,10 @@ pub async fn prepare(
     // Persistent LOCAL (tmux) sessions (TODO #85): a tab that resolved to a LOCAL
     // spawn — i.e. ssh/docker wrapping did NOT rewrite it — and carries a
     // `tmux_session` name is wrapped in a tmux session on this machine, so the run
-    // survives an Eldrun crash and the tab reattaches on restart. A remote tab is
+    // survives a Tabtivity crash and the tab reattaches on restart. A remote tab is
     // now `cmd == "ssh"` (its tmux is inside the remote command) and a container tab
     // is `cmd == "docker"`, so both are skipped. No-op on Windows / without tmux.
+    crate::brand::PAIR.export_both(&mut opts.env);
     #[cfg(unix)]
     if opts.tmux_session.is_some() && opts.cmd != "ssh" && opts.cmd != "docker" {
         crate::services::tmux_local::wrap_pty_options_local(&mut opts);
@@ -748,7 +761,7 @@ mod tests {
     #[test]
     fn vm_down_refuses_with_the_boot_sentinel() {
         let msg = vm_spawn_refusal(true, false, false, "t1").unwrap();
-        assert!(msg.starts_with("ELDRUN_VM_DOWN:"), "{msg}");
+        assert!(msg.starts_with(concat!(crate::app_upper!(), "_VM_DOWN:")), "{msg}");
     }
 
     #[test]
@@ -760,7 +773,7 @@ mod tests {
     fn cwd_within_accepts_project_dir_and_subdirs() {
         assert!(cwd_within("/home/u/proj", Path::new("/home/u/proj")));
         assert!(cwd_within(
-            "/home/u/proj/.eldrun/worktrees/feature-x",
+            concat!("/home/u/proj/.", crate::app_slug!(), "/worktrees/feature-x"),
             Path::new("/home/u/proj")
         ));
     }

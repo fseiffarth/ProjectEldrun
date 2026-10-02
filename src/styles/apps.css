@@ -303,8 +303,8 @@
   align-items: center;
   flex-shrink: 0;
   /* Span the full 40px header row whatever the surrounding cluster does with
-     its children (.header-center stretches them, .header-left/.header-right
-     center them). The button inside stays vertically centered either way — what
+     its children (.header-center stretches them, .header-right centers
+     them). The button inside stays vertically centered either way — what
      this buys is that `top: 100%` on the menu below means "the bottom edge of
      the top bar" for EVERY header menu, not "the bottom edge of a 32px button
      floating somewhere in it". */
@@ -403,7 +403,7 @@
   /* Overflow is conveyed solely by the left/right chevron buttons (toggled from
      JS via the overflow-* classes); a vertical mouse wheel also scrolls this
      horizontally in the webview, so no edge fade or visible scrollbar is used. */
-  --eldrun-scrollbar: none; /* no native bar, and no app-painted thumb either */
+  --app-scrollbar: none; /* no native bar, and no app-painted thumb either */
   -ms-overflow-style: none;
 }
 

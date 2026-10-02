@@ -86,6 +86,7 @@ export function sameReaderLive(a: ReaderLive, b: ReaderLive): boolean {
     && (a.working === null) === (b.working === null)
     && a.working?.elapsed === b.working?.elapsed
     && a.working?.tokens === b.working?.tokens
+    && a.working?.effort === b.working?.effort
     && sameStatus(a.status, b.status);
 }
 
@@ -99,7 +100,7 @@ function sameStatus(a: SessionStatus | null, b: SessionStatus | null): boolean {
  * The model picker the Reader's model chip opened (`/model`, or OpenCode's
  * palette), read off the whole screen: the picker replaces the input box, so
  * it is not in the part `readReaderLive` reads. The phone's model sheet reads
- * it the same way — the session's own rows, not a list Eldrun believes in.
+ * it the same way — the session's own rows, not a list Tabtivity believes in.
  */
 export function readModelPicker(buffer: ReadableBufferLike, agentLabel: string): SelectPrompt | null {
   const { lines } = readableScreen(buffer);

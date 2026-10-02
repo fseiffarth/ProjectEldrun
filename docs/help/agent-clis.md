@@ -4,9 +4,9 @@ title: AI agent CLIs — install, sign in, open
 keywords: [agent, cli, install, claude, codex, gemini, npm, node, manage clis, sign in, login, resume, custom agent, skills]
 ---
 
-Eldrun runs AI coding agents as terminal tabs. It does not bundle them: each
+Tabtivity runs AI coding agents as terminal tabs. It does not bundle them: each
 agent is its vendor's own command-line tool (CLI), installed once per machine.
-Eldrun detects installed CLIs, offers them in every `+` menu, and resumes
+Tabtivity detects installed CLIs, offers them in every `+` menu, and resumes
 their conversations after a restart where the CLI allows it.
 
 ## Install an agent CLI
@@ -16,7 +16,7 @@ their conversations after a restart where the CLI allows it.
    same list is also in **Settings → Agents → Manage CLIs**.
 2. Find the agent. Installed ones are listed first; use the search box for
    the rest.
-3. Click **Install <name>**. Eldrun runs the vendor's official installer and
+3. Click **Install <name>**. Tabtivity runs the vendor's official installer and
    streams its output right there. Alternatively click **Run in terminal** to
    run the same command in a visible terminal tab (in the root console), where
    you can answer prompts such as a sudo password.
@@ -71,13 +71,13 @@ panel links the vendor's install docs. Detailed guides: `claude-code`,
 
 Open the agent's tab; on first start the CLI asks you to sign in (usually a
 browser approval). If no browser opens, copy the sign-in link the CLI prints
-into your browser. You sign in **once per CLI**: agents run in Eldrun's own
-per-project homes, and Eldrun shares each CLI's login file across all of
+into your browser. You sign in **once per CLI**: agents run in Tabtivity's own
+per-project homes, and Tabtivity shares each CLI's login file across all of
 them, so every other project's tab of that CLI is signed in too. If this
 computer already holds a login for the CLI, Settings → Agent sandbox → **Agent
-logins** → *Import from this computer* copies just that file into Eldrun
+logins** → *Import from this computer* copies just that file into Tabtivity
 (never config, skills or MCP entries). The first start of this version does
-that for you, once, for every CLI Eldrun has no login for yet. **Sign out** there forgets it
+that for you, once, for every CLI Tabtivity has no login for yet. **Sign out** there forgets it
 everywhere. A CLI that keeps its login in the system keyring or a database
 (Kiro, Kilo, OpenClaw, Copilot) signs in once per project instead — Copilot's
 case is described under the sandbox below.
@@ -89,7 +89,7 @@ case is described under the sandbox below.
 - The compact list shows Claude, Codex and Gemini by default; change it with
   the "+ tab" chips in the Models & agents menu. **More agents & CLIs…** lists
   every installed agent.
-- The **Default** chip picks the agent Eldrun uses when it must choose one
+- The **Default** chip picks the agent Tabtivity uses when it must choose one
   itself (e.g. filling scaffold files).
 - Root console: agents are off there until you turn on their **Root** chip.
 
@@ -123,14 +123,14 @@ recent conversation. Others start fresh.
 ## Permission modes
 
 Plan mode, auto-accept, sandbox or approval policies are set inside each
-agent's own CLI. Eldrun adds no mode flag and has no mode toggle.
+agent's own CLI. Tabtivity adds no mode flag and has no mode toggle.
 
 ## The agent sandbox and agent homes
 
 Every local agent tab runs inside a filesystem sandbox (bubblewrap on Linux,
 Seatbelt on macOS): the project is writable, your own home folder (SSH keys,
 other credentials, other projects) is hidden, and the agent's `$HOME` is a
-home Eldrun keeps for that project, box or the root console under its state
+home Tabtivity keeps for that project, box or the root console under its state
 directory. Each of those homes holds the agent's own config, transcripts and
 session stores. Deleting a project deletes its agent home.
 
@@ -145,32 +145,32 @@ when it starts, merged into the settings files the CLI writes itself, so a
 model you picked in one project stays picked there. Agents cannot change
 the global config; what an agent changes in its own project's home stays in
 that project and is reset where it overlaps the global config. There is no off switch; if `bwrap` is missing the agent does
-not start, and Eldrun offers `sudo apt install bubblewrap` in a terminal tab.
+not start, and Tabtivity offers `sudo apt install bubblewrap` in a terminal tab.
 
 Typing a CLI's name (`claude`, `cursor-agent`, …) into a shell tab runs it in
 the same sandbox as an agent tab of that project. Running the binary by its
-absolute path is your own shell, your real home, and none of Eldrun's logins.
+absolute path is your own shell, your real home, and none of Tabtivity's logins.
 
 For work that is not a project's — repairing the browser, the printer, this
 machine — the root console's `+` menu has a **Host session** group: the agent
-runs outside the sandbox, with your full rights (`sudo` works), in Eldrun's own `host`
+runs outside the sandbox, with your full rights (`sudo` works), in Tabtivity's own `host`
 home, sharing the logins. Its tab carries a red HOST badge, it is never
 started from the phone, and after a restart it comes back paused until you
 press *Resume without sandbox*.
 
 Windows has no agent sandbox: an agent there runs with your full rights — other
-projects, saved passwords, SSH keys, your browser profile. Eldrun says so
+projects, saved passwords, SSH keys, your browser profile. Tabtivity says so
 before the first agent tab starts and asks you to accept that once; declining
 starts nothing. For a real boundary on Windows, open the project in a
 container.
 
 The sandbox hides the system keyring, so Copilot can't store its login there.
-Eldrun does it instead: run `/login` once in any sandboxed Copilot tab, and
-every sandboxed Copilot tab started after that is signed in. Eldrun keeps the
+Tabtivity does it instead: run `/login` once in any sandboxed Copilot tab, and
+every sandboxed Copilot tab started after that is signed in. Tabtivity keeps the
 sign-in in its own keyring entry, never as plain text. Settings → Agent
 sandbox shows the account and has **Sign out**, which you need before
 switching to a different account. The same rule holds for every shared
-login: a tab that signs in as a different account than the one Eldrun holds
+login: a tab that signs in as a different account than the one Tabtivity holds
 is not adopted until you sign out first.
 
 ## Custom agents and skills

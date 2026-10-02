@@ -5,7 +5,9 @@
 // phone the same toggle sits above a one-column list that is re-mounted by every
 // tab switch, so "hide done" was being asked for again a dozen times a session.
 
-const PREFIX = "eldrun.mobile.";
+import { storageKey } from "../../src/lib/brand";
+
+const PREFIX = storageKey("mobile.");
 
 type FlagStorage = Pick<Storage, "getItem" | "setItem">;
 
@@ -59,8 +61,13 @@ export function writeFlag(name: MobileFlag, value: boolean, storage?: FlagStorag
  * are read for different things: the cross-project Agents list is triage, while
  * a project's own tabs are a place the reader arranges by hand. `mailAccount`
  * is the mail account the Mail tab opens on: an id the desktop handed out,
- * checked against the accounts it lists before it is used. */
-export type MobileChoice = "agentsSort" | "projectTabsSort" | "speechLang" | "mailAccount";
+ * checked against the accounts it lists before it is used. `theme` is the
+ * phone's own theme (`theme.ts`), and `desktopTheme` the desktop's as last
+ * reported, so a cold open that follows it paints right before the bridge
+ * answers. `markupInstruction` is free text rather than a choice — what a
+ * Mark up Submit tells the agent (`markupInstruction.ts`) — kept here all the
+ * same, since it is just as much this phone's own. */
+export type MobileChoice = "agentsSort" | "projectTabsSort" | "speechLang" | "mailAccount" | "theme" | "desktopTheme" | "markupInstruction" | "markupApply";
 
 export function readChoice<T extends string>(name: MobileChoice, accept: (value: unknown) => value is T, fallback: T, storage?: FlagStorage): T {
   try {

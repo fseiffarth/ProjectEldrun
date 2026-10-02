@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useT } from "../../lib/i18n";
+import { useUse24h } from "../../lib/timeFormat";
 import { buildPromptTrail, type TrailPrompt } from "../../lib/agents/prompt/trail";
 import { useAgentPromptsStore } from "../../stores/agents/agentPrompts";
 import { usePromptTrailStore } from "../../stores/agents/promptTrail";
@@ -21,12 +22,14 @@ import { UntestedTag } from "../common/UntestedTag";
 /** Scopes whose history this window already asked for. */
 const historyAsked = new Set<string>();
 
-function clockTime(at: number): string {
+/** A prompt's time on the app's 12/24-hour clock (`lib/timeFormat`: the
+ * setting, else the OS) — the webview's locale is not the desktop's. */
+function clockTime(at: number, use24h: boolean): string {
   const when = new Date(at);
   const today = new Date().toDateString() === when.toDateString();
   return today
-    ? when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : when.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    ? when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: !use24h })
+    : when.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: !use24h });
 }
 
 /** A prompt as one line: its lines joined with a return mark. */
@@ -56,10 +59,12 @@ export function TerminalPromptStrip({
   /** Hand the keyboard back to the terminal (the drop-down closed). */
   onReturnFocus: () => void;
   /** The Reader switch (`TerminalReaderView`), for an agent whose stored
-   * conversation Eldrun reads; absent for any other. */
-  reader?: { open: boolean; onToggle: () => void };
+   * conversation Tabtivity reads; absent for any other. `changes` is the
+   * Reader's Diffs switch (`TerminalReaderChanges`), shown while it is open. */
+  reader?: { open: boolean; onToggle: () => void; changes?: { open: boolean; onToggle: () => void } };
 }) {
   const t = useT();
+  const use24h = useUse24h();
   const tab = useTabsStore((state) => state.tabsByScope[scope]?.find((entry) => entry.key === tabKey));
   const history = useAgentPromptsStore((state) => state.historyByProject[scope]);
   const typed = usePromptTrailStore((state) => state.typedByPty[ptyId]);
@@ -155,7 +160,7 @@ export function TerminalPromptStrip({
           {current.source === "typed" && (
             <span className="prompt-strip-typed" title={t("terminal.promptStrip.typedHint")}>≈</span>
           )}
-          <span className="prompt-strip-time">{clockTime(current.at)}</span>
+          <span className="prompt-strip-time">{clockTime(current.at, use24h)}</span>
           <span className="prompt-strip-nav">
             <button
               type="button"
@@ -204,6 +209,19 @@ export function TerminalPromptStrip({
           </button>
         </>
       )}
+      {reader?.open && reader.changes && (
+        <button
+          type="button"
+          className={reader.changes.open ? "prompt-strip-reader active" : "prompt-strip-reader"}
+          onMouseDown={keepFocus}
+          onClick={reader.changes.onToggle}
+          aria-pressed={reader.changes.open}
+          title={t(reader.changes.open ? "terminal.reader.changesHideHint" : "terminal.reader.changesHint")}
+        >
+          {t("terminal.reader.changes")}
+          <UntestedTag id="terminal.reader.changes" />
+        </button>
+      )}
       {reader && (
         <button
           type="button"
@@ -241,7 +259,7 @@ export function TerminalPromptStrip({
                     onClick={() => pick(i)}
                     title={entry.text}
                   >
-                    <span className="prompt-strip-row-time">{clockTime(entry.at)}</span>
+                    <span className="prompt-strip-row-time">{clockTime(entry.at, use24h)}</span>
                     <span className="prompt-strip-row-text">{oneLine(entry.text)}</span>
                     {entry.source === "typed" && <span className="prompt-strip-typed">≈</span>}
                   </li>

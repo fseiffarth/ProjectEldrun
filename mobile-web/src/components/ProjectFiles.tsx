@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
 import { ApiError, listProjectFiles, type OutboxFile, type ProjectFileEntry, type ProjectFileListing, type ViewerScope } from "../api";
 import { shareAs, useOutboxShare } from "../outboxShare";
 import { sizeLabel } from "../terminal/fileLabels";
 import { installFocusSwipe } from "../terminal/focusSwipe";
-import { OutboxViewer } from "./OutboxViewer";
+import { OutboxViewer, type MarkupTarget } from "./OutboxViewer";
 
 /** One folder on the way down: its sealed token (none for the project root)
  * and the name the reader tapped. */
@@ -57,11 +57,15 @@ function failureKey(reason: unknown): TranslationKey {
  * A drawer from the left edge: the project screen opens it on a left→right
  * swipe, and a right→left swipe over it (or a tap beside it) puts it away.
  */
-export function ProjectFiles({ projectId, label, onClose }: {
+export function ProjectFiles({ projectId, label, onClose, markup }: {
   projectId: string;
   /** The project's name, the trail's first crumb. */
   label: string;
   onClose: () => void;
+  /** An agent tab's drawer offers **Mark up** on its PDFs and pictures; the
+   * project screen's passes none (it has no chat). The drawer finds a
+   * file's newest version itself (`refresh`). */
+  markup?: Omit<MarkupTarget, "projectId" | "place" | "refresh">;
 }) {
   const t = useT();
   const [trail, setTrail] = useState<Crumb[]>([{ name: label }]);
@@ -108,6 +112,15 @@ export function ProjectFiles({ projectId, label, onClose }: {
     return installFocusSwipe(host, { onSwipeRight: () => {}, onSwipeLeft: onClose });
   }, [fileOpen, onClose]);
 
+  /** Mark up's Reload: the open file's folder listed again, for its fresh
+   * token, size and time. The viewer keeps showing it — swapping `fileOpen`
+   * would remount the viewer (its key) and lose the markup's view. */
+  const refresh = useCallback(async (file: OutboxFile): Promise<OutboxFile | null> => {
+    const fresh = await listProjectFiles(projectId, here.token);
+    const entry = fresh.entries.find((candidate) => candidate.kind !== "dir" && candidate.name === file.name);
+    return entry ? asViewerFile(entry) : null;
+  }, [projectId, here.token]);
+
   const open = (entry: ProjectFileEntry) => {
     if (entry.kind === "dir") {
       setTrail((current) => [...current, { token: entry.token, name: entry.name }]);
@@ -119,7 +132,10 @@ export function ProjectFiles({ projectId, label, onClose }: {
   };
 
   if (fileOpen) {
-    return <OutboxViewer key={fileOpen.ref} scope={scope} file={fileOpen} pictures={pictures} onStep={setFileOpen} onClose={() => setFileOpen(null)} />;
+    // The folder trail names the file's layer on the phone; its token cannot.
+    const place = trail.slice(1).map((crumb) => crumb.name).join("/");
+    return <OutboxViewer key={fileOpen.ref} scope={scope} file={fileOpen} pictures={pictures} onStep={setFileOpen} onClose={() => setFileOpen(null)}
+      markup={markup && { ...markup, projectId, place, refresh }} />;
   }
   return <div className="sheet-backdrop files-drawer-backdrop" role="presentation" onClick={onClose}>
     <section ref={drawer} className="option-sheet project-files" role="dialog" aria-modal="true" aria-label={t("mobile.files.title")} onClick={(event) => event.stopPropagation()}>

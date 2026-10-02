@@ -17,14 +17,14 @@ interface Upload {
   id: number;
   name: string;
   state: "sending" | "sent" | "failed";
-  /** The project-relative `.eldrun/inbox/<file>` once it landed. */
+  /** The project-relative `.tabtivity/inbox/<file>` once it landed. */
   reference?: string;
   failure?: string;
 }
 
 /**
  * The project screen's **＋ → Send a file from this phone**: a document into
- * the project's own inbox (`.eldrun/inbox/`, the same drop box the Focus
+ * the project's own inbox (`.tabtivity/inbox/`, the same drop box the Focus
  * composer's **+** fills), for whichever agent works here next — the screen
  * has no session to name, and a project with every tab closed still takes it.
  * `open` must run inside the tap that asked for it (the picker needs the

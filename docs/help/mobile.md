@@ -1,35 +1,35 @@
 ---
 id: mobile
-title: Eldrun Mobile (phone companion)
-keywords: [mobile, phone, files, browse, project files, read-only, tailscale, tailnet, pair, pairing, remote control, pwa, revoke, push, notifications, reminders, agent, question, connecting, not connecting, stuck, force stop, version]
+title: Tabtivity Mobile (phone companion)
+keywords: [mobile, phone, files, browse, project files, read-only, mark up, markup, annotate, pdf, tailscale, tailnet, pair, pairing, remote control, pwa, revoke, push, notifications, reminders, agent, question, connecting, not connecting, stuck, force stop, version]
 ---
 
-Eldrun Mobile is a small companion web app for your phone. It shows the
-projects you opted in, their agent and shell tabs, and one tab at a time as a
-live terminal you can type into — plus a to-do board, read-only mail and a
+Tabtivity Mobile is a small companion web app for your phone. It shows the
+projects you opted in, their agent tabs (and shell tabs, if you allow them),
+and one tab at a time as a live terminal you can type into — plus a to-do board, read-only mail and a
 calendar, and — if you allow it — a read-only look at your projects' files.
-It is a remote control, not a phone-sized Eldrun: no editor, git, browser or
+It is a remote control, not a phone-sized Tabtivity: no editor, git, browser or
 settings.
 
 ## Requirements
 
 - Tailscale on this computer and on the phone. The app is reachable only over
   your own private tailnet, never from the public internet.
-- A Tailscale Serve HTTPS root handler proxying to Eldrun's loopback port, with
-  Funnel off. Eldrun checks this and refuses to start otherwise, saying what is
+- A Tailscale Serve HTTPS root handler proxying to Tabtivity's loopback port, with
+  Funnel off. Tabtivity checks this and refuses to start otherwise, saying what is
   wrong.
 
 ## Set it up
 
 Until Mobile is set up, clicking the Mobile indicator in the header opens a
-**Set up Eldrun Mobile** guide with these same steps and a button for the
+**Set up Tabtivity Mobile** guide with these same steps and a button for the
 Tailscale command.
 
-1. **Install Tailscale on this computer** and sign in. Eldrun itself only
+1. **Install Tailscale on this computer** and sign in. Tabtivity itself only
    ever listens on loopback; Tailscale carries the phone's connection.
 2. **Install the Tailscale app on the phone** (or tablet) and sign in to the
    same tailnet.
-3. **Publish Eldrun privately with Tailscale Serve.** On this computer run
+3. **Publish Tabtivity privately with Tailscale Serve.** On this computer run
    (8742 is the default port; use yours if you changed it in Mobile
    settings):
 
@@ -42,9 +42,9 @@ Tailscale command.
    check `tailscale serve status` first if something else is already served
    there. If Tailscale asks for approval or HTTPS setup, finish it in the
    browser it opens. Use Serve, never Funnel.
-4. **Turn Eldrun Mobile on.** Open **Settings → Remote & mobile → Mobile**,
+4. **Turn Tabtivity Mobile on.** Open **Settings → Remote & mobile → Mobile**,
    press **Detect Tailscale Serve settings**, check the computer name,
-   loopback port and origin it fills in, then switch Mobile on. Eldrun checks
+   loopback port and origin it fills in, then switch Mobile on. Tabtivity checks
    the Serve mapping before it starts the host.
 5. **Choose what the phone may open.** Under **Project access**, switch on the
    projects and boxes the phone may reach. All start off. Only local,
@@ -67,10 +67,10 @@ reopen, because the phone attaches to its terminal session.
 
 ## Using it
 
-- Attaching to a running tab keeps working while the desktop Eldrun is closed
+- Attaching to a running tab keeps working while the desktop Tabtivity is closed
   or restarting.
 - Creating a new tab from the phone goes through the running desktop, so
-  Eldrun must be up.
+  Tabtivity must be up.
 - A paired phone types into a terminal exactly like your keyboard: keep agent
   approval modes conservative while Mobile is on.
 - An agent tab opens as a **Chat**: the conversation as messages, a text box
@@ -80,6 +80,20 @@ reopen, because the phone attaches to its terminal session.
   real terminal. A shell tab has no conversation, so its switch reads
   **Reader** (the screen as text) and **Terminal**. The desktop offers the
   same chat on its agent tabs (help topic `agent-clis`).
+- A PDF or picture in an agent tab's viewer has **Mark up**: draw on it and
+  **Submit** sends the marks to that tab. The view stays open — the sent marks
+  dim, a pill says what the agent is doing, you can keep marking (the next
+  Submit sends only the new marks), and once the agent is done **Reload PDF**
+  shows the rebuilt file under your marks. The sent marks stay until you erase
+  them, so you can check each change. The agent first only lists the changes;
+  tap **Make these changes** to let it go ahead (both prompts: Home → This
+  phone → **Mark up prompt**). The desktop's PDF viewer has the same **Mark up**
+  for local projects, with its own prompts in Settings → Agents → **PDF markup**.
+- **No shells on the phone** (under **Project access**, on by default) keeps
+  the phone to agent tabs: shell tabs are left off its lists, an open one
+  disconnects within seconds, and **＋** offers no shell. Switch it off to
+  see and open shells from the phone — they run as you, with no agent's
+  permission prompts in between.
 
 ## Project files on the phone
 
@@ -96,7 +110,7 @@ read-only: nothing can be changed, moved or deleted from there.
 
 - It covers the projects switched on for Mobile, not boxes or the root
   console.
-- `.git`, `.eldrun` and `.env…` are left out, symbolic links are not shown or
+- `.git`, `.tabtivity` and `.env…` are left out, symbolic links are not shown or
   followed, and a folder shows its first 500 entries.
 - Files up to 24 MiB open; a longer text file shows its first 24 MiB.
 - Switching it off closes the drawer within seconds, without restarting the host.
@@ -104,7 +118,7 @@ read-only: nothing can be changed, moved or deleted from there.
 ## Notifications on the phone
 
 On the phone, open **This phone → Notifications** (or **Calendar → Reminders**)
-and choose what reaches you, even with Eldrun Mobile closed:
+and choose what reaches you, even with Tabtivity Mobile closed:
 
 - **Calendar reminders** — each reminder of the desktop calendar. A tap opens
   the Calendar.
@@ -116,14 +130,14 @@ and choose what reaches you, even with Eldrun Mobile closed:
   place; project and tab), or *Only that something wants you*, for a lock
   screen others can see.
 
-Eldrun must be running on the desktop: it is what notices the reminder or the
+Tabtivity must be running on the desktop: it is what notices the reminder or the
 agent's turn.
 
 - This is the one Mobile feature that leaves your tailnet: notifications travel
   through your phone browser's push service (Google, Apple, Mozilla or
   Microsoft). Each one is encrypted to your phone first, so the service cannot
   read it.
-- On iPhone, add Eldrun Mobile to the Home Screen and open it from there;
+- On iPhone, add Tabtivity Mobile to the Home Screen and open it from there;
   Safari tabs cannot receive notifications.
 - A calendar whose alerts are switched off on the desktop stays silent on the
   phone too. Revoking a phone stops its notifications at once.
@@ -147,7 +161,7 @@ phone's language:
    press Retry.
 4. Only one VPN runs at a time on a phone: another VPN app switched on
    silently takes Tailscale's place.
-5. Still stuck: check the desktop is awake and Eldrun is running on it.
+5. Still stuck: check the desktop is awake and Tabtivity is running on it.
 
 To make it rarer on Android, set Tailscale's battery use to **Unrestricted**
 and turn on **Always-on VPN** for it (search Settings for "VPN", then tap the
@@ -159,8 +173,8 @@ dd-mm hh:mm`), the same line as the home screen's header. After the desktop
 updates, a build time older than the desktop's means the phone is still
 running an old copy: close and reopen the app.
 
-The desktop keeps the phone's server up to date by itself: each time Eldrun
-starts, a server older than Eldrun is replaced (phones reconnect within
+The desktop keeps the phone's server up to date by itself: each time Tabtivity
+starts, a server older than Tabtivity is replaced (phones reconnect within
 seconds). If that fails — Tailscale down, say — the old server keeps running
 and **Update** in the header's Mobile menu (or **Settings → Mobile → Update
 mobile host**) does it by hand; either appears only while the server is behind.

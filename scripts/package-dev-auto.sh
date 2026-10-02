@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Move the frozen "Eldrun (dev)" snapshot to the commit that was just made.
+# Move the frozen "Tabtivity (dev)" snapshot to the commit that was just made.
 #
 # The frozen window is where the day's real work happens, so it is only ever
 # as good as the last time somebody remembered to re-freeze it. A commit is the
@@ -33,17 +33,17 @@
 #   take in this project, because a 3-4 minute release build at full tilt is
 #   felt in every keystroke of the window it exists to serve.
 #
-# It builds and installs; it NEVER launches or stops Eldrun (user, 2026-07-29).
+# It builds and installs; it NEVER launches or stops Tabtivity (user, 2026-07-29).
 # A running frozen instance keeps its old inode and picks the new snapshot up
 # on its next launch, which is what the completion notification says.
 #
 # Off switch, in order of scope:
-#   git config eldrun.autoDevBuild false   # this clone, permanently
+#   git config tabtivity.autoDevBuild false   # this clone, permanently
 #   package-dev-auto.sh --pause            # until --resume (the dev-build chip's
 #                                          # "Pause auto-builds"); also cancels a
 #                                          # running compile to free the machine
-#   ELDRUN_NO_AUTO_DEV_BUILD=1 git commit  # one commit
-# Log: ~/.local/share/eldrun/package-dev-auto.log (the last build's output).
+#   TABTIVITY_NO_AUTO_DEV_BUILD=1 git commit  # one commit
+# Log: ~/.local/share/tabtivity/package-dev-auto.log (the last build's output).
 set -uo pipefail
 
 # A post-commit hook inherits git's own environment, and GIT_INDEX_FILE arrives
@@ -56,12 +56,14 @@ set -uo pipefail
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The app's names (scripts/lib/brand.sh): $APP_DISPLAY, $APP_SLUG, $APP_BIN_NAME, …
+. "$ROOT/scripts/lib/brand.sh" || exit 1
 SELF="$ROOT/scripts/package-dev-auto.sh"
 # Beside the binary package-dev.sh installs, and for the same reason it hardcodes
 # that path: what is frozen here is per-user, not per-state-dir, so a sandbox
-# session's ELDRUN_STATE_DIR must not send these somewhere else.
-APP_DIR="$HOME/.local/share/eldrun"
-BINARY="$APP_DIR/eldrun-dev"
+# session's TABTIVITY_STATE_DIR must not send these somewhere else.
+APP_DIR="$APP_SHARE_DIR"
+BINARY="$APP_DIR/$APP_DEV_BIN_NAME"
 LOCK_DIR="$APP_DIR/package-dev-auto.lock"
 PENDING="$APP_DIR/package-dev-auto.pending"
 STAMP="$APP_DIR/package-dev-auto.stamp"
@@ -84,18 +86,18 @@ PAUSED="$APP_DIR/package-dev-auto.paused"
 FREEZE_TREE="$ROOT/target/freeze-tree"
 # The status build_once returns for a pass it cancelled (128 + SIGTERM).
 CANCELLED=143
-SETTLE_SECONDS="${ELDRUN_DEV_BUILD_SETTLE:-30}"
+SETTLE_SECONDS="$(app_env DEV_BUILD_SETTLE 30)"
 
 note() { printf '%s %s\n' "$(date -Is)" "$*"; }
 
 notify() { # urgency, title, body
   command -v notify-send >/dev/null 2>&1 || return 0
-  notify-send -u "$1" -a Eldrun "$2" "$3" 2>/dev/null || true
+  notify-send -u "$1" -a "$APP_DISPLAY" "$2" "$3" 2>/dev/null || true
 }
 
 # Every reason not to touch the frozen build, cheapest first.
 declined() {
-  [ "${ELDRUN_NO_AUTO_DEV_BUILD:-}" = "1" ] && { echo "disabled for this commit"; return 0; }
+  [ "$(app_env NO_AUTO_DEV_BUILD)" = "1" ] && { echo "disabled for this commit"; return 0; }
   [ -n "${CI:-}" ] && { echo "running in CI"; return 0; }
   [ -f "$PAUSED" ] && { echo "paused (resume from the dev-build menu, or --resume)"; return 0; }
   # An agent tab's commit runs this hook inside the agent fence, whose $HOME is
@@ -103,10 +105,15 @@ declined() {
   # copy while the real snapshot never moves (2026-09-25: 27 commits behind).
   # The window runs on the host and queues it from the dev-build chip's poll
   # (services::dev_build::queue_if_behind).
-  [ -n "${ELDRUN_AGENT_FENCE:-}" ] && { echo "inside an agent fence — the Eldrun window queues it"; return 0; }
-  case "$(git -C "$ROOT" config --bool --get eldrun.autoDevBuild 2>/dev/null)" in
-    false) echo "disabled by git config eldrun.autoDevBuild"; return 0 ;;
-  esac
+  [ -n "$(app_env AGENT_FENCE)" ] && { echo "inside an agent fence — the $APP_DISPLAY window queues it"; return 0; }
+  # Under the current name, and under the old one: a clone switched off
+  # before the app was renamed stays off.
+  local key
+  for key in "$APP_SLUG.autoDevBuild" "$APP_LEGACY_SLUG.autoDevBuild"; do
+    case "$(git -C "$ROOT" config --bool --get "$key" 2>/dev/null)" in
+      false) echo "disabled by git config $key"; return 0 ;;
+    esac
+  done
   # A linked worktree is somebody else's tree — an agent's, usually. Freezing
   # THAT over the user's dev binary is exactly the surprise this must not be.
   local git_dir common_dir
@@ -135,7 +142,7 @@ queue() {
   # the terminal (or the editor that ran it) does not take the build with it.
   setsid nohup "$SELF" --run </dev/null >/dev/null 2>&1 &
   disown 2>/dev/null || true
-  printf 'Eldrun (dev): rebuilding the frozen snapshot in the background (%s)\n' "$LOG"
+  printf '%s (dev): rebuilding the frozen snapshot in the background (%s)\n' "$APP_DISPLAY" "$LOG"
 }
 
 # One build attempt. Prints into the (already redirected) log; returns the
@@ -280,9 +287,9 @@ run() {
   version="$(node -p "require('$ROOT/package.json').version" 2>/dev/null || echo '?')"
   commit="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')"
   if [ "$status" -eq 0 ]; then
-    notify low 'Eldrun (dev) rebuilt' "$version @ $commit — relaunch Eldrun (dev) to pick it up."
+    notify low "$APP_DISPLAY (dev) rebuilt" "$version @ $commit — relaunch $APP_DISPLAY (dev) to pick it up."
   else
-    notify critical 'Eldrun (dev) build failed' "$version @ $commit — see $LOG"
+    notify critical "$APP_DISPLAY (dev) build failed" "$version @ $commit — see $LOG"
   fi
   return "$status"
 }
@@ -294,14 +301,14 @@ pause() {
   mkdir -p "$APP_DIR" || return 1
   : >"$PAUSED"
   rm -f "$PENDING"
-  echo "Eldrun (dev): auto-builds paused"
+  echo "$APP_DISPLAY (dev): auto-builds paused"
 }
 
 # Undo pause() and catch up: queue HEAD when the installed snapshot is behind
 # it, since the commits made while paused queued nothing.
 resume() {
   rm -f "$PAUSED"
-  echo "Eldrun (dev): auto-builds resumed"
+  echo "$APP_DISPLAY (dev): auto-builds resumed"
   local head
   head="$(tree_signature)" || return 0
   [ -f "$STAMP" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$head" ] && return 0

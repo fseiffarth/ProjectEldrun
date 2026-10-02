@@ -87,8 +87,8 @@ auth) and the local/remote git push axis (#21).*
 
     What is kept: `services::agent_session` still re-applies the mode Claude's
     Stop hook recorded onto the `--resume` respawn, so a mode set *in-session*
-    survives a relaunch. That is the CLI's answer being preserved, not Eldrun
-    choosing one. Eldrun Mobile's mode sheet is untouched — it presses Shift+Tab
+    survives a relaunch. That is the CLI's answer being preserved, not Tabtivity
+    choosing one. Tabtivity Mobile's mode sheet is untouched — it presses Shift+Tab
     and verifies against the TUI's own status line
     (`mobile-web/src/terminal/agentModes.ts`), never a launch flag; only the
     desktop bridge's launch-`modes` list went (now always empty).
@@ -96,7 +96,7 @@ auth) and the local/remote git push axis (#21).*
     Not reopening this without a mechanism that does not restart the session.
     See `docs/context/agent_authority.md`.
 
-60. **Never manipulate the browser download path. (DONE — removed.)** Eldrun must
+60. **Never manipulate the browser download path. (DONE — removed.)** Tabtivity must
     not touch any browser's download directory. The `commands/downloads.rs` module
     that edited Firefox `prefs.js` / Chromium `Preferences` was removed entirely
     (file, `mod` decl, and handler registration). Routing a download into a project
@@ -109,7 +109,7 @@ auth) and the local/remote git push axis (#21).*
     remaining-work line: `sandbox::container_path` spells every host path for
     Docker Desktop (`C:\x` → `/c/x`) at the argv layer only, `--user` is
     omitted on Windows, the staged Claude/Codex configs point at a POSIX twin
-    of the SessionStart hook (`eldrun_session_start.sh`, written beside the
+    of the SessionStart hook (`tabtivity_session_start.sh`, written beside the
     PowerShell one) so in-container resume records still land, and the
     frontend gates are lifted. Still needs the real Docker Desktop box below.
     **Two premises below are now stale:**
@@ -148,12 +148,12 @@ auth) and the local/remote git push axis (#21).*
 ### Sandbox-audit follow-ups (2026-07-26)
 
 An adversarial review of the agent-tab container found ten issues (S-1 … S-10).
-Eight were fixed in place; the root cause was that Eldrun's own control files
-(`project.json`, `.eldrun/sessions/terminals.json`) live **inside** the
+Eight were fixed in place; the root cause was that Tabtivity's own control files
+(`project.json`, `.tabtivity/sessions/terminals.json`) live **inside** the
 container's writable project mount while the host reads them back as executable
 intent. What is left is listed here.
 
-142. **DONE (2026-07-27) — Move `.eldrun/sessions/` out of the project tree.**
+142. **DONE (2026-07-27) — Move `.tabtivity/sessions/` out of the project tree.**
     The layout and `open_apps` now live at `<state_dir>/sessions/<project key>/
     terminals.json`, keyed by **project id** rather than by the path to a
     `project.json` (that re-keying was the actual work — the whole
@@ -306,7 +306,7 @@ intent. What is left is listed here.
     `file-history/`, `telemetry/`, `history.jsonl`, `sessions/`, `session-env/`,
     `stats-cache.json`, `daemon.*`), which closes the host-RCE routes. But
     `projects/` is still mounted whole, and Claude keys transcripts by encoded
-    cwd rather than by Eldrun project — so a contained agent can still read and
+    cwd rather than by Tabtivity project — so a contained agent can still read and
     write **every** project's conversation history. Narrowing it means
     replicating Claude's cwd encoding on the Rust side and accepting that a
     project whose encoding we get wrong loses resume — an undocumented format
@@ -340,7 +340,7 @@ intent. What is left is listed here.
     the project's container toggle is on, the run tab is contained anyway.
     **Re-evaluated 2026-09-18 — still open, and now the odd one out.**
     `services::exec_trust` has since put every other project-supplied program
-    Eldrun runs on the host (git hooks, `latexmkrc`, the project's prettier)
+    Tabtivity runs on the host (git hooks, `latexmkrc`, the project's prettier)
     behind an ask-once fingerprint; nothing in `python.rs` touches it, so an
     in-tree `.venv/bin/python` still wins auto-select unprompted and
     `poetry env info -p` still runs with the project as cwd (`python.rs:230`).
@@ -397,7 +397,7 @@ intent. What is left is listed here.
     instead of the tab's env: a local-model tab mints a uid at creation
     (`src/lib/remote/hostBound.ts` → `register_host_bound_tab`), the backend writes
     `<state_dir>/sessions/<project>/host_bound/<uid>`, and the spawn path checks
-    for that file. `ELDRUN_LOCAL_MODEL` is a usage label again. Markers are pruned
+    for that file. `TABTIVITY_LOCAL_MODEL` is a usage label again. Markers are pruned
     on every layout save against the uids still in the layout.
     Two corrections to the plan, both worth knowing: the uid is **not** already
     stable across relaunch (`loadFromLayout` re-mints every key *and* the PTY id),
@@ -422,8 +422,8 @@ intent. What is left is listed here.
 
     `services::sandbox::is_host_bound_local_agent` lets a tab skip the container
     when its `cmd` is in `HOST_BOUND_LOCAL_AGENT_CMDS` **and** its env carries
-    `ELDRUN_LOCAL_MODEL` — and both came from the persisted layout, i.e. from
-    inside the container's own writable mount. `ELDRUN_LOCAL_MODEL` was never an
+    `TABTIVITY_LOCAL_MODEL` — and both came from the persisted layout, i.e. from
+    inside the container's own writable mount. `TABTIVITY_LOCAL_MODEL` was never an
     authority marker: `TabBar.tsx`/`NewTabMenu.tsx` set it so the usage recap can
     break local-agent tabs down by model, so an authority decision was keyed on a
     telemetry label. The **arbitrary-argv half is fixed** (`resumeArgs` is now
@@ -446,7 +446,7 @@ intent. What is left is listed here.
     mirror-resolution step and before session/remote-control logic reads
     `project_id`. The root is `services::sandbox::project_dir_for(project_id)`
     for a local project (already the bind-mount root docker uses, so a git
-    worktree at `<dir>/.eldrun/worktrees/<name>` passes as a subdir — no second
+    worktree at `<dir>/.tabtivity/worktrees/<name>` passes as a subdir — no second
     enumeration needed) or `services::remote_sync::mirror_dir(project_id)` for a
     `local_only` tab of a remote project (exactly what that branch had just set
     `cwd` to, so this only ever catches a caller that supplied its own instead).
@@ -477,7 +477,7 @@ intent. What is left is listed here.
 
 151. **A repo's own `.git/config` is executable intent too. (MITIGATED ⚠️ · not
     fully closed)** The same sentence as #142, with git as the executor instead
-    of Eldrun: `services::sandbox` bind-mounts the project directory whole —
+    of Tabtivity: `services::sandbox` bind-mounts the project directory whole —
     `.git` included — into the container's rw mount, and every host-side git
     call runs in that directory with the repo's config honoured. So a
     contained agent writing `.git/config` gets code execution **on the host**.
@@ -608,7 +608,7 @@ intent. What is left is listed here.
 
 ---
 
-153. **Harden Eldrun Mobile's local unlock into a cryptographic gate (PROPOSED
+153. **Harden Tabtivity Mobile's local unlock into a cryptographic gate (PROPOSED
      — needs sign-off).** From the 2026-08-28 mobile security re-review. Today
      the phone's app lock (`mobile-web/src/localLock.ts`) is a UI gate: the
      device signing key is a non-exportable `CryptoKey` in IndexedDB usable by
@@ -623,7 +623,7 @@ intent. What is left is listed here.
      PIN-only and PRF-incapable phones keep today's behavior (no lockout).
      Full spec — enrollment/unlock/migration, the extractable-key tradeoff, and
      the residual it does *not* close (unlocked-and-running) — in
-     [`docs/eldrun_mobile_future_plan.md`](../docs/eldrun_mobile_future_plan.md)
+     [`docs/tabtivity_mobile_future_plan.md`](../docs/tabtivity_mobile_future_plan.md)
      §G. Needs the user's sign-off on the extractable-key tradeoff before any
      implementation.
     - [ ] 🤖 Automated test
@@ -659,7 +659,7 @@ intent. What is left is listed here.
      up — the delay is the only window in which the target window can be
      brought forward. Countdown rides the existing switch toast.
      - Audit at the time (2026-08-31): no auto-named `Screenshot-*.png` was ever
-       committed in any Eldrun project; the only screenshots in this public
+       committed in any Tabtivity project; the only screenshots in this public
        repo's history are the deliberate README assets.
     - [x] 🤖 Automated test — `src/__tests__/system/ScreenshotDelay.test.ts` (countdown,
       throttled-timer firing, restart, cancel), `commands::screenshot` staging
@@ -687,7 +687,7 @@ intent. What is left is listed here.
     config at /home/…/.codex/config.toml (code -32603)`. Verified directly:
     `mv` onto a bind-mounted file returns `Device or resource busy`. Fixed by
     binding the scope's whole staging dir once at
-    `agent_fence::STAGE_MOUNT` (`/run/eldrun-agent-config`) and making each
+    `agent_fence::STAGE_MOUNT` (`/run/tabtivity-agent-config`) and making each
     shadowed path a `--symlink` into it: an in-place rewrite still lands in the
     throwaway copy, a rename replaces the *link* with a plain file in the home
     tmpfs, and neither reaches the host original.
@@ -732,8 +732,8 @@ intent. What is left is listed here.
     Not the symlink trick from #155 — Claude 2.1.263 opens the store with
     `O_NOFOLLOW` and answers `refused-symlink`/`ELOOP` — and not the whole
     `~/.claude` directory, which would fail *open* for every deny-listed
-    entry created after spawn. Fixed by `services::agent_creds`: an
-    Eldrun-owned mirror at `<state_dir>/agent-creds/claude/.credentials.json`
+    entry created after spawn. Fixed by `services::agent_creds`: a
+    Tabtivity-owned mirror at `<state_dir>/agent-creds/claude/.credentials.json`
     (0600) whose inode never changes is what the fence and the project
     container mount at the real path (`.credentials.json` joined
     `CLAUDE_UNMOUNTED`; `sandbox::claude_credential_mounts` owns the
@@ -807,12 +807,12 @@ intent. What is left is listed here.
     `<project>/.git/config` and returns early when that is not a file, so a
     project whose `.git` is a pointer (`gitdir: .notgit`) keeps any
     `filter.*`/`diff.*` driver in the redirected config. Reproduced 2026-09-18
-    with Eldrun's exact flags (`-c core.fsmonitor=false -c protocol.ext.allow=never`,
+    with Tabtivity's exact flags (`-c core.fsmonitor=false -c protocol.ext.allow=never`,
     `--no-ext-diff --no-textconv`): the clean filter executes on `git diff` and
     on `git status` after a same-size edit, i.e. from the file-tree poll with no
     click. Reachable by a downloaded folder added as a project, or by a fenced/
     containerised agent that swaps `.git` for a pointer (the published
-    "trust handoff" class — Pillar Security, CSA 2026). Eldrun's own agent
+    "trust handoff" class — Pillar Security, CSA 2026). Tabtivity's own agent
     worktrees use the pointer layout, so the sanitizer is a no-op there too.
     Fix shapes: resolve the real git dir (and `commondir` + `config.worktree`)
     from the pointer file before sanitizing, without invoking git in the repo;
@@ -829,7 +829,7 @@ intent. What is left is listed here.
     - **Read-only `.git` mounts — implemented 2026-09-18 (🧪 untested live).**
       `services::git_guard::guard_paths` names the control files (`config`,
       `config.worktree`, `hooks`, `commondir`, `.git` pointer files, incl. every
-      `.eldrun/worktrees/*`); the fence binds them `--ro-bind` after the root
+      `.tabtivity/worktrees/*`); the fence binds them `--ro-bind` after the root
       grant and binds `.git` onto itself (a mount point can't be renamed away);
       containers get the same as `:ro` volumes, outside the fingerprint so a new
       file can't recreate the container under live tabs. Verified with real
@@ -838,7 +838,7 @@ intent. What is left is listed here.
       fail. **Residual**: the agent can still *create* `commondir` in a main
       `.git` (verified to redirect config/hooks for plain git) or `git init`
       a new repo — a read-only bind can't cover a file that doesn't exist yet.
-    - [x] 🤖 Automated test — `git_guard` tests (plain repo, Eldrun worktree,
+    - [x] 🤖 Automated test — `git_guard` tests (plain repo, Tabtivity worktree,
       hostile pointer, repo outside the roots, no repo) and
       `git_control_files_are_rebound_read_only_after_the_root_grant`.
     - [ ] 🖐️ Manual test — fenced agent tab: `echo x > .git/hooks/post-checkout`
@@ -899,13 +899,13 @@ intent. What is left is listed here.
 Found by the four-way re-read of `docs/threat_model.md` (its "Open gaps"
 table). Code-read findings; only #862 was reproduced (scratch repo, git 2.53).
 
-861. **A fenced agent can plant binaries Eldrun runs on the host.**
+861. **A fenced agent can plant binaries Tabtivity runs on the host.**
     `updatable_install_dirs` (`services/agent_fence.rs`) binds `~/.local/bin`
     and `~/.local/share/<tool>` read-write for a native-installed CLI, and
     `paths::effective_path` prepends `~/.local/bin` to every child's PATH. A
     planted `~/.local/bin/git` runs at the next file-tree poll, unfenced; a
     planted `bwrap` unfences later tabs. Keep the CLI self-update working
-    without handing the agent the shared launcher dir, and resolve Eldrun's
+    without handing the agent the shared launcher dir, and resolve Tabtivity's
     own `git`/`bwrap`/`tmux`/`ssh` so a user-writable dir can't shadow them.
     - **Fixed 2026-09-24 (not live).** Private per-tab `~/.local/bin` bound over
       the host's; `reconcile_launcher` carries back only the launcher link into
@@ -926,7 +926,7 @@ table). Code-read findings; only #862 was reproduced (scratch repo, git 2.53).
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
 
-862. **Planted hooks run through Eldrun's hooks-live git calls.**
+862. **Planted hooks run through Tabtivity's hooks-live git calls.**
     `hardened_git_command_in` leaves hooks live; diff, stage, file diff,
     commit-message generation and the merge-state probe rewrite the index and
     fire `post-index-change`. A fenced agent can *create* `.git/commondir`
@@ -934,9 +934,9 @@ table). Code-read findings; only #862 was reproduced (scratch repo, git 2.53).
     plant `MERGE_HEAD` so opening Git history reaches it. Hooks off by default
     in the hardened helper, on only for the verbs `exec_trust` gates; treat a
     `commondir` inside a main `.git` as hostile. Widens #158's residual.
-    - **Fixed 2026-09-24 (not live).** Hooks off on every Eldrun git call but
+    - **Fixed 2026-09-24 (not live).** Hooks off on every Tabtivity git call but
       the `exec_trust`-gated verbs (`run_git_hooked`/`hooked_git_command_in`);
-      `GIT_COMMON_DIR` pinned to a main `.git`. Eldrun's stage/checkout/fetch
+      `GIT_COMMON_DIR` pinned to a main `.git`. Tabtivity's stage/checkout/fetch
       no longer run your own `post-*` hooks.
     - [x] 🤖 Automated test — a `commondir`-redirected `post-index-change` does
       not run on diff/stage/merge-state.
@@ -1042,16 +1042,16 @@ table). Code-read findings; only #862 was reproduced (scratch repo, git 2.53).
       (`local_model_home`); its control paths (`LOCAL_MODEL_CONTROL`) are
       read-only binds after it (Seatbelt: denied writes), created empty where
       missing, symlinks replaced; a local home's `hooks.toml` is rewritten to
-      Eldrun's hook alone. Residual: same-model tabs share logs, history and
+      Tabtivity's hook alone. Residual: same-model tabs share logs, history and
       `trusted_folders.toml`. Vibe saving its own config in a fenced local tab
-      now fails (Eldrun owns that file).
+      now fails (Tabtivity owns that file).
     - [x] 🤖 Automated test — `only_the_spawns_own_local_model_home_is_mounted`,
       `a_symlinked_control_path_is_replaced_not_followed`,
-      `a_local_model_home_keeps_only_eldruns_hook`; the layering was checked
+      `a_local_model_home_keeps_only_tabtivitys_hook`; the layering was checked
       once under real bubblewrap (control files unwritable and unrenamable,
       logs/history writable, sibling homes invisible).
     - [ ] 🖐️ Manual test — a fenced local-model (Ollama) tab starts, answers,
-      and resumes; from a fenced Claude tab `ls ~/.local/share/eldrun/vibe_local`
+      and resumes; from a fenced Claude tab `ls ~/.local/share/tabtivity/vibe_local`
       shows nothing.
       - [ ] ✅ Works on Linux (X11)
       - [ ] ❌ Doesn't work on Linux (X11)
@@ -1083,13 +1083,13 @@ Evidence and the focused fixes are in
 - [x] **High: remove writable shared CLI payloads from the fence.**
   Host-installed CLIs still get `~/.local/share/<tool>` writable for updates;
   another scope or host shell then executes the modified payload. Plan the
-  migration to Eldrun-owned installs or host-side updates, preserving the
+  migration to Tabtivity-owned installs or host-side updates, preserving the
   one-click install flow. The private launcher copy alone is insufficient.
   - **Fixed 2026-09-26 (not live).** Every install is read-only in the
     fence; `updatable_install_dirs`, the Copilot `pkg/` payload and the
     private `~/.local/bin` copy + carry-back (#861) are removed; the
     updater switch is applied to every fenced spawn. Updates: reinstall
-    through Manage CLIs (one click, unchanged) or outside Eldrun.
+    through Manage CLIs (one click, unchanged) or outside Tabtivity.
 - [x] **Conditional high: close terminal injection for shell-tab shims.**
   A CLI entered in a shell uses `agent_shim`, outside the direct fenced-tmux
   drain path. Evaluate denying injection ioctls at the Linux fence boundary
@@ -1119,7 +1119,7 @@ Evidence and the focused fixes are in
   keystrokes and type into unfenced windows. Wayland sockets were already
   hidden by the private `/run`.
   - **Fixed 2026-09-28 (not live).** `services::fence_scope`: the launcher
-    runs `eldrun --fence-scope`, which enters Landlock's
+    runs `tabtivity --fence-scope`, which enters Landlock's
     `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET` and execs bwrap. Skipped below
     Landlock ABI 6 (Linux 6.12) and for a setuid bwrap; fails closed where
     used. Checked from a fenced tab: the XWayland socket answered before
@@ -1140,12 +1140,36 @@ Evidence and the focused fixes are in
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+### Threat-model recheck follow-ups (2026-10-01)
+
+- [x] **Close the Windows phone file-browser path race (BUILT 2026-10-01 · 🧪 not run live).**
+  `services::mobile_control::files_windows` now holds the project directory
+  open, opens each child with handle-relative `NtCreateFile` and
+  `FILE_OPEN_REPARSE_POINT`, rejects every reparse type from handle metadata,
+  and enumerates through the held handle. A renamed parent never redirects
+  the subsequent file open or listing. Windows tests cover internal/external
+  junction refusal, a concurrent parent swap after acquiring its handle, and
+  directory enumeration across multiple native batches. The actual helper
+  and tests cross-compile and pass Windows clippy from Linux; executing them
+  on Windows remains pending, as does live verification.
+  - [ ] 🖐️ On Windows, enable phone project files, browse a nested folder and
+    read a text/PDF file; a junction under the project must stay hidden and
+    unresolvable. Run the Windows Rust tests to exercise the scheduled swap.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 ### Safe for everyone — non-expert users (2026-09-24)
 
 Plan: `docs/safe_for_everyone_plan.md`. Goal: every "⚠️ yours" row in
-`docs/threat_model.md` becomes a safe default, something Eldrun handles, or a
+`docs/threat_model.md` becomes a safe default, something Tabtivity handles, or a
 warning the user can't miss, so that a typical engineer or a teacher can use
-Eldrun. None of these is started.
+Tabtivity. None of these is started.
 
 2321. **Can a fenced agent type into host windows?** The fence shares the host
     network namespace; `DISPLAY` is not scrubbed and the abstract X11 socket is
@@ -1187,7 +1211,7 @@ Eldrun. None of these is started.
 
 2326. **Red badge for unfenced + bypass mode.** When an unfenced tab's CLI has
     a bypass/auto-approve mode (recorded by the session hook), badge the tab.
-    Display only — Eldrun still never picks or changes the mode.
+    Display only — Tabtivity still never picks or changes the mode.
 
 2327. **Agents on Windows run with the user's full rights.** No fence exists
     there (`platform_fenceable()`).
@@ -1199,7 +1223,7 @@ Eldrun. None of these is started.
       the next tab starts without asking. Linux/macOS never show it.
       - [ ] ✅ Works on Windows
       - [ ] ❌ Doesn't work on Windows
-    - ❌ AppContainer, rejected: cuts loopback (every Eldrun MCP endpoint,
+    - ❌ AppContainer, rejected: cuts loopback (every Tabtivity MCP endpoint,
       Ollama, agent OAuth callbacks are `127.0.0.1`; exemption is admin-only),
       blocks Credential Manager and `%TEMP%`. Low-IL/restricted tokens don't
       hide reads. Rationale in `docs/context/agent_authority.md`.
@@ -1207,10 +1231,10 @@ Eldrun. None of these is started.
       needs `C:\` ↔ container path mapping (the same-absolute-path invariant
       can't hold on Windows) and Docker Desktop's licensing.
     - (c) **Candidate real fence: the Linux fence unchanged inside WSL2.**
-      Agent tabs run `wsl.exe -d <distro>` with Eldrun-owned Linux agent
+      Agent tabs run `wsl.exe -d <distro>` with Tabtivity-owned Linux agent
       installs; `services::agent_fence` wraps them as on Linux. Costs: hide
       `/mnt/*` except the project (else `C:\Users\<you>` is readable), kill
-      interop, `C:\`↔`/mnt/c/` path mapping wherever paths cross (eldrun-send,
+      interop, `C:\`↔`/mnt/c/` path mapping wherever paths cross (tabtivity-send,
       git MCP, mobile control), drvfs speed, no Windows toolchain for the
       agent, one-time `wsl --install` (UAC + reboot). **Go/no-go checks, run
       in the default WSL distro before any code:**
@@ -1222,12 +1246,12 @@ Eldrun. None of these is started.
          `/proc/sys/fs/binfmt_misc/WSLInterop` is ro-bound to an empty file).
       3. `bwrap --ro-bind / / --tmpfs /mnt/c/Users/$WINUSER --bind /mnt/c/Users/$WINUSER/<project> /mnt/c/Users/$WINUSER/<project> --unshare-user ls /mnt/c/Users/$WINUSER`
          — must list only `<project>`, and a write into it must land on `C:\`.
-      4. From WSL: `curl -s http://127.0.0.1:<eldrun-mcp-port>/mcp/help` —
-         reaches Eldrun only under mirrored networking (`.wslconfig`
-         `networkingMode=mirrored`, Win11 22H2+); NAT needs Eldrun to also
+      4. From WSL: `curl -s http://127.0.0.1:<tabtivity-mcp-port>/mcp/help` —
+         reaches Tabtivity only under mirrored networking (`.wslconfig`
+         `networkingMode=mirrored`, Win11 22H2+); NAT needs Tabtivity to also
          bind the WSL vEthernet address (token-protected as today).
 
-2328. **Warn about a planted `.git/commondir`.** Eldrun's own git ignores it
+2328. **Warn about a planted `.git/commondir`.** Tabtivity's own git ignores it
     (#862), but the user's own terminal git follows it. Detect a `commondir`
     inside a main `.git` and offer to remove it.
 
@@ -1254,7 +1278,7 @@ Eldrun. None of these is started.
 
 2333. **Disclosure policy and an outside audit.** Add `SECURITY.md` (how to
     report, scope, link to the threat model); reproducible release builds; an
-    external audit or pentest before telling non-experts Eldrun is safe.
+    external audit or pentest before telling non-experts Tabtivity is safe.
 
 2336. **`~/.claude/jobs/` and other new entries are writable in every fence.**
     `CLAUDE_UNMOUNTED` (`sandbox.rs`) lists what to hide, so an entry a newer

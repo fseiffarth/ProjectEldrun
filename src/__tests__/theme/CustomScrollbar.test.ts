@@ -458,7 +458,7 @@ describe("stylesheet scrollbar invariants", () => {
   it("registers the opt-out property so it cannot inherit", () => {
     // An opted-out strip must not mute the thumbs of scroll containers inside
     // it, which only a registered `inherits: false` property guarantees.
-    const at = css.match(/@property\s+--eldrun-scrollbar\s*\{[^}]*\}/);
+    const at = css.match(/@property\s+--app-scrollbar\s*\{[^}]*\}/);
     expect(at?.[0]).toMatch(/inherits\s*:\s*false/);
   });
 });
@@ -513,7 +513,7 @@ describe("installCustomScrollbars discovering late overflow", () => {
   }
 
   const thumbs = (axis: "vertical" | "horizontal") =>
-    document.querySelectorAll(`.eldrun-scrollbar-layer .eldrun-scrollbar-${axis}`).length;
+    document.querySelectorAll(`.app-scrollbar-layer .app-scrollbar-${axis}`).length;
 
   it("grows a vertical thumb for a list that overflowed sideways only when it was found", () => {
     const clock = frameClock();
@@ -542,7 +542,7 @@ describe("installCustomScrollbars discovering late overflow", () => {
     const { panel, list } = mountList({ scrollHeight: 200, scrollWidth: 100 });
     const uninstall = installCustomScrollbars();
     clock.tick();
-    expect(list.hasAttribute("data-eldrun-scrollbar")).toBe(false);
+    expect(list.hasAttribute("data-app-scrollbar")).toBe(false);
 
     // The panel slides open and, with no DOM change, the list now overflows
     // (a class flip, a width change). The slide's end looks under the panel.
@@ -551,7 +551,7 @@ describe("installCustomScrollbars discovering late overflow", () => {
       Object.assign(new Event("transitionend", { bubbles: true }), { propertyName: "transform" }),
     );
     clock.tick();
-    expect(list.hasAttribute("data-eldrun-scrollbar")).toBe(true);
+    expect(list.hasAttribute("data-app-scrollbar")).toBe(true);
     expect(thumbs("vertical")).toBe(1);
 
     uninstall();
@@ -569,7 +569,7 @@ describe("installCustomScrollbars discovering late overflow", () => {
       Object.assign(new Event("transitionend", { bubbles: true }), { propertyName: "opacity" }),
     );
     clock.tick();
-    expect(list.hasAttribute("data-eldrun-scrollbar")).toBe(false);
+    expect(list.hasAttribute("data-app-scrollbar")).toBe(false);
 
     uninstall();
     panel.remove();

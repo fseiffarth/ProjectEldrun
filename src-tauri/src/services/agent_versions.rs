@@ -1,7 +1,7 @@
 //! Which release of each agent CLI is installed, and whether it is still the
-//! one Eldrun's flags and parsers were actually checked against.
+//! one Tabtivity's flags and parsers were actually checked against.
 //!
-//! Eldrun reads other people's CLIs at a level of detail that only holds for
+//! Tabtivity reads other people's CLIs at a level of detail that only holds for
 //! the release someone sat down and verified: a `--resume` flag, a session-log
 //! key, the numbered rows of an approval menu, the shape of a `/model` sheet.
 //! `docs/third_party_update_checklist.md` records those checks in prose — "*
@@ -66,7 +66,7 @@ pub const PROBE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const VERSION_ARGV: &[(&str, &[&str])] = &[
     // "2.1.284 (Claude Code)"
     ("claude", &["--version"]),
-    // "codex-cli 0.157.0"
+    // "codex-cli 0.159.3"
     ("codex", &["--version"]),
     // "GitHub Copilot CLI 1.0.88." (1.0.88; 0.0.393 printed "0.0.393 Commit: ea52078")
     ("copilot", &["--version"]),
@@ -81,7 +81,7 @@ const VERSION_ARGV: &[(&str, &[&str])] = &[
 /// For the CLI whose launcher does more than print on `--version`: Muse's
 /// wrapper script checks for an update on *any* invocation and, once its
 /// interval has passed, starts a background self-update — so an unguarded
-/// daily probe would be Eldrun updating somebody else's CLI.
+/// daily probe would be Tabtivity updating somebody else's CLI.
 /// `MUSE_NO_AUTO_UPDATE=1` skips that branch of the launcher (read out of the
 /// 1.3.0 launcher, 2026-09-25) and the version still prints.
 const VERSION_ENV: &[(&str, &[(&str, &str)])] = &[("muse", &[("MUSE_NO_AUTO_UPDATE", "1")])];
@@ -103,7 +103,7 @@ pub struct Verified {
 ///
 /// One row per *check*, not per agent: Codex has four because four different
 /// surfaces are verified separately, and once they sit at different releases
-/// the oldest of them is the weakest assumption Eldrun currently rests on.
+/// the oldest of them is the weakest assumption Tabtivity currently rests on.
 /// Collapsing them to one number per agent would throw away the only part that
 /// says where to look.
 ///
@@ -117,23 +117,23 @@ const VERIFIED: &[Verified] = &[
     },
     Verified {
         agent: "codex",
-        version: "0.157.0",
+        version: "0.159.3",
         surface: "§1.2 — mobile mode lines and Shift+Tab (agentModes.ts)",
     },
     Verified {
         agent: "codex",
-        version: "0.159.2",
+        version: "0.159.3",
         surface: "§1.2 — decision lamp: title repaints, numbered approval rows",
     },
     Verified {
         agent: "codex",
-        version: "0.159.2",
+        version: "0.159.3",
         surface: "§1.2 — the two-step /model sheet read off the screen",
     },
     Verified {
         agent: "codex",
-        version: "0.157.0",
-        surface: "§1.2 — resume writer-lock conflict and release on process exit (offline probe)",
+        version: "0.159.3",
+        surface: "§1.2 — resume writer-lock markers (lifecycle last probed on 0.154.0)",
     },
     Verified {
         agent: "antigravity",
@@ -787,18 +787,20 @@ mod tests {
     }
 
     #[test]
-    fn an_install_older_than_every_codex_check_names_them_all() {
-        // Today's table: an install older than all four Codex checks names
-        // all four; the newest checked release names only the two surfaces
-        // last checked on an older one.
+    fn codex_drift_uses_the_current_verified_release() {
+        // An older install names every surface; the checked release is quiet,
+        // and the next release raises all four again.
         let (state, stale) = drift("codex", Some("0.153.4"));
         assert_eq!(state, DriftState::Moved);
         assert_eq!(stale.len(), 4);
         assert!(stale.iter().all(|note| note.direction == Direction::Older));
-        let (state, stale) = drift("codex", Some("0.159.2"));
+        let (state, stale) = drift("codex", Some("0.159.3"));
+        assert_eq!(state, DriftState::Match);
+        assert!(stale.is_empty());
+        let (state, stale) = drift("codex", Some("0.159.4"));
         assert_eq!(state, DriftState::Moved);
-        assert_eq!(stale.len(), 2);
-        assert!(stale.iter().all(|note| note.version == "0.157.0" && note.direction == Direction::Newer));
+        assert_eq!(stale.len(), 4);
+        assert!(stale.iter().all(|note| note.version == "0.159.3" && note.direction == Direction::Newer));
     }
 
     #[test]

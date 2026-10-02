@@ -11,6 +11,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore } from "../../stores/tabs";
 import type { ProjectEntry, Settings } from "../../types";
+import { BRAND, MOBILE_HOST_KEY } from "../../lib/brand";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -34,7 +35,7 @@ describe("Mobile project access in the file viewer", () => {
     });
     useProjectsStore.setState({ projects: [project], activeId: project.id, loaded: true });
     useSettingsStore.setState({
-      settings: { eldrun_mobile_host: { enabled: true } } as Settings,
+      settings: { [MOBILE_HOST_KEY]: { enabled: true } } as Settings,
       loaded: true,
     });
     useTabsStore.setState({ scope: project.id, tabsByScope: {} });
@@ -53,7 +54,7 @@ describe("Mobile project access in the file viewer", () => {
     // The opt-in is a tag chip, not a switch: an unpressed "Mobile · Off"
     // button that turns accent-filled once access is on.
     const toggle = await screen.findByRole("button", {
-      name: `Eldrun Mobile access for ${project.name}`,
+      name: `${BRAND.display} Mobile access for ${project.name}`,
       pressed: false,
     });
     await user.click(toggle);

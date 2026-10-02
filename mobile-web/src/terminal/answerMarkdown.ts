@@ -21,7 +21,21 @@ import { renderMarkdown } from "../../../src/lib/viewers/markdown";
  * the markup could still not open, load, run or restyle anything.
  */
 export function answerHtml(text: string): string {
-  return allowlisted(renderMarkdown(text)
+  return inert(renderMarkdown(text));
+}
+
+/**
+ * A prompt in the chat — the reader's own, or one an agent wrote for a
+ * subagent — formatted as an answer is (`answerHtml`, same rewrites and
+ * allowlist), except that a single line break stays a break: a prompt is
+ * typed as a chat message, not as a Markdown document.
+ */
+export function promptHtml(text: string): string {
+  return inert(renderMarkdown(text, { breaks: true }));
+}
+
+function inert(html: string): string {
+  return allowlisted(html
     .replace(/<a\b[^>]*>/g, '<span class="md-link">')
     .replace(/<\/a>/g, "</span>")
     .replace(/<img\b[^>]*?\balt="([^"]*)"[^>]*>/g, "$1")
