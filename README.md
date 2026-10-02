@@ -368,6 +368,27 @@ does not have to ship a phone app for the agent you are running.
 - A desktop header control shows host status; Settings carries the opt-in, the
   security-health readout, and one-click terminal setup.
 
+**Set it up.** Until Mobile is set up, clicking the Mobile indicator in the
+header opens a guide with these steps. The full version, with troubleshooting,
+is in [docs/help/mobile.md](docs/help/mobile.md).
+
+1. Install Tailscale on this computer and sign in.
+2. Install the Tailscale app on the phone and sign in to the same tailnet.
+3. Publish Eldrun privately with Tailscale Serve (8742 is the default port):
+   `tailscale serve --bg http://127.0.0.1:8742`. The guide's **Set up in
+   terminal** button runs it for you. Use Serve, never Funnel.
+4. Open **Settings → Remote & mobile → Mobile**, press **Detect Tailscale Serve
+   settings**, check what it fills in, then switch Mobile on.
+5. Under **Project access**, switch on the projects and boxes the phone may
+   reach. All start off.
+6. Press **Show install QR** and scan the `https://…ts.net` address with the
+   phone (Tailscale must be connected there).
+7. Press **New pairing code** and type the code on the phone within five
+   minutes. Never send it by chat, e-mail or screenshot.
+8. Optional: add the page to the Home Screen (iPhone: Share → Add to Home
+   Screen; Android: browser menu → Install app). On iPhone this is needed for
+   notifications.
+
 *Host setup is implemented for Linux (systemd user service), macOS (launchd),
 and Windows (Run key). Cross-platform and full real-phone security/acceptance QA
 remain; some Mobile UI has been live-tested.*
