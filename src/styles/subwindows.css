@@ -2309,10 +2309,13 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
    width (`--reader-changes-w`, dragged), so neither covers the other; the
    chat keeps 320px at least. */
 .terminal-reader.with-changes,
+.terminal-pane-with-changes,
 .terminal-changes {
   --reader-changes-inset: min(var(--reader-changes-w, 520px), calc(100% - 320px));
 }
 .terminal-reader.with-changes { right: var(--reader-changes-inset); }
+/* Terminal mode (`.terminal-pane-with-changes`): the panel over the pane's
+   right edge, which the pane pads by this inset so the fit leaves it free. */
 .terminal-changes {
   position: absolute;
   top: 0;
@@ -2347,13 +2350,10 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   padding: 6px 10px 6px 14px;
   border-bottom: 1px solid var(--border-subtle);
 }
-.terminal-pane-with-changes,
 .terminal-changes-head > small { color: var(--text-secondary); }
 .terminal-changes-close {
   margin-left: auto;
   width: 24px;
-/* Terminal mode (`.terminal-pane-with-changes`): the panel over the pane's
-   right edge, which the pane pads by this inset so the fit leaves it free. */
   height: 24px;
   font: inherit;
   color: var(--text-secondary);
@@ -2469,6 +2469,20 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   background: var(--bg-subtle);
   border-radius: var(--radius-full);
 }
+/* Arrived while the panel was shown, not unfolded yet. */
+.terminal-changes-card.fresh {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.terminal-changes-new {
+  flex: none;
+  padding: 0 6px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border-radius: var(--radius-full);
+}
 .terminal-changes-card.add .terminal-changes-kind { color: #3fb950; }
 .terminal-changes-card.delete .terminal-changes-kind { color: #f85149; }
 .terminal-changes-time { flex: none; color: var(--text-muted); font-size: var(--text-xs); }
@@ -2507,20 +2521,6 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   color: var(--text-muted);
 }
 .terminal-reader-earlier {
-/* Arrived while the panel was shown, not unfolded yet. */
-.terminal-changes-card.fresh {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-.terminal-changes-new {
-  flex: none;
-  padding: 0 6px;
-  font-size: var(--text-xs);
-  font-weight: 600;
-  color: var(--accent-contrast);
-  background: var(--accent);
-  border-radius: var(--radius-full);
-}
   align-self: center;
   padding: 3px 12px;
   font: inherit;
