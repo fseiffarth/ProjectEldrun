@@ -499,6 +499,39 @@ describe(`${BRAND.display} Mobile select dialog`, () => {
     expect(prompt?.context).toBe(0);
   });
 
+  it("keeps a long command's whole permission dialog above its rows", () => {
+    // Claude Code 2.1.287's dangerous-rm prompt in auto mode, after
+    // readableScreen dropped its rules: tool, description, the command
+    // fenced in dashed rules, why it asks and the auto-deny countdown, one
+    // block. Capped at ten lines, the phone showed the command's tail under
+    // no heading.
+    const command: { text: string; afterRule?: boolean }[] = Array.from({ length: 12 }, (_, line) => ({ text: ` diff -U0 $S/cum${line}/a.ts $S/cum${line + 1}/a.ts | grep '^[-+]' |` }));
+    command[0] = { ...command[0], afterRule: true };
+    const screen = [
+      { text: "⏺ Building the nine snapshots." },
+      { text: "" },
+      { text: " Bash command", afterRule: true },
+      { text: " Count each commit's changed lines per file" },
+      ...command,
+      { text: " Dangerous rm operation on possibly-empty variable path: $B/$f in `rm -f $B/$f`", afterRule: true },
+      { text: " ⚠ Claude Code will automatically deny this request in 1:23, to avoid blocking progress on an unattended session" },
+      { text: "" },
+      { text: " Do you want to proceed?" },
+      { text: " ❯ 1. Yes" },
+      { text: "   2. No" },
+    ];
+    const prompt = readSelectPrompt(screen, "Claude Code");
+    expect(prompt?.title).toBe("Do you want to proceed?");
+    expect(prompt?.question).toBe(screen.length - 3);
+    expect(screen[prompt?.context ?? -1].text).toBe(" Bash command");
+  });
+
+  it("still bounds a block of plain output above a question", () => {
+    const output = Array.from({ length: 15 }, (_, line) => ({ text: `output ${line}` }));
+    const prompt = readSelectPrompt([...output, { text: "" }, { text: "Pick one?" }, { text: "❯ 1. A" }, { text: "  2. B" }]);
+    expect(prompt?.context).toBe(6);
+  });
+
   it("rejoins a row's label wrapped at the pane's edge instead of reading it as a note", () => {
     const prompt = readSelectPrompt(OVERWRITE, "Claude Code", 60);
     expect(prompt?.options.map((option) => [option.label, option.description])).toEqual([

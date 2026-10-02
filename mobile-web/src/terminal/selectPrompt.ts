@@ -268,11 +268,18 @@ const CONTEXT_BLOCKS = 2;
  * banner — version, model, directory, tips, warnings — above its first
  * question, and a mid-turn one repeated the answer the reader already has. */
 const CONTEXT_LINES = 10;
+/** …except the permission dialog's own block, which is what the rows approve.
+ * Claude Code 2.1.287 draws it as one block — the tool (`Bash command`), the
+ * description, the command fenced in dashed rules, why it asks, the auto-deny
+ * countdown — and a long command ran it past `CONTEXT_LINES`: the phone showed
+ * the command's last lines under no heading, its start cut off. */
+const DIALOG_LINES = 40;
 
 /** Where the dialog's own text starts, read upwards from its first row: the
  * question is the contiguous block directly above the rows, the context that
- * block and `CONTEXT_BLOCKS - 1` more, bounded by `CONTEXT_LINES`. Both are
- * `start` when nothing but blanks sits above the rows. */
+ * block and `CONTEXT_BLOCKS - 1` more, bounded by `CONTEXT_LINES` — or, for a
+ * block ruled inside (`DIALOG_LINES`), by that. Both are `start` when nothing
+ * but blanks sits above the rows. */
 function readContext(lines: readonly SelectLineLike[], start: number): { question: number; context: number } {
   let index = start - 1;
   let context = start;
@@ -283,20 +290,38 @@ function readContext(lines: readonly SelectLineLike[], start: number): { questio
     // The spinner is the session's, not the dialog's: nothing above it is.
     if (index >= 0 && busyRow(lines[index].text)) break;
     const top = index;
-    while (index >= 0 && dialogText(lines[index]) && taken < CONTEXT_LINES) {
-      context = index;
-      taken += 1;
-      index -= 1;
-      // The question ends at a dropped rule, as its heading does (`readTitle`):
-      // Claude Code 2.1.286 rules the diff of a file it asks to write off from
-      // its question with no blank between, and read through the rule, the
-      // diff's last lines became the question — rejoined into prose.
-      if (block === 0 && lines[index + 1].afterRule) break;
+    if (block === 0) {
+      while (index >= 0 && dialogText(lines[index]) && taken < CONTEXT_LINES) {
+        context = index;
+        taken += 1;
+        index -= 1;
+        // The question ends at a dropped rule, as its heading does
+        // (`readTitle`): Claude Code 2.1.286 rules the diff of a file it asks
+        // to write off from its question with no blank between, and read
+        // through the rule, the diff's last lines became the question —
+        // rejoined into prose.
+        if (lines[index + 1].afterRule) break;
+      }
+      question = context;
+      continue;
     }
-    if (block === 0) question = context;
+    if (top < 0) break;
+    let first = index;
+    while (first > 0 && dialogText(lines[first - 1]) && top - first + 1 < DIALOG_LINES) first -= 1;
+    // A rule inside the block is the dialog's own fence; one only over its top
+    // line is just where the block began.
+    let ruled = false;
+    for (let line = first + 1; line <= top; line += 1) if (lines[line].afterRule) ruled = true;
+    const room = ruled ? DIALOG_LINES : CONTEXT_LINES - taken;
+    const from = Math.max(first, top - room + 1);
+    if (from <= top) {
+      context = from;
+      taken += top - from + 1;
+    }
+    index = from - 1;
     // Claude Code's tab row over an agent's question is the question's label,
     // not a block of context: what it labels is the agent's message above.
-    else if (top === index + 1 && readQuestionTabs(lines[top].text)) block -= 1;
+    if (from === top && readQuestionTabs(lines[top].text)) block -= 1;
   }
   return { question, context };
 }
