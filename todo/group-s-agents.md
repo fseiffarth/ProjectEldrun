@@ -2497,3 +2497,26 @@ unchanged; the new agents are additive.
   - [ ] Gemini CLI — `chats/session-*.json` `tokens`.
   - [ ] Copilot, Antigravity (`agy`) and others — check what their session
     records carry before promising a split.
+
+- [ ] **Nested `claude --resume` guard for the Windows hook** (2026-10-03;
+  follow-up to 9d949ec2). The POSIX hook refuses a foreign `clear`/`resume`
+  start sent by a `claude` with another `claude` above it among the tab's
+  processes (`/proc` environ walk, any `*_TAB_UID`); the PowerShell twin in
+  `services::agent_session::hook_script_body` takes it, so a `claude -p
+  --resume` run from a Windows tab's Bash tool moves the tab's record (Reader
+  chat + Changes panel show that run) until the tab's next Stop heals it.
+  Windows can't read another process's environment, so the bound has to be
+  the process tree instead: one `Get-CimInstance Win32_Process` snapshot
+  (Windows PowerShell 5.1 runs the hook — no `Get-Process .Parent`), walk
+  `ParentProcessId` from `$PID`, count `claude.exe` ancestors, stop at the
+  app's own executable (name baked into the script when it is written), refuse
+  at two. Only on a foreign `clear`/`resume`, so the CIM cost stays off the
+  common path. A wrong guard refuses the tab's own `/clear` — worse than the
+  self-healing gap — so build it only with a Windows box to test on.
+  - [ ] 🤖 Automated test — the walk over a canned process table.
+  - [ ] 🖐️ Manual test — In a Windows Claude tab, ask the agent to run
+    `claude -p "hi" --resume <another session id>` from its Bash tool: the
+    Reader keeps showing the tab's own conversation. Then type `/clear` in the
+    tab: the Reader follows the new conversation and "Undo clear" is offered.
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
