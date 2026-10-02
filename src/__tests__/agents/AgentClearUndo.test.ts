@@ -5,7 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invokeM
 
 import { noteTypedClear, undoAgentClear, useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
 import { _clearScheduledAgentInputsForTest, registerScheduledAgentInput } from "../../lib/agents/scheduledAgentInput";
-import { noteTypedLine } from "../../lib/agents/typedClear";
+import { noteTypedLine, screenAtCursor, type TypedScreen } from "../../lib/agents/typedClear";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
 import { BRAND } from "../../lib/brand";
@@ -156,5 +156,38 @@ describe("typed new-conversation commands", () => {
     expect(type("t7", ["\x1b[A", "\r"])).toBe(false);
     // …and the next line after an unknown one is read afresh.
     expect(type("t7", [..."/clear", "\r"])).toBe(true);
+  });
+
+  it("reads a command finished in the CLI's slash popup off the screen", () => {
+    /** Type the keys; the last (the Enter) sees `screen`. */
+    const type = (id: string, keys: string[], screen: TypedScreen) =>
+      keys.reduce((_, key) => noteTypedLine(id, key, () => screen), false);
+    const codexPopup = (input: string, first: string): TypedScreen => ({
+      input: `› ${input}`,
+      below: ["", `  ${first}     start a new chat`, "  /collab    collaborate"],
+    });
+    // Tab completed it, or ↑ recalled it: the composer row says what runs.
+    expect(type("p1", [..."/cl", "\t", "\r"], { input: "› /clear ", below: [] })).toBe(true);
+    expect(type("p2", ["\x1b[A", "\r"], { input: "│ > /clear   │", below: [] })).toBe(true);
+    // A prefix typed out and run as is runs the popup's first entry.
+    expect(type("p3", [..."/cl", "\r"], codexPopup("/cl", "/clear"))).toBe(true);
+    expect(type("p4", [..."/co", "\r"], codexPopup("/co", "/compact"))).toBe(false);
+    // An arrow may have moved the selection: only a whole command counts.
+    expect(type("p5", [..."/cl", "\x1b[B", "\r"], codexPopup("/cl", "/clear"))).toBe(false);
+    // A completion to something else, a prompt, or no composer at all.
+    expect(type("p6", [..."/mo", "\t", "\r"], { input: "› /model ", below: [] })).toBe(false);
+    expect(type("p7", [..."fix it", "\r"], codexPopup("fix it", "/clear"))).toBe(false);
+    expect(type("p8", [..."/cl", "\t", "\r"], { input: "/clear", below: [] })).toBe(false);
+  });
+
+  it("takes the cursor's row and the ones under it", () => {
+    const rows = ["old", "› /cl", "  /clear  new chat", "footer"];
+    const buffer = {
+      baseY: 1,
+      cursorY: 0,
+      length: rows.length,
+      getLine: (y: number) => (rows[y] === undefined ? undefined : { translateToString: () => rows[y] }),
+    };
+    expect(screenAtCursor(buffer)).toEqual({ input: "› /cl", below: ["  /clear  new chat", "footer"] });
   });
 });

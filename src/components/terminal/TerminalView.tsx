@@ -49,7 +49,7 @@ import { TerminalVersionCard } from "./TerminalVersionCard";
 import { UntestedTag } from "../common/UntestedTag";
 import { type ConfirmSpec, useDialogs } from "../common/PromptDialogs";
 import { noteTypedClear, useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
-import { noteTypedLine } from "../../lib/agents/typedClear";
+import { noteTypedLine, screenAtCursor } from "../../lib/agents/typedClear";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
 import { notePromptTrailInput } from "../../stores/agents/promptTrail";
 import "@xterm/xterm/css/xterm.css";
@@ -815,9 +815,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         const deciding = useActivityStore.getState().attentionByTab[id] === "decision";
         noteUserInput(id, isInterruptInput(data));
         if (noteInput(id, data) > 0) countSubmit();
-        // A typed `/clear` (or `/new`) offers "Undo clear" — the one way the
-        // window learns of it from an agent whose hooks say nothing.
-        if ((kind === "agent" || kind === "local_agent") && noteTypedLine(id, data)) noteTypedClear(id);
+        // A typed `/clear` (or `/new`) offers "Undo clear" and empties the
+        // Reader — the one way the window learns of it at once (Codex's hook
+        // waits for the next prompt). One picked in the CLI's slash popup is
+        // read off the screen, which the Enter has not reached yet.
+        if ((kind === "agent" || kind === "local_agent") && noteTypedLine(id, data, () => screenAtCursor(term.buffer.active))) {
+          noteTypedClear(id);
+        }
         // The prompt strip's own reading of what was asked, CLI-blind: a
         // one-key answer or a session command is not a prompt.
         if (kind === "agent" || kind === "local_agent") {
