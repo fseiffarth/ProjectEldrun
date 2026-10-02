@@ -140,9 +140,9 @@ export function ProjectFiles({ projectId, label, onClose, markup }: {
   return <div className="sheet-backdrop files-drawer-backdrop" role="presentation" onClick={onClose}>
     <section ref={drawer} className="option-sheet project-files" role="dialog" aria-modal="true" aria-label={t("mobile.files.title")} onClick={(event) => event.stopPropagation()}>
       <header>
-        <button className="sheet-close" onClick={onClose} aria-label={t("mobile.files.close")}>✕</button>
+        <button className="files-close" onClick={onClose} aria-label={t("mobile.files.close")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg></button>
         <h2>{t("mobile.files.title")} {(isUntested("mobile.files.browse") || isUntested("mobile.files.share")) && <small>{t("mobile.outbox.untested")}</small>}</h2>
-        <span className="sheet-close" aria-hidden="true" />
+        <span className="files-close" aria-hidden="true" />
       </header>
       <nav className="files-trail" aria-label={t("mobile.files.trail")}>
         {trail.map((crumb, index) => {
