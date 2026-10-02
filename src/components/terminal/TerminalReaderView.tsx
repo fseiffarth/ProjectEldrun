@@ -1,7 +1,7 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { useT } from "../../lib/i18n";
+import { useT, type TranslationKey } from "../../lib/i18n";
 import {
   READER_STEP,
   composerHistory,
@@ -13,11 +13,14 @@ import {
 import { NO_LIVE, STOP_KEY, answerKeys, readReaderLive, sameReaderLive, type ReaderLive } from "../../lib/agents/readerLive";
 import { onSentPrompt } from "../../lib/agents/sentPrompts";
 import { readerDraft, setReaderDraft } from "../../lib/agents/readerDrafts";
-import { sendSteeringPrompt } from "../../lib/shortcuts/steeringAgent";
+import { clearAgentTab, sendSteeringPrompt } from "../../lib/shortcuts/steeringAgent";
+import { isNewConversationCommand } from "../../lib/agents/typedClear";
+import { submitScheduledAgentMessage } from "../../lib/agents/scheduledAgentInput";
+import { agentFamily, agentInputWrites } from "../../../shared/agentComposer";
 import { writePtyInput } from "../../lib/terminal/terminalInput";
 import { isClaudeCommand } from "../../lib/terminal/terminalControl";
 import { terminalFor } from "../../lib/terminal/terminalRegistry";
-import { isInterruptInput, noteUserInput } from "../../stores/activity";
+import { isInterruptInput, noteUserInput, useActivityStore } from "../../stores/activity";
 import { useUse24h } from "../../lib/timeFormat";
 import { agentTabLabel, agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
@@ -31,6 +34,9 @@ import { UntestedTag } from "../common/UntestedTag";
 import { TabStatusMark } from "../tabs/TabLocalityBadges";
 import { answerHtml, promptHtml } from "../../../mobile-web/src/terminal/answerMarkdown";
 import { chatDayLabel, chatMoment, chatTime, dayOpeners } from "../../../mobile-web/src/terminal/chatTimes";
+import { bufferRows, sendToSubagent, type SubagentSendFailure } from "../../../mobile-web/src/terminal/subagentInput";
+import { forgetSlashCommand, readSlashCommands, rememberSlashCommand, slashSuggestions, type SlashSuggestion } from "../../../mobile-web/src/slashCommands";
+import { ReaderSlashMenu } from "./ReaderSlashMenu";
 import { compactTokens, openSubagent, openSubagentRunning, siblingPosition, stepSibling, subagentAtWork, workingElapsed, workingModelName, type SubagentStep } from "../../../mobile-web/src/terminal/subagents";
 import { commandArgsInline, transcriptTurns, type TranscriptTurn } from "../../../mobile-web/src/terminal/transcriptTurns";
 import { afterClear, clearMark } from "../../../mobile-web/src/terminal/clearedSession";
@@ -285,11 +291,29 @@ function Turn({ turn, cutLabel, planLabel, agentLabel, use24h, onOpenAgent }: {
  * it survives the Reader unmounting too — another tab shown, the switch
  * flipped. Sends through the prompt box's path (`sendSteeringPrompt`); ↑/↓
  * walk `history`; Esc is `onEscape`.
+ *
+ * With a Claude subagent open, `subagent`, the words go to it instead — through
+ * Claude Code's own agent list (`subagentInput`), the one way it takes them —
+ * and nothing goes anywhere when that subagent cannot be reached.
  */
-function ReaderComposer({ scope, tabKey, tabRef, history, focused, visible, steering, onEscape, onStatus }: {
+/** Why a message to a subagent did not go, said in the composer. */
+const SUBAGENT_SEND_FAILED: Record<SubagentSendFailure, TranslationKey> = {
+  not_listed: "terminal.reader.subagentNotListed",
+  ambiguous: "terminal.reader.subagentAmbiguous",
+  not_opened: "terminal.reader.subagentNoWay",
+  send_failed: "terminal.reader.sendFailed",
+};
+
+function ReaderComposer({ scope, tabKey, tabRef, ptyId, cli, subagent, history, focused, visible, steering, onEscape, onStatus }: {
   scope: string;
   tabKey: string;
   tabRef: RefObject<TabEntry | undefined>;
+  /** The tab's CLI (`agentFamily`): whose commands the `/` menu offers. */
+  cli: string;
+  /** The pane the subagent's list is read off and walked in. */
+  ptyId: string;
+  /** The open subagent to write to: its description and type. */
+  subagent?: { task: string; role?: string };
   history: readonly string[];
   focused: boolean;
   visible: boolean;
@@ -307,6 +331,33 @@ function ReaderComposer({ scope, tabKey, tabRef, history, focused, visible, stee
    * null while the composer holds the user's own draft. */
   const historyAt = useRef<number | null>(null);
   const setAsideDraft = useRef("");
+  /** The `/` menu (`ReaderSlashMenu`): the commands sent to this CLI before,
+   * the row ↑/↓ moved to (null before they were pressed) and whether Esc
+   * closed it for the draft as it stands. */
+  const [usedSlash, setUsedSlash] = useState(() => readSlashCommands(cli));
+  useEffect(() => setUsedSlash(readSlashCommands(cli)), [cli]);
+  const [slashAt, setSlashAt] = useState<number | null>(null);
+  const [slashClosed, setSlashClosed] = useState(false);
+  // Not over a recalled prompt: ↑/↓ there walk the history, not the menu.
+  const slashMenu = useMemo(
+    () => (slashClosed || historyAt.current !== null ? [] : slashSuggestions(draft, cli, usedSlash)),
+    [slashClosed, draft, cli, usedSlash],
+  );
+  const editDraft = (next: string) => {
+    setDraft(next);
+    setSendError("");
+    setSlashAt(null);
+    setSlashClosed(false);
+  };
+  const pickSlash = (suggestion: SlashSuggestion) => {
+    editDraft(suggestion.args ? `${suggestion.line} ` : suggestion.line);
+    composerRef.current?.focus();
+  };
+  const forgetSlash = (line: string) => {
+    forgetSlashCommand(cli, line);
+    setUsedSlash(readSlashCommands(cli));
+    setSlashAt(null);
+  };
 
   // The keyboard goes to the composer whenever this pane is the focused one,
   // and back to it when steering lets go.
@@ -328,8 +379,43 @@ function ReaderComposer({ scope, tabKey, tabRef, history, focused, visible, stee
     setSending(true);
     setSendError("");
     try {
-      // Shown as sending by the Reader's `onSentPrompt` listener.
-      await sendSteeringPrompt(current, text);
+      // A new conversation goes in as the Clear key's does, so the window
+      // knows of it at once: Codex's hook says so only with the next prompt.
+      if (isNewConversationCommand(text)) {
+        if (!(await clearAgentTab(scope, current))) {
+          // Codex refuses one mid-turn, and says so only in its terminal.
+          const busy = agentFamily(agentTabLabel(current)) === "codex" && !!useActivityStore.getState().busyByTab[ptyId];
+          setSendError(t(busy ? "terminal.reader.clearBusy" : "terminal.reader.sendFailed"));
+          return;
+        }
+      } else if (subagent && !/^\s*\//u.test(text)) {
+        // Words go to the open subagent; a command stays the session's.
+        const target = current.scheduleTargetId;
+        if (!target) throw new Error("not an agent tab");
+        const result = await sendToSubagent({
+          rows: () => {
+            const term = terminalFor(ptyId);
+            return term ? bufferRows(term.buffer.active) : [];
+          },
+          // Its Esc hands the list's keyboard back: no turn is stopped.
+          key: (key) => {
+            noteUserInput(ptyId);
+            return writePtyInput(ptyId, ENCODER.encode(key)).then(() => true, () => false);
+          },
+          command: (command) => typeKeys(ptyId, agentInputWrites(command)).then(() => true, () => false),
+          type: () => submitScheduledAgentMessage(target, text, { whileBusy: true }).then(() => true, () => false),
+        }, subagent);
+        if (!result.ok) {
+          setSendError(t(SUBAGENT_SEND_FAILED[result.reason]));
+          return;
+        }
+      } else {
+        // Shown as sending by the Reader's `onSentPrompt` listener.
+        await sendSteeringPrompt(current, text);
+      }
+      // Offered again by the `/` menu, newest first.
+      rememberSlashCommand(cli, text);
+      setUsedSlash(readSlashCommands(cli));
       setDraft("");
       historyAt.current = null;
     } catch {
@@ -364,8 +450,34 @@ function ReaderComposer({ scope, tabKey, tabRef, history, focused, visible, stee
     return true;
   };
 
+  /** The `/` menu's keys: ↑/↓ move through its rows, Tab — or Enter once
+   * the arrows picked a row — fills the box with it, Esc closes it. Enter
+   * with no row picked still sends what was typed. */
+  const slashKey = (e: KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (slashMenu.length === 0 || e.altKey || e.ctrlKey || e.metaKey || e.nativeEvent.isComposing) return false;
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      if (e.shiftKey) return false;
+      const step = e.key === "ArrowUp" ? -1 : 1;
+      const from = slashAt ?? (step > 0 ? -1 : slashMenu.length);
+      setSlashAt((from + step + slashMenu.length) % slashMenu.length);
+      return true;
+    }
+    if ((e.key === "Tab" && !e.shiftKey) || (e.key === "Enter" && !e.shiftKey && slashAt !== null)) {
+      pickSlash(slashMenu[slashAt ?? 0]);
+      return true;
+    }
+    if (e.key === "Escape") {
+      setSlashClosed(true);
+      setSlashAt(null);
+      return true;
+    }
+    return false;
+  };
+
   const onComposerKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && walkHistory(e, e.key === "ArrowUp" ? -1 : 1)) {
+    if (slashKey(e)) {
+      e.preventDefault();
+    } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && walkHistory(e, e.key === "ArrowUp" ? -1 : 1)) {
       e.preventDefault();
     } else if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
@@ -379,16 +491,18 @@ function ReaderComposer({ scope, tabKey, tabRef, history, focused, visible, stee
   if (steering) return null;
   return <>
     <div className="terminal-reader-composer">
+      {slashMenu.length > 0 && <ReaderSlashMenu suggestions={slashMenu} at={slashAt} onPick={pickSlash} onForget={forgetSlash} />}
       <textarea
         ref={composerRef}
         value={draft}
         rows={2}
-        placeholder={t("terminal.reader.placeholder")}
-        aria-label={t("terminal.reader.placeholder")}
-        onChange={(e) => { setDraft(e.target.value); setSendError(""); }}
+        placeholder={subagent ? t("terminal.reader.subagentPlaceholder") : t("terminal.reader.placeholder")}
+        aria-label={subagent ? t("terminal.reader.subagentPlaceholder") : t("terminal.reader.placeholder")}
+        onChange={(e) => editDraft(e.target.value)}
         onKeyDown={onComposerKey}
       />
       {historyAt.current !== null && <UntestedTag id="terminal.reader.history" />}
+      {subagent && <UntestedTag id="terminal.reader.subagentInput" />}
       <button type="button" className="terminal-reader-send" disabled={!draft.trim() || sending} onClick={() => void send()}>
         {t("terminal.reader.send")}
       </button>
@@ -413,7 +527,8 @@ function ReaderComposer({ scope, tabKey, tabRef, history, focused, visible, stee
  * "Subagents" list over the session, which names them all. A bar above the
  * chat goes back up (Esc in the composer too) and steps between the
  * subagents beside it; while the open one is still at work its own working
- * row names its model. Prompts always go to the session, and
+ * row names its model. A prompt written there goes to that subagent on a
+ * Claude tab (`ReaderComposer`); anywhere else prompts go to the session, and
  * sending one goes back to it.
  */
 export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, focused }: {
@@ -997,6 +1112,9 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
         scope={scope}
         tabKey={tabKey}
         tabRef={tabRef}
+        ptyId={ptyId}
+        cli={agentFamily(agentLabel)}
+        subagent={openStep && isClaudeCommand(tab?.cmd) ? openStep : undefined}
         history={history}
         focused={focused}
         visible={visible}

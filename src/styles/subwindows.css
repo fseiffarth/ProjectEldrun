@@ -2574,6 +2574,7 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   background: var(--bg-hover);
 }
 .terminal-reader-composer {
+  position: relative;
   flex: none;
   display: flex;
   align-items: flex-end;
@@ -2620,6 +2621,84 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   color: var(--danger, #d9534f);
   background: var(--bg-panel);
 }
+/* The composer's `/` menu (`ReaderSlashMenu`), the phone's `.slash-menu`:
+   opens upward over the chat like the facts row's picker, anchored to the
+   composer; the row ↑/↓ reached is tinted. */
+.terminal-reader-slash {
+  position: absolute;
+  left: 14px;
+  bottom: calc(100% + 6px);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  width: min(520px, calc(100% - 28px));
+  max-height: min(50vh, 340px);
+  padding: 6px;
+  overflow-y: auto;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+}
+.terminal-reader-slash-head {
+  padding: 2px 8px 6px;
+  font-size: var(--text-xs, 0.7rem);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.terminal-reader-slash-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--radius);
+}
+.terminal-reader-slash-row:hover,
+.terminal-reader-slash-row.active { background: var(--bg-hover); }
+.terminal-reader-slash-pick {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 8px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-slash-pick strong {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  color: var(--accent);
+}
+.terminal-reader-slash-pick small {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.terminal-reader-slash-row.used .terminal-reader-slash-pick small { color: var(--text-secondary); }
+.terminal-reader-slash-forget {
+  flex: none;
+  padding: 0 8px;
+  font: inherit;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-slash-forget:hover { color: var(--text-primary); }
 /* The facts row over the composer (`TerminalReaderFacts`), the phone's
    `.session-facts`: the model as a button, then plain facts. The model list
    opens upward over the chat, anchored to the row. */
@@ -2822,7 +2901,9 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   border-radius: var(--radius);
   cursor: var(--cur-pointer, pointer);
 }
-.terminal-reader-option:hover:not(:disabled) {
+/* Buttons only: an answered card's rows (`AskedQuestions`) are divs, never
+   `:disabled`, and must not light up as if they could still be picked. */
+button.terminal-reader-option:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent-soft);
 }

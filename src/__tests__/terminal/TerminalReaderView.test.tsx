@@ -5,7 +5,11 @@ const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})), emit: vi.fn(() => Promise.resolve()) }));
 const sendSteeringPrompt = vi.fn();
-vi.mock("../../lib/shortcuts/steeringAgent", () => ({ sendSteeringPrompt: (...args: unknown[]) => sendSteeringPrompt(...args) }));
+const clearAgentTab = vi.fn();
+vi.mock("../../lib/shortcuts/steeringAgent", () => ({
+  sendSteeringPrompt: (...args: unknown[]) => sendSteeringPrompt(...args),
+  clearAgentTab: (...args: unknown[]) => clearAgentTab(...args),
+}));
 const submitCommand = vi.fn((..._args: unknown[]) => Promise.resolve("p:agent-1"));
 vi.mock("../../lib/agents/scheduledAgentInput", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/agents/scheduledAgentInput")>()),
@@ -116,6 +120,25 @@ describe("the agent pane's Reader", () => {
       unregisterTerminal("p:agent-1", term);
       vi.useRealTimers();
     }
+  });
+
+  it("starts a new conversation the way the Clear key does, not as a prompt", async () => {
+    clearAgentTab.mockReset();
+    clearAgentTab.mockResolvedValue(true);
+    reader(host);
+    await screen.findByText("fix the parser");
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "/clear" } });
+    await act(async () => { fireEvent.keyDown(box, { key: "Enter" }); });
+    expect(clearAgentTab).toHaveBeenCalledWith("p", expect.objectContaining({ key: "agent-1" }));
+    expect(sendSteeringPrompt).not.toHaveBeenCalled();
+    expect((box as HTMLTextAreaElement).value).toBe("");
+    // Refused (Codex mid-turn, a pane not ready): the text stays, with why.
+    clearAgentTab.mockResolvedValue(false);
+    fireEvent.change(box, { target: { value: "/new" } });
+    await act(async () => { fireEvent.keyDown(box, { key: "Enter" }); });
+    expect(screen.getByRole("alert").textContent).toMatch(/Not sent/);
+    expect((box as HTMLTextAreaElement).value).toBe("/new");
   });
 
   it("keeps the text and says why when the prompt did not go in", async () => {
@@ -333,7 +356,9 @@ describe("the Reader's subagents", () => {
     await screen.findByText("Tests sit beside the sources.");
   });
 
-  it("goes back to the session when a prompt is sent from a subagent", async () => {
+  it("goes back to the session when a prompt is sent from a subagent on another CLI", async () => {
+    // A Claude tab writes to the subagent instead (`subagentInput`, MobileSubagentInput.test).
+    useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [{ ...tab, label: "Codex", cmd: "codex", scheduleTargetId: "st-1" }] } }));
     sendSteeringPrompt.mockImplementation((_tab: TabEntry, text: string) => { noteSentPrompt("st-1", text); return Promise.resolve(); });
     reader(host);
     await openListed("Find the parser");
