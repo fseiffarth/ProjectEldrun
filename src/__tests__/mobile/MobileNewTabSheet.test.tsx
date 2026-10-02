@@ -12,7 +12,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Project } from "../../../mobile-web/src/screens/Project";
 import type { TabRow } from "../../../mobile-web/src/api";
-import { NAMES } from "../../lib/brand";
+import { BRAND, NAMES } from "../../lib/brand";
 
 const fetchMock = vi.fn();
 
@@ -120,7 +120,7 @@ describe("Mobile project screen — the ＋", () => {
     expect((screen.getByRole("button", { name: /Send a file from this phone/ }) as HTMLButtonElement).disabled).toBe(false);
     // … while a launch mode still needs the window.
     expect((screen.getByRole("button", { name: "plan" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/No Eldrun window is open/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`No ${BRAND.display} window is open`))).toBeTruthy();
   });
 
   it("puts the phone file under the shell and asks for any file, not just media", async () => {

@@ -1,4 +1,3 @@
-use crate::brand::UPPER;
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, State};

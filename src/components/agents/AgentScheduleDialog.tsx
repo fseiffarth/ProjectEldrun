@@ -289,7 +289,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
             <p>{t("agentSchedule.openOnly")} <UntestedTag id="agentSchedule.headless" /></p>
             <p>{t("agentSchedule.windowOnlyTimers")} <UntestedTag id="calendar.alarms.headless" /></p>
           </details>
-          {/* Two Eldrun windows on one state dir: only the one holding the timer
+          {/* Two Tabtivity windows on one state dir: only the one holding the timer
               lease delivers (headless owner plan, H2 interim). Said here, where
               a schedule is written, rather than discovered when it does not fire. */}
           {!leaseHeld && (

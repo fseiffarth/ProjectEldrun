@@ -158,7 +158,7 @@ describe("Mobile schedule sheet", () => {
   it("keeps the form live when the host answered off its files with no window (H3), and says so", async () => {
     fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({ schedules: [], time_zone: "Europe/Berlin", next_runs: {}, desktop_available: false }), { status: 200 }));
     render(<ScheduleSheet tabId={TAB} onClose={() => {}} />);
-    expect((await screen.findByRole("status")).textContent).toContain("The Eldrun window is closed");
+    expect((await screen.findByRole("status")).textContent).toContain(`The ${BRAND.display} window is closed`);
     expect(screen.queryByRole("alert")).toBeNull();
     expect((screen.getByLabelText("Prompt") as HTMLTextAreaElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);

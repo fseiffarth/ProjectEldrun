@@ -35,7 +35,7 @@ pub struct MobileHostSettings {
     pub port: u16,
     #[serde(default)]
     pub serve_origin: Option<String>,
-    /// Keep running when Eldrun quits (Settings → Mobile, default off).
+    /// Keep running when Tabtivity quits (Settings → Mobile, default off).
     #[serde(default)]
     pub stay_after_quit: Option<bool>,
 }

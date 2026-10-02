@@ -174,7 +174,7 @@ export const useAlarmStore = create<AlarmStore>((set, get) => ({
   },
 
   tick: async (now = new Date()) => {
-    // Another Eldrun window holds the timer lease: it fires the reminders,
+    // Another Tabtivity window holds the timer lease: it fires the reminders,
     // this one does not (headless owner plan, H2 interim).
     if (!holdsTimerLease()) return;
     const { events, calendars, loaded } = useCalendarStore.getState();

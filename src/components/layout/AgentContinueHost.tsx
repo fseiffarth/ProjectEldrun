@@ -222,7 +222,7 @@ export function AgentContinueHost() {
     };
 
     const tick = async () => {
-      // Another Eldrun window holds the timer lease: it continues the agents,
+      // Another Tabtivity window holds the timer lease: it continues the agents,
       // this one does not (headless owner plan, H2 interim).
       if (!holdsTimerLease()) return;
       if (disposed || running.current) return;

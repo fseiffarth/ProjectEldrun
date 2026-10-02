@@ -9,7 +9,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { adoptSyncOutcome, applyWorkspacePatch, refreshWorkspaceScope, useTabsStore, type TabEntry } from "../../stores/tabs";
+import { LEGACY_NAMES, NAMES } from "../../lib/brand";
+import { MONITOR_TAB_CMD, adoptSyncOutcome, applyWorkspacePatch, refreshWorkspaceScope, useTabsStore, type TabEntry } from "../../stores/tabs";
 
 function tab(key: string, label: string, id?: string): TabEntry {
   return { key, id, label, cmd: "", cwd: "/tmp", kind: "shell", scope: "p" };
@@ -69,7 +70,7 @@ describe("adoptSyncOutcome", () => {
           { key: "k3", id: "id-c", label: "C", cmd: "", cwd: "/tmp", kind: "shell" },
           // Created at version 5, after this window's base of 3: a phone's ＋
           // through the owner. It keeps the owner's tmux name and session id.
-          { key: "headless-1", id: "id-new", label: "Claude", cmd: "claude", cwd: "/work", kind: "agent", sessionId: "uid-1", tmuxSession: "eldrun-p--agent-x", createdVersion: 5 },
+          { key: "headless-1", id: "id-new", label: "Claude", cmd: "claude", cwd: "/work", kind: "agent", sessionId: "uid-1", tmuxSession: `${NAMES.tmuxPrefix}p--agent-x`, createdVersion: 5 },
           // Created at version 2, before the base: something this window
           // closed and has not persisted yet — never resurrected.
           { key: "old", id: "id-old", label: "Old", cmd: "", cwd: "/tmp", kind: "shell", createdVersion: 2 },
@@ -82,7 +83,7 @@ describe("adoptSyncOutcome", () => {
     const added = state.tabsByScope.p[3];
     expect(added.id).toBe("id-new");
     expect(added.key).not.toBe("headless-1");
-    expect(added.tmuxSession).toBe("eldrun-p--agent-x");
+    expect(added.tmuxSession).toBe(`${NAMES.tmuxPrefix}p--agent-x`);
     expect(added.sessionId).toBe("uid-1");
     expect(added.args).toEqual(["--resume", "uid-1"]);
     expect(added.scope).toBe("p");
@@ -91,6 +92,31 @@ describe("adoptSyncOutcome", () => {
     expect(layout && layout.type === "group" ? layout.activeKey : null).toBe("k1");
     expect(state.tabs.map((t) => t.key)).toContain(added.key);
     expect(state.workspaceVersionByScope.p).toBe(9);
+  });
+
+  it("restores an arriving built-in tab under its current command and drops a retired one, as a hydrate does", () => {
+    adoptSyncOutcome(
+      "p",
+      {
+        version: 9,
+        stale: true,
+        ops: [{ op: "created", id: "id-mon" }, { op: "created", id: "id-mail" }],
+        tabs: [
+          { key: "k1", id: "id-a", label: "A", cmd: "", cwd: "/tmp", kind: "shell" },
+          { key: "k2", id: "id-b", label: "B", cmd: "", cwd: "/tmp", kind: "shell" },
+          { key: "k3", id: "id-c", label: "C", cmd: "", cwd: "/tmp", kind: "shell" },
+          // Written by an older build under the app's old name.
+          { key: "mon", id: "id-mon", label: "Monitor", cmd: `${LEGACY_NAMES.tabCommandPrefix}monitor__`, cwd: "/tmp", kind: "monitor", createdVersion: 5 },
+          // A retired kind, however it is spelled, never comes back.
+          { key: "mail", id: "id-mail", label: "Mail", cmd: `${LEGACY_NAMES.tabCommandPrefix}mail__`, cwd: "/tmp", createdVersion: 5 },
+        ],
+      },
+      new Set(["k1", "k2", "k3"]),
+    );
+    const state = useTabsStore.getState();
+    expect(state.tabsByScope.p.map((t) => t.label)).toEqual(["A", "B", "C", "Monitor"]);
+    expect(state.tabsByScope.p[3].cmd).toBe(MONITOR_TAB_CMD);
+    expect(state.tabsByScope.p[3].kind).toBe("monitor");
   });
 
   it("never closes a tab this window did not send, and ignores a colour outside the palette", () => {
@@ -142,7 +168,7 @@ describe("applyWorkspacePatch", () => {
       tabLayout: [
         { key: "x", id: "id-a", label: "A", cmd: "", cwd: "/tmp", kind: "shell" },
         { key: "y", id: "id-b", label: "B", cmd: "", cwd: "/tmp", kind: "shell" },
-        { key: "z", id: "id-new", label: "Shell", cmd: "", cwd: "/tmp", kind: "shell", tmuxSession: "eldrun-p--shell-1", createdVersion: 6 },
+        { key: "z", id: "id-new", label: "Shell", cmd: "", cwd: "/tmp", kind: "shell", tmuxSession: `${NAMES.tmuxPrefix}p--shell-1`, createdVersion: 6 },
       ],
     });
     await refreshWorkspaceScope("p");

@@ -83,13 +83,13 @@ pub async fn run(state_dir: PathBuf, auth: Arc<Mutex<AuthStore>>, mut shutdown: 
                     let deliveries = auth.lock().unwrap_or_else(PoisonError::into_inner).push_deliveries(&notice(&alarm));
                     match deliveries {
                         Ok(deliveries) if !deliveries.is_empty() => {
-                            eprintln!("eldrun-mobile-host: reminder '{}' pushed to {} phone(s) with no window", alarm.key, deliveries.len());
+                            eprintln!("{}: reminder '{}' pushed to {} phone(s) with no window", crate::brand::MOBILE_HOST_BIN, alarm.key, deliveries.len());
                             for endpoint in push::send(deliveries).await {
-                                auth.lock().unwrap_or_else(PoisonError::into_inner).push_forget_endpoint(&endpoint);
+                                auth.lock().unwrap_or_else(PoisonError::into_inner).push_lapse_endpoint(&endpoint);
                             }
                         }
-                        Ok(_) => eprintln!("eldrun-mobile-host: reminder '{}' due with no window and no phone to push to", alarm.key),
-                        Err(error) => eprintln!("eldrun-mobile-host: reminder '{}': {error}", alarm.key),
+                        Ok(_) => eprintln!("{}: reminder '{}' due with no window and no phone to push to", crate::brand::MOBILE_HOST_BIN, alarm.key),
+                        Err(error) => eprintln!("{}: reminder '{}': {error}", crate::brand::MOBILE_HOST_BIN, alarm.key),
                     }
                 }
             }

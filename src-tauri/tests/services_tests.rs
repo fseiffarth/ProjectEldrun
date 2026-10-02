@@ -419,12 +419,12 @@ fn save_tab_layout_persists_open_session_uuids() {
         Some(serde_json::json!([])),
         true,
     );
-    assert_eq!(refused.unwrap_err(), eldrun_lib::services::workspace::OWNED_ERROR);
-    let version = eldrun_lib::services::workspace::snapshot(&id).unwrap().version;
-    eldrun_lib::services::workspace::sync(
+    assert_eq!(refused.unwrap_err(), app_lib::services::workspace::OWNED_ERROR);
+    let version = app_lib::services::workspace::snapshot(&id).unwrap().version;
+    app_lib::services::workspace::sync(
         &id,
         &path_str,
-        eldrun_lib::services::workspace::ClientSync {
+        app_lib::services::workspace::ClientSync {
             base_version: version,
             tabs: vec![],
             groups: None,

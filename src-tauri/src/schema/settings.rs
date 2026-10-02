@@ -65,7 +65,7 @@ pub struct AppMobileHostSettings {
     /// (`mobile_control::files::files_open`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_files: Option<bool>,
-    /// Does the Mobile host keep running when Eldrun quits, so the phone,
+    /// Does the Mobile host keep running when Tabtivity quits, so the phone,
     /// scheduled prompts and calendar reminders go on with no window
     /// (`docs/headless_owner_plan.md`)? Default off: a quit stops it. Read by
     /// the quit path (`commands::mobile_control::stop_host_for_exit`).
@@ -825,7 +825,7 @@ pub struct Settings {
     /// A whole-document save must carry the revision it loaded, and is
     /// refused when the file moved on since — a second window or the Mobile
     /// sidecar saving in between is never erased. `0` for a file no
-    /// revision-aware Eldrun has written yet; not serialized then, so an
+    /// revision-aware build has written yet; not serialized then, so an
     /// untouched file keeps its bytes.
     #[serde(default, skip_serializing_if = "rev_is_zero")]
     pub rev: u64,

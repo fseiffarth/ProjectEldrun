@@ -366,7 +366,7 @@ export function AgentScheduleHost() {
         again = true;
         return;
       }
-      // Another Eldrun window holds the timer lease: it delivers, this one
+      // Another Tabtivity window holds the timer lease: it delivers, this one
       // does not (headless owner plan, H2 interim).
       if (!holdsTimerLease()) return;
       running.current = true;

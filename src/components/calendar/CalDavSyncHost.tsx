@@ -83,7 +83,7 @@ export function CalDavSyncHost() {
     }
 
     const tick = () => {
-      // Another Eldrun window holds the timer lease: it syncs, this one does
+      // Another Tabtivity window holds the timer lease: it syncs, this one does
       // not (headless owner plan, H2 interim).
       if (!holdsTimerLease()) return;
       // Serialized across accounts: a slow server plus a short interval could

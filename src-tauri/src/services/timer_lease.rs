@@ -1,7 +1,7 @@
 //! The single-client timer lease (headless owner plan, H2, interim).
 //!
 //! Scheduled prompts, auto-continue, the warm-up cron, calendar alarms and
-//! CalDAV sync are still fired by React hosts in a window. Two Eldrun
+//! CalDAV sync are still fired by React hosts in a window. Two Tabtivity
 //! processes on one state dir — a packaged build beside a dev window, a
 //! window that survived a crash — would each fire them. Until the timers
 //! move into the owner, a host runs only while its window holds this lease:

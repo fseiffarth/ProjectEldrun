@@ -638,7 +638,7 @@ pub fn local_tmux_argv(session: &str, opts: &PtyOptions, detached: bool) -> Vec<
 /// Start `opts`'s command in a **detached** local tmux session named by
 /// `opts.tmux_session`, with no PTY and no window (headless owner plan, H1b:
 /// the sidecar's spawn). The client gets what the PTY's `build_command` gives
-/// one — the tab's `cwd`, `TERM`, `COLORTERM`, Eldrun's PATH, then `opts.env`
+/// one — the tab's `cwd`, `TERM`, `COLORTERM`, Tabtivity's PATH, then `opts.env`
 /// — so the session's environment is what an attached spawn's would be; the
 /// per-tab secrets reach the session through the client environment and
 /// `update-environment`, never the argv (#864). `socket` names a private tmux
@@ -1118,7 +1118,7 @@ mod tests {
             id: format!("headless:{session}"),
             cmd: "sleep".into(),
             args: vec!["30".into()],
-            env: env_of(&[("ELDRUN_TAB_UID", "u-detached")]),
+            env: env_of(&[(crate::app_env!("TAB_UID"), "u-detached")]),
             cwd: cwd.into(),
             cols: 80,
             rows: 24,
@@ -1137,9 +1137,9 @@ mod tests {
 
     #[test]
     fn the_detached_argv_is_the_attached_one_plus_d() {
-        let opts = detached_fixture("eldrun-p--shell-x", "/p");
-        let attached = local_tmux_argv("eldrun-p--shell-x", &opts, false);
-        let detached = local_tmux_argv("eldrun-p--shell-x", &opts, true);
+        let opts = detached_fixture(concat!(crate::app_slug!(), "-p--shell-x"), "/p");
+        let attached = local_tmux_argv(concat!(crate::app_slug!(), "-p--shell-x"), &opts, false);
+        let detached = local_tmux_argv(concat!(crate::app_slug!(), "-p--shell-x"), &opts, true);
         let at = attached.iter().position(|a| a == "-A").unwrap();
         let mut expected = attached.clone();
         expected.insert(at + 1, "-d".into());
@@ -1149,9 +1149,9 @@ mod tests {
 
     #[test]
     fn a_spawn_without_a_session_name_is_refused() {
-        let mut opts = detached_fixture("eldrun-p--shell-x", "/p");
+        let mut opts = detached_fixture(concat!(crate::app_slug!(), "-p--shell-x"), "/p");
         opts.tmux_session = None;
-        assert!(spawn_detached_with(&opts, Some("eldrun-test-unused")).is_err());
+        assert!(spawn_detached_with(&opts, Some(concat!(crate::app_slug!(), "-test-unused"))).is_err());
     }
 
     /// Live check on a private socket (skipped without tmux): the headless
@@ -1163,8 +1163,8 @@ mod tests {
         if !tmux_available() {
             return;
         }
-        let socket = format!("eldrun-test-h1b-{}", std::process::id());
-        let session = "eldrun-p--shell-detached";
+        let socket = format!(concat!(crate::app_slug!(), "-test-h1b-{}"), std::process::id());
+        let session = concat!(crate::app_slug!(), "-p--shell-detached");
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("env.txt");
         let mut opts = detached_fixture(session, &dir.path().to_string_lossy());
@@ -1183,7 +1183,7 @@ mod tests {
         let mut seen = String::new();
         for _ in 0..50 {
             seen = std::fs::read_to_string(&out).unwrap_or_default();
-            if seen.contains("ELDRUN_TAB_UID") {
+            if seen.contains(crate::app_env!("TAB_UID")) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1193,6 +1193,6 @@ mod tests {
         assert!(has.status.success(), "{}", String::from_utf8_lossy(&has.stderr));
         let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
         assert!(listed.lines().any(|l| l == format!("{session}\t0")), "{listed}");
-        assert!(seen.contains("ELDRUN_TAB_UID=u-detached"), "{seen}");
+        assert!(seen.contains(concat!(crate::app_env!("TAB_UID"), "=u-detached")), "{seen}");
     }
 }

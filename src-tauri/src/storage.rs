@@ -85,7 +85,7 @@ where
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     // The process-wide lock serialises this process; the file lock serialises
-    // a second Eldrun process patching the same file (#171's lesson applied
+    // a second Tabtivity process patching the same file (#171's lesson applied
     // to every read-modify-write here).
     let _file_lock = FileLock::exclusive(path).map_err(|e| format!("lock {}: {e}", path.display()))?;
     let mut value = if path.exists() {
@@ -193,7 +193,7 @@ pub(crate) mod durability {
 /// An advisory, cross-process lock on a sibling `<file>.lock` of a state
 /// file, held for the guard's lifetime.
 ///
-/// `JSON_MUTATION_LOCK` serialises this process; a second Eldrun process (a
+/// `JSON_MUTATION_LOCK` serialises this process; a second Tabtivity process (a
 /// second window, the Mobile sidecar) needs the file system to do it. The
 /// lock file is never removed: deleting one out from under a holder is how
 /// two processes end up both holding "the" lock. Best effort — a filesystem

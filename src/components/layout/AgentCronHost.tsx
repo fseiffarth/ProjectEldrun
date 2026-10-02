@@ -96,7 +96,7 @@ export function AgentCronHost() {
 
     const tick = () => {
       if (inFlight.current) return;
-      // Another Eldrun window holds the timer lease: it sends the morning's
+      // Another Tabtivity window holds the timer lease: it sends the morning's
       // message, this one does not (headless owner plan, H2 interim).
       if (!holdsTimerLease()) return;
       const now = new Date();

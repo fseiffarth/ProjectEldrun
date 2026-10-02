@@ -5,7 +5,7 @@ import { create } from "zustand";
  * The single-client timer lease (headless owner plan, H2, interim).
  *
  * Scheduled prompts, auto-continue, the warm-up cron, calendar alarms and the
- * CalDAV sync are still fired by hosts in this window. Two Eldrun processes on
+ * CalDAV sync are still fired by hosts in this window. Two Tabtivity processes on
  * one state dir would each fire them, so a host ticks only while this window
  * holds the lease the backend grants to one client at a time
  * (`services::timer_lease`). The lease is renewed by heartbeat and expires on

@@ -3,7 +3,7 @@
 //! Scheduled prompts used to fire only from a window: `AgentScheduleHost`
 //! ticks every 15 s, waits for the tab to fall idle and types the prompt into
 //! its PTY. With no window open nothing fired; with two, both did. This is
-//! the same loop run by the Mobile sidecar — the one Eldrun process that
+//! the same loop run by the Mobile sidecar — the one Tabtivity process that
 //! lives without a window — against the same files, with the tab reached
 //! through its tmux session instead of a PTY the window owns.
 //!
@@ -78,7 +78,7 @@ const RELAUNCH_BACKOFF: Duration = Duration::from_secs(60);
 const PREFACE_SETTLE_MAX: Duration = Duration::from_secs(6);
 const PREFACE_POLL: Duration = Duration::from_millis(100);
 /// The buffer name the delivery loads a submission under; deleted on paste.
-const PASTE_BUFFER: &str = "eldrun-schedule";
+const PASTE_BUFFER: &str = concat!(crate::app_slug!(), "-schedule");
 
 /// What the window's `scheduleVerdict` answers: an occurrence inside the
 /// catch-up window that waits for an idle point, one past it that is only
@@ -557,7 +557,7 @@ fn retire(state_dir: &Path, target: &Target, schedule: &ScheduledAgentPrompt, oc
         },
     );
     if let Err(error) = recorded {
-        eprintln!("eldrun-mobile-host: scheduler: history row of '{}' not written: {error}", schedule.id);
+        eprintln!("{}: scheduler: history row of '{}' not written: {error}", crate::brand::MOBILE_HOST_BIN, schedule.id);
         return;
     }
     if !once {
@@ -615,7 +615,7 @@ pub async fn tick(ctx: &Context, now: DateTime<Local>) -> Vec<Event> {
                 if target.kind() == "agent" && ctx.may_relaunch(&target.tmux) {
                     let error = (ctx.launch)(headless::launch_options(&target.project_id, &target.tab)).await.err();
                     if let Some(error) = &error {
-                        eprintln!("eldrun-mobile-host: scheduler: could not restart '{}': {error}", target.tmux);
+                        eprintln!("{}: scheduler: could not restart '{}': {error}", crate::brand::MOBILE_HOST_BIN, target.tmux);
                     }
                     events.push(Event::Relaunched { tmux: target.tmux.clone(), error });
                 }
@@ -700,11 +700,11 @@ pub async fn run(
                 for event in tick(&ctx, Local::now()).await {
                     match event {
                         Event::WindowHoldsLease(_) => {}
-                        Event::Relaunched { tmux, error: None } => eprintln!("eldrun-mobile-host: scheduler: restarted '{tmux}' for a due prompt"),
+                        Event::Relaunched { tmux, error: None } => eprintln!("{}: scheduler: restarted '{tmux}' for a due prompt", crate::brand::MOBILE_HOST_BIN),
                         Event::Relaunched { .. } => {}
-                        Event::Missed { tmux, schedule_id, occurrence } => eprintln!("eldrun-mobile-host: scheduler: '{schedule_id}' on '{tmux}' missed {occurrence}"),
-                        Event::Delivered { tmux, schedule_id, occurrence } => eprintln!("eldrun-mobile-host: scheduler: '{schedule_id}' delivered into '{tmux}' for {occurrence}"),
-                        Event::Failed { tmux, schedule_id, occurrence, error } => eprintln!("eldrun-mobile-host: scheduler: '{schedule_id}' into '{tmux}' for {occurrence} failed: {error}"),
+                        Event::Missed { tmux, schedule_id, occurrence } => eprintln!("{}: scheduler: '{schedule_id}' on '{tmux}' missed {occurrence}", crate::brand::MOBILE_HOST_BIN),
+                        Event::Delivered { tmux, schedule_id, occurrence } => eprintln!("{}: scheduler: '{schedule_id}' delivered into '{tmux}' for {occurrence}", crate::brand::MOBILE_HOST_BIN),
+                        Event::Failed { tmux, schedule_id, occurrence, error } => eprintln!("{}: scheduler: '{schedule_id}' into '{tmux}' for {occurrence} failed: {error}", crate::brand::MOBILE_HOST_BIN),
                     }
                 }
             }
@@ -822,7 +822,7 @@ mod tests {
 
     const PROJECT: &str = "proj-1";
     const TARGET: &str = "target-1";
-    const TMUX: &str = "eldrun-proj-1--agent-abc";
+    const TMUX: &str = concat!(crate::app_slug!(), "-proj-1--agent-abc");
     const UID: &str = "11111111-2222-4333-8444-555555555555";
 
     impl Fixture {
@@ -835,9 +835,9 @@ mod tests {
                 "tabLayout": [
                     { "key": "k1", "label": "Claude", "cmd": "claude", "cwd": dir.path().to_string_lossy(),
                       "kind": "agent", "sessionId": UID, "scheduleTargetId": TARGET, "tmuxSession": TMUX,
-                      "args": ["--session-id", UID], "env": { "ELDRUN_TAB_UID": UID } },
+                      "args": ["--session-id", UID], "env": { crate::app_env!("TAB_UID"): UID } },
                     { "key": "k2", "label": "Shell", "cmd": "", "cwd": dir.path().to_string_lossy(),
-                      "kind": "shell", "tmuxSession": "eldrun-proj-1--shell-def" }
+                      "kind": "shell", "tmuxSession": concat!(crate::app_slug!(), "-proj-1--shell-def") }
                 ]
             });
             let path = headless::session_file(dir.path(), PROJECT);
@@ -1153,8 +1153,8 @@ mod tests {
         if !crate::services::tmux_local::tmux_available() {
             return;
         }
-        let socket = format!("eldrun-test-h2-{}", std::process::id());
-        let session = "eldrun-p--agent-h2";
+        let socket = format!(concat!(crate::app_slug!(), "-test-h2-{}"), std::process::id());
+        let session = concat!(crate::app_slug!(), "-p--agent-h2");
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("typed.txt");
         let tmux = |args: &[&str]| {
@@ -1183,7 +1183,7 @@ mod tests {
         let _ = tmux(&["kill-server"]);
         delivered.unwrap();
         assert!(probe.is_some_and(|p| p.created > 0), "the probe reads the live session");
-        assert!(runner.probe("eldrun-p--agent-none").is_none());
+        assert!(runner.probe(concat!(crate::app_slug!(), "-p--agent-none")).is_none());
         let model = typed.find("/model opus\n").expect("the prefix command, submitted");
         let message = typed.find("hello\nworld\n").expect("the message with its newline, submitted");
         assert!(model < message, "prefix first: {typed:?}");
@@ -1198,8 +1198,8 @@ mod tests {
         if !crate::services::tmux_local::tmux_available() {
             return;
         }
-        let socket = format!("eldrun-test-h3-{}", std::process::id());
-        let session = "eldrun-p--shell-h3";
+        let socket = format!(concat!(crate::app_slug!(), "-test-h3-{}"), std::process::id());
+        let session = concat!(crate::app_slug!(), "-p--shell-h3");
         let dir = tempfile::tempdir().unwrap();
         let tmux = |args: &[&str]| {
             std::process::Command::new("tmux")

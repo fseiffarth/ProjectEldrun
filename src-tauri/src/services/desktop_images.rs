@@ -70,7 +70,7 @@ impl ImageFolder {
     }
 }
 
-/// The platform's screenshot and picture folders plus Eldrun's own screenshot
+/// The platform's screenshot and picture folders plus Tabtivity's own screenshot
 /// staging area under `state_dir`, where a shot taken through the Screenshot
 /// app waits for its filing answer. Linux honours `user-dirs.dirs`, so a
 /// localized `~/Bilder` is found. Shared by the desktop command and the

@@ -5301,7 +5301,7 @@ mod tests {
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains(&host.root.to_string_lossy().to_string()));
         assert!(!body.contains("scheduleTargetId"));
-        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
+        assert!(!body.contains(crate::brand::TMUX_PREFIX));
 
         // A tab the desktop never bound to a schedule target has nowhere to
         // file a rule: the owner answers "no such tab" rather than inventing
@@ -5324,13 +5324,20 @@ mod tests {
         let (status, _, body) = host.send(create).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
         assert_eq!(json(&body)["error"], "tab_not_found");
-        assert!(!body.contains("eldrun-"));
+        assert!(!body.contains(crate::brand::TMUX_PREFIX));
     }
 
     /// A host whose spawn seam records what it is asked to start (and starts
     /// nothing), with every agent CLI "installed".
     fn headless_host(launch: headless::HeadlessLaunch) -> Fixture {
         let mut host = Fixture::with_project();
+        // Shell tabs are off the phone unless switched on; the owner mints
+        // shells too, so the fixture opts in.
+        std::fs::write(
+            host.state.config.state_dir.join("settings.json"),
+            serde_json::json!({ crate::brand::MOBILE_HOST_KEY: { "enabled": true, "shell_tabs": true } }).to_string(),
+        )
+        .expect("write settings");
         host.state.spawner = HeadlessSpawner { launch, installed: Arc::new(|_| true) };
         host
     }
@@ -5375,7 +5382,7 @@ mod tests {
         let session_file = host.state.config.state_dir.join("sessions").join(RAW_PROJECT).join("terminals.json");
         let leaks = |body: &str| {
             assert!(!body.contains(RAW_PROJECT), "raw project id leaked: {body}");
-            assert!(!body.contains("eldrun-"), "tmux name leaked: {body}");
+            assert!(!body.contains(crate::brand::TMUX_PREFIX), "tmux name leaked: {body}");
             assert!(!body.contains("9d0f-session"), "session id leaked: {body}");
             assert!(!body.contains(&host.root.to_string_lossy().to_string()), "path leaked: {body}");
         };
@@ -5403,7 +5410,7 @@ mod tests {
         let (status, _, body) = host.send(request_as("DELETE", &format!("/api/v1/tabs/{tab_id}"), &cookie, None)).await;
         assert_eq!(status, StatusCode::OK, "answered: {body}");
         assert_eq!(json(&body)["closed"], true);
-        assert_eq!(host.runner.killed.lock().unwrap().as_slice(), [format!("eldrun-{RAW_PROJECT}--agent-abcdef123")]);
+        assert_eq!(host.runner.killed.lock().unwrap().as_slice(), [format!("{}{RAW_PROJECT}--agent-abcdef123", crate::brand::TMUX_PREFIX)]);
         let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
         let detail = json(&body);
         assert_eq!(detail["tabs"].as_array().map(Vec::len), Some(0), "{body}");
@@ -5431,8 +5438,8 @@ mod tests {
         assert_eq!(spawned.len(), 1);
         assert_eq!(spawned[0].cmd, "claude");
         assert_eq!(spawned[0].args, vec!["--resume".to_string(), "9d0f-session".to_string()]);
-        assert!(spawned[0].tmux_session.as_deref().is_some_and(|n| n.starts_with(&format!("eldrun-{RAW_PROJECT}--agent-"))));
-        assert_ne!(spawned[0].tmux_session.as_deref(), Some(&*format!("eldrun-{RAW_PROJECT}--agent-abcdef123")), "a fresh session name");
+        assert!(spawned[0].tmux_session.as_deref().is_some_and(|n| n.starts_with(&format!("{}{RAW_PROJECT}--agent-", crate::brand::TMUX_PREFIX))));
+        assert_ne!(spawned[0].tmux_session.as_deref(), Some(&*format!("{}{RAW_PROJECT}--agent-abcdef123", crate::brand::TMUX_PREFIX)), "a fresh session name");
         let stored: crate::schema::session::TerminalSession = crate::storage::read_json(&session_file).expect("session");
         assert_eq!(stored.tab_layout.len(), 1); // project-tree-read: ok — the state-dir session file.
         assert_eq!(stored.tab_layout[0].session_id.as_deref(), Some("9d0f-session")); // project-tree-read: ok — same.
@@ -5458,7 +5465,7 @@ mod tests {
                     "kind": "agent",
                     "sessionId": "9d0f-session",
                     "scheduleTargetId": "tgt-1",
-                    "tmuxSession": format!("eldrun-{RAW_PROJECT}--agent-abcdef123"),
+                    "tmuxSession": format!("{}{RAW_PROJECT}--agent-abcdef123", crate::brand::TMUX_PREFIX),
                 }]
             }))
             .expect("session fixture"),
@@ -5528,7 +5535,7 @@ mod tests {
         let leaks = |body: &str| {
             assert!(!body.contains(RAW_PROJECT), "raw project id leaked: {body}");
             assert!(!body.contains("tgt-1"), "schedule target leaked: {body}");
-            assert!(!body.contains("eldrun-"), "tmux name leaked: {body}");
+            assert!(!body.contains(crate::brand::TMUX_PREFIX), "tmux name leaked: {body}");
             assert!(!body.contains("9d0f-session"), "session id leaked: {body}");
             assert!(!body.contains(&host.root.to_string_lossy().to_string()), "path leaked: {body}");
         };
@@ -5709,7 +5716,7 @@ mod tests {
         assert_eq!(options["worktrees"], json!([]));
         assert_eq!(options["sign_in"], json!([]));
 
-        // Desktop images: a file in Eldrun's own screenshot folder is listed
+        // Desktop images: a file in Tabtivity's own screenshot folder is listed
         // (no clipboard) and attached into the project inbox.
         let shots = state_dir.join("screenshots-pending");
         std::fs::create_dir_all(&shots).expect("shots dir");
@@ -5727,7 +5734,7 @@ mod tests {
             .await;
         assert_eq!(status, StatusCode::CREATED, "answered: {body}");
         let attached = json(&body)["attachment"].clone();
-        assert!(attached["reference"].as_str().is_some_and(|r| r.starts_with(".eldrun/inbox/")), "{body}");
+        assert!(attached["reference"].as_str().is_some_and(|r| r.starts_with(concat!(".", crate::app_slug!(), "/inbox/"))), "{body}");
         assert!(host.root.join(attached["reference"].as_str().unwrap()).is_file());
         let (status, _, body) = host
             .send(request_as("POST", &format!("/api/v1/tabs/{tab_id}/desktop-images"), &cookie, Some(json!({ "image_id": "clipboard" }))))
@@ -5882,16 +5889,16 @@ mod tests {
         let minted = &tabs[1];
         assert!(minted["id"].as_str().is_some_and(|id| !id.is_empty()), "{minted}");
         let tmux = minted["tmuxSession"].as_str().expect("tmux name").to_string();
-        assert!(tmux.starts_with(&format!("eldrun-{RAW_PROJECT}--agent-")), "{tmux}");
+        assert!(tmux.starts_with(&format!("{}{RAW_PROJECT}--agent-", crate::brand::TMUX_PREFIX)), "{tmux}");
         let target = minted["scheduleTargetId"].as_str().expect("schedule binding").to_string();
         assert!(minted["mobileRequestHash"].as_str().is_some());
         let uid = minted["sessionId"].as_str().expect("session uuid").to_string();
         assert_eq!(minted["args"], json!(["--session-id", uid]));
-        assert_eq!(minted["env"]["ELDRUN_TAB_UID"], uid);
+        assert_eq!(minted["env"][crate::app_env!("TAB_UID")], uid);
         assert!(session["workspaceVersion"].as_u64().is_some_and(|v| v >= 2), "{session}");
         let leaks = |body: &str| {
             assert!(!body.contains(RAW_PROJECT), "raw project id leaked: {body}");
-            assert!(!body.contains("eldrun-"), "tmux name leaked: {body}");
+            assert!(!body.contains(crate::brand::TMUX_PREFIX), "tmux name leaked: {body}");
             assert!(!body.contains(&uid), "session id leaked: {body}");
             assert!(!body.contains(&target), "schedule target leaked: {body}");
             assert!(!body.contains(&host.root.to_string_lossy().to_string()), "path leaked: {body}");
@@ -5909,7 +5916,7 @@ mod tests {
         assert!(opts.agent);
         assert_eq!(opts.project_id.as_deref(), Some(RAW_PROJECT));
         assert!(std::path::Path::new(&opts.cwd).ends_with("work"), "{}", opts.cwd);
-        assert_eq!(opts.env.get("ELDRUN_TAB_UID"), Some(&uid));
+        assert_eq!(opts.env.get(crate::app_env!("TAB_UID")), Some(&uid));
         assert_eq!(opts.schedule_target_id.as_deref(), Some(target.as_str()));
 
         // The same request again answers the same tab and starts nothing.
@@ -5951,7 +5958,7 @@ mod tests {
         let shell = recorded.lock().unwrap().last().cloned().expect("shell spawn");
         assert_eq!(shell.cmd, "");
         assert!(!shell.agent);
-        assert!(shell.tmux_session.as_deref().is_some_and(|n| n.starts_with(&format!("eldrun-{RAW_PROJECT}--shell-"))));
+        assert!(shell.tmux_session.as_deref().is_some_and(|n| n.starts_with(&format!("{}{RAW_PROJECT}--shell-", crate::brand::TMUX_PREFIX))));
     }
 
     /// A headless launch that fails leaves no tab behind: the record is taken
@@ -5971,7 +5978,7 @@ mod tests {
             .await;
         assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
         assert_eq!(json(&body)["error"], "launch_failed");
-        assert!(!body.contains("eldrun-"), "{body}");
+        assert!(!body.contains(crate::brand::TMUX_PREFIX), "{body}");
         let session_path = host.state.config.state_dir.join("sessions").join(RAW_PROJECT).join("terminals.json");
         let session: Value = serde_json::from_slice(&std::fs::read(&session_path).expect("session")).expect("json");
         assert_eq!(session["tabLayout"].as_array().expect("tabs").len(), 1, "{session}");
@@ -6057,7 +6064,7 @@ mod tests {
             assert!(!body.contains(&task.id), "raw task id leaked: {body}");
             assert!(!body.contains(&event.id), "raw event id leaked: {body}");
             assert!(!body.contains("tgt-1"), "schedule target leaked: {body}");
-            assert!(!body.contains(concat!(crate::app_slug!(), "-")), "tmux name leaked: {body}");
+            assert!(!body.contains(crate::brand::TMUX_PREFIX), "tmux name leaked: {body}");
             assert!(!body.contains(&host.root.to_string_lossy().to_string()), "path leaked: {body}");
         };
 
@@ -6208,7 +6215,7 @@ mod tests {
         assert_eq!(json(&body)["desktop_available"], false);
         assert_eq!(json(&body)["tabs"].as_array().expect("tabs").len(), 0);
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
+        assert!(!body.contains(crate::brand::TMUX_PREFIX));
     }
 
     #[test]
@@ -6367,7 +6374,7 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
         assert_eq!(json(&body)["error"], "desktop_unavailable");
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
+        assert!(!body.contains(crate::brand::TMUX_PREFIX));
 
         // The create route will not take the session name from the phone.
         let (status, _, body) = host
@@ -6471,7 +6478,7 @@ mod tests {
         assert_eq!(json(&body)["desktop_available"], false);
         assert_eq!(json(&body)["tab"]["label"], "Release review");
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
+        assert!(!body.contains(crate::brand::TMUX_PREFIX));
     }
 
     #[tokio::test]
@@ -6519,7 +6526,7 @@ mod tests {
         assert_eq!(json(&body)["desktop_available"], false);
         assert!(!body.contains(RAW_BOX));
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
+        assert!(!body.contains(crate::brand::TMUX_PREFIX));
         assert_eq!(
             host.runner.killed.lock().unwrap().as_slice(),
             [format!("{SLUG}-box_{RAW_BOX}--shell-abcdef123")],
@@ -6626,7 +6633,7 @@ mod tests {
         assert_eq!(json(&body)["tabs"], serde_json::json!([anchor_id, tab_id]), "the moved tab now follows its anchor");
         assert!(!body.contains(RAW_BOX));
         assert!(!body.contains(RAW_PROJECT));
-        assert!(!body.contains(concat!(crate::app_slug!(), "-")));
+        assert!(!body.contains(crate::brand::TMUX_PREFIX));
     }
 
     #[tokio::test]

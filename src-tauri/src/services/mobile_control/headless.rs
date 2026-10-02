@@ -636,7 +636,7 @@ pub fn session_file(state_dir: &Path, raw_id: &str) -> std::path::PathBuf {
 
 /// The tab record a headless create appends — `buildStaticTabSpec`'s shape:
 /// a shell is the bare login shell; an agent is its binary with a fresh
-/// session uuid as `sessionId`, `ELDRUN_TAB_UID` and, for the CLIs that take
+/// session uuid as `sessionId`, `<UPPER>_TAB_UID` and, for the CLIs that take
 /// one at launch (Claude, Gemini), `--session-id`. The owner mints the id,
 /// the tmux name and the schedule binding (`workspace::create_tab_in`); the
 /// key is re-minted by every window that loads it.
@@ -652,7 +652,7 @@ fn tab_record(kind: &CreateTabKind, agent: Option<&AgentChoice>, cwd: &Path, req
             };
             extra.insert("kind".into(), json!("agent"));
             extra.insert("args".into(), json!(args));
-            extra.insert("env".into(), json!({ "ELDRUN_TAB_UID": uuid }));
+            extra.insert("env".into(), json!({ crate::app_env!("TAB_UID"): uuid }));
             (agent.public.label.clone(), agent.bin.to_string(), Some(uuid))
         }
         _ => {
@@ -799,7 +799,7 @@ pub fn closed_tabs(state_dir: &Path, raw_id: &str) -> Vec<super::protocol::Close
 /// `RESUMABLE_AGENTS` (`stores/tabs.ts`): the launch args that bring a
 /// resumable agent tab's conversation back. Claude's `--resume <launch id>`
 /// is upgraded to the live id by `launch_prep` as at every restart; Codex
-/// resolves its own from `ELDRUN_TAB_UID`; the rest continue their latest.
+/// resolves its own from `<UPPER>_TAB_UID`; the rest continue their latest.
 pub(super) fn resume_args(cmd: &str, session_id: &str) -> Vec<String> {
     match cmd {
         "claude" => vec!["--resume".into(), session_id.into()],

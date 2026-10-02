@@ -766,7 +766,7 @@ async fn enable_host_service(target: &Path, _config: &HostConfig) -> Result<(), 
 /// choice, and the next launch's [`start_host_on_launch`] starts the host
 /// whether or not the login did.
 ///
-/// The one exception is the user's own: with "Keep running when Eldrun is
+/// The one exception is the user's own: with "Keep running when Tabtivity is
 /// closed" on (`stay_after_quit`), the host is left up, because since the
 /// headless owner (`docs/headless_owner_plan.md`) it is no longer a listener
 /// with nothing behind it — it answers the phone, starts tabs, and fires
@@ -1510,7 +1510,8 @@ mod stay_after_quit_tests {
     fn config(host: &str) -> HostConfig {
         let temp = tempfile::tempdir().expect("temp directory");
         let settings = format!(
-            r#"{{"eldrun_mobile_host":{{"enabled":true,"serve_origin":"https://desk.example.ts.net"{host}}}}}"#
+            r#"{{"{}":{{"enabled":true,"serve_origin":"https://desk.example.ts.net"{host}}}}}"#,
+            crate::brand::MOBILE_HOST_KEY
         );
         std::fs::write(temp.path().join("settings.json"), settings).expect("settings");
         HostConfig::load(temp.path()).expect("config")

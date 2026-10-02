@@ -5455,22 +5455,33 @@ export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, s
   const before = useTabsStore.getState();
   const known = before.workspaceVersionByScope[scope] ?? 0;
   const heldIds = new Set((before.tabsByScope[scope] ?? []).map((t) => t.id).filter((id): id is string => !!id));
+  // The same gates `loadFromLayout` applies to a hydrate: a built-in tab's
+  // command under the app's old name is rewritten first, a retired kind and a
+  // kind whose experimental flag is off never come back.
+  const withdrawn = new Set<TabKind>(withdrawnTabKinds(useSettingsStore.getState().settings));
+  const kindOf = (t: SavedTabEntry): TabKind => t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : ""));
   const arrived = Object.prototype.hasOwnProperty.call(before.tabsByScope, scope)
-    ? (outcome.tabs ?? []).filter(
-        (t) =>
-          !!t.id &&
-          !heldIds.has(t.id) &&
-          (t.createdVersion ?? 0) > known &&
-          !RETIRED_TAB_CMDS.has(t.cmd || "") &&
-          isRestorableTab({
-            kind: t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : "")),
-            cmd: t.cmd,
-            sessionId: t.sessionId,
-            resumeArgs: t.resumeArgs,
-            viewer: t.viewer,
-            localLaunch: t.localLaunch,
-          }),
-      )
+    ? (outcome.tabs ?? [])
+        .map((t) => {
+          const cmd = t.cmd ? currentTabCommand(t.cmd) : t.cmd;
+          return cmd === t.cmd ? t : { ...t, cmd };
+        })
+        .filter(
+          (t) =>
+            !!t.id &&
+            !heldIds.has(t.id) &&
+            (t.createdVersion ?? 0) > known &&
+            !RETIRED_TAB_CMDS.has(t.cmd || "") &&
+            !withdrawn.has(kindOf(t)) &&
+            isRestorableTab({
+              kind: kindOf(t),
+              cmd: t.cmd,
+              sessionId: t.sessionId,
+              resumeArgs: t.resumeArgs,
+              viewer: t.viewer,
+              localLaunch: t.localLaunch,
+            }),
+        )
     : [];
   if (arrived.length > 0) {
     const entries = arrived.map((t) => restoreSavedTab(t, { defaultCwd: t.cwd, scope, agentRoots: [] }));

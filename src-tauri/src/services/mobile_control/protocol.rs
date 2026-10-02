@@ -1187,7 +1187,8 @@ impl DesktopRequest {
             | Self::AgentStatus { .. }
             | Self::AgentTranscript { .. }
             | Self::DesktopImages { .. }
-            | Self::AttachDesktopImage { .. } => false,
+            | Self::AttachDesktopImage { .. }
+            | Self::Refresh { .. } => false,
         }
     }
 }

@@ -23,7 +23,7 @@
 //!
 //! Bookkeeping lives in the session's `extra` (`workspaceVersion`,
 //! `workspaceClosed`) and each tab's (`id`, `createdVersion`), so a file
-//! written by an older Eldrun reads as version 0 and is adopted on its first
+//! written by an older build reads as version 0 and is adopted on its first
 //! sync — nothing about the on-disk shape changed for anyone else.
 
 use std::collections::{HashMap, HashSet};
@@ -42,7 +42,7 @@ pub const OWNED_ERROR: &str =
     "this scope's tab set is held by the workspace service; save it through workspace_sync";
 
 /// `TerminalSession.extra`: the scope's version, `0`/absent for a file no
-/// revision-aware Eldrun has synced yet.
+/// revision-aware build has synced yet.
 pub const VERSION_KEY: &str = "workspaceVersion";
 /// `TerminalSession.extra`: `[{id, version}]` of the tabs closed most
 /// recently, so a client that still carries one of them (it had not seen the
@@ -119,15 +119,15 @@ fn kind_of(tab: &TabEntry) -> &str {
 // ── Owner-side minting ──────────────────────────────────────────────────────
 
 /// Mint the tmux session name of a scope's new PTY tab:
-/// `eldrun-<scope>--<shell|agent>-<uuid>`. The same shape the desktop minted
+/// `<slug>-<scope>--<shell|agent>-<uuid>`. The same shape the desktop minted
 /// client-side (`lib/terminal/tmuxSession.ts::newTmuxSessionName`) and the one
 /// the sidecar's catalog checks (`discovery::expected_tmux`): the scope after
-/// `eldrun-`, reduced like every state-dir key, then `--`, then the kind
+/// the tmux prefix (`<slug>-`), reduced like every state-dir key, then `--`, then the kind
 /// token at the front of the uuid half, so a host shared by several projects
 /// can tell one project's sessions from another's.
 pub fn mint_tmux_session(scope: &str, kind: &str) -> String {
     let token = if kind == "shell" { "shell" } else { "agent" };
-    format!("eldrun-{}--{token}-{}", storage::project_key(scope), crate::commands::projects::uuid_v4())
+    format!("{}{}--{token}-{}", crate::brand::TMUX_PREFIX, storage::project_key(scope), crate::commands::projects::uuid_v4())
 }
 
 /// Give a freshly created tab what the owner mints for it: a tmux session
@@ -984,14 +984,14 @@ mod tests {
     #[test]
     fn a_change_written_after_the_clients_base_is_kept_over_its_stale_copy() {
         let (_dir, path) = file();
-        let seeded = sync_in(&path, "p", client(0, vec![pty_tab("a", "A", "eldrun-p--shell-1"), pty_tab("b", "B", "eldrun-p--agent-2")])).unwrap();
+        let seeded = sync_in(&path, "p", client(0, vec![pty_tab("a", "A", concat!(crate::app_slug!(), "-p--shell-1")), pty_tab("b", "B", concat!(crate::app_slug!(), "-p--agent-2"))])).unwrap();
         let base = seeded.version;
         // The other writer renames and colours A and closes B.
         edit_in(&path, "p", |session| {
-            let a = session.tab_layout.iter_mut().find(|t| tmux_of(t) == Some("eldrun-p--shell-1")).unwrap();
+            let a = session.tab_layout.iter_mut().find(|t| tmux_of(t) == Some(concat!(crate::app_slug!(), "-p--shell-1"))).unwrap();
             a.label = "From the phone".into();
             a.extra.insert("color".into(), Value::String("teal".into()));
-            session.tab_layout.retain(|t| tmux_of(t) != Some("eldrun-p--agent-2"));
+            session.tab_layout.retain(|t| tmux_of(t) != Some(concat!(crate::app_slug!(), "-p--agent-2")));
             Ok(())
         })
         .unwrap();
@@ -1027,21 +1027,21 @@ mod tests {
         attach.extra.insert("tmuxAttach".into(), Value::String("train".into()));
         let mut files = tab("f", "Files");
         files.extra.insert("kind".into(), Value::String("files".into()));
-        let out = sync_in(&path, "box:paper", client(0, vec![tab("s", "Shell"), agent, local, attach, files, pty_tab("m", "Mine", "eldrun-box_paper--shell-mine")])).unwrap();
+        let out = sync_in(&path, "box:paper", client(0, vec![tab("s", "Shell"), agent, local, attach, files, pty_tab("m", "Mine", concat!(crate::app_slug!(), "-box_paper--shell-mine"))])).unwrap();
         let by_label = |l: &str| out.tabs.iter().find(|t| t.label == l).unwrap().clone();
         let shell = tmux_of(&by_label("Shell")).unwrap().to_string();
-        assert!(shell.starts_with("eldrun-box_paper--shell-"), "{shell}");
-        assert!(shell.len() > "eldrun-box_paper--shell-".len() + 8);
+        assert!(shell.starts_with(concat!(crate::app_slug!(), "-box_paper--shell-")), "{shell}");
+        assert!(shell.len() > concat!(crate::app_slug!(), "-box_paper--shell-").len() + 8);
         assert!(shell.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
         assert!(extra_str(&by_label("Shell"), "scheduleTargetId").is_none(), "a shell binds no schedules");
         let agent = by_label("Claude");
-        assert!(tmux_of(&agent).unwrap().starts_with("eldrun-box_paper--agent-"));
+        assert!(tmux_of(&agent).unwrap().starts_with(concat!(crate::app_slug!(), "-box_paper--agent-")));
         assert!(extra_str(&agent, "scheduleTargetId").is_some());
-        assert!(tmux_of(&by_label("Local")).unwrap().starts_with("eldrun-box_paper--agent-"), "a local-model tab carries the agent token");
+        assert!(tmux_of(&by_label("Local")).unwrap().starts_with(concat!(crate::app_slug!(), "-box_paper--agent-")), "a local-model tab carries the agent token");
         assert_eq!(tmux_of(&by_label("Attached")), Some("train"), "an attach is not re-minted");
         assert!(extra_str(&by_label("Attached"), "tmuxSession").is_none());
         assert!(tmux_of(&by_label("Files")).is_none(), "no PTY, no session");
-        assert_eq!(tmux_of(&by_label("Mine")), Some("eldrun-box_paper--shell-mine"), "the client's own name stands");
+        assert_eq!(tmux_of(&by_label("Mine")), Some(concat!(crate::app_slug!(), "-box_paper--shell-mine")), "the client's own name stands");
         // A sync that changes nothing mints nothing new.
         let again = sync_in(&path, "box:paper", client(out.version, out.tabs.clone())).unwrap();
         assert!(again.ops.is_empty());
@@ -1060,7 +1060,7 @@ mod tests {
         let created = create_tab_in(&path, "p", spec.clone(), Some("req-1")).unwrap();
         assert!(!created.existed);
         assert!(tab_id(&created.tab).is_some());
-        assert!(tmux_of(&created.tab).unwrap().starts_with("eldrun-p--agent-"));
+        assert!(tmux_of(&created.tab).unwrap().starts_with(concat!(crate::app_slug!(), "-p--agent-")));
         assert_eq!(created_version(&created.tab), seeded.version + 1);
         let again = create_tab_in(&path, "p", spec, Some("req-1")).unwrap();
         assert!(again.existed);
@@ -1083,33 +1083,33 @@ mod tests {
     #[test]
     fn phone_tab_operations_land_in_the_file_and_a_closed_agent_tab_reopens() {
         let (_dir, path) = file();
-        let mut agent = pty_tab("b", "Claude", "eldrun-p--agent-2");
+        let mut agent = pty_tab("b", "Claude", concat!(crate::app_slug!(), "-p--agent-2"));
         agent.extra.insert("kind".into(), Value::String("agent".into()));
         agent.session_id = Some("uid-1".into());
         agent.extra.insert("scheduleTargetId".into(), Value::String("target-1".into()));
-        let seeded = sync_in(&path, "p", client(0, vec![pty_tab("a", "A", "eldrun-p--shell-1"), agent, pty_tab("c", "C", "eldrun-p--shell-3")])).unwrap();
+        let seeded = sync_in(&path, "p", client(0, vec![pty_tab("a", "A", concat!(crate::app_slug!(), "-p--shell-1")), agent, pty_tab("c", "C", concat!(crate::app_slug!(), "-p--shell-3"))])).unwrap();
         let base = seeded.version;
 
-        let stored = rename_tab_in(&path, "p", "eldrun-p--shell-1", "From the phone").unwrap();
+        let stored = rename_tab_in(&path, "p", concat!(crate::app_slug!(), "-p--shell-1"), "From the phone").unwrap();
         assert_eq!(stored.tab_layout[0].label, "From the phone");
         assert_eq!(rename_tab_in(&path, "p", "nope", "x").unwrap_err(), TAB_NOT_FOUND);
-        let stored = color_tab_in(&path, "p", "eldrun-p--shell-1", Some("teal")).unwrap();
+        let stored = color_tab_in(&path, "p", concat!(crate::app_slug!(), "-p--shell-1"), Some("teal")).unwrap();
         assert_eq!(stored.tab_layout[0].extra["color"], "teal");
-        let stored = color_tab_in(&path, "p", "eldrun-p--shell-1", None).unwrap();
+        let stored = color_tab_in(&path, "p", concat!(crate::app_slug!(), "-p--shell-1"), None).unwrap();
         assert!(!stored.tab_layout[0].extra.contains_key("color"));
-        let stored = reorder_tab_in(&path, "p", "eldrun-p--shell-3", "eldrun-p--shell-1", false).unwrap();
+        let stored = reorder_tab_in(&path, "p", concat!(crate::app_slug!(), "-p--shell-3"), concat!(crate::app_slug!(), "-p--shell-1"), false).unwrap();
         assert_eq!(labels(&stored.tab_layout), ["C", "From the phone", "Claude"]);
-        let stored = reorder_tab_in(&path, "p", "eldrun-p--shell-3", "eldrun-p--agent-2", true).unwrap();
+        let stored = reorder_tab_in(&path, "p", concat!(crate::app_slug!(), "-p--shell-3"), concat!(crate::app_slug!(), "-p--agent-2"), true).unwrap();
         assert_eq!(labels(&stored.tab_layout), ["From the phone", "Claude", "C"]);
-        assert_eq!(reorder_tab_in(&path, "p", "eldrun-p--shell-3", "nope", true).unwrap_err(), TAB_NOT_FOUND);
+        assert_eq!(reorder_tab_in(&path, "p", concat!(crate::app_slug!(), "-p--shell-3"), "nope", true).unwrap_err(), TAB_NOT_FOUND);
         assert_eq!(labels(&read_session(&path).unwrap().tab_layout), ["From the phone", "Claude", "C"], "a refused move changes nothing");
 
         // Closing hands the record back (the caller ends its session); a shell
         // is forgotten, an agent tab is kept for a reopen.
-        let shell = close_tab_in(&path, "p", "eldrun-p--shell-3", 1_000).unwrap();
+        let shell = close_tab_in(&path, "p", concat!(crate::app_slug!(), "-p--shell-3"), 1_000).unwrap();
         assert_eq!(shell.label, "C");
         assert!(closed_tabs(&read_session(&path).unwrap()).is_empty());
-        let closed = close_tab_in(&path, "p", "eldrun-p--agent-2", 2_000).unwrap();
+        let closed = close_tab_in(&path, "p", concat!(crate::app_slug!(), "-p--agent-2"), 2_000).unwrap();
         assert_eq!(closed.label, "Claude");
         let stored = read_session(&path).unwrap();
         assert_eq!(labels(&stored.tab_layout), ["From the phone"]);
@@ -1118,7 +1118,7 @@ mod tests {
         assert_eq!(remembered[0].closed_at, 2_000);
         assert_eq!(remembered[0].tab.label, "Claude");
         assert_ne!(remembered[0].id, "uid-1", "the closed id is never the session id");
-        assert_eq!(close_tab_in(&path, "p", "eldrun-p--agent-2", 3_000).unwrap_err(), TAB_NOT_FOUND);
+        assert_eq!(close_tab_in(&path, "p", concat!(crate::app_slug!(), "-p--agent-2"), 3_000).unwrap_err(), TAB_NOT_FOUND);
 
         // The window's stale snapshot neither resurrects the closed tabs nor
         // undoes the rename.
@@ -1132,8 +1132,8 @@ mod tests {
         assert_eq!(reopened.label, "Claude");
         assert_eq!(reopened.session_id.as_deref(), Some("uid-1"));
         assert_eq!(reopened.extra["scheduleTargetId"], "target-1", "its schedules follow it");
-        assert_ne!(tmux_of(&reopened), Some("eldrun-p--agent-2"));
-        assert!(tmux_of(&reopened).unwrap().starts_with("eldrun-p--agent-"));
+        assert_ne!(tmux_of(&reopened), Some(concat!(crate::app_slug!(), "-p--agent-2")));
+        assert!(tmux_of(&reopened).unwrap().starts_with(concat!(crate::app_slug!(), "-p--agent-")));
         assert_ne!(tab_id(&reopened), tab_id(&closed));
         let stored = read_session(&path).unwrap();
         assert_eq!(labels(&stored.tab_layout), ["From the phone", "Claude"]);
@@ -1163,13 +1163,13 @@ mod tests {
         let (_dir, path) = file();
         let mut attach = tab("t", "Attached");
         attach.extra.insert("tmuxAttach".into(), Value::String("train".into()));
-        sync_in(&path, "box:paper", client(0, vec![attach, pty_tab("m", "Mine", "eldrun-box_paper--shell-mine")])).unwrap();
+        sync_in(&path, "box:paper", client(0, vec![attach, pty_tab("m", "Mine", concat!(crate::app_slug!(), "-box_paper--shell-mine"))])).unwrap();
 
         let closed = close_tab_in(&path, "box:paper", "train", 1).unwrap();
         assert_eq!(closed.label, "Attached");
         assert!(!owns_tmux_session(&closed), "the attached session is not the tab's to end");
 
-        let closed = close_tab_in(&path, "box:paper", "eldrun-box_paper--shell-mine", 2).unwrap();
+        let closed = close_tab_in(&path, "box:paper", concat!(crate::app_slug!(), "-box_paper--shell-mine"), 2).unwrap();
         assert!(owns_tmux_session(&closed), "a minted session ends with its tab");
     }
 }
