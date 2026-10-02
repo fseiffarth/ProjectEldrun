@@ -3016,6 +3016,42 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   tmux `prefix None` on Tabtivity sessions (decision 5). Not done from the plan:
   the optional `calendar_writes`/`todo_writes` desktop switches (6, "consider")
   — a CalDAV delete from the phone is still guarded by the confirm sheet alone.
+  - [ ] 🖐️ Manual phone QA — slow answers are waited for, and a wedged tmux costs no terminal (2026-10-01; `api.ts` `TAB_CREATE_TIMEOUT` / `MAIL_MESSAGE_TIMEOUT` / `SIGN_IN_CALLBACK_TIMEOUT`, `discovery.rs` `TMUX_LS_TIMEOUT` + carried-forward live map, `pty_bridge.rs` `catalog_unavailable`; ⚠️ never run on a phone; sidecar + PWA rebuild first): (a) open a large mail message for the first time on a slow IMAP account, and ＋ a new agent tab while the desktop is busy → each lands, or fails with its own reason — never "Your desktop didn't answer" followed by the thing having happened anyway. (b) With a terminal open on the phone, `kill -STOP "$(tmux display-message -p '#{pid}')"` for ~20 s, then `kill -CONT` the same pid: the phone's project list keeps its tabs as they were, the open terminal is not closed with "access was withdrawn", and everything resumes. Switching the project's phone access off during the stop still closes the terminal within ~5 s.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — a dead terminal link lets go at once, and a final close looks closed (2026-10-01; `Terminal.tsx` `abandon` / `dropLink` / `reconnectLater`; ⚠️ never run on a phone; PWA rebuild first): (a) with a terminal open, make the link silent without closing it (switch Tailscale off on the phone, or change networks) → within about a minute the composer disables and shows "Reconnecting…", and the session reconnects once the path is back. Lock the phone during such an outage, unlock: within ~5 s the link reconnects rather than the screen staying "connected" with typing going nowhere. (b) Open the same tab from a second phone or browser → the first shows "This session was opened on another device or tab.", its composer is disabled, a prompt still waiting for its ack reads "Not delivered", and it does not reconnect. Known leftover: the disabled composer's placeholder still reads "Reconnecting…" under that sentence.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — a closed desktop is named quickly, and a sidecar restart mid sign-in is ridden out (2026-10-01; `auth.ts` `PROXY_DOWN_RETRIES` / `STALE_CHALLENGE_RETRIES`, `start_desktop_bridge` bind retry + log; ⚠️ never run on a phone; PWA + backend rebuild first): (a) quit desktop Eldrun, then open or unlock Eldrun Mobile → "Eldrun Mobile isn't running on your desktop" after about 3 s, not about 10. (b) Hard to provoke: switch Mobile off and on in Settings while the phone is unlocking on a slow link → the sign-in still lands, no "Your desktop reported an error"; the connect trace on the slow splash shows `session 401 invalid_challenge` followed by a second challenge. (c) With `mobile-control/` made read-only before launch, Eldrun's stderr says `mobile host: desktop bridge cannot listen on …` after about 5 s (Windows: the block only needs to compile — never compile-checked).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — large desktop answers arrive, and a slow upload is not cut (2026-10-01; `protocol.rs` `MAX_DESKTOP_RESPONSE`, `admin.rs` `write_desktop_response`, `limits.rs` `BODY_TIMEOUT`; ⚠️ never run on a phone; backend rebuild + sidecar update first): (a) with the desktop open, open an agent tab with a long session in Focus → the chat loads; open a large To-do board and a busy Calendar month → no "read-only" notice, and adding a card answers with the board rather than "Eldrun isn't running on your desktop" (no duplicate card). (b) On mobile data, ＋ → From this phone → a photo of 10 MB or more → it arrives instead of failing after about 15 s with "Eldrun Mobile isn't running on your desktop".
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - [ ] 🖐️ Manual phone QA — "every second unlock fails, Retry works" (2026-09-27, `mobile.link.unlockRetry`): leave the PWA past the 3-minute lock with the screen off for a few minutes, come back, unlock ten times in a row: each one connects (Connecting… may run ~10 s on a dead connection, then lands) and none shows the failure splash; when a splash does show, Retry connects without asking for the fingerprint again. Phone-bundle-only change: commit, let the dev build publish, pull to refresh.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
@@ -3331,6 +3367,16 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+  - [ ] 🖐️ Manual phone QA — a lapsed subscription comes back by itself (2026-10-01; `push.rs` lapsed records, `refreshPush`; ⚠️ never run on a phone; sidecar + PWA rebuild first): with Reminders on, drop the browser's subscription behind Eldrun's back — in the phone's site settings for Eldrun Mobile switch Notifications off and on again (permission is granted again, the subscription is gone) — then trigger one reminder: nothing arrives, and `mobile-control/push.json` shows the row with `"lapsed": true` and empty keys. Reopen Eldrun Mobile and sign in — no prompt — and the next reminder arrives with the same details choice as before. Reminders → Off still removes the row whole.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 - [~] **31bn — Agent questions and finished turns as push notifications** (2026-09-28;
   ✅ code-complete, automated tests passing — `push.rs` (per-phone choices,
   decrypted payloads carry only opaque ids when details are off, per-tab
@@ -3354,6 +3400,16 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     Needs your answer" within seconds; tap → unlock → that tab. With the tab
     open on the phone, the next question does not notify. Switch to "Also when
     one finishes a turn" → a finished turn notifies. Revoke → nothing.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+  - [ ] 🖐️ Manual phone QA — a pocketed phone still gets the notice (2026-10-01; `TerminalControl::Visibility` / `TerminalEvent::Features`, `TerminalRegistry::is_watched`; ⚠️ never run on a phone; sidecar + PWA rebuild first): Agents → "Also when one finishes a turn". Open an agent tab on the phone, send a prompt, switch to another app (or lock the screen) before the turn ends → the "Finished …" notice arrives, and the tab's row still reads unread/done on the desktop until the phone is looked at again. Back in the tab, with the page in front: the next finished turn does not notify. Coming back from the other app must not replay the history (the socket was kept).
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)
@@ -3516,6 +3572,80 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     chat. Same on a picture (`…-marked.png` + layer) and on a PDF the agent sent
     (chat bubble → viewer → Mark up). Submit while the agent works → held and
     delivered like a typed message.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA, iPad (Pencil) and a pen-less phone — markup that handles like the phone's own (2026-10-01; untested id `mobile.markup.native`; ⚠️ never run on a phone; PWA rebuild first): open a PDF from an agent tab, scroll to page 3 and pinch in → **Mark up**: the floating palette appears and the page and zoom stay where they were; **Done** → the palette goes, the marks stay on show, Mark up carries a red dot; ✕ closes the viewer. On the pen-less phone one finger draws at once and two fingers scroll and pinch. On the iPad the first Pencil stroke makes fingers scroll again; ⋯ → "Draw with the pen only" off lets a finger draw, and the choice survives a reload. The colour dot opens the colour choice; ⋯ also holds Clear page. Note tool: tap → new note; tap a note → edit it; drag a note → it follows the finger or Pencil and stays on the page at the edges (with "pen only" on, a finger drag on a note moves it, a finger drag elsewhere scrolls); Undo puts it back. Type a note and tap Done without Add → the note is kept. A picture: Mark up → Done returns to the picture.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA — the Submit prompt is worded only in the phone's settings (2026-10-02; untested id `mobile.markup.instruction`; ⚠️ never run on a phone; PWA rebuild + `backend:stale` first): Home → This phone → **Mark up prompt** reads "Default: list the changes, edit nothing until asked"; mark up a PDF built from a `.tex` beside it and Submit → the agent lists the changes and touches no file (not the `.tex`, not the PDF) until told. Edit the prompt (e.g. "Apply them to the .tex and rebuild"), Save → the row says "Your own" and the next Submit ends with that text instead; **Use the default** brings the default back. The Mark up view itself has no place to edit it.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA, phone — markup rounds: Submit keeps the view open (2026-10-02; plan `docs/pdf_markup_rounds_plan.md`, handoff `docs/pdf_markup_rounds_handoff.md`; untested id `mobile.markup.rounds`; ✅ automated: `MobileMarkupRoundsCore.test.ts`, `MobileMarkupRounds.test.tsx`; ⚠️ never run on a phone; PWA rebuild + `backend:stale` first): an agent tab on a LaTeX project → files drawer → the built PDF → **Mark up** → strike a word → **Submit**: the view stays open, the stroke dims, the pill reads Sent → Agent is working… → Agent finished — PDF unchanged (the default instruction only lists). While it works circle another word and Submit → the pill says Queued, and only the new circle goes out (the chat shows the second prompt). Tell the agent in the chat to make the changes and rebuild → back in the view the pill goes working → "Agent finished — PDF changed" with **Reload PDF** → Reload: the rebuilt pages appear under the layer at the same place, the sent marks stay on show, dimmed, to check each change against — the eraser removes a checked one (⋯ **Show sent marks** hides them, ⋯ **Clear sent marks** drops them; nothing removes one automatically), unsent marks stay. Same on a PDF the agent sent with `eldrun-send` (chat bubble → viewer): Reload picks the newer copy, and closing and reopening that copy shows the layer.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA, desktop — **Mark up** in the desktop PDF viewer (2026-10-02; untested id `desktop.markup`; ✅ automated: `PdfMarkupCore.test.ts`, `PdfMarkupLayer.test.tsx`, `PdfMarkupSubmit.test.tsx`, `PdfMarkupViewer.test.tsx`, Rust `commands::pdf_markup`; ⚠️ never run live; needs a rebuilt Eldrun for `pdf_markup_submit` — `npm run backend:stale`): a local project with an agent tab → open its PDF (or the TeX workspace's PDF) → the toolbar's **✎ Mark up** (beside ▮) → a strip opens under the toolbar; draw with the mouse (pen ✎, highlighter ▭, note T: click to type, Enter adds, drag a note to move it; eraser ⌫ takes whole marks), colours, ↶/↷ and Ctrl+Z / Ctrl+Shift+Z undo strokes (not page edits), Clear page; zoom in/out — marks stay put and sharp; remarks stay visible but don't react, right-click places none; ▮ and the rail are off. **Submit** → the agent tab receives the prompt (`.eldrun/inbox/…-marked.pdf` beside the layer PNGs; open it — the marks are annotations), the strokes dim, the pill follows the tab (Sent / working / asking / Agent finished). While it works add marks and Submit again → typed into its queue at once. Let the agent rebuild the PDF: the pages do **not** repaint under the marks — the status line says the PDF changed → **Reload PDF** brings it at the same zoom and scroll, sent marks still shown dimmed; the eraser removes a checked one, nothing removes one automatically. Two agent tabs: a "Send to" picker lists both, defaulting to the one you looked at last; the pick receives the prompt. No agent tab: Submit disabled with "Open an agent tab in this project to send". The same PDF in a second pane: its Mark up says it is being marked up in another pane. Pending page edits (rail) → Mark up disabled with the reason. Remote project, root console, a box and a popout window: no Mark up button. Quit and restart Eldrun → the unsent marks are still there. A pen tablet draws with pressure; touch draws.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA — **Make these changes** + the desktop's own markup prompts (2026-10-02; plan §2.8; untested ids `mobile.markup.apply`, `desktop.markup.apply`; ✅ automated: `MobileMarkupRounds.test.tsx`, `MobileMarkupRoundsCore.test.ts`, `PdfMarkupSubmit.test.tsx`, `DesktopSettings.test.tsx`, `pdf_markup.rs` tests; ⚠️ never live). Phone: Submit marks → the agent lists the changes → the pill says Agent finished and offers **Make these changes** → tap: the go-ahead appears in the chat as your prompt, the pill follows that turn and offers no second Make these changes; when it finishes, **Reload PDF** leads. Home → This phone → Mark up prompt: the second field changes what the button sends; Use the default resets both. Desktop: Settings → Agents → **PDF markup** shows both prompts starting from the defaults; a changed Mark up prompt ends the next Submit's prompt in the agent tab; **Make these changes** in the markup strip queues the go-ahead into the target tab.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bu — A plain `opencode` tab's chat fills its facts and shows it working** (2026-10-01;
+  ✅ code-complete, automated tests passing — `MobileOpenCodeMini.test.ts`
+  "full TUI composer", `MobileAgentBusy.test.ts`; ⚠️ never run on a phone;
+  untested id `mobile.focus.openCodeComposer`). The phone's chat for a plain
+  (full-screen) OpenCode tab showed `Status Model Mode` placeholders and no
+  working row while it answered: everything read the `--mini` status row
+  only. `openCodeComposer`/`openCodeFullFooter` (`openCodeMini.ts`) now read
+  the full TUI's composer — agent row `Build · <model> <provider> · <variant>`
+  (the provider cut off by its muted colour) and the footer under it
+  (`… esc interrupt …  12.3K (5%)  ctrl+p commands`); `agentBusy` accepts the
+  interrupt hint as a mid-row column. Both OpenCode readers now flip the
+  printed share *used* into context *left*, which the fact button says.
+  Shapes are read from the 1.18.34 source, not a capture (no OpenCode in the
+  fence).
+  - [ ] 🖐️ Manual phone QA (PWA rebuild + restart first) — on a plain
+    `opencode` tab, Chat view: the fact buttons show the model (without its
+    provider), the agent (`build`/`plan`) and, after a first answer, the
+    context left; send a prompt → a "… is working" row shows until the answer
+    lands; the status-line swipe shows the composer's two rows. Tab in the
+    terminal to Plan → the mode follows.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)

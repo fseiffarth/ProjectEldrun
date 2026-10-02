@@ -3,14 +3,16 @@
  * never the desktop (`docs/mobile_pdf_markup_plan.md` §2.7). Handwriting is
  * many points, and Safari allows `localStorage` only a few MB for the whole
  * app. One record per source; saved as each stroke ends, so a closed app or
- * a reload loses at most the stroke in progress; cleared after a Submit.
+ * a reload loses at most the stroke in progress. A Submit keeps the record:
+ * its marks move to the layer's `sent` side (`docs/pdf_markup_rounds_plan.md`
+ * §2.1), and the record goes only once neither side has a mark.
  *
  * Every access may fail — a private window, evicted or blocked storage — and
  * then the layer still works, unsaved, and the view says so: every function
  * here resolves rather than throws.
  */
 
-import { isLayer, LIMITS, markCount, type Layer } from "./layer";
+import { isLayer, LIMITS, markCount, type Layer, type PageLayer } from "./layer";
 import { LEGACY_NAMES, NAMES } from "../../../src/lib/brand";
 import { adoptLegacyDatabase, databaseHost, databasePort } from "../../../src/lib/brandMigration";
 
@@ -91,10 +93,25 @@ export function layerKey(projectId: string, source: { files: string } | { outbox
 }
 
 /** Whether a layer is one the desktop would accept — never store one it
- * would refuse at Submit. */
+ * would refuse at Submit. The sent marks never go out again and are never
+ * trimmed (only the reader erases them), so they get a looser bound of their
+ * own that only keeps the record finite. */
+export const SENT_LIMITS = { marks: LIMITS.marks * 4, points: LIMITS.points * 4 } as const;
 export function withinLimits(layer: Layer): boolean {
-  const { marks, points } = markCount(layer);
-  return marks <= LIMITS.marks && points <= LIMITS.points;
+  const bounded = (pages: Record<number, PageLayer>, limits: { marks: number; points: number }) => {
+    const { marks, points } = markCount({ pages });
+    return marks <= limits.marks && points <= limits.points;
+  };
+  return bounded(layer.pages, LIMITS) && bounded(layer.sent?.pages ?? {}, SENT_LIMITS);
+}
+
+/** A stored value as a layer: whole, or — when only its `sent` side is
+ * unreadable — its unsent marks alone, which matter more. */
+function readLayer(value: unknown): Layer | null {
+  if (isLayer(value)) return value;
+  const pages = value && typeof value === "object" ? (value as { pages?: unknown }).pages : undefined;
+  const unsent = { pages };
+  return isLayer(unsent) ? unsent : null;
 }
 
 /** The saved layer, `null` when there is none, or `"unavailable"` when the
@@ -107,17 +124,20 @@ export async function loadLayer(key: string, backend: LayerBackend = indexedDbBa
     return "unavailable";
   }
   if (!value || typeof value !== "object") return null;
-  const { layer, fingerprint, saved } = value as Partial<StoredLayer>;
-  if (!isLayer(layer) || !fingerprint || typeof fingerprint.size !== "number" || typeof fingerprint.modified !== "number") return null;
+  const { fingerprint, saved } = value as Partial<StoredLayer>;
+  const layer = readLayer((value as { layer?: unknown }).layer);
+  if (!layer || !fingerprint || typeof fingerprint.size !== "number" || typeof fingerprint.modified !== "number") return null;
   return { layer, fingerprint: { size: fingerprint.size, modified: fingerprint.modified }, saved: typeof saved === "number" ? saved : 0 };
 }
 
-/** Saves the layer; `false` when it could not be. An empty layer is a
- * removal, so a cleared file leaves nothing behind. */
+/** Saves the layer; `false` when it could not be. A layer with no mark on
+ * either side is a removal, so a cleared file leaves nothing behind — but one
+ * holding only sent marks (just after a Submit) is kept. */
 export async function saveLayer(key: string, layer: Layer, fingerprint: Fingerprint, backend: LayerBackend = indexedDbBackend): Promise<boolean> {
   if (!withinLimits(layer)) return false;
   try {
-    if (Object.values(layer.pages).every((page) => page.marks.length === 0)) await backend.delete(key);
+    const empty = (pages: Record<number, PageLayer>) => Object.values(pages).every((page) => page.marks.length === 0);
+    if (empty(layer.pages) && empty(layer.sent?.pages ?? {})) await backend.delete(key);
     else await backend.put(key, { layer, fingerprint, saved: Date.now() } satisfies StoredLayer);
     return true;
   } catch {
@@ -132,6 +152,18 @@ export async function clearLayer(key: string, backend: LayerBackend = indexedDbB
   } catch {
     return false;
   }
+}
+
+/** Moves the record from `from` to `to`, stamped with `to`'s file — a Reload
+ * that switched to a newer copy of the file (an outbox leaf). `false` when
+ * the storage failed; nothing stored under `from` is a success. */
+export async function moveLayer(from: string, to: string, fingerprint: Fingerprint, backend: LayerBackend = indexedDbBackend): Promise<boolean> {
+  if (from === to) return true;
+  const stored = await loadLayer(from, backend);
+  if (stored === "unavailable") return false;
+  if (!stored) return true;
+  if (!(await saveLayer(to, stored.layer, fingerprint, backend))) return false;
+  return clearLayer(from, backend);
 }
 
 /** Whether the file changed since its layer was drawn. */

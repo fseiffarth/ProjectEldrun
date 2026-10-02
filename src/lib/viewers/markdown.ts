@@ -495,7 +495,9 @@ function renderList(items: ListItem[]): string {
   return parts.join("");
 }
 
-export function renderMarkdown(src: string): string {
+/** `breaks`: a single line break inside a paragraph stays a break (`<br>`),
+ * as in a chat message, instead of joining the lines into one. */
+export function renderMarkdown(src: string, { breaks = false }: { breaks?: boolean } = {}): string {
   // Drop NUL up front — it is the inline placeholder delimiter (`mark`), and
   // stripping it here is what makes a marker impossible to forge from document
   // text. A NUL in a file being viewed as markdown has nothing to render anyway.
@@ -506,7 +508,8 @@ export function renderMarkdown(src: string): string {
   let paragraph: string[] = [];
   const flushParagraph = () => {
     if (paragraph.length) {
-      out.push(`<p>${renderInline(paragraph.join(" "))}</p>`);
+      // Each line was trimmed, so the only newlines left are the joins.
+      out.push(`<p>${breaks ? renderInline(paragraph.join("\n")).replace(/\n/g, "<br>") : renderInline(paragraph.join(" "))}</p>`);
       paragraph = [];
     }
   };

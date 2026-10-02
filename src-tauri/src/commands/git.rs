@@ -640,12 +640,26 @@ pub struct GitStatus {
 }
 
 #[tauri::command]
-pub async fn git_status(project_dir: String) -> Result<GitStatus, String> {
-    run_off_thread(move || git_status_blocking(project_dir)).await
+pub async fn git_status(
+    project_dir: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<GitStatus, String> {
+    run_off_thread(move || match worktree {
+        None => git_status_blocking(project_dir),
+        Some(selection) => git_status_blocking_selected(project_dir, Some(selection)),
+    })
+    .await
 }
 
 fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
-    git_status_probe(project_dir, true)
+    git_status_blocking_selected(project_dir, None)
+}
+
+fn git_status_blocking_selected(
+    project_dir: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<GitStatus, String> {
+    git_status_probe_selected(project_dir, true, worktree)
 }
 
 /// `probe_remote: false` skips the `git remote` spawn and reports
@@ -655,7 +669,15 @@ fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
 /// second process (an SSH round trip on a remote project) bought nothing. The
 /// `git_status` command keeps the full answer for anything that does read it.
 fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus, String> {
-    let target = remote_target_for_dir(&project_dir);
+    git_status_probe_selected(project_dir, probe_remote, None)
+}
+
+fn git_status_probe_selected(
+    project_dir: String,
+    probe_remote: bool,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<GitStatus, String> {
+    let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(GitStatus {
             staged: 0,
@@ -670,7 +692,11 @@ fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus
 
     // `--branch` adds one `## main...origin/main [behind 2]` header — the
     // behind count for free, in the spawn this probe already pays for.
-    let out = run_git(target.as_ref(), &project_dir, &["status", "--porcelain", "--branch"])?;
+    let out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["status", "--porcelain", "--branch"],
+    )?;
 
     let text = String::from_utf8_lossy(&out.stdout);
     let mut staged = 0usize;
@@ -826,12 +852,26 @@ fn git_repo_root_blocking(project_dir: String, rel_path: String) -> Result<Optio
 }
 
 #[tauri::command]
-pub async fn git_add_all(project_dir: String) -> Result<(), String> {
-    run_off_thread(move || git_add_all_blocking(project_dir)).await
+pub async fn git_add_all(
+    project_dir: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<(), String> {
+    run_off_thread(move || match worktree {
+        None => git_add_all_blocking(project_dir),
+        Some(selection) => git_add_all_blocking_selected(project_dir, Some(selection)),
+    })
+    .await
 }
 
 fn git_add_all_blocking(project_dir: String) -> Result<(), String> {
-    let target = remote_target_for_dir(&project_dir);
+    git_add_all_blocking_selected(project_dir, None)
+}
+
+fn git_add_all_blocking_selected(
+    project_dir: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<(), String> {
+    let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
     let out = run_git(target.as_ref(), &project_dir, &["add", "-A"])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
@@ -840,12 +880,28 @@ fn git_add_all_blocking(project_dir: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn git_generate_commit_message(project_dir: String) -> Result<String, String> {
-    run_off_thread(move || git_generate_commit_message_blocking(project_dir)).await
+pub async fn git_generate_commit_message(
+    project_dir: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<String, String> {
+    run_off_thread(move || match worktree {
+        None => git_generate_commit_message_blocking(project_dir),
+        Some(selection) => {
+            git_generate_commit_message_blocking_selected(project_dir, Some(selection))
+        }
+    })
+    .await
 }
 
 fn git_generate_commit_message_blocking(project_dir: String) -> Result<String, String> {
-    let target = remote_target_for_dir(&project_dir);
+    git_generate_commit_message_blocking_selected(project_dir, None)
+}
+
+fn git_generate_commit_message_blocking_selected(
+    project_dir: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<String, String> {
+    let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
     let files_out = run_git(
         target.as_ref(),
         &project_dir,
@@ -928,12 +984,28 @@ fn format_commit_message(kind: &str, files: &[String]) -> String {
 }
 
 #[tauri::command]
-pub async fn git_commit(project_dir: String, message: String) -> Result<(), String> {
-    run_off_thread(move || git_commit_blocking(project_dir, message)).await
+pub async fn git_commit(
+    project_dir: String,
+    message: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<(), String> {
+    run_off_thread(move || match worktree {
+        None => git_commit_blocking(project_dir, message),
+        Some(selection) => git_commit_blocking_selected(project_dir, message, Some(selection)),
+    })
+    .await
 }
 
 fn git_commit_blocking(project_dir: String, message: String) -> Result<(), String> {
-    let target = remote_target_for_dir(&project_dir);
+    git_commit_blocking_selected(project_dir, message, None)
+}
+
+fn git_commit_blocking_selected(
+    project_dir: String,
+    message: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<(), String> {
+    let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
     require_hook_trust(target.as_ref(), &project_dir)?;
     let out = run_git_hooked(target.as_ref(), &project_dir, &["commit", "-m", &message])?;
     if !out.status.success() {
@@ -1191,17 +1263,29 @@ pub async fn git_change_stats(
     project_dir: String,
     scope: String,
     pool: tauri::State<'_, crate::services::remote::RemotePoolState>,
+    worktree: Option<GitWorktreeSelection>,
 ) -> Result<Vec<FileChange>, String> {
+    let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
     let dir = Path::new(&project_dir);
-    let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
 
     let numstat_args: Option<Vec<String>> = match scope.as_str() {
-        "staged" => Some(vec!["diff".into(), "--cached".into(), "--numstat".into(), "--".into()]),
-        "unpushed" => unpushed_base(target.as_ref(), &project_dir)
-            .map(|base| vec!["diff".into(), format!("{base}.."), "--numstat".into(), "--".into()]),
+        "staged" => Some(vec![
+            "diff".into(),
+            "--cached".into(),
+            "--numstat".into(),
+            "--".into(),
+        ]),
+        "unpushed" => unpushed_base(target.as_ref(), &project_dir).map(|base| {
+            vec![
+                "diff".into(),
+                format!("{base}.."),
+                "--numstat".into(),
+                "--".into(),
+            ]
+        }),
         _ => Some(vec!["diff".into(), "--numstat".into(), "--".into()]),
     };
 
@@ -1369,12 +1453,26 @@ fn pick_remote_namesake(refs: &str, branch: &str) -> Option<String> {
 /// Returns one-line summaries of commits ahead of the upstream (not yet pushed),
 /// measured against [`unpushed_base`]. Empty when there is none or no repo.
 #[tauri::command]
-pub async fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> {
-    run_off_thread(move || git_unpushed_commits_blocking(project_dir)).await
+pub async fn git_unpushed_commits(
+    project_dir: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<Vec<String>, String> {
+    run_off_thread(move || match worktree {
+        None => git_unpushed_commits_blocking(project_dir),
+        Some(selection) => git_unpushed_commits_blocking_selected(project_dir, Some(selection)),
+    })
+    .await
 }
 
 fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, String> {
-    let target = remote_target_for_dir(&project_dir);
+    git_unpushed_commits_blocking_selected(project_dir, None)
+}
+
+fn git_unpushed_commits_blocking_selected(
+    project_dir: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<Vec<String>, String> {
+    let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
@@ -1434,22 +1532,47 @@ pub(crate) fn require_hook_trust(target: Option<&RemoteTarget>, project_dir: &st
 }
 
 #[tauri::command]
-pub async fn git_push(project_dir: String, project_id: Option<String>) -> Result<String, String> {
-    run_off_thread(move || git_push_blocking(project_dir, project_id)).await
+pub async fn git_push(
+    project_dir: String,
+    project_id: Option<String>,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<String, String> {
+    run_off_thread(move || {
+        if worktree.is_none() {
+            return git_push_blocking(project_dir, project_id);
+        }
+        let (dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
+        if let Some(target) = target {
+            let out = run_git_hooked(Some(&target), &dir, &PUSH_ARGS)?;
+            push_outcome(&out, None, None)
+        } else {
+            git_push_blocking(dir, project_id)
+        }
+    })
+    .await
 }
 
 /// The git bar's Release dialog: the suggested tag for the checked-out
 /// branch's tip and whether a release could go out now
 /// (`services::git_release`). Local projects only; asks the remote.
 #[tauri::command]
-pub async fn git_release_preview(project_dir: String, project_id: Option<String>) -> Result<crate::services::git_release::Preview, String> {
+pub async fn git_release_preview(
+    project_dir: String,
+    project_id: Option<String>,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<crate::services::git_release::Preview, String> {
     run_off_thread(move || {
-        if remote_target_for_dir(&project_dir).is_some() {
+        let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
+        if target.is_some() {
             return Err("Releases are tagged from local projects only.".to_string());
         }
         require_hook_trust(None, &project_dir)?;
         let (token, origins) = release_creds(project_id.as_deref());
-        Ok(crate::services::git_release::preview(Path::new(&project_dir), token.as_deref(), &origins))
+        Ok(crate::services::git_release::preview(
+            Path::new(&project_dir),
+            token.as_deref(),
+            &origins,
+        ))
     })
     .await
 }
@@ -1460,18 +1583,39 @@ pub async fn git_release_preview(project_dir: String, project_id: Option<String>
 /// like Push: with no stored token the user's own credential helpers answer,
 /// and those are part of the approved hook fingerprint.
 #[tauri::command]
-pub async fn git_release_tag(project_dir: String, project_id: Option<String>, tag: String) -> Result<String, String> {
+pub async fn git_release_tag(
+    project_dir: String,
+    project_id: Option<String>,
+    tag: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<String, String> {
     run_off_thread(move || {
-        if remote_target_for_dir(&project_dir).is_some() {
+        let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
+        if target.is_some() {
             return Err("Releases are tagged from local projects only.".to_string());
         }
         require_hook_trust(None, &project_dir)?;
         let dir = Path::new(&project_dir);
         let (token, origins) = release_creds(project_id.as_deref());
-        let plan = crate::services::git_release::plan(dir, tag.trim(), false, token.as_deref(), &origins).map_err(|f| f.message)?;
+        let plan =
+            crate::services::git_release::plan(dir, tag.trim(), false, token.as_deref(), &origins)
+                .map_err(|f| f.message)?;
         crate::services::git_release::release(dir, &plan, &plan.tag, token.as_deref(), &origins)
-            .map(|_| format!("Tagged {} at {} and pushed it to {}.", plan.tag, &plan.head[..7.min(plan.head.len())], plan.remote))
-            .map_err(|f| if f.output.is_empty() { f.message } else { format!("{}\n{}", f.message, f.output) })
+            .map(|_| {
+                format!(
+                    "Tagged {} at {} and pushed it to {}.",
+                    plan.tag,
+                    &plan.head[..7.min(plan.head.len())],
+                    plan.remote
+                )
+            })
+            .map_err(|f| {
+                if f.output.is_empty() {
+                    f.message
+                } else {
+                    format!("{}\n{}", f.message, f.output)
+                }
+            })
     })
     .await
 }
@@ -1931,8 +2075,13 @@ pub async fn git_log(
     project_dir: String,
     limit: Option<u32>,
     skip: Option<u32>,
+    worktree: Option<GitWorktreeSelection>,
 ) -> Result<Vec<GitCommit>, String> {
-    run_off_thread(move || git_log_blocking(project_dir, limit, skip)).await
+    run_off_thread(move || match worktree {
+        None => git_log_blocking(project_dir, limit, skip),
+        Some(selection) => git_log_blocking_selected(project_dir, limit, skip, Some(selection)),
+    })
+    .await
 }
 
 fn git_log_blocking(
@@ -1940,7 +2089,16 @@ fn git_log_blocking(
     limit: Option<u32>,
     skip: Option<u32>,
 ) -> Result<Vec<GitCommit>, String> {
-    let target = remote_target_for_dir(&project_dir);
+    git_log_blocking_selected(project_dir, limit, skip, None)
+}
+
+fn git_log_blocking_selected(
+    project_dir: String,
+    limit: Option<u32>,
+    skip: Option<u32>,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<Vec<GitCommit>, String> {
+    let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
@@ -1975,8 +2133,15 @@ pub async fn git_log_search(
     project_dir: String,
     query: String,
     limit: Option<u32>,
+    worktree: Option<GitWorktreeSelection>,
 ) -> Result<Vec<GitCommit>, String> {
-    run_off_thread(move || git_log_search_blocking(project_dir, query, limit)).await
+    run_off_thread(move || match worktree {
+        None => git_log_search_blocking(project_dir, query, limit),
+        Some(selection) => {
+            git_log_search_blocking_selected(project_dir, query, limit, Some(selection))
+        }
+    })
+    .await
 }
 
 fn git_log_search_blocking(
@@ -1984,11 +2149,20 @@ fn git_log_search_blocking(
     query: String,
     limit: Option<u32>,
 ) -> Result<Vec<GitCommit>, String> {
+    git_log_search_blocking_selected(project_dir, query, limit, None)
+}
+
+fn git_log_search_blocking_selected(
+    project_dir: String,
+    query: String,
+    limit: Option<u32>,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<Vec<GitCommit>, String> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return Ok(vec![]);
     }
-    let target = remote_target_for_dir(&project_dir);
+    let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
@@ -2138,12 +2312,26 @@ pub struct GitBranch {
 
 /// Lists local and remote-tracking branches.
 #[tauri::command]
-pub async fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
-    run_off_thread(move || git_branches_blocking(project_dir)).await
+pub async fn git_branches(
+    project_dir: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<Vec<GitBranch>, String> {
+    run_off_thread(move || match worktree {
+        None => git_branches_blocking(project_dir),
+        Some(selection) => git_branches_blocking_selected(project_dir, Some(selection)),
+    })
+    .await
 }
 
 fn git_branches_blocking(project_dir: String) -> Result<Vec<GitBranch>, String> {
-    let target = remote_target_for_dir(&project_dir);
+    git_branches_blocking_selected(project_dir, None)
+}
+
+fn git_branches_blocking_selected(
+    project_dir: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<Vec<GitBranch>, String> {
+    let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
@@ -2178,15 +2366,31 @@ fn git_branches_blocking(project_dir: String) -> Result<Vec<GitBranch>, String> 
 /// Checks out a branch name or commit hash. Surfaces git's stderr on failure
 /// (e.g. when the working tree has conflicting uncommitted changes).
 #[tauri::command]
-pub async fn git_checkout(project_dir: String, target: String) -> Result<String, String> {
-    run_off_thread(move || git_checkout_blocking(project_dir, target)).await
+pub async fn git_checkout(
+    project_dir: String,
+    target: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<String, String> {
+    run_off_thread(move || match worktree {
+        None => git_checkout_blocking(project_dir, target),
+        Some(selection) => git_checkout_blocking_selected(project_dir, target, Some(selection)),
+    })
+    .await
 }
 
 fn git_checkout_blocking(project_dir: String, target: String) -> Result<String, String> {
+    git_checkout_blocking_selected(project_dir, target, None)
+}
+
+fn git_checkout_blocking_selected(
+    project_dir: String,
+    target: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<String, String> {
     // `target` originates from `git_branches` output, i.e. from repo content — a
     // refname beginning with `-` would be parsed by git as an option.
     check_rev(&target)?;
-    let rt = remote_target_for_dir(&project_dir);
+    let (project_dir, rt) = selected_git_context(project_dir, worktree.as_ref())?;
     // A checkout fires `post-checkout`, and for a container-toggled project
     // `.git/hooks` is the container's writable mount — so a contained agent
     // writing one would get host execution from a click in Tabtivity's Git panel.
@@ -2202,13 +2406,29 @@ fn git_checkout_blocking(project_dir: String, target: String) -> Result<String, 
 
 /// Returns the full commit message (subject + body) for a single commit.
 #[tauri::command]
-pub async fn git_commit_message(project_dir: String, hash: String) -> Result<String, String> {
-    run_off_thread(move || git_commit_message_blocking(project_dir, hash)).await
+pub async fn git_commit_message(
+    project_dir: String,
+    hash: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<String, String> {
+    run_off_thread(move || match worktree {
+        None => git_commit_message_blocking(project_dir, hash),
+        Some(selection) => git_commit_message_blocking_selected(project_dir, hash, Some(selection)),
+    })
+    .await
 }
 
 fn git_commit_message_blocking(project_dir: String, hash: String) -> Result<String, String> {
+    git_commit_message_blocking_selected(project_dir, hash, None)
+}
+
+fn git_commit_message_blocking_selected(
+    project_dir: String,
+    hash: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<String, String> {
     check_rev(&hash)?;
-    let target = remote_target_for_dir(&project_dir);
+    let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
     let out = run_git(
         target.as_ref(),
         &project_dir,
@@ -2223,15 +2443,31 @@ fn git_commit_message_blocking(project_dir: String, hash: String) -> Result<Stri
 /// Rewords the most recent commit (HEAD) via `git commit --amend`. Only valid
 /// for the latest commit; rewording older commits would require a rebase.
 #[tauri::command]
-pub async fn git_reword_head(project_dir: String, message: String) -> Result<(), String> {
-    run_off_thread(move || git_reword_head_blocking(project_dir, message)).await
+pub async fn git_reword_head(
+    project_dir: String,
+    message: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<(), String> {
+    run_off_thread(move || match worktree {
+        None => git_reword_head_blocking(project_dir, message),
+        Some(selection) => git_reword_head_blocking_selected(project_dir, message, Some(selection)),
+    })
+    .await
 }
 
 fn git_reword_head_blocking(project_dir: String, message: String) -> Result<(), String> {
+    git_reword_head_blocking_selected(project_dir, message, None)
+}
+
+fn git_reword_head_blocking_selected(
+    project_dir: String,
+    message: String,
+    worktree: Option<GitWorktreeSelection>,
+) -> Result<(), String> {
     if message.trim().is_empty() {
         return Err("Commit message cannot be empty".to_string());
     }
-    let target = remote_target_for_dir(&project_dir);
+    let (project_dir, target) = selected_git_context(project_dir, worktree.as_ref())?;
     require_hook_trust(target.as_ref(), &project_dir)?;
     let out = run_git_hooked(
         target.as_ref(),
@@ -2558,6 +2794,57 @@ impl WorktreeSite {
             _ => WorktreeSite::Host,
         }
     }
+}
+
+/// Frontend capability check: older running binaries ignore unknown command
+/// arguments, so selection must stay disabled until this API is available.
+#[tauri::command]
+pub fn git_worktree_selection_supported() -> bool {
+    true
+}
+
+/// Explicit panel selection, always anchored to the registered project's repository.
+#[derive(Clone, serde::Deserialize)]
+pub struct GitWorktreeSelection {
+    pub path: String,
+    pub site: String,
+}
+
+/// Resolve the side first, then accept only a live checkout returned by that
+/// repository's own worktree list. A host path never becomes a local invocation.
+pub(crate) fn selected_git_context(
+    project_dir: String,
+    selection: Option<&GitWorktreeSelection>,
+) -> Result<(String, Option<RemoteTarget>), String> {
+    let Some(selection) = selection else {
+        let target = remote_target_for_dir(&project_dir);
+        return Ok((project_dir, target));
+    };
+    if selection.site != "host" && selection.site != "mirror" {
+        return Err("Unknown worktree side".into());
+    }
+    let mut ctx = worktree_ctx(&project_dir, Some(&selection.site), None);
+    if !selection.path.is_empty() {
+        let out = run_worktree_git(&ctx, &["worktree", "list", "--porcelain"])?;
+        if !out.status.success() {
+            return Err(git_err(&out));
+        }
+        let list = parse_worktree_porcelain(&String::from_utf8_lossy(&out.stdout));
+        let wt = list
+            .iter()
+            .find(|wt| same_dir(&ctx, &wt.path, &selection.path))
+            .ok_or_else(|| {
+                "The selected worktree no longer belongs to this repository".to_string()
+            })?;
+        if wt.is_prunable || wt.is_bare {
+            return Err("The selected worktree is not a live checkout".into());
+        }
+        ctx.cwd = wt.path.clone();
+        if let Some(target) = ctx.target.as_mut() {
+            target.spec.remote_path = wt.path.clone();
+        }
+    }
+    Ok((ctx.cwd, ctx.target))
 }
 
 /// Everything a worktree command needs once the site question is settled.
@@ -4267,6 +4554,19 @@ filename note.txt
         assert_eq!(listed.iter().filter(|w| w.is_current).count(), 1);
         assert!(listed.iter().any(|w| w.branch == "feature"));
 
+        let selection = GitWorktreeSelection { path: wt_path.clone(), site: "host".into() };
+        let branches = git_branches_blocking_selected(root_str.clone(), Some(selection.clone())).unwrap();
+        assert!(branches.iter().any(|b| b.name == "feature" && b.is_current));
+        assert!(git_branches_blocking(root_str.clone()).unwrap().iter().any(|b| b.name == "main" && b.is_current));
+        std::fs::write(Path::new(&wt_path).join("selected.txt"), "selected\n").unwrap();
+        git_add_all_blocking_selected(root_str.clone(), Some(selection.clone())).unwrap();
+        assert_eq!(git_status_blocking_selected(root_str.clone(), Some(selection.clone())).unwrap().staged, 1);
+        assert_eq!(git_status_blocking(root_str.clone()).unwrap().staged, 0);
+        let invalid = GitWorktreeSelection { path: tmp.path().to_string_lossy().into_owned(), site: "host".into() };
+        assert!(selected_git_context(root_str.clone(), Some(&invalid)).is_err());
+        run_git(None, &wt_path, &["reset"]).unwrap();
+        std::fs::remove_file(Path::new(&wt_path).join("selected.txt")).unwrap();
+
         // `.tabtivity/` is excluded repo-locally, so the new checkout is not staged as
         // a bogus gitlink by the commit UI's `git add -A` (verified: without this,
         // `git ls-files --stage` shows mode 160000 for it).
@@ -4712,7 +5012,7 @@ filename note.txt
         let head = plain_git(&dir, &["rev-parse", "HEAD"]);
         fs::write(git.join("MERGE_HEAD"), &head.stdout).expect("MERGE_HEAD");
         fs::write(dir.join("f.txt"), "d\n").expect("edit");
-        let state = tauri::async_runtime::block_on(crate::commands::git_pull::git_merge_state(d.clone()))
+        let state = tauri::async_runtime::block_on(crate::commands::git_pull::git_merge_state(d.clone(), None))
             .expect("merge state");
         assert!(state.merging, "setup is stale: MERGE_HEAD not seen");
         assert!(!planted.exists(), "planted hook ran on the merge-state probe");

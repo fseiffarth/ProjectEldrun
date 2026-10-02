@@ -13,7 +13,7 @@ import { ensureRootScopeHydrated, useRootOverlayStore } from "../../stores/rootO
 import { closeTabInScope } from "../../lib/remote/closeRemoteTab";
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
-import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
+import { agentTabState, lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
 import { agentTabModelTag, tabModeMarks, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { holdPhonePrompt } from "../../lib/agents/phoneHolds";
@@ -472,9 +472,9 @@ function agentStatuses(projectId?: string): AgentTabStatus[] {
  * done on its own evidence.
  */
 function mobileAgentState(ptyId: string): MobileAgentState {
+  const live = agentTabState(ptyId);
+  if (live !== "idle") return live;
   const activity = useActivityStore.getState();
-  if (activity.busyByTab[ptyId]) return "working";
-  if (activity.attentionByTab[ptyId] === "decision") return "question";
   if (activity.attentionByTab[ptyId] === "interrupted") return "interrupted";
   if (activity.attentionByTab[ptyId] === "done") return "done";
   const doneAt = activity.lastDoneByTab[ptyId];
@@ -823,6 +823,11 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
     if (!item) return { status: "error", code: "unsupported_sign_in", message: "Sign-in is unavailable for this agent" };
     spec = buildSignInTabSpec(item, signInLaunch(item.cmd, request.sign_in === "alternate"), cwd, t);
   } else if (request.kind === "shell") {
+    // The sidecar's `shells_open` is the perimeter; this repeats it, because
+    // the bridge is reachable without going through it.
+    if (useSettingsStore.getState().settings?.[MOBILE_HOST_KEY]?.shell_tabs !== true) {
+      return { status: "error", code: "shells_off", message: "Shells are off for the phone" };
+    }
     if (request.agent_id || request.mode) {
       return { status: "error", code: "invalid_request", message: "Shell requests cannot name an agent or mode" };
     }
@@ -2277,7 +2282,17 @@ async function handleRequest(
     case "undo_clear": return undoTabClear(request.project_id, request.tmux_session);
     case "desktop_images": return desktopImagesFor(request.project_id);
     case "attach_desktop_image": return attachDesktopImage(request.project_id, request.image_id);
+    // A sidecar newer than this window can ask for a kind it does not know.
+    // Answered at once and by name: `undefined` failed to deserialize in
+    // `mobile_desktop_respond`, and the phone sat out the whole desktop
+    // timeout before reading "desktop unavailable". Typed `never`, so a kind
+    // added to `DesktopRequest` without a case here still fails the build.
+    default: return unknownRequest(request);
   }
+}
+
+function unknownRequest(_request: never): DesktopResponse {
+  return { status: "error", code: "unknown_request", message: "This desktop does not know that request" };
 }
 
 /** Desktop mutations run one at a time — but per domain, not on one chain.
@@ -2288,7 +2303,11 @@ async function handleRequest(
  * their own order; nothing in one waits on another. */
 const mutationQueues = new Map<string, Promise<unknown>>();
 
-function mutationDomain(type: DesktopRequest["type"]): string | null {
+/** Which queue a request waits in, or `null` for a read. The sidecar's
+ * `DesktopRequest::is_mutation` (`protocol.rs`) is the same list — it decides
+ * which over-large answers are reported as "applied" — and
+ * `MobileMutationList.test.ts` holds the two in step (exported for it). */
+export function mutationDomain(type: DesktopRequest["type"]): string | null {
   switch (type) {
     case "create": case "activate": case "rename_tab": case "close_tab": case "reopen_tab": case "color_tab": case "reorder_tab": return "tabs";
     case "todo_mutate": case "alert_resolve": case "calendar_mutate": return "board";

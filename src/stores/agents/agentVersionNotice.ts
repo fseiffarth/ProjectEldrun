@@ -42,6 +42,13 @@ export interface NewerAgentVersion {
   verified: string;
 }
 
+// The Rust verification table is compiled into the backend, which does not
+// hot-reload. Keep this checked release here too so an already-running window
+// stops showing its old backend's card when the frontend hot-reloads.
+const FRONTEND_VERIFIED: Readonly<Record<string, string>> = {
+  codex: "0.159.3",
+};
+
 interface AgentVersionNoticeStore {
   /** Registry id → the notice to show, only for CLIs newer than verified. */
   newer: Record<string, NewerAgentVersion>;
@@ -62,6 +69,7 @@ interface AgentVersionNoticeStore {
 /** The notice a report calls for, or null when it is not newer drift. */
 export function newerNotice(report: VersionReport): NewerAgentVersion | null {
   if (report.state !== "moved" || report.dismissed || !report.version) return null;
+  if (FRONTEND_VERIFIED[report.agent] === report.version) return null;
   const newer = report.stale.filter((note) => note.direction === "newer");
   if (newer.length === 0) return null;
   // `stale` is oldest-verified first; the newest one is the closest check.

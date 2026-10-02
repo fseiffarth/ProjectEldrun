@@ -149,6 +149,7 @@ pub mod state_gc;
 pub mod sync_auto;
 pub mod terminal_service;
 pub mod tmux_local;
+pub mod token_stats;
 // The UI's main threads (this process's, each renderer's) asked to rtkit for
 // nice -10, so the work agent tabs start cannot outrank typing.
 #[cfg(target_os = "linux")]

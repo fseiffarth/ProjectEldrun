@@ -131,7 +131,7 @@ describe("brand mirror", () => {
     };
     const old = LEGACY_NAMES.storageDashPrefix;
     const cur = NAMES.storageDashPrefix;
-    expect(paint({})).toEqual({ theme: "dark", accent: undefined, radius: undefined });
+    expect(paint({})).toEqual({ theme: "light_lavender", accent: undefined, radius: undefined });
     expect(paint({ [`${old}theme`]: "light", [`${old}accent`]: "#112233", [`${old}corners`]: "square" })).toEqual({
       theme: "light",
       accent: "#112233",

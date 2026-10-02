@@ -8,7 +8,9 @@ import {
   type ScheduleRule,
   type ScheduledPrompt,
   type ScheduledPromptInput,
+  wasApplied,
 } from "../api";
+import { describeFailure } from "../connection";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
 import { BRAND } from "../../../src/lib/brand";
@@ -57,6 +59,12 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
     setError("");
   }, []);
   const fail = useCallback((cause: unknown) => {
+    // Made on the desktop, only the refreshed list did not come back: say so,
+    // rather than "could not be loaded" under a form that invites a resend.
+    if (wasApplied(cause)) {
+      setError(describeFailure(cause));
+      return;
+    }
     const unavailable = cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable");
     setOffline(unavailable);
     setError(unavailable ? `Open desktop ${BRAND.display} to manage scheduled prompts.` : "Schedules could not be loaded.");
@@ -118,6 +126,7 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
         : await createSchedule(tabId, input()));
       reset();
     } catch (cause) {
+      if (wasApplied(cause)) reset();
       fail(cause);
     } finally {
       setBusy(false);

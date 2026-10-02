@@ -34,7 +34,14 @@ function usageTone(kind: "cpu" | "ram", value: number): "low" | "medium" | "high
   return "low";
 }
 
-export function AppResourceDisplay() {
+/**
+ * `folded`: the header status cluster has folded this readout away
+ * (`display: none`, still mounted). It then takes no readings of its own — its
+ * report never tones the summary lamp, so the fold toggle's tooltip is the only
+ * thing still reading it — and samples once each time `peek` changes, which
+ * the cluster bumps as the pointer reaches that toggle.
+ */
+export function AppResourceDisplay({ folded = false, peek = 0 }: { folded?: boolean; peek?: number } = {}) {
   const t = useT();
   // Each row defaults ON (undefined → shown) and is independent of debug mode.
   const showCpu = useSettingsStore((s) => s.settings?.show_cpu_usage ?? true);
@@ -53,6 +60,10 @@ export function AppResourceDisplay() {
       setUsage(null);
       return;
     }
+    // Folded keeps the last reading rather than clearing it: the cluster
+    // counts this member by its report, and a member that vanished on fold
+    // could drop the count below the fold threshold and unfold the row again.
+    if (folded) return;
 
     let cancelled = false;
     // `gpu: false` with the GPU row hidden: the backend then skips its GPU and
@@ -73,7 +84,26 @@ export function AppResourceDisplay() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [anyShown, showGpu, quiesce]);
+  }, [anyShown, showGpu, quiesce, folded]);
+
+  // One reading for the folded tooltip. It shows CPU and RAM only, so the GPU
+  // and Ollama reads are skipped and the last GPU figures carried over until
+  // the expanded poll replaces them.
+  useEffect(() => {
+    if (!anyShown || !folded || peek === 0) return;
+    let cancelled = false;
+    invoke<AppResourceUsage>("debug_app_resource_usage", { gpu: false })
+      .then((next) => {
+        if (cancelled) return;
+        setUsage((prev) => ({ ...next, gpus: prev?.gpus ?? [], vram_bytes: prev?.vram_bytes ?? 0 }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // Only a new `peek` asks; folding or unfolding is not a hover.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peek]);
 
   // Never tones up. A build pegs the CPU for minutes at a time, so toning this
   // `attention` would turn a collapsed header's summary lamp amber for the

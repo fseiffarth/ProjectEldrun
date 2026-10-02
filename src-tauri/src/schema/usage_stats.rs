@@ -79,6 +79,24 @@ pub mod metric {
     /// External apps launched.
     pub const APP_LAUNCHED: &str = "app.launched";
 
+    /// Agent tokens, suffixed with `<cli>.<model>`. These are **not** counted
+    /// into this store: `services::token_stats` derives them from the CLIs'
+    /// own usage records and keeps them in `token_stats.json`, so a crashed
+    /// tab or a resume can never make them drift. They share this namespace
+    /// so the recap folds them with the same code. `<model>` is everything
+    /// after the third `.` — model names contain dots (`gpt-6.1-sol`).
+    ///
+    /// Fresh input, not counting cache reads or writes.
+    pub const TOKENS_IN: &str = "tokens.in";
+    /// Input written to the prompt cache.
+    pub const TOKENS_CACHE_W: &str = "tokens.cache_w";
+    /// Input read back from the prompt cache.
+    pub const TOKENS_CACHE_R: &str = "tokens.cache_r";
+    /// Output, thinking/reasoning included.
+    pub const TOKENS_OUT: &str = "tokens.out";
+    /// A total with no split — only Codex's SQLite fallback reports one.
+    pub const TOKENS_TOTAL: &str = "tokens.total";
+
     /// Compose a dotted key from a prefix and an open-ended segment, e.g.
     /// `sub(AGENT_PROMPT, "claude")` → `"agent.prompt.claude"`.
     pub fn sub(prefix: &str, leaf: &str) -> String {

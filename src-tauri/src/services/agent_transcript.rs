@@ -14,7 +14,8 @@
 //! a `/clear` that is the conversation the reader just cleared.
 //!
 //! What is read is deliberately narrow: the prompts the user submitted and
-//! the text the agent answered with. Tool calls and their results, thinking
+//! the text the agent answered with — and, the one tool call kept, a question
+//! the agent put to the user with the answer it got. Other tool calls and their results, thinking
 //! blocks, attachments, the reminders the CLI attaches to a prompt and the
 //! notes it leaves for itself are not the conversation and are stepped over —
 //! on a phone the answer is what is wanted, not the edit-by-edit status the
@@ -65,6 +66,8 @@ const MAX_ROLE_CHARS: usize = 48;
 const MAX_SHELL_CHARS: usize = 8_000;
 /// Longest description of a running shell.
 const MAX_SHELL_DESCRIPTION_CHARS: usize = 200;
+/// Longest question, option label or note of a question the agent asked.
+const MAX_QUESTION_CHARS: usize = 2_000;
 /// How deep a subagent's own subagents are followed.
 pub(crate) const MAX_SUBAGENT_DEPTH: usize = 8;
 
@@ -108,6 +111,39 @@ pub struct TranscriptEntry {
     /// `Agent` launch), so it can be at work while the session's turn is over.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background: bool,
+    /// On an `answer` entry: the questions the agent asked the user (Claude's
+    /// `AskUserQuestion`), each with the answer it got. The entry is written
+    /// once the call has its result, so a question still waiting is the live
+    /// screen's and never in the chat twice; `text` is the same exchange as
+    /// plain text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<AskedQuestion>,
+}
+
+/// One question the agent asked, as answered.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AskedQuestion {
+    /// The short label the dialog's tab row shows for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<AskedOption>,
+    /// What the user answered — a row's label, several joined by `, ` on a
+    /// multi-select, or their own words. Absent when the question was turned
+    /// down rather than answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+}
+
+/// One row a question offered, and whether the answer took it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AskedOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chosen: bool,
 }
 
 /// What a tab's stored session answers with. Always a value, never an error:
@@ -144,6 +180,13 @@ pub struct AgentTranscript {
     /// off its own conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The tokens the newest request that records its usage carried — the
+    /// context it sent plus what came back, the figure Claude Code's own row
+    /// for a subagent counts (Codex's `last_token_usage`). The phone's
+    /// working row in a subagent's conversation shows it; a session's own
+    /// row reads its spinner instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
     /// The shell commands the agent is running right now — Claude's `Bash`
     /// calls since the last prompt that have no result in the transcript
     /// yet. Desktop Reader only: the phone's API strips it, since a command
@@ -367,13 +410,33 @@ fn codex_transcript(
 /// A spawned thread's rollout: the path its row names, taken only when it is
 /// a file under the scope's `.codex/sessions` whose name ends in the thread's id.
 fn codex_rollout(project_id: Option<&str>, thread: &crate::services::codex_store::SpawnedThread) -> Option<PathBuf> {
-    let root = std::fs::canonicalize(agent_session::codex_sessions_root(project_id)).ok()?;
-    let path = std::fs::canonicalize(thread.rollout_path.as_deref()?).ok()?;
-    let named = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(&format!("{}.jsonl", thread.id)));
-    (named && path.starts_with(&root) && path.is_file()).then_some(path)
+    codex_rollout_in(&agent_session::codex_sessions_root(project_id), thread)
+}
+
+/// Testable core of [`codex_rollout`] against an explicit sessions root.
+/// Codex records the path as its own tab sees it — inside the fence the agent
+/// home is mounted as `$HOME`, so the row says `/home/<user>/.codex/sessions/…`
+/// while Tabtivity reads the same file under `<state_dir>/agent-homes/<key>` — so
+/// the part after `.codex/sessions/` is re-rooted onto `root` first, and the
+/// recorded path is tried as is only after that.
+fn codex_rollout_in(root: &Path, thread: &crate::services::codex_store::SpawnedThread) -> Option<PathBuf> {
+    let root = std::fs::canonicalize(root).ok()?;
+    let recorded = Path::new(thread.rollout_path.as_deref()?);
+    let parts: Vec<_> = recorded.components().map(|part| part.as_os_str()).collect();
+    let rerooted = parts
+        .windows(2)
+        .position(|pair| pair[0] == ".codex" && pair[1] == "sessions")
+        .map(|at| root.join(parts[at + 2..].iter().collect::<PathBuf>()));
+    let named = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(&format!("{}.jsonl", thread.id)))
+    };
+    rerooted
+        .into_iter()
+        .chain(std::iter::once(recorded.to_path_buf()))
+        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .find(|path| named(path) && path.starts_with(&root) && path.is_file())
 }
 
 /// A Claude session the hook has recorded but Claude has not written yet —
@@ -525,6 +588,7 @@ fn read_transcript_in(
         TranscriptKind::Claude => None,
     };
     let model = newest_model(&lines, kind);
+    let tokens = newest_tokens(&lines, kind);
     let (mut entries, calls, shell_calls) = parse_entries(lines.into_iter(), kind, sidechain);
     let shells = running_shells(path, &current, shell_calls);
     match spawns {
@@ -561,6 +625,7 @@ fn read_transcript_in(
         truncated,
         usage,
         model,
+        tokens,
         shells,
     })
 }
@@ -614,6 +679,36 @@ fn running_shells(path: &Path, version: &str, calls: ShellCalls) -> Vec<RunningS
 /// reads it ([`agent_session::model_in_record`]).
 fn newest_model(lines: &[&str], kind: TranscriptKind) -> Option<String> {
     lines.iter().rev().find_map(|line| agent_session::model_in_record(line, kind))
+}
+
+/// The tokens the newest record in `lines` that carries usage counts
+/// ([`AgentTranscript::tokens`]): a Claude assistant message's input, cache
+/// and output tokens together, or a Codex `token_count`'s last request.
+fn newest_tokens(lines: &[&str], kind: TranscriptKind) -> Option<u64> {
+    let needle = match kind {
+        TranscriptKind::Claude => "\"usage\"",
+        TranscriptKind::Codex => "\"token_count\"",
+    };
+    lines.iter().rev().filter(|line| line.contains(needle)).find_map(|line| {
+        let value = serde_json::from_str::<Value>(line).ok()?;
+        match kind {
+            TranscriptKind::Claude => {
+                let message = value.get("message").filter(|_| value.get("type").and_then(Value::as_str) == Some("assistant"))?;
+                let usage = message.get("usage")?;
+                let count = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
+                let total = count("input_tokens")
+                    + count("cache_creation_input_tokens")
+                    + count("cache_read_input_tokens")
+                    + count("output_tokens");
+                (total > 0).then_some(total)
+            }
+            TranscriptKind::Codex => value
+                .get("payload")
+                .filter(|p| p.get("type").and_then(Value::as_str) == Some("token_count"))?
+                .pointer("/info/last_token_usage/total_tokens")?
+                .as_u64(),
+        }
+    })
 }
 
 /// The subagents in a Claude session's `folder`, by the tool call that
@@ -782,6 +877,10 @@ fn parse_entries<'a>(
     // (`async_launched`); what it does after is replayed in `agents`.
     let mut returned = std::collections::HashSet::new();
     let mut agents = BackgroundAgents::default();
+    // Questions asked, by call id, until their result comes: the exchange is
+    // one entry, placed where the result lands — the agent waits on it, so
+    // nothing of its own comes in between.
+    let mut asked: std::collections::HashMap<String, (Vec<AskedQuestion>, Option<String>)> = std::collections::HashMap::new();
     for line in lines {
         let line = line.trim();
         if line.is_empty() {
@@ -796,7 +895,12 @@ fn parse_entries<'a>(
             }
         }
         if kind == TranscriptKind::Claude {
-            returned.extend(claude_tool_results(&value));
+            for call in claude_tool_results(&value) {
+                if let Some((questions, at)) = asked.remove(&call) {
+                    entries.extend(question_entry(questions, value.get("toolUseResult"), at));
+                }
+                returned.insert(call);
+            }
             backgrounded.extend(claude_backgrounded(&value));
             ended.extend(claude_tasks_ended(line));
             agents.read(&value, line);
@@ -824,6 +928,9 @@ fn parse_entries<'a>(
                     shells.push((call, shell));
                 }
                 Record::Plan(raw) => entries.extend(transcript_entry("answer", &raw, at.clone()).map(|entry| TranscriptEntry { plan: true, ..entry })),
+                Record::Question { call, questions } => {
+                    asked.insert(call, (questions, at.clone()));
+                }
                 Record::Spawn { call, task, kind } => {
                     if let Some(entry) = agent_entry(&task, kind.as_deref(), at.clone()) {
                         calls.push((entries.len(), call));
@@ -1049,6 +1156,8 @@ enum Record {
     Spawn { call: String, task: String, kind: Option<String> },
     /// A shell command started by tool call `call`.
     Shell { call: String, shell: RunningShell },
+    /// Questions put to the user by tool call `call`, not yet answered.
+    Question { call: String, questions: Vec<AskedQuestion> },
 }
 
 /// A subagent's entry: its task as one bounded line, its kind beside it.
@@ -1106,8 +1215,8 @@ fn clean_text(raw: &str) -> Option<String> {
 /// reading the last-prompt line makes — tool results, meta notes and
 /// reminders are not), a prompt the user queued mid-turn (the prompt chart's
 /// reading), or an `assistant` record's text blocks, the plan its
-/// `ExitPlanMode` call put up and the subagents its `Agent` calls spawned.
-/// Thinking and other tool-use blocks are stepped over, as is a sidechain (a
+/// `ExitPlanMode` call put up, the subagents its `Agent` calls spawned and
+/// the questions its `AskUserQuestion` calls asked. Thinking and other tool-use blocks are stepped over, as is a sidechain (a
 /// subagent's) record.
 fn claude_records(value: &Value) -> Vec<Record> {
     let sidechain = value.get("isSidechain").and_then(Value::as_bool) == Some(true);
@@ -1136,7 +1245,7 @@ fn claude_records(value: &Value) -> Vec<Record> {
                         .join("\n\n"),
                     blocks
                         .iter()
-                        .filter_map(|b| claude_plan(b).or_else(|| claude_spawn(b)).or_else(|| claude_shell(b)))
+                        .filter_map(|b| claude_plan(b).or_else(|| claude_spawn(b)).or_else(|| claude_shell(b)).or_else(|| claude_question(b)))
                         .collect(),
                 ),
                 _ => return Vec::new(),
@@ -1161,6 +1270,68 @@ fn claude_plan(block: &Value) -> Option<Record> {
     }
     let plan = block.get("input")?.get("plan")?.as_str()?.trim();
     (!plan.is_empty()).then(|| Record::Plan(plan.to_string()))
+}
+
+/// An `AskUserQuestion` `tool_use` block: the questions, with their rows.
+fn claude_question(block: &Value) -> Option<Record> {
+    if block.get("type").and_then(Value::as_str) != Some("tool_use")
+        || block.get("name").and_then(Value::as_str) != Some("AskUserQuestion")
+    {
+        return None;
+    }
+    let call = block.get("id")?.as_str()?.to_string();
+    let field = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).and_then(bounded_line);
+    let questions: Vec<AskedQuestion> = block
+        .get("input")?
+        .get("questions")?
+        .as_array()?
+        .iter()
+        .filter_map(|q| {
+            Some(AskedQuestion {
+                header: field(q, "header"),
+                question: field(q, "question")?,
+                options: q
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|o| Some(AskedOption { label: field(o, "label")?, description: field(o, "description"), chosen: false }))
+                    .collect(),
+                answer: None,
+            })
+        })
+        .collect();
+    (!questions.is_empty()).then_some(Record::Question { call, questions })
+}
+
+/// A question's text cleaned and cut at its bound; `None` when empty.
+fn bounded_line(raw: &str) -> Option<String> {
+    Some(clean_text(raw)?.chars().take(MAX_QUESTION_CHARS).collect())
+}
+
+/// The entry for questions whose call has its result: each answer read off
+/// the result's `answers` (keyed by the question's text as asked) and the
+/// rows it took marked. A call turned down has no answers, and its questions
+/// none.
+fn question_entry(mut questions: Vec<AskedQuestion>, result: Option<&Value>, at: Option<String>) -> Option<TranscriptEntry> {
+    let answers = result.and_then(|r| r.get("answers")).and_then(Value::as_object);
+    for question in &mut questions {
+        question.answer = answers
+            .and_then(|a| a.iter().find(|(asked, _)| bounded_line(asked).as_deref() == Some(question.question.as_str())))
+            .and_then(|(_, answer)| answer.as_str())
+            .and_then(bounded_line);
+        if let Some(answer) = &question.answer {
+            for option in &mut question.options {
+                option.chosen = *answer == option.label || answer.split(", ").any(|part| part == option.label);
+            }
+        }
+    }
+    let text = questions
+        .iter()
+        .map(|q| format!("{}\n→ {}", q.question, q.answer.as_deref().unwrap_or("—")))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    transcript_entry("answer", &text, at).map(|entry| TranscriptEntry { questions, ..entry })
 }
 
 /// A `Bash` `tool_use` block: the command, and the description Claude gave it.
@@ -1273,6 +1444,45 @@ mod tests {
         let wire = serde_json::to_value(&read.entries[2]).unwrap();
         assert_eq!(wire["plan"], true);
         assert!(serde_json::to_value(&read.entries[1]).unwrap().get("plan").is_none());
+    }
+
+    #[test]
+    fn a_claude_question_stays_in_the_chat_with_its_answer_once_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let ask = |id: &str, question: &str| {
+            format!(
+                "{{\"type\":\"assistant\",\"timestamp\":\"2026-10-02T10:00:00Z\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"AskUserQuestion\",\"input\":{{\"questions\":[{{\"question\":\"{question}\",\"header\":\"Pick\",\"options\":[{{\"label\":\"Red\",\"description\":\"Warm\"}},{{\"label\":\"Blue\"}}],\"multiSelect\":true}}]}}}}]}}}}\n"
+            )
+        };
+        let mut text = String::from("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"ask me\"}}\n");
+        text += &ask("toolu_A", "Which colours?");
+        text += "{\"type\":\"user\",\"timestamp\":\"2026-10-02T10:01:00Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_A\",\"content\":\"Your questions have been answered\"}]},\"toolUseResult\":{\"answers\":{\"Which colours?\":\"Red, Blue\"}}}\n";
+        text += &ask("toolu_B", "Which one?");
+        text += "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_B\",\"content\":\"The user doesn't want to proceed\",\"is_error\":true}]},\"toolUseResult\":\"User rejected tool use\"}\n";
+        text += "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Noted.\"}]}}\n";
+        // Still waiting: the live screen shows it, the chat does not yet.
+        text += &ask("toolu_C", "Still open?");
+        std::fs::write(&path, text).unwrap();
+        let read = read_transcript(&path, TranscriptKind::Claude, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(
+            kinds(&read),
+            vec![("prompt", "ask me"), ("answer", "Which colours?\n→ Red, Blue"), ("answer", "Which one?\n→ —"), ("answer", "Noted.")]
+        );
+        let answered = &read.entries[1];
+        // Placed at the question's own time, not the answer's.
+        assert_eq!(answered.at.as_deref(), Some("2026-10-02T10:00:00Z"));
+        assert_eq!(answered.questions.len(), 1);
+        let question = &answered.questions[0];
+        assert_eq!(question.header.as_deref(), Some("Pick"));
+        assert_eq!(question.answer.as_deref(), Some("Red, Blue"));
+        assert_eq!(question.options.iter().map(|o| (o.label.as_str(), o.chosen)).collect::<Vec<_>>(), vec![("Red", true), ("Blue", true)]);
+        assert_eq!(question.options[0].description.as_deref(), Some("Warm"));
+        // Turned down: the question stays, with no answer and no row taken.
+        let declined = &read.entries[2].questions[0];
+        assert_eq!(declined.answer, None);
+        assert!(declined.options.iter().all(|o| !o.chosen));
+        assert!(serde_json::to_value(&read.entries[3]).unwrap().get("questions").is_none());
     }
 
     #[test]
@@ -1636,6 +1846,39 @@ mod tests {
         .unwrap();
         let read = read_transcript_in(&sub, TranscriptKind::Claude, &Spawns::None, true, None, DEFAULT_LIMIT).unwrap();
         assert_eq!(read.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(read.tokens, None);
+    }
+
+    #[test]
+    fn a_transcript_counts_the_tokens_of_its_newest_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("agent-x.jsonl");
+        std::fs::write(
+            &sub,
+            concat!(
+                "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":0,\"output_tokens\":5},\"content\":[{\"type\":\"text\",\"text\":\"looking\"}]}}\n",
+                "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":300,\"cache_read_input_tokens\":12000,\"output_tokens\":40},\"content\":[{\"type\":\"text\",\"text\":\"found\"}]}}\n",
+                // A tool result carries no usage of its own.
+                "{\"type\":\"user\",\"isSidechain\":true,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t\",\"content\":\"usage\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript_in(&sub, TranscriptKind::Claude, &Spawns::None, true, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(read.tokens, Some(12_342));
+        assert_eq!(serde_json::to_value(&read).unwrap()["tokens"], 12_342);
+
+        let rollout = dir.path().join("rollout.jsonl");
+        std::fs::write(
+            &rollout,
+            concat!(
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"total_tokens\":800}}}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"total_tokens\":90259}}}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":null}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript_in(&rollout, TranscriptKind::Codex, &Spawns::None, false, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(read.tokens, Some(90_259));
     }
 
     #[test]
@@ -1777,6 +2020,37 @@ mod tests {
         let bare = dir.path().join("bare.sqlite");
         rusqlite::Connection::open(&bare).unwrap().execute_batch("CREATE TABLE threads (id TEXT)").unwrap();
         assert!(crate::services::codex_store::spawned_threads(&bare, "root").is_empty());
+    }
+
+    #[test]
+    fn a_codex_subagent_rollout_named_as_the_fence_sees_it_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("agent-homes/p1/.codex/sessions");
+        let day = root.join("2026/10/01");
+        std::fs::create_dir_all(&day).unwrap();
+        let id = "01a0f8c9-becb-7461-8d94-0f88165a3b65";
+        let file = day.join(format!("rollout-2026-10-01T20-46-06-{id}.jsonl"));
+        std::fs::write(&file, "").unwrap();
+        let thread = |rollout: &str, id: &str| crate::services::codex_store::SpawnedThread {
+            id: id.into(),
+            task: String::new(),
+            role: None,
+            nickname: Some("Lorentz".into()),
+            created_ms: None,
+            rollout_path: Some(rollout.into()),
+        };
+        let fenced = format!("/home/u/.codex/sessions/2026/10/01/rollout-2026-10-01T20-46-06-{id}.jsonl");
+        let found = codex_rollout_in(&root, &thread(&fenced, id));
+        assert_eq!(found, Some(std::fs::canonicalize(&file).unwrap()));
+        // The path as Tabtivity itself sees it still works.
+        assert!(codex_rollout_in(&root, &thread(file.to_str().unwrap(), id)).is_some());
+        // Never a file of another thread, nor one outside the root.
+        assert!(codex_rollout_in(&root, &thread(&fenced, "01a0f8c9-0000-7461-8d94-0f88165a3b65")).is_none());
+        let outside = dir.path().join(format!("rollout-x-{id}.jsonl"));
+        std::fs::write(&outside, "").unwrap();
+        assert!(codex_rollout_in(&root, &thread(outside.to_str().unwrap(), id)).is_none());
+        let escape = format!("/home/u/.codex/sessions/../../../rollout-x-{id}.jsonl");
+        assert!(codex_rollout_in(&root, &thread(&escape, id)).is_none());
     }
 
     #[test]

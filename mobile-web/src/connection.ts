@@ -187,6 +187,7 @@ const FAILURE_TEXT: Record<string, string> = {
   project_not_found: "This project is no longer shared with the phone.",
   project_ineligible: "This project is no longer shared with the phone.",
   tab_not_found: "That tab is no longer available.",
+  shells_off: "Shells are switched off for the phone in the desktop's Mobile settings.",
   // A sign-in address the phone handed back (`sign_in.rs`).
   invalid_callback: "That is not the address the browser ended on. Copy all of it — it starts with http://localhost.",
   callback_not_local: "That address does not lead to the agent waiting on the desktop.",
@@ -212,6 +213,14 @@ const FAILURE_TEXT: Record<string, string> = {
   empty_reply: "The reply is empty.",
   // The desktop bridge's refusals (`MobileBridgeHost.tsx`).
   desktop_error: `${BRAND.display} on the desktop hit an error handling that.`,
+  unknown_request: `${BRAND.display} on the desktop does not know that request.`,
+  response_too_large: "That is too large for the desktop to send to the phone.",
+  // A write the desktop made whose refreshed list did not come back
+  // (`reloadIfApplied` in `api.ts`): never worded as a refusal, so the reader
+  // does not send it again.
+  applied_response_too_large: "The change was made, but the updated list is too large to send to the phone.",
+  applied_list_too_large: "The change was made, but the list is now too large to show on the phone.",
+  applied_reload_failed: "The change was made, but the list could not be reloaded.",
   launch_failed: "The desktop could not open that tab.",
   unknown_agent: "The desktop does not know that agent.",
   unsupported_sign_in: "The desktop cannot sign that agent in from the phone.",

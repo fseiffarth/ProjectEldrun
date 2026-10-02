@@ -33,7 +33,9 @@ pub const HOMES_DIR: &str = "agent-homes";
 pub const HOST_SCOPE_KEY: &str = "host";
 /// Written once a home has been seeded, so the one-time imports (an existing
 /// per-scope Codex store, the scope's Claude transcripts) never run twice.
-const SEEDED_MARKER: &str = crate::brand::AGENT_HOME_MARKER;
+/// Its mtime is also when the seeding ran: `services::token_stats` counts no
+/// Claude record older than it, so seeded history is not counted per home.
+pub(crate) const SEEDED_MARKER: &str = crate::brand::AGENT_HOME_MARKER;
 
 /// `<state_dir>/agent-homes/`.
 pub fn homes_root_in(state_dir: &Path) -> PathBuf {

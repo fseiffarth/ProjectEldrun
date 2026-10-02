@@ -411,13 +411,16 @@ export function readSelectPrompt(
   for (let index = runs.length - 1; index >= 0; index -= 1) {
     const candidate = runs[index];
     const windowed = candidate.hidden !== undefined || candidate.edge;
-    // A run from anywhere but 1 is a slice only a windowed dialog draws.
-    if (candidate.options[0].number !== 1 && !windowed) continue;
+    const title = readTitle(lines, candidate.start);
+    // Codex may clip the top of its model picker without a hidden-row note or
+    // edge marker. Its heading and the caller's agent identify that slice.
+    const codexModelSlice = /codex/iu.test(agentLabel ?? "") && title?.startsWith("Select Model") === true;
+    if (candidate.options[0].number !== 1 && !windowed && !codexModelSlice) continue;
     if (candidate.options.length >= MIN_OPTIONS && candidate.marked.length === 1) {
       return {
         options: candidate.options,
         current: candidate.marked[0],
-        title: readTitle(lines, candidate.start),
+        title,
         start: candidate.start,
         ...readContext(lines, candidate.start),
         ...(candidate.hidden ? { hidden: candidate.hidden } : {}),
@@ -477,9 +480,14 @@ export function mergeSelectRows(step: SelectStep | null, prompt: SelectPrompt): 
  * printed number — where to walk the highlight next to make the dialog draw
  * it — or `undefined` once every row is known. */
 export function missingSelectRow(step: SelectStep, prompt: SelectPrompt): number | undefined {
+  const seen = new Set(step.options.map((option) => option.number));
+  // A clipped first row already tells us its printed number, even when the
+  // picker gives no count of hidden rows. Walk up to collect it for the sheet.
+  for (let number = 1; number < prompt.options[0].number; number += 1) {
+    if (!seen.has(number)) return number;
+  }
   if (!prompt.hidden) return undefined;
   const total = prompt.options.length + prompt.hidden;
-  const seen = new Set(step.options.map((option) => option.number));
   for (let number = 1; number <= total; number += 1) if (!seen.has(number)) return number;
   return undefined;
 }

@@ -39,6 +39,7 @@ pub mod ollama;
 pub mod openvpn;
 pub mod os_clock;
 pub mod pdf_clip;
+pub mod pdf_markup;
 pub mod power;
 pub mod presenter;
 pub mod print_native;

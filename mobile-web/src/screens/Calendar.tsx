@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type CalendarAction, type MobileCalendar, type MobileCalendarEvent, type MobileCalendarEventInput, type MobileCalendarInfo } from "../api";
+import { api, reloadIfApplied, wasApplied, type CalendarAction, type MobileCalendar, type MobileCalendarEvent, type MobileCalendarEventInput, type MobileCalendarInfo } from "../api";
 import { OptionSheet } from "../components/OptionSheet";
 import { describeFailure } from "../connection";
 import { NotificationsSheet } from "../components/NotificationsSheet";
@@ -61,7 +61,7 @@ export function Calendar() {
   const [reminders, setReminders] = useState(false);
   const load = useCallback(async () => { setBusy(true); setError(""); try { const { calendar } = await api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`); setData(calendar); setSelected((d) => d.startsWith(month) ? d : `${month}-01`); } catch (e) { setError(describeFailure(e)); } finally { setBusy(false); } }, [month]);
   useEffect(() => { void load(); }, [load]);
-  const mutate = async (action: CalendarAction) => { setBusy(true); setError(""); try { const { calendar } = await api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`, { method: "POST", body: JSON.stringify(action) }); setData(calendar); return true; } catch (e) { setError(describeFailure(e)); return false; } finally { setBusy(false); } };
+  const mutate = async (action: CalendarAction) => { setBusy(true); setError(""); try { const { calendar } = await reloadIfApplied(api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`, { method: "POST", body: JSON.stringify(action) }), () => api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`)); setData(calendar); return true; } catch (e) { setError(describeFailure(e)); /* Made on the desktop, only not shown: done, as far as the editor goes. */ return wasApplied(e); } finally { setBusy(false); } };
   const weekStart = data?.week_start ?? 1; const days = useMemo(() => grid(month, weekStart), [month, weekStart]);
   const events = useCallback((date: string) => (data?.events ?? []).filter((event) => happensOn(event, date)), [data]);
   const selectedEvents = useMemo(() => events(selected).sort((a, b) => Number(b.all_day) - Number(a.all_day) || a.start.localeCompare(b.start)), [events, selected]);

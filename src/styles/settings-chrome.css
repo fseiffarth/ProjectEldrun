@@ -4017,3 +4017,20 @@ label.settings-toggle-card-row {
   width: min(720px, calc(100vw - 32px));
   max-height: min(860px, calc(100vh - 64px));
 }
+
+/* A free-text prompt (Settings → PDF markup): the field chrome above, full
+   card width, several lines. */
+.settings-card > .settings-prompt-text {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-base);
+  padding: 6px 9px;
+  resize: vertical;
+}

@@ -1725,6 +1725,7 @@ pub fn run() {
             // Usage counters + daily recap.
             commands::usage_stats::usage_bump,
             commands::usage_stats::usage_summary,
+            commands::usage_stats::usage_token_stats,
             commands::usage_stats::usage_watch_project,
             commands::usage_stats::usage_git_stats,
             commands::monitor::system_monitor_snapshot,
@@ -1832,6 +1833,7 @@ pub fn run() {
             commands::fs::write_file_bytes,
             commands::pdf_clip::pdf_clip_set,
             commands::pdf_clip::pdf_clip_get,
+            commands::pdf_markup::pdf_markup_submit,
             commands::fs::file_mtime,
             commands::format::format_source,
             commands::format::formatter_available,
@@ -2004,6 +2006,7 @@ pub fn run() {
             commands::skills::skills_list_installed,
             // Git worktrees (TODO Group E #23)
             commands::git::git_worktree_list,
+            commands::git::git_worktree_selection_supported,
             commands::git::git_worktree_add,
             commands::git::git_worktree_remove,
             commands::git::git_worktree_lock,

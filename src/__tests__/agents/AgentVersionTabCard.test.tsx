@@ -62,6 +62,24 @@ describe("agent tab version card", () => {
     expect(newerNotice(report({ dismissed: true }))).toBeNull();
   });
 
+  it("hides the checked Codex release while the running backend still has its old table", async () => {
+    const oldBackend = report({
+      agent: "codex",
+      version: "0.159.3",
+      stale: [
+        { version: "0.157.0", surface: "mode lines", direction: "newer" },
+        { version: "0.159.2", surface: "model sheet", direction: "newer" },
+      ],
+    });
+    expect(newerNotice(oldBackend)).toBeNull();
+    expect(newerNotice({ ...oldBackend, version: "0.159.4" })?.installed).toBe("0.159.4");
+    mockVersions([oldBackend]);
+    const pane = host();
+    render(<TerminalVersionCard host={pane} cmd="codex" />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("agent_versions", { refresh: false }));
+    expect(pane.querySelector(".terminal-version-drift")).toBeNull();
+  });
+
   it("names the closest verified release when several checks are newer-stale", () => {
     const notice = newerNotice(
       report({

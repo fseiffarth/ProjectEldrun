@@ -35,6 +35,15 @@ pub const MAX_MARKS: usize = 5_000;
 pub const MAX_POINTS: usize = 200_000;
 /// Typed characters one page's notes may hold together.
 pub const MAX_PAGE_TEXT: usize = 2_000;
+/// Characters the phone's own instruction (its settings) may hold.
+pub const MAX_INSTRUCTION: usize = 2_000;
+/// What the agent is told to do with the marks when the phone's settings
+/// hold no instruction of their own. It asks first: a marked PDF is often
+/// built from a `.tex` or `.md` beside it, and an agent told to "apply" the
+/// marks went and edited that file unasked. The phone shows this text as the
+/// setting's starting point (`mobile-web/src/markupInstruction.ts`, kept equal
+/// by a test below).
+pub const DEFAULT_INSTRUCTION: &str = "Read every mark (strike-throughs, insertions, circled parts, margin notes) and list the changes they ask for, and any mark you could not read. Do not change any file yet — not this one, not the sources it is built from, not any other file — until I tell you which changes to make.";
 /// How far outside its page a mark may reach, in page units — a stroke that
 /// leaves the edge by a hair is still the reader's.
 const EDGE_SLACK: f64 = 2.0;
@@ -96,6 +105,10 @@ pub struct MarkupRequest {
     /// on the phone and sent through the inbox like a layer.
     #[serde(default)]
     pub picture: Option<String>,
+    /// What to do with the marks, from the phone's settings; absent or blank
+    /// is `DEFAULT_INSTRUCTION`. The user's own words, as the prompt is.
+    #[serde(default)]
+    pub instruction: Option<String>,
 }
 
 /// Why a submit was refused, as the phone's wire code.
@@ -109,6 +122,15 @@ pub enum MarkupError {
     Unsupported,
     Files(files::FilesError),
     Outbox(outbox::OutboxError),
+    /// Desktop only: the path is not inside the project's folder.
+    OutsideProject,
+    /// Desktop only: the path crosses a name the file browser hides
+    /// (`files::hidden` — `.git`, `.tabtivity` but its outbox, `.env*`).
+    HiddenPath,
+    /// Desktop only: a layer is not a PNG of a sane size.
+    InvalidLayer,
+    /// Desktop only: a layer could not be written into the inbox.
+    Inbox(inbox::InboxError),
 }
 
 impl MarkupError {
@@ -119,6 +141,10 @@ impl MarkupError {
             MarkupError::Unsupported => "unsupported_source",
             MarkupError::Files(error) => error.code(),
             MarkupError::Outbox(error) => error.code(),
+            MarkupError::OutsideProject => "outside_project",
+            MarkupError::HiddenPath => "hidden_path",
+            MarkupError::InvalidLayer => "invalid_layer",
+            MarkupError::Inbox(error) => error.code(),
         }
     }
 }
@@ -138,18 +164,37 @@ fn inbox_leaf(reference: &str) -> Option<&str> {
     (inbox::valid_global_name(leaf) && leaf.to_ascii_lowercase().ends_with(".png")).then_some(leaf)
 }
 
-/// Every shape and bound the request must meet before anything is read.
+/// Every shape and bound the phone's request must meet before anything is
+/// read: its source's shape (`validate_source`) and its body's
+/// (`validate_body`).
 pub fn validate(request: &MarkupRequest) -> Result<(), MarkupError> {
+    validate_source(&request.source)?;
+    validate_body(request)
+}
+
+/// The phone's source reference: a bounded token or an outbox leaf. The
+/// desktop names its source by path instead (`resolve_local_source`).
+pub fn validate_source(source: &MarkupSource) -> Result<(), MarkupError> {
+    match source {
+        MarkupSource::Files(token) if token.is_empty() || token.len() > 8_192 => Err(MarkupError::Invalid),
+        MarkupSource::Outbox(name) if !outbox::valid_name(name) => Err(MarkupError::Invalid),
+        _ => Ok(()),
+    }
+}
+
+/// The pages, marks, layer references, picture and instruction bounds —
+/// everything but `request.source`, which each caller proves its own way.
+pub fn validate_body(request: &MarkupRequest) -> Result<(), MarkupError> {
     let invalid = Err(MarkupError::Invalid);
     if request.pages.is_empty() || request.pages.len() > MAX_PAGES {
         return invalid;
     }
-    match &request.source {
-        MarkupSource::Files(token) if token.is_empty() || token.len() > 8_192 => return invalid,
-        MarkupSource::Outbox(name) if !outbox::valid_name(name) => return invalid,
-        _ => {}
-    }
     if request.picture.as_deref().is_some_and(|picture| inbox_leaf(picture).is_none()) {
+        return invalid;
+    }
+    if request.instruction.as_deref().is_some_and(|text| {
+        text.chars().count() > MAX_INSTRUCTION || text.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
+    }) {
         return invalid;
     }
     let mut numbers = std::collections::HashSet::new();
@@ -274,20 +319,47 @@ pub fn submit(
     request: &MarkupRequest,
     send_back: bool,
 ) -> Result<Submitted, MarkupError> {
-    // The path goes into a prompt sent as the user's own words: a project
-    // file named with a line break or a backtick could speak in it.
+    speakable(source)?;
+    layers_present(root, request)?;
+    let (bytes, kind) = read_source(root, source)?;
+    bake_and_prompt(root, source, request, send_back, bytes, kind)
+}
+
+/// The path goes into a prompt sent as the user's own words: a project file
+/// named with a line break or a backtick could speak in it.
+fn speakable(source: &ResolvedSource) -> Result<(), MarkupError> {
     if source.rel().chars().any(|c| c.is_control() || c == '`') {
         return Err(MarkupError::Unsupported);
     }
+    Ok(())
+}
+
+fn layers_present(root: &Path, request: &MarkupRequest) -> Result<(), MarkupError> {
     let layers_ok = request.pages.iter().all(|page| inbox_png(root, &page.layer))
         && request.picture.as_deref().is_none_or(|picture| inbox_png(root, picture));
     if !layers_ok {
         return Err(MarkupError::LayerMissing);
     }
-    let (bytes, kind) = match source {
-        ResolvedSource::Files(rel) => files::read(root, rel).map_err(MarkupError::Files)?,
-        ResolvedSource::Outbox(name) => outbox::read(root, name).map_err(MarkupError::Outbox)?,
-    };
+    Ok(())
+}
+
+fn read_source(root: &Path, source: &ResolvedSource) -> Result<(Vec<u8>, &'static str), MarkupError> {
+    match source {
+        ResolvedSource::Files(rel) => files::read(root, rel).map_err(MarkupError::Files),
+        ResolvedSource::Outbox(name) => outbox::read(root, name).map_err(MarkupError::Outbox),
+    }
+}
+
+/// The one bake path, phone and desktop: the source's bytes as read, a
+/// PDF's marked copy into the inbox, the prompt.
+fn bake_and_prompt(
+    root: &Path,
+    source: &ResolvedSource,
+    request: &MarkupRequest,
+    send_back: bool,
+    bytes: Vec<u8>,
+    kind: &str,
+) -> Result<Submitted, MarkupError> {
     let is_pdf = kind == "application/pdf";
     let is_picture = kind.starts_with("image/");
     // A picture is one page with its composed copy; a PDF has no such copy.
@@ -321,9 +393,129 @@ pub fn submit(
         marked: marked.as_deref(),
         failure,
         pages: &request.pages,
+        instruction: request.instruction.as_deref(),
         send_back,
     });
     Ok(Submitted { prompt, marked })
+}
+
+/// The largest layer PNG the desktop viewer may hand over, and all of one
+/// submit's together. A layer is `LAYER_WIDTH` (1200) px wide and mostly
+/// transparent (`mobile-web/src/markup/rasterize.ts`).
+pub const MAX_LAYER_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_LAYERS_TOTAL: usize = 64 * 1024 * 1024;
+/// The widest or tallest a layer PNG may claim to be.
+const MAX_LAYER_SIDE: u32 = 16_384;
+const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// One page the desktop viewer marked: its marks, as the phone sends them,
+/// and its layer PNG's bytes (stored into the inbox here, not uploaded first).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalPage {
+    pub n: u32,
+    pub size: [f64; 2],
+    pub marks: Vec<Mark>,
+    pub layer_png: Vec<u8>,
+}
+
+/// Whether `bytes` is a PNG of sane size: the signature, then the `IHDR`
+/// chunk first with a width and height in `1..=MAX_LAYER_SIDE`.
+pub fn check_layer_png(bytes: &[u8]) -> Result<(), MarkupError> {
+    if bytes.len() > MAX_LAYER_BYTES || bytes.len() < 33 || !bytes.starts_with(PNG_MAGIC) || &bytes[8..16] != b"\0\0\0\x0dIHDR" {
+        return Err(MarkupError::InvalidLayer);
+    }
+    let side = |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    if !(1..=MAX_LAYER_SIDE).contains(&side(16)) || !(1..=MAX_LAYER_SIDE).contains(&side(20)) {
+        return Err(MarkupError::InvalidLayer);
+    }
+    Ok(())
+}
+
+/// Where the desktop viewer's `path` sits in the project whose folder is
+/// `root` (the directory `projects.json` records; the caller has refused a
+/// remote project). Lexical and strict: `path` must be absolute and lie below
+/// `root` as recorded or as canonicalized, by plain names only — no `..`, no
+/// `.`. `files::read` / `outbox::read` then re-prove every segment with no
+/// link on the way, so a symlink anywhere on the path is `file_not_found`.
+/// `.tabtivity/outbox/<leaf>` reads as an outbox source; any other name the file
+/// browser hides (`files::hidden`) is `HiddenPath`.
+pub fn resolve_local_source(root: &Path, path: &Path) -> Result<ResolvedSource, MarkupError> {
+    if !path.is_absolute() {
+        return Err(MarkupError::OutsideProject);
+    }
+    let canonical = root.canonicalize().map_err(|_| MarkupError::Files(files::FilesError::Unavailable))?;
+    let rest = path
+        .strip_prefix(root)
+        .or_else(|_| path.strip_prefix(&canonical))
+        .map_err(|_| MarkupError::OutsideProject)?;
+    let mut segments = Vec::new();
+    for component in rest.components() {
+        match component {
+            std::path::Component::Normal(name) => {
+                segments.push(name.to_str().ok_or(MarkupError::Files(files::FilesError::NotFound))?)
+            }
+            _ => return Err(MarkupError::OutsideProject),
+        }
+    }
+    if segments.is_empty() {
+        return Err(MarkupError::Files(files::FilesError::NotFound));
+    }
+    let rel = segments.join("/");
+    if let Some(leaf) = rel.strip_prefix(outbox::OUTBOX_DIR).and_then(|rest| rest.strip_prefix('/')) {
+        if outbox::valid_name(leaf) {
+            return Ok(ResolvedSource::Outbox(leaf.to_string()));
+        }
+    }
+    if segments.iter().any(|segment| files::hidden(segment)) {
+        return Err(MarkupError::HiddenPath);
+    }
+    Ok(ResolvedSource::Files(rel))
+}
+
+/// The desktop viewer's Submit (`commands::pdf_markup`): the phone's submit
+/// over a project path instead of a sealed token. Everything — path, marks,
+/// layer PNGs, the source being a readable PDF — is checked before the first
+/// write; then the layers go into the inbox (`<stem>-p<n>-layer.png`) and the
+/// one bake path makes the marked copy and the prompt. The prompt has no
+/// `tabtivity-send` line: the viewer reloads the file from disk. The
+/// instruction is the desktop's own setting (`Settings::pdf_markup_instruction`,
+/// passed in by the viewer, bounded like the phone's), `DEFAULT_INSTRUCTION`
+/// when unset. PDFs only — the desktop marks no pictures.
+pub fn submit_local(root: &Path, path: &Path, pages: Vec<LocalPage>, instruction: Option<String>) -> Result<Submitted, MarkupError> {
+    let source = resolve_local_source(root, path)?;
+    let placeholder = format!("{}/layer.png", inbox::INBOX_DIR);
+    let (marks, layers): (Vec<MarkupPage>, Vec<Vec<u8>>) = pages
+        .into_iter()
+        .map(|page| (MarkupPage { n: page.n, size: page.size, marks: page.marks, layer: placeholder.clone() }, page.layer_png))
+        .unzip();
+    let mut request = MarkupRequest {
+        // Never read: `bake_and_prompt` works from `source` resolved above.
+        source: MarkupSource::Files(String::new()),
+        pages: marks,
+        picture: None,
+        instruction,
+    };
+    validate_body(&request)?;
+    let mut total = 0usize;
+    for png in &layers {
+        check_layer_png(png)?;
+        total += png.len();
+    }
+    if total > MAX_LAYERS_TOTAL {
+        return Err(MarkupError::InvalidLayer);
+    }
+    speakable(&source)?;
+    let (bytes, kind) = read_source(root, &source)?;
+    if kind != "application/pdf" {
+        return Err(MarkupError::Unsupported);
+    }
+    let stem = source.stem();
+    for (page, png) in request.pages.iter_mut().zip(&layers) {
+        let stored = inbox::store(root, &format!("{stem}-p{}-layer.png", page.n), png).map_err(MarkupError::Inbox)?;
+        page.layer = stored.reference;
+    }
+    layers_present(root, &request)?;
+    bake_and_prompt(root, &source, &request, false, bytes, kind)
 }
 
 /// What the prompt is built from.
@@ -334,6 +526,8 @@ pub struct Prompt<'a> {
     /// Why there is no marked copy of a PDF.
     pub failure: Option<&'a str>,
     pub pages: &'a [MarkupPage],
+    /// The phone's instruction; `None` or blank is `DEFAULT_INSTRUCTION`.
+    pub instruction: Option<&'a str>,
     pub send_back: bool,
 }
 
@@ -341,7 +535,7 @@ pub struct Prompt<'a> {
 /// shown as interface text), naming files by `@` project-relative references.
 pub fn prompt(parts: &Prompt) -> String {
     let what = if parts.picture { "picture" } else { "PDF" };
-    let mut lines = vec![format!("Apply the changes I marked by hand on `{}`.", parts.source)];
+    let mut lines = vec![format!("I marked these changes by hand on `{}`.", parts.source)];
     match (parts.marked, parts.failure) {
         (Some(marked), _) if parts.picture => {
             lines.push("The picture with my marks drawn on it:".into());
@@ -356,17 +550,15 @@ pub fn prompt(parts: &Prompt) -> String {
     }
     let mut pages: Vec<&MarkupPage> = parts.pages.iter().collect();
     pages.sort_by_key(|page| page.n);
-    if parts.picture {
-        lines.push("My markup layer alone, the size of the picture:".into());
-        for page in &pages {
-            lines.push(format!("@{}", page.layer));
-        }
+    lines.push(if parts.picture {
+        "My markup layer alone, the size of the picture:".into()
     } else {
-        lines.push("My markup layers, one per page, each the size of that page:".into());
-        for page in &pages {
-            lines.push(format!("Page {}: @{}", page.n, page.layer));
-        }
-    }
+        "My markup layers, one per page, each the size of that page:".into()
+    });
+    let layers: Vec<String> = pages
+        .iter()
+        .map(|page| if parts.picture { format!("@{}", page.layer) } else { format!("Page {}: @{}", page.n, page.layer) })
+        .collect();
     let notes: Vec<String> = pages
         .iter()
         .flat_map(|page| {
@@ -379,18 +571,63 @@ pub fn prompt(parts: &Prompt) -> String {
             })
         })
         .collect();
+    let instruction = parts.instruction.map(str::trim).filter(|text| !text.is_empty());
+    let mut tail = vec![instruction.unwrap_or(DEFAULT_INSTRUCTION).to_string()];
+    if parts.send_back {
+        tail.push(format!("Once you have rebuilt the {what}, send it to me with `{SLUG}-send <file>`."));
+    }
+    // The layer list and the notes share what the fixed lines leave of the
+    // budget; the notes are promised up to half of it, so a 300-page round
+    // cannot crowd every note out. Whole lines only, in page order.
+    let cost = |lines: &[String]| lines.iter().map(|line| line.len() + 1).sum::<usize>();
+    let budget = MAX_PROMPT_BYTES.saturating_sub(cost(&lines) + cost(&tail) + PROMPT_OMISSION_RESERVE);
+    let notes_cost = if notes.is_empty() { 0 } else { "My typed notes:".len() + 1 + cost(&notes) };
+    let layers_budget = budget - notes_cost.min(budget / 2);
+    let shown_layers = fitting(&layers, layers_budget);
+    let left = budget.saturating_sub(cost(&layers[..shown_layers]));
+    let shown_notes = fitting(&notes, left.saturating_sub("My typed notes:".len() + 1));
+    lines.extend_from_slice(&layers[..shown_layers]);
+    if let (Some(first), Some(last)) = (pages.get(shown_layers), pages.last()) {
+        let more = pages.len() - shown_layers;
+        lines.push(format!(
+            "(Pages {}–{}: {more} more layers, beside these in `{}/`, named `…-p<page>-layer.png`.)",
+            first.n,
+            last.n,
+            inbox::INBOX_DIR
+        ));
+    }
     if !notes.is_empty() {
         lines.push("My typed notes:".into());
-        lines.extend(notes);
+        lines.extend_from_slice(&notes[..shown_notes]);
+        let more = notes.len() - shown_notes;
+        if more > 0 {
+            let place = if parts.marked.is_some() && !parts.picture { "the marked copy" } else { "the layers" };
+            lines.push(format!("({more} more notes — read them in {place}.)"));
+        }
     }
-    lines.push("Read every mark (strike-throughs, insertions, circled parts, margin notes).".into());
-    lines.push(format!(
-        "If the {what} is built from sources in this project (LaTeX, Markdown, a script, …), make the changes there and rebuild it; do not edit the {what} itself. List any mark you could not read or apply."
-    ));
-    if parts.send_back {
-        lines.push(format!("When done, send the rebuilt {what} to me with `{SLUG}-send <file>`."));
-    }
+    lines.extend(tail);
     lines.join("\n")
+}
+
+/// The longest a prompt may grow, in bytes. The phone's held prompts and the
+/// desktop's scheduled ones both pass the 16 KB message cap
+/// (`shared/agentComposer.ts::MAX_AGENT_MESSAGE_BYTES`); the layer list and
+/// the typed notes fill only what the fixed lines leave of this.
+pub const MAX_PROMPT_BYTES: usize = 12 * 1024;
+/// Room kept for the two "… more" lines.
+const PROMPT_OMISSION_RESERVE: usize = 256;
+
+/// How many of `lines`, from the first, fit into `budget` bytes (each line
+/// plus its break).
+fn fitting(lines: &[String], budget: usize) -> usize {
+    let mut used = 0usize;
+    lines
+        .iter()
+        .take_while(|line| {
+            used += line.len() + 1;
+            used <= budget
+        })
+        .count()
 }
 
 #[cfg(test)]
@@ -409,7 +646,7 @@ mod tests {
     }
 
     fn request(source: MarkupSource, pages: Vec<MarkupPage>) -> MarkupRequest {
-        MarkupRequest { source, pages, picture: None }
+        MarkupRequest { source, pages, picture: None, instruction: None }
     }
 
     fn project() -> tempfile::TempDir {
@@ -502,7 +739,7 @@ mod tests {
         assert!(copy.starts_with(&source) && copy.len() > source.len());
         assert_eq!(fs::read(root.join("docs/draft.pdf")).unwrap(), source);
         assert_eq!(fs::metadata(root.join("docs/draft.pdf")).unwrap().modified().unwrap(), before);
-        assert!(done.prompt.starts_with("Apply the changes I marked by hand on `docs/draft.pdf`."));
+        assert!(done.prompt.starts_with("I marked these changes by hand on `docs/draft.pdf`."));
         assert!(done.prompt.contains(&format!("@{marked}")));
         assert!(done.prompt.contains(&format!("Page 3: @{p3}")));
         assert!(done.prompt.contains("- p3: \"use the 2024 numbers here\""));
@@ -563,7 +800,7 @@ mod tests {
         assert_eq!(done.marked.as_deref(), Some(composed.as_str()));
         assert!(done.prompt.contains("The picture with my marks drawn on it:"));
         assert!(done.prompt.contains(&format!("@{l}")));
-        assert!(done.prompt.contains("rebuilt picture"));
+        assert!(done.prompt.contains("rebuilt the picture"));
         // A picture without its composed copy, or a PDF with one, is refused.
         req.picture = None;
         assert_eq!(submit(root, &ResolvedSource::Files("docs/plot.png".into()), &req, true), Err(MarkupError::Unsupported));
@@ -583,21 +820,48 @@ mod tests {
     #[test]
     fn the_prompt_is_deterministic_and_ordered() {
         let pages = vec![page(7, concat!(".", crate::app_slug!(), "/inbox/b.png")), page(3, concat!(".", crate::app_slug!(), "/inbox/a.png"))];
-        let parts = Prompt { source: "docs/paper/draft.pdf", picture: false, marked: Some(concat!(".", crate::app_slug!(), "/inbox/m.pdf")), failure: None, pages: &pages, send_back: true };
+        let parts = Prompt { source: "docs/paper/draft.pdf", picture: false, marked: Some(concat!(".", crate::app_slug!(), "/inbox/m.pdf")), failure: None, pages: &pages, instruction: None, send_back: true };
         let text = prompt(&parts);
         assert_eq!(text, prompt(&parts));
         assert_eq!(
             text,
-            concat!("Apply the changes I marked by hand on `docs/paper/draft.pdf`.\n\
+            concat!("I marked these changes by hand on `docs/paper/draft.pdf`.\n\
              Marked copy with my handwriting and marks as annotations:\n\
              @.", crate::app_slug!(), "/inbox/m.pdf\n\
              My markup layers, one per page, each the size of that page:\n\
              Page 3: @.", crate::app_slug!(), "/inbox/a.png\n\
              Page 7: @.", crate::app_slug!(), "/inbox/b.png\n\
-             Read every mark (strike-throughs, insertions, circled parts, margin notes).\n\
-             If the PDF is built from sources in this project (LaTeX, Markdown, a script, …), make the changes there and rebuild it; do not edit the PDF itself. List any mark you could not read or apply.\n\
-             When done, send the rebuilt PDF to me with `", crate::app_slug!(), "-send <file>`.")
+             Read every mark (strike-throughs, insertions, circled parts, margin notes) and list the changes they ask for, and any mark you could not read. Do not change any file yet — not this one, not the sources it is built from, not any other file — until I tell you which changes to make.\n\
+             Once you have rebuilt the PDF, send it to me with `", crate::app_slug!(), "-send <file>`.")
         );
+    }
+
+    #[test]
+    fn the_phone_instruction_replaces_the_default() {
+        let pages = vec![page(1, concat!(".", crate::app_slug!(), "/inbox/a.png"))];
+        let mut parts = Prompt { source: "a.pdf", picture: false, marked: None, failure: None, pages: &pages, instruction: Some("  Fix only the typos.\nAsk me first.  "), send_back: false };
+        let text = prompt(&parts);
+        assert!(text.ends_with(concat!("Page 1: @.", crate::app_slug!(), "/inbox/a.png\nFix only the typos.\nAsk me first.")), "{text}");
+        assert!(!text.contains(DEFAULT_INSTRUCTION));
+        parts.instruction = Some(" \n ");
+        assert!(prompt(&parts).ends_with(DEFAULT_INSTRUCTION));
+    }
+
+    #[test]
+    fn an_instruction_is_bounded_and_plain_text() {
+        let mut req = request(MarkupSource::Outbox("20261001-090000-paper.pdf".into()), vec![page(1, concat!(".", crate::app_slug!(), "/inbox/a.png"))]);
+        req.instruction = Some("Line one\n\tLine two".into());
+        assert_eq!(validate(&req), Ok(()));
+        req.instruction = Some("x".repeat(MAX_INSTRUCTION + 1));
+        assert_eq!(validate(&req), Err(MarkupError::Invalid));
+        req.instruction = Some("bell \u{7}".into());
+        assert_eq!(validate(&req), Err(MarkupError::Invalid));
+    }
+
+    #[test]
+    fn the_phone_shows_the_same_default() {
+        let phone = include_str!("../../../../mobile-web/src/markupInstruction.ts");
+        assert!(phone.contains(DEFAULT_INSTRUCTION), "markupInstruction.ts must hold DEFAULT_INSTRUCTION verbatim");
     }
 
     #[test]

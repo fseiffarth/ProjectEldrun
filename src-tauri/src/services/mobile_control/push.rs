@@ -174,10 +174,21 @@ pub struct Subscription {
     #[serde(default)]
     pub agents: AgentNotices,
     pub created_at: u64,
+    /// The push service said this endpoint is gone (`PushStore::lapse_endpoint`).
+    /// The row stays as the phone's remembered choices and nothing more: its
+    /// keys are cleared, nothing is sent to it, and the phone it belongs to
+    /// re-subscribes with these choices the next time it signs in. Left out
+    /// while false, so a file written before the field existed and one written
+    /// after read alike.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lapsed: bool,
 }
 
 impl Subscription {
     fn wants(&self, notice: &Notice) -> bool {
+        if self.lapsed {
+            return false;
+        }
         match notice.kind {
             NoticeKind::Calendar => self.calendar,
             NoticeKind::Agent => match self.agents {
@@ -241,8 +252,10 @@ pub struct AgentTabRef {
     pub project_label: String,
     pub tab_id: String,
     pub tab_label: String,
-    /// A phone holds this tab's live terminal right now: it is already being
-    /// looked at, so a notice would only interrupt the reader.
+    /// A phone has this tab's live terminal on a visible page right now
+    /// (`TerminalRegistry::is_watched`): it is already being looked at, so a
+    /// notice would only interrupt the reader. A phone that merely still
+    /// holds the socket from a pocket is not that.
     pub attached: bool,
 }
 
@@ -389,6 +402,7 @@ impl PushStore {
             calendar: prefs.calendar,
             agents: prefs.agents,
             created_at: now(),
+            lapsed: false,
         });
         self.save()
     }
@@ -413,11 +427,28 @@ impl PushStore {
     }
 
     /// A push service said the endpoint is gone (404/410): the browser dropped
-    /// the subscription, so keeping it would only fail every notice after.
-    pub fn forget_endpoint(&mut self, endpoint: &str) {
-        let before = self.file.subscriptions.len();
-        self.file.subscriptions.retain(|s| s.endpoint != endpoint);
-        if before != self.file.subscriptions.len() {
+    /// the subscription, so posting to it would only fail every notice after.
+    ///
+    /// The row is kept as a lapsed record rather than deleted. Deleting it
+    /// took the phone's choices with it, the host then answered "not
+    /// subscribed", and the phone's silent refresh left a phone that never
+    /// switched notices on alone — so they stayed off until somebody noticed
+    /// and re-enabled them by hand. The keys go (nothing can be encrypted to
+    /// this row again, by this build or an older one reading the file); the
+    /// endpoint stays so the phone can tell a browser still handing out the
+    /// dead subscription from a fresh one. Unsubscribing, revoking the device
+    /// and forget-all still remove the row whole.
+    pub fn lapse_endpoint(&mut self, endpoint: &str) {
+        let mut changed = false;
+        for sub in &mut self.file.subscriptions {
+            if sub.endpoint == endpoint && !sub.lapsed {
+                sub.lapsed = true;
+                sub.p256dh.clear();
+                sub.auth.clear();
+                changed = true;
+            }
+        }
+        if changed {
             let _ = self.save();
         }
     }
@@ -469,6 +500,7 @@ impl PushStore {
         full["title"] = serde_json::json!(clip(&notice.title, MAX_TITLE_CHARS));
         full["body"] = serde_json::json!(clip(&notice.body, MAX_BODY_CHARS));
         let mut out = vec![];
+        // `wants` is false for a lapsed row: it has no keys and gets nothing.
         for sub in self.file.subscriptions.iter().filter(|s| s.wants(notice)) {
             // Revocation already dropped the row; this is the belt to that
             // brace, for a push.json edited or restored behind our back.
@@ -730,6 +762,87 @@ mod tests {
 
         push.forget_device("phone").unwrap();
         assert!(PushStore::open(dir.path()).unwrap().subscription("phone").is_none());
+    }
+
+    #[test]
+    fn a_gone_endpoint_lapses_and_keeps_the_phones_choices_until_it_resubscribes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut push = PushStore::open(dir.path()).unwrap();
+        let auth = Base64UrlUnpadded::encode_string(&[7u8; 16]);
+        let chosen = PushPrefs { details: false, calendar: true, agents: AgentNotices::Questions };
+        push.subscribe("phone", "https://fcm.googleapis.com/a", &phone_key(), &auth, chosen).unwrap();
+        push.subscribe("other", "https://fcm.googleapis.com/o", &phone_key(), &auth, prefs(true)).unwrap();
+        let paired = vec!["phone".to_string(), "other".to_string()];
+
+        push.lapse_endpoint("https://fcm.googleapis.com/a");
+        // Written through, and only the row the push service named.
+        let mut reopened = PushStore::open(dir.path()).unwrap();
+        let sub = reopened.subscription("phone").expect("the record is kept");
+        assert!(sub.lapsed);
+        assert!(!sub.details && sub.calendar);
+        assert_eq!(sub.agents, AgentNotices::Questions);
+        assert_eq!(sub.endpoint, "https://fcm.googleapis.com/a");
+        assert!(sub.p256dh.is_empty() && sub.auth.is_empty(), "nothing left to encrypt to");
+        assert!(!reopened.subscription("other").unwrap().lapsed);
+        // Nothing is sent to it — and a notice only it wanted costs no budget.
+        let out = reopened.deliveries(&calendar_notice(), "t", &paired).unwrap();
+        assert_eq!(out.iter().map(|d| d.endpoint.as_str()).collect::<Vec<_>>(), ["https://fcm.googleapis.com/o"]);
+        let question = agent_tab().notice(concat!(crate::app_slug!(), "-x"), AgentTurn::Question, None);
+        assert!(reopened.deliveries(&question, "q", &paired).unwrap().is_empty());
+        assert_eq!(reopened.sent.len(), 1);
+
+        // The phone's refresh registers a fresh subscription: live again.
+        reopened
+            .subscribe("phone", "https://fcm.googleapis.com/a2", &phone_key(), &auth, chosen)
+            .unwrap();
+        let sub = PushStore::open(dir.path()).unwrap();
+        let sub = sub.subscription("phone").unwrap();
+        assert!(!sub.lapsed);
+        assert_eq!(sub.endpoint, "https://fcm.googleapis.com/a2");
+        assert!(!serde_json::to_string(sub).unwrap().contains("lapsed"), "left out while false");
+    }
+
+    #[test]
+    fn a_lapsed_record_goes_with_an_unsubscribe_and_with_forget_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut push = PushStore::open(dir.path()).unwrap();
+        let auth = Base64UrlUnpadded::encode_string(&[7u8; 16]);
+        for device in ["a", "b"] {
+            let endpoint = format!("https://fcm.googleapis.com/{device}");
+            push.subscribe(device, &endpoint, &phone_key(), &auth, prefs(true)).unwrap();
+            push.lapse_endpoint(&endpoint);
+        }
+        push.forget_device("a").unwrap();
+        assert!(push.subscription("a").is_none());
+        assert!(push.subscription("b").is_some_and(|s| s.lapsed));
+        push.forget_all().unwrap();
+        assert!(PushStore::open(dir.path()).unwrap().subscription("b").is_none());
+    }
+
+    #[test]
+    fn a_push_file_written_before_lapsed_records_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = phone_key();
+        fs::write(
+            dir.path().join("push.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": 1,
+                "subscriptions": [{
+                    "device_id": "phone",
+                    "endpoint": "https://fcm.googleapis.com/a",
+                    "p256dh": key,
+                    "auth": Base64UrlUnpadded::encode_string(&[7u8; 16]),
+                    "details": true,
+                    "created_at": 1,
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut push = PushStore::open(dir.path()).unwrap();
+        let sub = push.subscription("phone").expect("row");
+        assert!(!sub.lapsed && sub.calendar);
+        assert_eq!(push.deliveries(&calendar_notice(), "t", &["phone".into()]).unwrap().len(), 1);
     }
 
     #[test]

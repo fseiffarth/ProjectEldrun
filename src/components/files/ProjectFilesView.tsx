@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { invokeTrusted } from "../../lib/execTrust";
+import { gitWorktreeArgs, type GitWorktreeSelection } from "../../lib/gitWorktree";
 import { GitHistory } from "./GitHistory";
 import { GitChangeTree, type ChangeScope } from "./GitChangeTree";
 import { GitPushProposals } from "../agents/GitPushMcp";
@@ -526,6 +527,7 @@ export function ProjectFilesView({
   const [openTree, setOpenTree] = useState<"add" | "commit" | "push" | null>(null);
   const [commitMsg, setCommitMsg] = useState<string | null>(null);
   const [gitBusy, setGitBusy] = useState(false);
+  const [gitWorktree, setGitWorktree] = useState<{ root: string; selection: GitWorktreeSelection | null } | null>(null);
   // Bumped by the Pull button: GitHistory owns the pull preview it opens.
   const [pullRequest, setPullRequest] = useState(0);
   const [gitError, setGitError] = useState<string | null>(null);
@@ -556,20 +558,23 @@ export function ProjectFilesView({
   // subprocesses, so `Promise.all` collapses two serially-awaited chains into
   // one round of parallel work. Each result still applies independently.
   const runRefreshGit = (dir: string) => {
+    const context = gitContextKey;
+    const worktreeArgs = gitWorktreeArgs(selectedGitWorktree);
     void Promise.all([
-      invoke<GitStatus>("git_status", { projectDir: dir }).catch(() => null),
-      invoke<string[]>("git_unpushed_commits", { projectDir: dir }).catch(() => [] as string[]),
+      invoke<GitStatus>("git_status", { projectDir: dir, ...worktreeArgs }).catch(() => null),
+      invoke<string[]>("git_unpushed_commits", { projectDir: dir, ...worktreeArgs }).catch(() => [] as string[]),
     ]).then(([status, unpushed]) => {
+      if (context !== gitContextKeyRef.current) return;
       setGitStatus(status);
       setUnpushedCommits(unpushed);
-      writeGitBarSnapshot(dir, { status, unpushed });
+      if (!selectedGitWorktree) writeGitBarSnapshot(dir, { status, unpushed });
       // Keep the project's pill dot in sync from the data we just fetched (no
       // extra git subprocesses), so edits/commits/pushes reflect immediately
       // instead of waiting for the switcher's periodic poll.
       // Don't let a nested repo's status pollute the project pill's dirty dot —
       // that dot tracks the project repo (the switcher's poll recomputes it).
       // Gate on `active` so a background tab never churns the shared store.
-      if (active && projectId && status && !onNestedRepo) {
+      if (active && projectId && status && !onNestedRepo && !selectedGitWorktree) {
         useGitDirtyStore.getState().set(projectId, gitDirtyState(status, unpushed.length));
       }
     });
@@ -652,6 +657,23 @@ export function ProjectFilesView({
   // on: the nested repo when detected and not overridden, else the project repo.
   const effectiveGitRoot = nestedRoot && !preferProjectRepo ? nestedRoot : projectDir;
   const onNestedRepo = !!nestedRoot && effectiveGitRoot !== projectDir;
+  const selectedGitWorktree = view === "git" && gitWorktree?.root === effectiveGitRoot ? gitWorktree.selection : null;
+  const gitContextKey = JSON.stringify([effectiveGitRoot, selectedGitWorktree?.site ?? "host", selectedGitWorktree?.path ?? ""]);
+  const gitContextKeyRef = useRef(gitContextKey);
+  gitContextKeyRef.current = gitContextKey;
+  const onGitWorktreeChanged = useCallback((selection: GitWorktreeSelection | null) => {
+    setGitWorktree({ root: effectiveGitRoot, selection });
+  }, [effectiveGitRoot]);
+  const previousGitContext = useRef(gitContextKey);
+  useEffect(() => {
+    if (previousGitContext.current === gitContextKey) return;
+    previousGitContext.current = gitContextKey;
+    setCommitMsg(null);
+    setOpenTree(null);
+    setGitError(null);
+    setGitStatus(null);
+    setUnpushedCommits([]);
+  }, [gitContextKey]);
 
   // Diverged (amber/orange) files for a remote project, from the cached sync
   // status — backs the toolbar count badge and the "Orange" list view. These are
@@ -1213,7 +1235,7 @@ export function ProjectFilesView({
       setGitStatus(null);
       setUnpushedCommits([]);
     }
-  }, [active, effectiveGitRoot, remoteBlocked]);
+  }, [active, effectiveGitRoot, remoteBlocked, gitContextKey]);
 
   // The counts are one `git status` reading; nothing above re-reads them when
   // the repo moves under the view (an agent's or a terminal's add/commit/
@@ -1249,7 +1271,7 @@ export function ProjectFilesView({
       if (poll) clearInterval(poll);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, effectiveGitRoot, remoteBlocked, project?.remote, view]);
+  }, [active, effectiveGitRoot, remoteBlocked, project?.remote, view, gitContextKey]);
 
   // The gear dialog belongs to the project it was opened on; a project switch
   // reloads the filters under it, so close it rather than let it re-target.
@@ -1262,7 +1284,7 @@ export function ProjectFilesView({
     setGitBusy(true);
     setGitError(null);
     try {
-      await invoke("git_add_all", { projectDir: effectiveGitRoot });
+      await invoke("git_add_all", { projectDir: effectiveGitRoot, ...gitWorktreeArgs(selectedGitWorktree) });
       refreshGit(effectiveGitRoot);
     } catch (e) {
       setGitError(String(e));
@@ -1276,7 +1298,7 @@ export function ProjectFilesView({
     setGitBusy(true);
     setGitError(null);
     try {
-      const msg = await invoke<string>("git_generate_commit_message", { projectDir: effectiveGitRoot });
+      const msg = await invoke<string>("git_generate_commit_message", { projectDir: effectiveGitRoot, ...gitWorktreeArgs(selectedGitWorktree) });
       setCommitMsg(msg);
       setTimeout(() => commitRef.current?.focus(), 50);
     } catch (e) {
@@ -1291,7 +1313,7 @@ export function ProjectFilesView({
     setGitBusy(true);
     setGitError(null);
     try {
-      await invokeTrusted("git_commit", { projectDir: effectiveGitRoot, message: commitMsg });
+      await invokeTrusted("git_commit", { projectDir: effectiveGitRoot, ...gitWorktreeArgs(selectedGitWorktree), message: commitMsg });
       setCommitMsg(null);
       refreshGit(effectiveGitRoot);
     } catch (e) {
@@ -1310,6 +1332,7 @@ export function ProjectFilesView({
       // plain `git push`), not the project's GitHub/GitLab provider flow.
       await invokeTrusted("git_push", {
         projectDir: effectiveGitRoot,
+        ...gitWorktreeArgs(selectedGitWorktree),
         projectId: onNestedRepo ? null : projectId ?? null,
       });
       refreshGit(effectiveGitRoot);
@@ -1330,7 +1353,7 @@ export function ProjectFilesView({
     setGitError(null);
     let preview: GitReleasePreview;
     try {
-      preview = await invokeTrusted<GitReleasePreview>("git_release_preview", { projectDir: effectiveGitRoot, projectId: projectId ?? null });
+      preview = await invokeTrusted<GitReleasePreview>("git_release_preview", { projectDir: effectiveGitRoot, ...gitWorktreeArgs(selectedGitWorktree), projectId: projectId ?? null });
     } catch (e) {
       setGitError(String(e));
       setGitBusy(false);
@@ -1359,7 +1382,7 @@ export function ProjectFilesView({
       confirmLabel: t("projectFilesView.releaseConfirm"),
       validate: (value) => (/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(value.trim()) ? null : t("projectFilesView.releaseInvalid")),
     }, async (value) => {
-      done = await invokeTrusted<string>("git_release_tag", { projectDir: effectiveGitRoot, projectId: projectId ?? null, tag: value.trim() });
+      done = await invokeTrusted<string>("git_release_tag", { projectDir: effectiveGitRoot, ...gitWorktreeArgs(selectedGitWorktree), projectId: projectId ?? null, tag: value.trim() });
     });
     if (tag !== null && done) {
       refreshGit(effectiveGitRoot);
@@ -1870,6 +1893,9 @@ export function ProjectFilesView({
             remote={!onNestedRepo && !!project?.remote}
             authProjectId={onNestedRepo ? undefined : projectId ?? undefined}
             onChanged={() => effectiveGitRoot && refreshGit(effectiveGitRoot)}
+            onWorktreeChanged={onGitWorktreeChanged}
+            actionsBusy={gitBusy || commitMsg !== null}
+            connected={active && !remoteBlocked}
             pullRequest={pullRequest}
           />
         </div>
@@ -1957,7 +1983,7 @@ export function ProjectFilesView({
                     <UntestedTag id="gitRelease" />
                   </button>
                 )}
-                {treeScope && projectDir && <GitChangeTree projectDir={projectDir} scope={treeScope} />}
+                {treeScope && projectDir && <GitChangeTree projectDir={effectiveGitRoot} worktree={selectedGitWorktree} scope={treeScope} />}
               </>
             )}
             {gitError && <ErrorNote className="git-action-error" error={gitError} />}

@@ -64,8 +64,10 @@ export function writeFlag(name: MobileFlag, value: boolean, storage?: FlagStorag
  * checked against the accounts it lists before it is used. `theme` is the
  * phone's own theme (`theme.ts`), and `desktopTheme` the desktop's as last
  * reported, so a cold open that follows it paints right before the bridge
- * answers. */
-export type MobileChoice = "agentsSort" | "projectTabsSort" | "speechLang" | "mailAccount" | "theme" | "desktopTheme";
+ * answers. `markupInstruction` is free text rather than a choice — what a
+ * Mark up Submit tells the agent (`markupInstruction.ts`) — kept here all the
+ * same, since it is just as much this phone's own. */
+export type MobileChoice = "agentsSort" | "projectTabsSort" | "speechLang" | "mailAccount" | "theme" | "desktopTheme" | "markupInstruction" | "markupApply";
 
 export function readChoice<T extends string>(name: MobileChoice, accept: (value: unknown) => value is T, fallback: T, storage?: FlagStorage): T {
   try {

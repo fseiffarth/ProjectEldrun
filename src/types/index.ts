@@ -155,6 +155,10 @@ export interface Settings {
     /** A paired phone may browse and read (never change) its Mobile projects'
      * files. Unset is off; read by the sidecar per request. */
     project_files?: boolean;
+    /** A paired phone may see and open shell tabs. Unset is off (the phone is
+     * agents-only); read by the sidecar per catalog load and repeated by the
+     * desktop bridge. */
+    shell_tabs?: boolean;
   };
   /** Show Tabtivity Mobile's host-connection control in the desktop header. This
    * defaults to on when Mobile itself is enabled; an explicit false hides it. */
@@ -378,6 +382,11 @@ export interface Settings {
    *  (`"claude"`, `"codex"`, …). Set from the 🧠 menu's Agents section; every
    *  reader falls back to `"claude"` when unset. */
   default_agent_cmd?: string;
+  /** Desktop PDF viewer Mark up prompts (`docs/pdf_markup_rounds_plan.md` §2.8):
+   *  the Submit's instruction and the **Make these changes** follow-up;
+   *  unset/blank = the defaults. */
+  pdf_markup_instruction?: string;
+  pdf_markup_apply?: string;
   /** Built-in agent registry ids shown without searching in the compact Agents
    *  group of the + tab menu. Set by the 🧠 menu's “+ tab” chips. Unset keeps
    *  the familiar Claude/Codex/Gemini quick picks; an empty array is a deliberate

@@ -400,7 +400,10 @@ running `--mobile-host` — binds to loopback;
 an existing, non-Funnel Tailscale Serve HTTPS root handler must be verified as
 an exact proxy to that port before Tabtivity saves or starts it. Each browser pairs
 with a short-lived code and a device-held P-256 key and can be revoked
-individually.
+individually. The header's phone menu lists every paired device — a green
+lamp for one signed in now, otherwise when it last connected — with
+**Disconnect** (click again to confirm): the device is unpaired, signed out
+within seconds, and needs a new pairing code to come back.
 
 Only persistent local shells and resumable configured agents are discoverable.
 The sidecar derives opaque browser ids from trusted Tabtivity state and revalidates
@@ -426,6 +429,21 @@ is asked to apply the marks to the sources and send the rebuilt file back with
 frame with no access to the session or the network. Project files need
 **Settings → Mobile → Project files on the phone**; files the agent sent work
 without it.
+
+Marking up is a loop, not one shot (`docs/pdf_markup_rounds_plan.md`):
+**Submit keeps the view open.** The round's marks stay on show, dimmed, and are
+never sent again; marking goes on while the agent works, and the next Submit
+carries only the new marks (into the agent's queue if it is busy). A pill
+follows the agent since the last Submit — sent, queued, working, asking,
+finished (with whether the PDF changed) — off the live screen. **Reload PDF**
+redraws the file as it is now, or the newer copy the agent sent, under the same
+layer: unsent marks stay, and the sent ones stay too, dimmed, so each change can
+be checked and its mark then erased by hand (the eraser and Clear page reach
+shown sent marks; ⋯ **Show sent marks** hides them). Nothing removes a mark
+automatically. The default prompt has the agent only list the changes; once it
+has, the pill offers **Make these changes**, which sends the go-ahead (edit the
+sources, rebuild, send the PDF back) — its wording is the second field of Home →
+This phone → **Mark up prompt**.
 
 ### Workspace Apps
 
@@ -490,7 +508,7 @@ file's own bytes, so comments, delimiters, quoting, and line endings survive, an
 they withhold the affordance rather than mangle a construct they cannot rewrite
 safely. The full list, with per-viewer behaviour, is in `README.md`.
 
-Three that carry design decisions worth recording here:
+Four that carry design decisions worth recording here:
 
 - **TeX** opens as a *single workspace tab per document* (deduped on
   `resolve_tex_root`): a left sidebar of the main file's `\input` children and
@@ -500,6 +518,19 @@ Three that carry design decisions worth recording here:
 - **PDF redaction** rasterises the pages you marked on save, so covered text is
   gone from the file rather than hidden under a shape that any copy, extract, or
   annotation-delete would lift. Only marked pages are flattened.
+- **PDF markup** (✎ **Mark up** in the PDF toolbar, the TeX workspace's PDF
+  too) is the phone's markup on the desktop: pen, highlighter, typed notes and
+  eraser over the pages, kept in this window's own storage — never in the
+  project or the session — until **Submit** bakes `<name>-marked.pdf` into
+  `.tabtivity/inbox/` (`pdf_markup_submit`, `commands/pdf_markup.rs`) and queues the
+  prompt for an agent tab of the same project, straight into its queue if it
+  works. The strip stays open with the same rounds and pill as the phone; a
+  recompile while marks are on the pages waits for **Reload PDF** rather than
+  sliding new pages under them. Local projects in the main window only, on the
+  PDF as saved (no page edits pending), one pane per file. **Make these
+  changes** appears once the agent has listed them; both prompts — the one a
+  Submit ends with and that go-ahead — are the desktop's own, in Settings →
+  Agents → **PDF markup** (`pdf_markup_instruction`, `pdf_markup_apply`).
 - **Markdown** renders fenced `mermaid` code blocks and `$…$`/`$$…$$` math; KaTeX runs
   with `trust: false` and mermaid script-free.
 

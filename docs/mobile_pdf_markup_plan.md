@@ -140,7 +140,7 @@ Per Submit, in the project inbox (`.tabtivity/inbox/`):
 and one chat message, built by the sidecar:
 
 ```
-Apply the changes I marked by hand on `docs/paper/draft.pdf`.
+I marked these changes by hand on `docs/paper/draft.pdf`.
 Marked copy with my handwriting and marks as annotations:
 @.tabtivity/inbox/…-draft-marked.pdf
 My markup layers, one per page, each the size of that page:
@@ -148,12 +148,18 @@ Page 3: @.tabtivity/inbox/…-draft-p3-layer.png
 Page 7: @.tabtivity/inbox/…-draft-p7-layer.png
 My typed notes:
 - p3: "use the 2024 numbers here"
-Read every mark (strike-throughs, insertions, circled parts, margin notes).
-If the PDF is built from sources in this project (LaTeX, Markdown, a
-script, …), make the changes there and rebuild it; do not edit the PDF
-itself. List any mark you could not read or apply. When done, send the
-rebuilt PDF to me with `tabtivity-send <file>`.
+Read every mark (strike-throughs, insertions, circled parts, margin notes)
+and list the changes they ask for, and any mark you could not read. Do not
+change any file yet — not this one, not the sources it is built from, not
+any other file — until I tell you which changes to make.
+Once you have rebuilt the PDF, send it to me with `tabtivity-send <file>`.
 ```
+
+The paragraph after the notes is the phone's **Mark up prompt** setting
+(Home → This phone; `markupInstruction.ts`), worded there and nowhere else,
+sent with a Submit only once changed. Its default asks first (2026-10-02):
+the earlier "make the changes in the sources and rebuild" had an agent edit
+the `.tex` beside a marked PDF unasked.
 
 "Automatically" means the agent works the prompt like any other: whether it
 asks before editing is its own CLI's permission mode — Tabtivity injects none

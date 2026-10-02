@@ -95,7 +95,7 @@ export interface ProjectPromptList { prompts: ProjectPrompt[]; desktop_available
 export interface ClosedTabRow { id: string; label: string; agent: string; closed_at: number }
 /** `files`: whether the read-only file browser answers for this project
  * (the desktop's switch is on, and it is a project, not a box or root). */
-export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[]; closed?: ClosedTabRow[]; files?: boolean }
+export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[]; closed?: ClosedTabRow[]; files?: boolean; /** The phone may open shell tabs (`shell_tabs` on the desktop); absent is off. */ shells?: boolean }
 export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; intake: boolean; overdue: boolean; due_today: boolean; color?: string }
 export interface TodoSubtask { id: string; title: string; done: boolean }
 export interface TodoTaskInput {
@@ -190,7 +190,10 @@ export interface MobileAlerts { enabled: boolean; items: MobileAlertItem[] }
  * only the row. The answer is the feed as it stands afterwards, so the list the
  * ✓ came from is replaced rather than patched by guesswork. */
 export function resolveAlert(alertId: string): Promise<{ alerts: MobileAlerts }> {
-  return api("/api/v1/alerts", { method: "POST", body: JSON.stringify({ alert_id: alertId }) });
+  return reloadIfApplied(
+    api("/api/v1/alerts", { method: "POST", body: JSON.stringify({ alert_id: alertId }) }),
+    () => api("/api/v1/alerts"),
+  );
 }
 /** A bounded, read-only occurrence expanded by the connected desktop. It never
  * carries a calendar/event id, notes, conferencing links, or write capability. */
@@ -294,6 +297,32 @@ export function recoverSession(): Promise<boolean> {
 /** A stalled socket on bad signal would otherwise hang a screen forever; the
  * splash in particular had no way back. */
 const REQUEST_TIMEOUT = 10_000;
+
+/* Deadlines for the routes whose far side may rightly take longer than
+ * `REQUEST_TIMEOUT`. Each sits above the whole budget the host can spend
+ * before it answers, so the host's own stated failure (`launch_pending`,
+ * `mail_fetch_failed`, `callback_timeout`) is what the reader sees — at the
+ * default these routes gave up first and said "Your desktop didn't answer"
+ * about an action that then completed anyway. The budgets are the sidecar's:
+ * `admin::desktop_call` allows 2 s to reach the desktop plus the request's
+ * `DesktopRequest::response_timeout` (`protocol.rs`). Change one side and the
+ * other must follow; `MobileApiDeadlines.test.ts` pins the relation. */
+
+/** A tab the desktop opens — a create, a reopen, a sign-in tab: 2 s connect +
+ * 10 s for the desktop's answer (`response_timeout` default), then up to 5 s
+ * of the sidecar polling its catalog for the new row (`created_through_desktop`
+ * in `host.rs`, 40 × 125 ms plus the reads themselves). */
+export const TAB_CREATE_TIMEOUT = 25_000;
+/** Opening a mail message, or flagging one: 2 s connect + 35 s
+ * (`response_timeout` for `MailMessage`/`MailMark` — a first open may fetch
+ * the body over IMAP). */
+export const MAIL_MESSAGE_TIMEOUT = 40_000;
+/** Sending a reply: 2 s connect + 65 s (`MailReply` talks to SMTP and IMAP). */
+export const MAIL_REPLY_TIMEOUT = 70_000;
+/** Handing an agent CLI its sign-in callback: the CLI exchanges the code with
+ * its provider before it answers, and the sidecar waits 20 s for that
+ * (`sign_in::CALLBACK_TIMEOUT`). */
+export const SIGN_IN_CALLBACK_TIMEOUT = 25_000;
 /** The pause before a read dropped in transit goes out again. */
 const READ_RETRY_DELAY = 400;
 
@@ -364,9 +393,10 @@ export function connectTrace(): readonly string[] {
   return trace;
 }
 
-/** `timeoutMs` overrides the default deadline for the one route that needs a
- * longer one (see `getAgentStatus`); everything else keeps `REQUEST_TIMEOUT`,
- * because a screen with no way back is worse than a failed request. */
+/** `timeoutMs` overrides the default deadline for the routes that need a
+ * longer one (`getAgentStatus`, and the constants under `REQUEST_TIMEOUT`);
+ * everything else keeps `REQUEST_TIMEOUT`, because a screen with no way back
+ * is worse than a failed request. */
 export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT, retried = false): Promise<T> {
   let signal: AbortSignal | undefined;
   const send = () => {
@@ -411,6 +441,36 @@ export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUE
   // which then read `undefined.map` and white-screened the whole app.
   if (body === undefined) throw new ApiError(response.status, "malformed_response");
   return body as T;
+}
+
+/** The desktop made the change, but the refreshed list it answers a write with
+ * was too large to relay (`admin::APPLIED_RESPONSE_TOO_LARGE`). Not a failed
+ * write: sending it again would apply it twice. */
+const APPLIED_RESPONSE_TOO_LARGE = "applied_response_too_large";
+
+/** Whether a failed write was in fact made — its list just could not be shown.
+ * A screen then clears its form exactly as on success, and offers no retry. */
+export function wasApplied(reason: unknown): boolean {
+  return reason instanceof ApiError && reason.code.startsWith("applied_");
+}
+
+/** A write that answers with its refreshed list. When the desktop applied it
+ * but could not relay that list, the list is read through `reload` — the
+ * ordinary read route, with that route's own fallbacks — and the caller sees a
+ * plain success. A reload that fails too still says the change was made
+ * (`wasApplied`), with a code of the phone's own for the sentence. */
+export async function reloadIfApplied<T>(write: Promise<T>, reload: () => Promise<T>): Promise<T> {
+  try {
+    return await write;
+  } catch (reason) {
+    if (!(reason instanceof ApiError) || reason.code !== APPLIED_RESPONSE_TOO_LARGE) throw reason;
+    try {
+      return await reload();
+    } catch (again) {
+      const tooLarge = again instanceof ApiError && again.code === "response_too_large";
+      throw new ApiError(reason.status, tooLarge ? "applied_list_too_large" : "applied_reload_failed");
+    }
+  }
 }
 
 /** Mirrors the desktop's `protocol::MAX_TAB_LABEL`: the catalog truncates a
@@ -470,14 +530,14 @@ export function undoClear(tabId: string): Promise<{ undone: boolean }> {
  * for the desktop to deliver to the CLI waiting there. The sidecar does it
  * itself, so this works with the desktop window closed. */
 export function finishSignIn(tabId: string, url: string): Promise<{ delivered: boolean }> {
-  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/sign-in-callback`, { method: "POST", body: JSON.stringify({ url }) });
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/sign-in-callback`, { method: "POST", body: JSON.stringify({ url }) }, SIGN_IN_CALLBACK_TIMEOUT);
 }
 
 /** `POST /api/v1/tabs/{id}/sign-in` — a sign-in tab for the CLI this agent
  * tab runs, beside it; the desktop picks the login command from the tab's
  * own. `alternate` asks for the CLI's other way in. */
 export function openSignInTab(tabId: string, alternate: boolean, idempotencyKey: string): Promise<{ tab: TabRow }> {
-  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/sign-in`, { method: "POST", body: JSON.stringify({ alternate, idempotency_key: idempotencyKey }) });
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/sign-in`, { method: "POST", body: JSON.stringify({ alternate, idempotency_key: idempotencyKey }) }, TAB_CREATE_TIMEOUT);
 }
 
 /** Which side of the anchor tab a dragged row lands on — the desktop's own
@@ -513,7 +573,7 @@ export function reopenTab(projectId: string, closedId?: string): Promise<{ tab: 
   return api(`/api/v1/projects/${encodeURIComponent(projectId)}/tabs/reopen`, {
     method: "POST",
     body: JSON.stringify(closedId ? { closed_id: closedId } : {}),
-  });
+  }, TAB_CREATE_TIMEOUT);
 }
 
 const schedulePath = (tabId: string) => `/api/v1/tabs/${encodeURIComponent(tabId)}/schedules`;
@@ -523,18 +583,18 @@ export function getSchedules(tabId: string): Promise<ScheduledPromptList> {
 }
 
 export function createSchedule(tabId: string, schedule: ScheduledPromptInput): Promise<ScheduledPromptList> {
-  return api(schedulePath(tabId), { method: "POST", body: JSON.stringify(schedule) });
+  return reloadIfApplied(api(schedulePath(tabId), { method: "POST", body: JSON.stringify(schedule) }), () => getSchedules(tabId));
 }
 
 export function updateSchedule(tabId: string, scheduleId: string, schedule: ScheduledPromptInput): Promise<ScheduledPromptList> {
-  return api(`${schedulePath(tabId)}/${encodeURIComponent(scheduleId)}`, {
+  return reloadIfApplied(api(`${schedulePath(tabId)}/${encodeURIComponent(scheduleId)}`, {
     method: "PUT",
     body: JSON.stringify(schedule),
-  });
+  }), () => getSchedules(tabId));
 }
 
 export function deleteSchedule(tabId: string, scheduleId: string): Promise<ScheduledPromptList> {
-  return api(`${schedulePath(tabId)}/${encodeURIComponent(scheduleId)}`, { method: "DELETE" });
+  return reloadIfApplied(api(`${schedulePath(tabId)}/${encodeURIComponent(scheduleId)}`, { method: "DELETE" }), () => getSchedules(tabId));
 }
 
 /** What one agent CLI answered when asked about its own quota. `raw` is the
@@ -573,6 +633,15 @@ export async function getAgentStatus(tabId: string, refresh = false): Promise<Ag
   return report;
 }
 
+/** A question the agent asked, as answered: its rows, the ones the answer
+ * took marked, and the answer itself — absent when it was turned down. */
+export interface AskedQuestion {
+  header?: string;
+  question: string;
+  options?: { label: string; description?: string; chosen?: boolean }[];
+  answer?: string;
+}
+
 /** One turn of an agent tab's stored conversation, as the desktop reads it
  * off the CLI's own transcript (`services::agent_transcript`). An `agent`
  * entry is a subagent the agent spawned: `text` is what it was sent to do,
@@ -588,6 +657,10 @@ export interface TranscriptEntry {
   /** On an `answer`: the plan the agent put up for approval (Claude's
    * `ExitPlanMode`), set apart from its ordinary answers. */
   plan?: boolean;
+  /** On an `answer`: the questions the agent asked (Claude's
+   * `AskUserQuestion`), with the answers they got — sent once answered, so
+   * the one still waiting is the live screen's. `text` says the same plainly. */
+  questions?: AskedQuestion[];
   /** On an `agent`: it has not reported back yet (Claude's spawn call has
    * no result in the transcript). */
   running?: boolean;
@@ -630,6 +703,9 @@ export interface SessionTranscript {
   usage?: SessionUsage;
   /** The model its newest record names, as an API id — a subagent's own. */
   model?: string;
+  /** The tokens its newest request carried (context plus answer), the count
+   * Claude Code's own subagent row shows — read off a subagent's own file. */
+  tokens?: number;
   /** Desktop Reader only (the phone's API strips it): the shell commands the
    * agent is running now — Claude's `Bash` calls still without a result, and
    * background ones still running. */
@@ -733,21 +809,21 @@ export function getPrompts(projectId: string): Promise<ProjectPromptList> {
 }
 
 export function createPrompt(projectId: string, message: string): Promise<ProjectPromptList> {
-  return api(promptsPath(projectId), { method: "POST", body: JSON.stringify({ message }) });
+  return reloadIfApplied(api(promptsPath(projectId), { method: "POST", body: JSON.stringify({ message }) }), () => getPrompts(projectId));
 }
 
 export function updatePrompt(projectId: string, promptId: string, message: string): Promise<ProjectPromptList> {
-  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}`, { method: "PUT", body: JSON.stringify({ message }) });
+  return reloadIfApplied(api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}`, { method: "PUT", body: JSON.stringify({ message }) }), () => getPrompts(projectId));
 }
 
 export function deletePrompt(projectId: string, promptId: string): Promise<ProjectPromptList> {
-  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}`, { method: "DELETE" });
+  return reloadIfApplied(api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}`, { method: "DELETE" }), () => getPrompts(projectId));
 }
 
 /** Send-now: the desktop turns the prompt into a one-time schedule at its own
  * current minute for `tabId`, delivered at that tab's next safe idle point. */
 export function sendPrompt(projectId: string, promptId: string, tabId: string): Promise<ProjectPromptList> {
-  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}/send`, { method: "POST", body: JSON.stringify({ tab_id: tabId }) });
+  return reloadIfApplied(api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}/send`, { method: "POST", body: JSON.stringify({ tab_id: tabId }) }), () => getPrompts(projectId));
 }
 
 /** One image the desktop offers the composer: the clipboard's image or a
@@ -850,7 +926,9 @@ export function viewerFileUrl(scope: ViewerScope, file: OutboxFile, download = f
  * the `SameSite=Strict` session cookie stays behind and the file answered
  * `authentication_required`; the URL goes out with a short-lived ticket for
  * exactly that file instead (`POST /api/v1/open-ticket`). If none can be had
- * the plain URL still opens — in a browser tab of the site the cookie rides. */
+ * the plain URL still opens — in a browser tab of the site the cookie rides.
+ * The installed app on an iPhone or iPad cannot be got back to from there
+ * (`openingOutsideStrands`): callers keep the file inside the app instead. */
 export async function openOutside(url: string): Promise<void> {
   let target = url;
   try {
@@ -947,7 +1025,9 @@ export type MarkupSource = { files: string } | { outbox: string };
 /** One marked page: its displayed size, its marks in that size's units, and
  * its layer PNG's inbox reference (`markup.rs`). */
 export interface MarkupPageBody { n: number; size: [number, number]; marks: Mark[]; layer: string }
-export interface MarkupBody { source: MarkupSource; pages: MarkupPageBody[]; picture?: string }
+/** `instruction` is the phone's own wording of what to do with the marks
+ * (`markupInstruction.ts`), absent while the desktop's default stands. */
+export interface MarkupBody { source: MarkupSource; pages: MarkupPageBody[]; picture?: string; instruction?: string }
 /** The prompt to send into the chat, and the marked copy's reference when the
  * desktop could bake one. */
 export interface MarkupAnswer { prompt: string; marked?: string | null }

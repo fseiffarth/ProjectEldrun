@@ -11,7 +11,8 @@
    --m-on-accent  text on an accent fill — the desktop's page colour, as its
                   filled-accent buttons use (Plain Dark's accent IS white).
 
-   The default is Plain Dark, the desktop's own default theme. */
+   Bare :root (before theme.ts sets data-theme) paints Plain Dark; the
+   default theme is Light Lavender, the desktop's own default. */
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;

@@ -8,6 +8,7 @@ import { useHeaderStatusReport } from "../../stores/headerStatus";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
 import { ErrorNote } from "../common/ErrorNote";
 import { MOBILE_HOST_KEY } from "../../lib/brand";
+import { UntestedTag } from "../common/UntestedTag";
 
 /** `translate` at the live language, for the async callbacks below (component
  *  `t` inside them would churn their identity on a language switch). */
@@ -20,6 +21,10 @@ function tr(
 
 const MENU_ID = "mobile";
 const POLL_MS = 15_000;
+/** How often the open menu re-reads the device list: a phone signing in or
+ * locking should show while somebody is looking at the list. One admin-socket
+ * call, and only while the menu is open. */
+const DEVICES_POLL_MS = 5_000;
 // `systemctl --user restart` acknowledges the job before the replacement
 // sidecar has necessarily rebound its admin socket. A short bounded wait keeps
 // that expected hand-off from being rendered as a failed reconnect.
@@ -41,6 +46,16 @@ interface AdminResponse {
   code?: string;
   expires_at?: number;
   message?: string;
+}
+
+/** A paired device as the sidecar's admin socket lists it. `online` is absent
+ * from a sidecar older than this window. */
+interface PairedDevice {
+  id: string;
+  name: string;
+  created_at: number;
+  last_seen_at?: number | null;
+  online?: boolean;
 }
 
 const pause = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
@@ -103,6 +118,11 @@ export function MobileIndicator() {
   const [error, setError] = useState<string | null>(null);
   const [updateNotice, setUpdateNotice] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(false);
+  const [devices, setDevices] = useState<PairedDevice[] | null>(null);
+  /** The device whose Disconnect was clicked once and now asks again. */
+  const [armed, setArmed] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  const lang = useI18nStore((s) => s.lang);
   const closeTimer = useRef<number | undefined>(undefined);
   const statusRequest = useRef(0);
   const reconnectingRef = useRef(false);
@@ -158,6 +178,57 @@ export function MobileIndicator() {
     const timer = window.setTimeout(() => setPairCode(null), remaining);
     return () => window.clearTimeout(timer);
   }, [pairCode]);
+
+  const running = status?.running ?? false;
+  const loadDevices = useCallback(async () => {
+    try {
+      const response = await invoke<{ status: string; devices?: PairedDevice[]; message?: string }>(
+        "mobile_admin",
+        { request: { type: "devices" } },
+      );
+      if (response.status !== "devices") throw new Error(response.message ?? response.status);
+      setDevices(response.devices ?? []);
+    } catch {
+      // The host's own status line already says why it cannot be asked.
+      setDevices(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open || !running) return;
+    void loadDevices();
+    const interval = window.setInterval(() => void loadDevices(), DEVICES_POLL_MS);
+    return () => window.clearInterval(interval);
+  }, [open, running, loadDevices]);
+
+  // A half-made Disconnect is forgotten when the menu closes.
+  useEffect(() => {
+    if (!open) setArmed(null);
+  }, [open]);
+
+  const disconnect = async (device: PairedDevice) => {
+    setArmed(null);
+    setDisconnecting(device.id);
+    setError(null);
+    try {
+      const response = await invoke<AdminResponse>("mobile_admin", { request: { type: "revoke", device_id: device.id } });
+      if (response.status === "error") throw new Error(response.message);
+    } catch (reason) {
+      setError(tr("mobile.indDisconnectError", { name: device.name, reason: String(reason) }));
+    } finally {
+      setDisconnecting(null);
+      await loadDevices();
+    }
+  };
+
+  const deviceCaption = (device: PairedDevice) =>
+    device.online
+      ? t("mobile.indDeviceOnline")
+      : device.last_seen_at
+        ? t("mobile.indDeviceLastSeen", {
+          when: new Date(device.last_seen_at * 1000).toLocaleString(lang, { dateStyle: "short", timeStyle: "short" }),
+        })
+        : t("mobile.indDeviceNeverSeen");
 
   const reveal = () => openMenu(MENU_ID);
   const scheduleClose = () => {
@@ -339,6 +410,35 @@ export function MobileIndicator() {
               <div className="mobile-indicator-paircode" role="status">
                 <code>{pairCode.code}</code>
                 <span>{t("mobile.pairCodeValidity")}</span>
+              </div>
+            )}
+            {running && devices && (
+              <div className="mobile-indicator-devices">
+                <div className="mobile-indicator-devices-label">
+                  {t("mobile.pairedDevices")} <UntestedTag id="mobile.indDevices" />
+                </div>
+                {devices.length === 0 && <span className="mobile-indicator-devices-empty">{t("mobile.indDevicesNone")}</span>}
+                {[...devices]
+                  .sort((a, b) => Number(b.online ?? false) - Number(a.online ?? false))
+                  .map((device) => (
+                    <div key={device.id} className="mobile-indicator-device">
+                      <span className={"mobile-indicator-device-lamp" + (device.online ? " online" : "")} aria-hidden="true" />
+                      <span className="mobile-indicator-device-text">
+                        <strong>{device.name}</strong>
+                        <span>{deviceCaption(device)}</span>
+                      </span>
+                      <button
+                        type="button"
+                        className={"inbox-menu-delete mobile-indicator-device-disconnect" + (armed === device.id ? " armed" : "")}
+                        title={t("mobile.indDisconnectHint")}
+                        aria-label={`${t("mobile.indDisconnect")} ${device.name}`}
+                        disabled={disconnecting !== null || lockingDown}
+                        onClick={() => (armed === device.id ? void disconnect(device) : setArmed(device.id))}
+                      >
+                        {armed === device.id ? t("mobile.indDisconnectConfirm") : t("mobile.indDisconnect")}
+                      </button>
+                    </div>
+                  ))}
               </div>
             )}
             <div className="mobile-indicator-actions">

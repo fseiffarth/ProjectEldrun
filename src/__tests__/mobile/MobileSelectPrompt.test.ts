@@ -117,6 +117,33 @@ describe(`${BRAND.display} Mobile select dialog`, () => {
     expect(selectSignature(walked!)).toBe(selectSignature(levels!));
   });
 
+  it("collects a Codex model hidden above the visible rows without a hidden-row count", () => {
+    // 0.159.3 offers GPT-6.1 Sol first. A short picker can begin at row 2
+    // without the `… +N models` note used by Claude's windowed picker.
+    const clipped = readSelectPrompt(lines(
+      "Select Model and Effort",
+      "",
+      "  2. gpt-6-astra (current)  Frontier intelligence for the most demanding work.",
+      "› 3. gpt-6-sol            Previous generation workhorse model.",
+      "  4. gpt-6-luna           Fast and affordable model for easier tasks.",
+    ), "Codex");
+    expect(clipped?.options.map((option) => option.number)).toEqual([2, 3, 4]);
+    const first = mergeSelectRows(null, clipped!);
+    expect(missingSelectRow(first, clipped!)).toBe(1);
+    expect(selectMoveKeys(clipped!.options[clipped!.current].number, 1)).toEqual([`${ESC}[A`, `${ESC}[A`]);
+
+    const revealed = readSelectPrompt(lines(
+      "Select Model and Effort",
+      "",
+      "› 1. gpt-6.1-sol (default)  Latest workhorse model for coding and everyday work.",
+      "  2. gpt-6-astra (current)  Frontier intelligence for the most demanding work.",
+      "  3. gpt-6-sol            Previous generation workhorse model.",
+    ), "Codex");
+    expect(mergeSelectRows(first, revealed!).options.map((option) => option.label)).toContain("gpt-6.1-sol (default)");
+    expect(missingSelectRow(mergeSelectRows(first, revealed!), revealed!)).toBeUndefined();
+    expect(readSelectPrompt(lines("2. Alpha", "› 3. Beta"), "Claude")).toBeNull();
+  });
+
   it("keeps reading rows past a note wrapped at phone width", () => {
     // codex-cli 0.155.0 at 70 columns: sol's note fits, astra's wraps, and the
     // wrapped line used to end the list after the second row.

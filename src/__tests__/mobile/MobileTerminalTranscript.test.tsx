@@ -260,6 +260,45 @@ describe(`${BRAND.display} Mobile Focus reads the stored session`, () => {
     expect(plan.querySelector("h1")?.textContent).toBe("Merge");
   });
 
+  it("keeps a question the agent asked in the chat with its answer", async () => {
+    localStorage.setItem(storageKey("mobile.view.claude-code"), "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => ({
+      ...STORED,
+      entries: [
+        { kind: "prompt", text: "ask me", at: "2026-09-27T10:00:00Z" },
+        {
+          kind: "answer",
+          text: "Which colour?\n→ Red",
+          at: "2026-09-27T10:00:01Z",
+          questions: [
+            { header: "Colour", question: "Which colour?", answer: "Red", options: [{ label: "Red (Recommended)", chosen: false }, { label: "Red", description: "Warm", chosen: true }, { label: "Blue" }] },
+            { question: "Which season?", answer: "Late autumn", options: [{ label: "Spring" }] },
+            { question: "Which day?", options: [{ label: "Monday" }] },
+          ],
+        },
+      ],
+    })));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+
+    const card = screen.getByRole("group", { name: "Question" });
+    expect(card.querySelector(".question-tabs")?.textContent).toBe("Colour");
+    const rows = [...card.querySelectorAll(".asked-list li")];
+    expect(rows.map((row) => [row.querySelector("strong")?.textContent, row.classList.contains("chosen")])).toEqual([
+      ["RedRecommended", false],
+      ["Red", true],
+      ["Blue", false],
+      ["Spring", false],
+      // Typed, not picked: a row of its own.
+      ["Late autumn", true],
+      ["Monday", false],
+    ]);
+    expect(card.querySelectorAll("button")).toHaveLength(0);
+    // Turned down: says so.
+    expect(card.querySelectorAll(".asked-none")).toHaveLength(1);
+    expect(card.querySelector(".asked-none")?.textContent).toBe("Not answered");
+  });
+
   it("lets a message's text be selected in part and copies only what is marked", async () => {
     localStorage.setItem(storageKey("mobile.view.claude-code"), "focus");
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));

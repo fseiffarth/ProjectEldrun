@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, resolveAlert, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow, type TabPlace } from "../api";
-import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
+import { api, resolveAlert, wasApplied, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow, type TabPlace } from "../api";
+import { classifyUnavailable, describeFailure, describeUnavailable, type UnavailableReason } from "../connection";
 import { readFlag, readOrder, writeFlag, writeOrder } from "../prefs";
 import { arrangeProjects, mergeProjectOrder, scopeCaption } from "../projectOrder";
 import { useRowDrag } from "../rowDrag";
@@ -17,6 +17,7 @@ import { SendToDesktop } from "../components/SendToDesktop";
 import { GitMark } from "../components/GitMark";
 import { readSpeechLang, type SpeechLang } from "../speechLang";
 import { NotificationsSheet, pushSummary } from "../components/NotificationsSheet";
+import { customMarkupPrompts, MarkupInstructionSheet, markupInstructionSummary } from "../components/MarkupInstructionSheet";
 import { getPushState, pushSupport, type HostPushState } from "../push";
 import { AppMark } from "../AppMark";
 import { BRAND } from "../../../src/lib/brand";
@@ -75,8 +76,9 @@ function AlertRows({ alerts, onAlerts, todo, mail }: {
       // to decide, and a card that reappears because it was only 90% done is a
       // truth the phone should show rather than hide.
       onAlerts((await resolveAlert(alertId)).alerts);
-    } catch {
-      setError(`That alert could not be completed. ${BRAND.display} on the desktop owns it.`);
+    } catch (reason) {
+      // Done on the desktop with a feed too large to show is not a failed ✓.
+      setError(wasApplied(reason) ? describeFailure(reason) : `That alert could not be completed. ${BRAND.display} on the desktop owns it.`);
     } finally {
       setFinishing(null);
     }
@@ -146,6 +148,9 @@ export function Home({ open, openTab, todo, mail }: {
    * fix it mid-answer has already been read to in the wrong voice. */
   const [speechLang, setSpeechLang] = useState<SpeechLang>(() => readSpeechLang());
   const [speechLangSheet, setSpeechLangSheet] = useState(false);
+  /** What a Mark up Submit tells the agent — worded here and nowhere else. */
+  const [markupInstruction, setMarkupInstruction] = useState(() => customMarkupPrompts());
+  const [markupInstructionSheet, setMarkupInstructionSheet] = useState(false);
   /** The phone's own theme (`theme.ts`); unset, it follows the desktop's. */
   const [theme, setTheme] = useState<PhoneTheme>(() => readPhoneTheme());
   const [themeSheet, setThemeSheet] = useState(false);
@@ -328,10 +333,15 @@ export function Home({ open, openTab, todo, mail }: {
           <span><strong>{t("mobile.push.title")}{isUntested("mobile.push.title") && <span className="untested">Untested</span>}</strong><small>{pushSummary(push, t)}</small></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
         </button></li>
+        <li><button aria-haspopup="dialog" aria-expanded={markupInstructionSheet} onClick={() => setMarkupInstructionSheet(true)}>
+          <span><strong>{t("mobile.markup.instruction.title")}{isUntested("mobile.markup.instruction") && <span className="untested">Untested</span>}</strong><small>{markupInstructionSummary(markupInstruction, t)}</small></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+        </button></li>
       </ul>
     </section>
     {themeSheet && <ThemeSheet chosen={theme} onChoose={setTheme} onClose={() => setThemeSheet(false)} />}
     {speechLangSheet && <SpeechLangSheet chosen={speechLang} onChoose={setSpeechLang} onClose={() => setSpeechLangSheet(false)} />}
     {pushSheet && <NotificationsSheet onChange={setPush} onClose={() => setPushSheet(false)} />}
+    {markupInstructionSheet && <MarkupInstructionSheet onChange={setMarkupInstruction} onClose={() => setMarkupInstructionSheet(false)} />}
   </main>;
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
 import { promptClock, promptLines, promptsFromTranscript, scheduleClock } from "../agentPrompts";
-import { ApiError, api, closeTab, deleteOutboxFile, listOutbox, openOutside, outboxFileUrl, reopenTab, reorderTab, type AgentRow, type ClosedTabRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
+import { ApiError, TAB_CREATE_TIMEOUT, api, closeTab, deleteOutboxFile, listOutbox, reopenTab, reorderTab, type AgentRow, type ClosedTabRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
 import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readChoice, writeChoice } from "../prefs";
 import { useRowDrag } from "../rowDrag";
@@ -281,12 +281,10 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [fileOpen, galleryOpen]);
-  /** A PDF opens in the browser's own viewer; a picture or text full screen
-   * here — the Focus screen's gallery does the same with the same files. */
-  const openFile = useCallback((file: OutboxFile) => {
-    if (file.kind === "application/pdf") void openOutside(outboxFileUrl({ project: id }, file.name));
-    else setFileOpen(file);
-  }, [id]);
+  /** A picture, a text or a PDF opens full screen here — the Focus screen's
+   * gallery does the same with the same files. A PDF handed to the phone's
+   * own viewer left no way back into the installed app. */
+  const openFile = useCallback((file: OutboxFile) => setFileOpen(file), []);
   /** Removes one file the desktop sent, from the tile's own confirm. The row is
    * dropped here rather than by the next poll — an 8 s wait on a tile that has
    * already been answered reads as the delete not having worked — and the sheet
@@ -306,7 +304,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     const idempotencyKey = pendingKeys.current.get(action) ?? crypto.randomUUID();
     pendingKeys.current.set(action, idempotencyKey);
     try {
-      const body = await api<{ tab: TabRow }>(`/api/v1/projects/${encodeURIComponent(id)}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, ...launch, idempotency_key: idempotencyKey }) });
+      const body = await api<{ tab: TabRow }>(`/api/v1/projects/${encodeURIComponent(id)}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, ...launch, idempotency_key: idempotencyKey }) }, TAB_CREATE_TIMEOUT);
       pendingKeys.current.delete(action);
       terminal(body.tab, launch?.sign_in ? { signIn: true } : undefined);
     } catch (reason) { setError(describeFailure(reason)); void load(); } finally { setCreating(false); }
@@ -558,6 +556,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {newTabOpen && detail && <NewTabSheet
       projectId={id}
       agents={detail.agents}
+      shells={detail.shells === true}
       busy={creating || !detail.desktop_available}
       onClose={() => setNewTabOpen(false)}
       onPick={(kind, agent, mode, launch) => { setNewTabOpen(false); void create(kind, agent, mode, launch); }}

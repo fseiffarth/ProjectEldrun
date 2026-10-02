@@ -9,7 +9,7 @@
       // Tauri invoke, so without this the page renders ~1s with the CSS
       // :root default (fancy_dark tokens) and then snaps to the real theme.
       // stores/settings.ts keeps this cache in sync on every theme change;
-      // "dark" (Plain Dark) mirrors the backend default (schema::settings).
+      // "light_lavender" mirrors the backend default (schema::settings).
       //
       // The keys carry the app's name (src/lib/brand.ts, `storageDashKey`).
       // What an older build cached under the app's old name is moved to the
@@ -23,9 +23,9 @@
         return value === null ? localStorage.getItem(OLD_KEY + name) : value;
       }
       try {
-        document.documentElement.setAttribute("data-theme", stored("theme") || "dark");
+        document.documentElement.setAttribute("data-theme", stored("theme") || "light_lavender");
       } catch (_) {
-        document.documentElement.setAttribute("data-theme", "dark");
+        document.documentElement.setAttribute("data-theme", "light_lavender");
       }
       // Same bargain for the appearance overrides (custom accent color, the
       // Theme Customizer's per-token colors, corner style —

@@ -11,6 +11,7 @@ import { useTabsStore } from "../../stores/tabs";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { GitMergeBar, GitPullPanel, type MergeState } from "./GitPullPanel";
 import { LockIcon, UnlockIcon, WarningIcon } from "../common/icons/Icon";
+import { gitWorktreeArgs, type GitWorktreeSelection } from "../../lib/gitWorktree";
 import { ErrorNote } from "../common/ErrorNote";
 import { NAMES, storageKey } from "../../lib/brand";
 
@@ -134,6 +135,9 @@ interface Props {
   /** Bumped by the parent to open the pull preview for the checked-out branch
    *  (the git bar's Pull button). 0 = never asked. */
   pullRequest?: number;
+  onWorktreeChanged?: (selection: GitWorktreeSelection | null) => void;
+  actionsBusy?: boolean;
+  connected?: boolean;
 }
 
 function basename(p: string): string {
@@ -333,7 +337,11 @@ const LOCKSTEP_STATUS_KEY: Record<LockstepStatus, TranslationKey> = {
   disconnected: "gitHistory.statusDisconnected",
 };
 
-export function GitHistory({ projectDir, projectId, remote, authProjectId, onChanged, pullRequest }: Props) {
+export function GitHistory(props: Props) {
+  return <GitHistoryView key={props.projectDir} {...props} />;
+}
+
+function GitHistoryView({ projectDir, projectId, remote, authProjectId, onChanged, pullRequest, onWorktreeChanged, actionsBusy = false, connected = true }: Props) {
   const t = useT();
   // Every destructive git question below is asked in the panel's own dialog —
   // the native `confirm()` these used arrives themeless, titled with the page
@@ -359,6 +367,10 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
   const loadedRef = useRef(COMMIT_PAGE);
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  const [selectionSupported, setSelectionSupported] = useState<boolean | null>(null);
+  const [worktreeSelection, setWorktreeSelection] = useState<GitWorktreeSelection | null>(null);
+  const gitArgs = useMemo(() => gitWorktreeArgs(worktreeSelection), [worktreeSelection]);
+  const contextVersion = useRef(0);
   // Git lockstep (#28n): only meaningful for SSH remote projects.
   const lockstepEligible = !!(remote && projectId);
   const [lockstep, setLockstep] = useState<GitPeerState | null>(null);
@@ -407,8 +419,30 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
     });
   }, []);
 
+  useEffect(() => {
+    let live = true;
+    invoke<boolean>("git_worktree_selection_supported")
+      .then((supported) => { if (live) setSelectionSupported(supported === true); })
+      .catch(() => { if (live) setSelectionSupported(false); });
+    return () => { live = false; };
+  }, []);
+
+  useEffect(() => {
+    onWorktreeChanged?.(worktreeSelection);
+  }, [onWorktreeChanged, worktreeSelection]);
+
+  const selectWorktree = (wt: Worktree) => {
+    if (!selectionSupported || loading || fetching || actionsBusy || !connected || wt.is_prunable || wt.is_bare) return;
+    setWorktreeSelection(wtSite === "host" && wt.is_current ? null : { path: wt.path, site: wtSite });
+  };
+
   const load = useCallback(async () => {
-    if (!projectDir) return;
+    if (!projectDir || !connected) {
+      ++contextVersion.current;
+      setLoading(false);
+      return;
+    }
+    const version = ++contextVersion.current;
     setLoading(true);
     setError(null);
     // `allSettled`, not `all`: these are three independent reads, and one of them
@@ -418,11 +452,12 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
     // and only the failures are reported.
     const want = loadedRef.current;
     const [log, br, wt, ms] = await Promise.allSettled([
-      invoke<GitCommit[]>("git_log", { projectDir, limit: want, skip: 0 }),
-      invoke<GitBranch[]>("git_branches", { projectDir }),
+      invoke<GitCommit[]>("git_log", { projectDir, ...gitArgs, limit: want, skip: 0 }),
+      invoke<GitBranch[]>("git_branches", { projectDir, ...gitArgs }),
       invoke<Worktree[]>("git_worktree_list", { projectDir, site: wtSite }),
-      invoke<MergeState>("git_merge_state", { projectDir }),
+      invoke<MergeState>("git_merge_state", { projectDir, ...gitArgs }),
     ]);
+    if (version !== contextVersion.current) return;
     // Best-effort and not reported: a backend without the command just never
     // shows the merge bar.
     setMergeState(ms.status === "fulfilled" ? ms.value : null);
@@ -433,20 +468,38 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
       setAutoPage(true);
     }
     if (br.status === "fulfilled") setBranches(br.value ?? []);
-    if (wt.status === "fulfilled") setWorktrees(wt.value ?? []);
+    if (wt.status === "fulfilled") {
+      const list = wt.value ?? [];
+      setWorktrees(list);
+      if (worktreeSelection?.path && !list.some((w) => w.path === worktreeSelection.path && !w.is_prunable && !w.is_bare)) {
+        setWorktreeSelection(wtSite === "mirror" ? { path: "", site: "mirror" } : null);
+      } else if (worktreeSelection && !worktreeSelection.path) {
+        const current = list.find((w) => w.is_current && !w.is_prunable && !w.is_bare);
+        if (current) setWorktreeSelection({ path: current.path, site: wtSite });
+      }
+    }
     const failed = [log, br, wt].filter((r) => r.status === "rejected");
     setError(failed.length ? String((failed[0] as PromiseRejectedResult).reason) : null);
     setLoading(false);
-  }, [projectDir, wtSite]);
+  }, [projectDir, wtSite, gitArgs, connected, worktreeSelection]);
 
   // Back to one page when the project changes, so a small repo opened after a big
   // one does not re-ask for the big one's page depth. Declared *before* the load
   // effect: effects run in order, and `load` reads this depth when it is called.
   useEffect(() => {
+    ++contextVersion.current;
+    setCommits([]);
+    commitsRef.current = [];
+    setBranches([]);
+    setSelected(null);
+    setResults(null);
+    setQuery("");
+    setPullTarget(null);
+    setMergeState(null);
     loadedRef.current = COMMIT_PAGE;
     setHasMore(false);
     setAutoPage(true);
-  }, [projectDir]);
+  }, [projectDir, gitArgs]);
 
   useEffect(() => {
     load();
@@ -460,7 +513,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
   // changed) is dropped so results never show under the wrong text.
   useEffect(() => {
     const q = query.trim();
-    if (!projectDir || !q) {
+    if (!projectDir || !connected || !q) {
       setResults(null);
       setSearching(false);
       return;
@@ -468,7 +521,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
     let live = true;
     setSearching(true);
     const timer = setTimeout(() => {
-      invoke<GitCommit[]>("git_log_search", { projectDir, query: q, limit: SEARCH_LIMIT })
+      invoke<GitCommit[]>("git_log_search", { projectDir, ...gitArgs, query: q, limit: SEARCH_LIMIT })
         .then((r) => {
           if (live) setResults(r ?? []);
         })
@@ -486,19 +539,22 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
       live = false;
       clearTimeout(timer);
     };
-  }, [query, projectDir, commits]);
+  }, [query, projectDir, commits, gitArgs, connected]);
 
   const loadMore = useCallback(async () => {
-    if (!projectDir || loadingMoreRef.current) return;
+    if (!projectDir || !connected || loadingMoreRef.current) return;
+    const version = contextVersion.current;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
       const skip = commitsRef.current.length;
       const more = await invoke<GitCommit[]>("git_log", {
         projectDir,
+        ...gitArgs,
         limit: COMMIT_PAGE,
         skip,
       });
+      if (version !== contextVersion.current) return;
       const page = more ?? [];
       // A commit landing between two pages shifts every later one down by a row,
       // which `--skip` would hand us twice; hashes settle it.
@@ -510,6 +566,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
       });
       setHasMore(page.length >= COMMIT_PAGE);
     } catch (e) {
+      if (version !== contextVersion.current) return;
       setError(String(e));
       // Stop the observer re-firing against a backend that just refused — the
       // row stays, and clicking it arms the automatic paging again.
@@ -518,7 +575,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
       setLoadingMore(false);
       loadingMoreRef.current = false;
     }
-  }, [projectDir]);
+  }, [projectDir, gitArgs, connected]);
 
   // Page the next chunk in when the end of the list comes into view. `root: null`
   // because the scroller is an ancestor (the side panel's body), and an observer
@@ -541,7 +598,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
 
   // Load git-lockstep status + subscribe to backend status pushes (#28n).
   useEffect(() => {
-    if (!lockstepEligible || !projectId) {
+    if (!lockstepEligible || !projectId || !connected) {
       setLockstep(null);
       return;
     }
@@ -556,7 +613,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
       alive = false;
       un.then((f) => f());
     };
-  }, [lockstepEligible, projectId]);
+  }, [lockstepEligible, projectId, connected]);
 
   const toggleLockstep = useCallback(async () => {
     if (!projectId) return;
@@ -769,7 +826,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
     setFetching(true);
     setError(null);
     try {
-      await invoke("git_fetch", { projectDir, projectId: authProjectId ?? null });
+      await invoke("git_fetch", { projectDir, ...gitArgs, projectId: authProjectId ?? null });
       await load();
       onChanged?.();
     } catch (e) {
@@ -791,7 +848,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
       // With git lockstep enabled, route through the coordinator so the paired
       // local mirror + remote host tree switch together (#28n). The Git UI here
       // reflects the host tree, so the host initiates.
-      if (lockstepEligible && projectId && lockstep?.enabled) {
+      if (lockstepEligible && projectId && lockstep?.enabled && !worktreeSelection) {
         const s = await invoke<GitPeerState>("git_peer_checkout", {
           projectId,
           target,
@@ -799,7 +856,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
         });
         setLockstep(s);
       } else {
-        await invoke("git_checkout", { projectDir, target });
+        await invoke("git_checkout", { projectDir, ...gitArgs, target });
       }
       setSelected(null);
       await load();
@@ -965,6 +1022,9 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
   const searchActive = query.trim() !== "" && results !== null;
   const shown = searchActive ? results : commits;
 
+  const selectedWorktree = worktreeSelection?.path
+    ? worktrees.find((wt) => wt.path === worktreeSelection.path)
+    : worktrees.find((wt) => wt.is_current);
   const current = branches.find((b) => b.is_current)?.name;
   const localBranches = branches.filter((b) => !b.is_remote);
   const remoteBranches = branches.filter((b) => b.is_remote);
@@ -985,6 +1045,11 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
   return (
     <div className="git-history">
       {dialogs}
+      <div className="git-worktree-context" title={t("gitHistory.selectedWorktree", { name: selectedWorktree?.path ?? projectDir })}>
+        <span>{t("gitHistory.selectedWorktree", { name: basename(selectedWorktree?.path ?? projectDir) })}</span>
+        {remote && <span>{t(wtSite === "host" ? "gitHistory.worktreeSiteHost" : "gitHistory.worktreeSiteMirror")}</span>}
+        <UntestedTag id="gitHistory.worktreeSelection" />
+      </div>
       <div className="git-history-toolbar">
         <span className="git-history-branch" title={t("gitHistory.currentBranchTitle")}>
           ⎇ {current ?? t("gitHistory.detached")}
@@ -1001,31 +1066,32 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
           className="toolbar-btn git-history-mode"
           onClick={() => void fetchNow()}
           title={t("gitPull.fetchTitle")}
-          disabled={loading || fetching}
+          disabled={loading || fetching || actionsBusy || !connected}
         >
           {fetching ? t("gitPull.fetchingShort") : t("gitPull.fetch")}
         </button>
-        <button className="toolbar-btn git-history-refresh" onClick={load} title={t("common.refresh")} disabled={loading}>
+        <button className="toolbar-btn git-history-refresh" onClick={load} title={t("common.refresh")} disabled={loading || actionsBusy || !connected}>
           ⟳
         </button>
       </div>
 
       {mergeState?.merging && (
-        <GitMergeBar projectDir={projectDir} state={mergeState} canOpenFiles={!remote} onChanged={afterPull} />
+        <GitMergeBar projectDir={projectDir} worktree={worktreeSelection} state={mergeState} canOpenFiles={!remote || (wtSite === "mirror" && !!worktreeSelection?.path)} onChanged={afterPull} />
       )}
       {pullTarget && !mergeState?.merging && (
         <GitPullPanel
-          key={`${projectDir}:${pullTarget.branch ?? ""}`}
+          key={`${projectDir}:${worktreeSelection?.path ?? ""}:${wtSite}:${pullTarget.branch ?? ""}`}
           projectDir={projectDir}
+          worktree={worktreeSelection}
           projectId={authProjectId ?? null}
           branch={pullTarget.branch}
-          canOpenFiles={!remote}
+          canOpenFiles={!remote || (wtSite === "mirror" && !!worktreeSelection?.path)}
           onClose={() => setPullTarget(null)}
           onDone={afterPull}
         />
       )}
 
-      {lockstepEligible && (
+      {lockstepEligible && !worktreeSelection && (
         <div className="git-lockstep-bar" style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 6px", borderBottom: "1px solid var(--border-color)", fontSize: 10 }}>
           <button
             className={`toolbar-btn${lockstep?.enabled ? " active" : ""}`}
@@ -1140,7 +1206,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
         </div>
       )}
 
-      {lockstepEligible && backups && (
+      {lockstepEligible && !worktreeSelection && backups && (
         <div className="git-lockstep-backups" style={{ borderBottom: "1px solid var(--border-color)", padding: "3px 6px", fontSize: 10, maxHeight: 140, overflowY: "auto" }}>
           {backups.length === 0 ? (
             <div style={{ color: "var(--text-muted)" }}>{t("gitHistory.noBackupRefs")}</div>
@@ -1171,21 +1237,29 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
       )}
 
       {(localBranches.length > 0 || remoteBranches.length > 0) && (
-        <div className="git-branch-list">
-          {localBranches.map((b) => (
+        <div className="git-worktree-section">
+          <div className="git-worktree-header"><span className="git-worktree-title">{t("gitHistory.branches")}</span></div>
+          <div className="git-branch-list">
+          {localBranches.map((b) => {
+            const occupied = worktrees.find((wt) => wt.branch === b.name && wt.path !== selectedWorktree?.path);
+            return (
             <button
               key={b.name}
-              className={`git-branch-pill${b.is_current ? " current" : ""}`}
-              onClick={() => !b.is_current && checkout(b.name)}
-              disabled={loading || b.is_current}
-              title={t(b.is_current ? "gitHistory.onBranchTitle" : "gitHistory.checkoutBranchTitle", { name: b.name })}
+              className={`git-branch-pill${b.is_current ? " current" : ""}${occupied ? " occupied" : ""}`}
+              onClick={() => occupied ? selectWorktree(occupied) : !b.is_current && checkout(b.name)}
+              disabled={loading || fetching || actionsBusy || !connected || b.is_current || !!occupied?.is_prunable || !!occupied?.is_bare || (!!occupied && !selectionSupported)}
+              title={occupied
+                ? t("gitHistory.openBranchWorktree", { name: b.name, worktree: basename(occupied.path) })
+                : t(b.is_current ? "gitHistory.onBranchTitle" : "gitHistory.checkoutBranchTitle", { name: b.name })}
             >
               {branchColor.has(b.name) && (
                 <span className="git-branch-dot" style={{ background: branchColor.get(b.name) }} aria-hidden />
               )}
-              {b.name}
+              {b.name}{occupied ? " " : ""}
+              {occupied && <span className="git-branch-worktree">{t("gitHistory.usedInWorktree", { name: basename(occupied.path) })}</span>}
             </button>
-          )).flatMap((pill, i) => {
+            );
+          }).flatMap((pill, i) => {
             // A branch behind its upstream gets a pull chip right after its pill.
             const b = localBranches[i];
             if (!b.behind) return [pill];
@@ -1195,7 +1269,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
                 key={`${b.name}:pull`}
                 className="git-branch-pill git-branch-pull"
                 onClick={() => setPullTarget({ branch: b.name })}
-                disabled={loading || !!mergeState?.merging}
+                disabled={loading || fetching || actionsBusy || !connected || !!mergeState?.merging || worktrees.some((wt) => wt.branch === b.name && wt.path !== selectedWorktree?.path)}
                 title={t("gitPull.branchChipTitle", {
                   name: b.name,
                   upstream: b.upstream ?? "",
@@ -1211,7 +1285,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
               key={b.name}
               className="git-branch-pill remote"
               onClick={() => checkout(b.name)}
-              disabled={loading}
+              disabled={loading || fetching || actionsBusy || !connected}
               title={t("gitHistory.checkoutBranchTitle", { name: b.name })}
             >
               {branchColor.has(b.name) && (
@@ -1220,6 +1294,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
               {b.name}
             </button>
           ))}
+          </div>
         </div>
       )}
 
@@ -1237,8 +1312,12 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
               title={t("gitHistory.worktreeSiteLabel")}
               onChange={(v) => {
                 setWtForm(null);
-                setWtSite(v === "mirror" ? "mirror" : "host");
+                const site = v === "mirror" ? "mirror" : "host";
+                setWorktrees([]);
+                setWtSite(site);
+                setWorktreeSelection(site === "mirror" ? { path: "", site } : null);
               }}
+              disabled={!selectionSupported || loading || fetching || actionsBusy || !connected}
               options={[
                 { value: "host", label: t("gitHistory.worktreeSiteHost") },
                 { value: "mirror", label: t("gitHistory.worktreeSiteMirror") },
@@ -1250,7 +1329,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
             <button
               className="toolbar-btn"
               onClick={pruneWorktrees}
-              disabled={loading}
+              disabled={loading || actionsBusy || !connected}
               title={t("gitHistory.pruneWorktreesTitle")}
             >
               {t("gitHistory.pruneWorktrees")}
@@ -1270,7 +1349,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
                     },
               )
             }
-            disabled={loading}
+            disabled={loading || actionsBusy || !connected}
             title={t("gitHistory.addWorktreeTitle")}
           >
             {t(wtForm ? "gitHistory.cancel" : "gitHistory.addWorktree")}
@@ -1282,10 +1361,11 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
           // lockstep will now refuse to move rather than corrupt (#23 D1).
           <div className="git-worktree-note">{t("gitHistory.worktreeLockstepNote")}</div>
         )}
+        {selectionSupported === false && <div className="git-worktree-note">{t("gitHistory.worktreeBackendRequired")}</div>}
         {worktrees.length > 0 && (
           <div className="git-branch-list git-worktree-list">
             {worktrees.map((wt) => {
-              const label = wt.branch || wt.head.slice(0, 7) || basename(wt.path);
+              const label = wt.branch || wt.head.slice(0, 7) || t("gitHistory.detached");
               const state = wt.is_prunable
                 ? t("gitHistory.worktreeGone", {
                     reason: wt.prunable_reason || t("gitHistory.worktreeGoneReason"),
@@ -1299,7 +1379,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
                 <span
                   key={wt.path}
                   className={
-                    `git-branch-pill git-worktree-pill${wt.is_current ? " current" : ""}` +
+                    `git-branch-pill git-worktree-pill${wt.path === selectedWorktree?.path ? " current" : ""}` +
                     `${wt.is_prunable ? " prunable" : ""}`
                   }
                   title={state ? `${wt.path}\n${state}` : wt.path}
@@ -1314,12 +1394,22 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
                       <WarningIcon />
                     </span>
                   )}
-                  {label}
+                  <button
+                    className="git-worktree-select"
+                    onClick={() => selectWorktree(wt)}
+                    disabled={!selectionSupported || loading || fetching || actionsBusy || !connected || wt.is_prunable || wt.is_bare}
+                    aria-pressed={wt.path === selectedWorktree?.path}
+                    aria-label={t("gitHistory.selectWorktree", { name: basename(wt.path) })}
+                  >
+                    <span className="git-worktree-name">{basename(wt.path)}</span>
+                    <span className="git-worktree-branch">⎇ {label}</span>
+                    {wt.is_main && <span className="git-worktree-main">{t("gitHistory.mainWorktree")}</span>}
+                  </button>
                   {!wt.is_main && (
                     <button
                       className="git-worktree-btn"
                       onClick={() => setWorktreeLock(wt, !wt.is_locked)}
-                      disabled={loading}
+                      disabled={loading || actionsBusy || !connected}
                       aria-label={t(
                         wt.is_locked ? "gitHistory.unlockWorktreeTitle" : "gitHistory.lockWorktreeTitle",
                         { path: wt.path },
@@ -1335,11 +1425,11 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
                   {/* `is_main` is not the question a Remove control has to answer:
                       git deletes the tree you are standing in without complaint
                       (#23 D4), and the backend refuses that separately. */}
-                  {!wt.is_main && !wt.is_current && (
+                  {!wt.is_main && !wt.is_current && wt.path !== selectedWorktree?.path && (
                     <button
                       className="git-worktree-btn git-worktree-remove"
                       onClick={() => removeWorktree(wt)}
-                      disabled={loading}
+                      disabled={loading || actionsBusy || !connected}
                       aria-label={t("gitHistory.removeWorktreeTitle", { path: wt.path })}
                       title={t("gitHistory.removeWorktreeTitle", { path: wt.path })}
                     >
@@ -1523,7 +1613,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
               setAutoPage(true);
               loadMore();
             }}
-            disabled={loadingMore}
+            disabled={loadingMore || !connected}
           >
             {loadingMore
               ? t("gitHistory.loadingMoreCommits")
@@ -1536,6 +1626,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
       {selected && createPortal(
         <CommitWindow
           projectDir={projectDir}
+          worktree={worktreeSelection}
           commit={selected}
           onClose={() => setSelected(null)}
           onCheckout={() => checkout(selected.hash)}
@@ -1553,29 +1644,30 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
 
 interface CommitWindowProps {
   projectDir: string;
+  worktree?: GitWorktreeSelection | null;
   commit: GitCommit;
   onClose: () => void;
   onCheckout: () => void;
   onReworded: () => void;
 }
 
-function CommitWindow({ projectDir, commit, onClose, onCheckout, onReworded }: CommitWindowProps) {
+function CommitWindow({ projectDir, worktree, commit, onClose, onCheckout, onReworded }: CommitWindowProps) {
   const t = useT();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    invoke<string>("git_commit_message", { projectDir, hash: commit.hash })
+    invoke<string>("git_commit_message", { projectDir, ...gitWorktreeArgs(worktree), hash: commit.hash })
       .then(setMessage)
       .catch((e) => setError(String(e)));
-  }, [projectDir, commit.hash]);
+  }, [projectDir, worktree, commit.hash]);
 
   async function generate() {
     setBusy(true);
     setError(null);
     try {
-      const msg = await invoke<string>("git_generate_commit_message", { projectDir });
+      const msg = await invoke<string>("git_generate_commit_message", { projectDir, ...gitWorktreeArgs(worktree) });
       setMessage(msg);
     } catch (e) {
       setError(String(e));
@@ -1588,7 +1680,7 @@ function CommitWindow({ projectDir, commit, onClose, onCheckout, onReworded }: C
     setBusy(true);
     setError(null);
     try {
-      await invokeTrusted("git_reword_head", { projectDir, message });
+      await invokeTrusted("git_reword_head", { projectDir, ...gitWorktreeArgs(worktree), message });
       onReworded();
     } catch (e) {
       setError(String(e));

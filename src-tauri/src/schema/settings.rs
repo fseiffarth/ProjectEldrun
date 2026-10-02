@@ -65,6 +65,12 @@ pub struct AppMobileHostSettings {
     /// (`mobile_control::files::files_open`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_files: Option<bool>,
+    /// May a paired phone see and open shell tabs? Default off — Mobile is
+    /// agents-only unless this is set. Read by the sidecar per catalog load
+    /// (`mobile_control::discovery::shells_open`) and repeated by the desktop
+    /// bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_tabs: Option<bool>,
 }
 
 /// Cloud completion authority lives in Tabtivity's settings, never project.json.
@@ -396,6 +402,17 @@ pub struct Settings {
     /// back to `"claude"` when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_agent_cmd: Option<String>,
+    /// The desktop PDF viewer's Mark up prompts (`docs/pdf_markup_rounds_plan.md`
+    /// §2.8), the desktop's own as the phone keeps its own: what a Submit tells
+    /// the agent after the file references (`None`/blank = `markup::
+    /// DEFAULT_INSTRUCTION`), and what **Make these changes** sends once the
+    /// agent has listed them (`None`/blank = the viewer's default). Free text
+    /// the user typed; the viewer passes the first to `pdf_markup_submit`,
+    /// which bounds it like the phone's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_markup_instruction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_markup_apply: Option<String>,
     /// Built-in agent registry ids shown before a search in the compact Agents
     /// group of the + tab menu. Chosen through the 🧠 menu's "+ tab" chips.
     /// Unset is interpreted by the frontend as Claude/Codex/Gemini; an empty
@@ -922,7 +939,7 @@ pub struct AlertSources {
 
 impl Settings {
     pub fn color_scheme(&self) -> &str {
-        self.color_scheme.as_deref().unwrap_or("dark")
+        self.color_scheme.as_deref().unwrap_or("light_lavender")
     }
 
     /// Whether Claude agent tabs should be spawned with `--remote-control`.
@@ -1307,7 +1324,7 @@ mod default_rule_tests {
         assert!(absent.connections_headless());
         assert!(absent.agent_remote_control());
         assert!(absent.daily_stats_recap());
-        assert_eq!(absent.color_scheme(), "dark");
+        assert_eq!(absent.color_scheme(), "light_lavender");
 
         let off: Settings = serde_json::from_str(
             r#"{"persist_local_sessions":false,"connections_headless":false,

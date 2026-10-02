@@ -5,20 +5,39 @@ import { shareAs, useOutboxShare } from "../outboxShare";
 import { sizeLabel } from "../terminal/fileLabels";
 import { isUntested } from "../../../src/lib/untested";
 import { MarkupView } from "./MarkupView";
+import type { AgentSignal } from "../markup/submitState";
+import { openingOutsideStrands } from "../platform";
+
+/** How a markup prompt left: into the agent's queue (it was working), typed
+ * straight in, or not at all. */
+export type MarkupSend = "queued" | "sent" | false;
 
 /** What the viewer needs to offer **Mark up** (an agent tab's chat): the tab
  * the prompt goes to, the project the phone-side layer is kept under, a
- * project file's folder trail, and the send into the chat. */
-export type MarkupTarget = { tabId: string; projectId: string; place?: string; onSend: (text: string) => boolean };
+ * project file's folder trail, the send into the chat, what the agent is
+ * doing now (the round's pill), and how to find the file's newest version
+ * for **Reload** (`docs/pdf_markup_rounds_plan.md` §2.2–2.3). */
+export type MarkupTarget = {
+  tabId: string;
+  projectId: string;
+  place?: string;
+  onSend: (text: string) => MarkupSend;
+  agent?: AgentSignal;
+  /** The file as it is now — a fresh listing row, or a newer copy — or
+   * `null` when it is gone. */
+  refresh?: (file: OutboxFile) => Promise<OutboxFile | null>;
+};
 
 const INLINE_LIMIT = 1024 * 1024;
+/** How much of a text **Open the whole file** reads into the app itself. */
+const WHOLE_LIMIT = 8 * 1024 * 1024;
 
 /** Read only the preview bytes; cancel the stream once the inline cap is met. */
-export async function readTextPreview(response: Response): Promise<string> {
+export async function readTextPreview(response: Response, limit = INLINE_LIMIT): Promise<string> {
   if (!response.ok || !response.body) throw new Error("read_failed");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let remaining = INLINE_LIMIT;
+  let remaining = limit;
   let text = "";
   try {
     while (remaining > 0) {
@@ -132,6 +151,12 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose, markup }:
   const [text, setText] = useState<string | null>(null);
   const [failure, setFailure] = useState("");
   const isText = file.kind.startsWith("text/");
+  // The whole of a long text is read in here, not handed to the browser's
+  // own tab: on an iPhone or iPad the installed app could not be got back to
+  // from there. Only a text too big for that still goes out — where it can.
+  const [wholeOf, setWholeOf] = useState<string | null>(null);
+  const whole = wholeOf === url;
+  const strands = openingOutsideStrands();
   const sharing = useOutboxShare(scope);
   const { prepare } = sharing;
   const shareable = shareAs(file) !== null;
@@ -139,12 +164,12 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose, markup }:
     const controller = new AbortController();
     setText(null);
     setFailure("");
-    if (isText) void fetch(url, { signal: controller.signal }).then(readTextPreview).then(
+    if (isText) void fetch(url, { signal: controller.signal }).then((response) => readTextPreview(response, whole ? WHOLE_LIMIT : INLINE_LIMIT)).then(
       (body) => { if (!controller.signal.aborted) setText(body); },
       () => { if (!controller.signal.aborted) setFailure(t("mobile.outbox.error")); },
     );
     return () => controller.abort();
-  }, [url, isText, t]);
+  }, [url, isText, whole, t]);
   // Fetch the bytes on opening, so a tap on Share shares at once rather than
   // after the radio — the button itself does not wait for them.
   useEffect(() => { prepare(file); }, [prepare, file]);
@@ -253,10 +278,25 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose, markup }:
   };
   const zoomed = view.scale > 1;
   const stepping = index >= 0 && steps.length > 1;
-  const markable = markup && (isImage || file.kind === "application/pdf") && file.kind !== "image/gif";
+  const isPdf = file.kind === "application/pdf";
+  const markable = markup && isImage && file.kind !== "image/gif";
   if (marking && markup) {
     return <MarkupView tabId={markup.tabId} projectId={markup.projectId} scope={scope} file={file} place={markup.place}
-      onSend={markup.onSend} onClose={() => setMarking(false)} />;
+      onSend={markup.onSend} agent={markup.agent} refresh={markup.refresh} onClose={() => setMarking(false)} />;
+  }
+  const actions = <>
+    {markable && <button className="outbox-action" onClick={() => setMarking(true)} aria-label={t("mobile.markup.openFile", { name: sentName(file) })}>{t("mobile.markup.open")}</button>}
+    <a className="outbox-action" href={viewerFileUrl(scope, file, true)} download={sentName(file)}>{t("mobile.outbox.save")}</a>
+    {shareable && <button className="outbox-action" disabled={sharing.busy === file.name} onClick={() => void sharing.share(file)}>
+      {t(sharing.ready === file.name ? "mobile.outbox.shareReady" : "mobile.outbox.share")}
+    </button>}
+    {shareable && isUntested("mobile.outbox.share") && <span className="untested">{t("mobile.outbox.untested")}</span>}
+  </>;
+  // A PDF's pages are drawn here, by the sealed pdf.js frame, and Mark up
+  // switches on in that same view.
+  if (isPdf) {
+    return <MarkupView tabId={markup?.tabId} projectId={markup?.projectId} place={markup?.place} onSend={markup?.onSend} agent={markup?.agent}
+      refresh={markup?.refresh} scope={scope} file={file} onClose={onClose} reader={{ actions, alert: sharing.failed === file.name ? t("mobile.outbox.shareError") : undefined }} />;
   }
   return <div className={`outbox-viewer${isText ? " outbox-text-sheet" : ""}`} role="dialog" aria-modal="true" aria-label={sentName(file)}>
     <div className="outbox-viewer-head">
@@ -265,28 +305,24 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose, markup }:
         <h2>{sentName(file)}</h2>
         <small>
           {stepping && `${t("mobile.outbox.position", { index: index + 1, count: steps.length })} · `}{sizeLabel(file.size)}
-          {((stepping && isUntested("mobile.outbox.step")) || (isImage && isUntested("mobile.outbox.zoom")))
+          {((stepping && isUntested("mobile.outbox.step")) || (isImage && isUntested("mobile.outbox.zoom"))
+            || (isText && file.size > INLINE_LIMIT && isUntested("mobile.outbox.wholeText")))
             && <span className="untested">{t("mobile.outbox.untested")}</span>}
         </small>
       </div>
-      {markable && <button className="outbox-markup" onClick={() => setMarking(true)} aria-label={t("mobile.markup.openFile", { name: sentName(file) })}>{t("mobile.markup.open")}</button>}
-      <a href={viewerFileUrl(scope, file, true)} download={sentName(file)}>{t("mobile.outbox.save")}</a>
-      {shareable && <button disabled={sharing.busy === file.name} onClick={() => void sharing.share(file)}>
-        {t(sharing.ready === file.name ? "mobile.outbox.shareReady" : "mobile.outbox.share")}
-      </button>}
-      {shareable && isUntested("mobile.outbox.share") && <span className="untested">{t("mobile.outbox.untested")}</span>}
+      {actions}
     </div>
     {(failure || sharing.failed === file.name) && <p role="alert">{failure || t("mobile.outbox.shareError")}</p>}
     {isText ? <div className="outbox-text-body">
       <pre>{text ?? (failure ? "" : t("mobile.outbox.loading"))}</pre>
-      {file.size > INLINE_LIMIT && <button className="outbox-open" onClick={() => void openOutside(url)}>{t("mobile.outbox.whole")}</button>}
+      {file.size > INLINE_LIMIT && !whole && (file.size <= WHOLE_LIMIT || !strands) && <button className="outbox-open"
+        onClick={() => { if (file.size <= WHOLE_LIMIT) setWholeOf(url); else void openOutside(url); }}>{t("mobile.outbox.whole")}</button>}
     </div> : isImage ? <div ref={stage} className={`outbox-viewer-stage${zoomed ? " zoomed" : ""}`}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
       <img ref={image} src={url} alt={sentName(file)} draggable={false}
         style={zoomed ? { transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` } : undefined} />
       {previous && <button className="outbox-step outbox-step-previous" onClick={() => onStep?.(previous)} aria-label={t("mobile.outbox.previous")}><span aria-hidden="true">‹</span></button>}
       {next && <button className="outbox-step outbox-step-next" onClick={() => onStep?.(next)} aria-label={t("mobile.outbox.next")}><span aria-hidden="true">›</span></button>}
-    </div>
-      : file.kind === "application/pdf" ? <button className="outbox-open" onClick={() => void openOutside(url)}>{t("mobile.outbox.open", { name: sentName(file) })}</button> : null}
+    </div> : null}
   </div>;
 }

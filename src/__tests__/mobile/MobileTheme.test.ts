@@ -74,9 +74,9 @@ describe("phone theme choice", () => {
   it("follows the desktop until the phone picks its own", () => {
     expect(readPhoneTheme()).toBe("desktop");
     applyPhoneTheme();
-    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
-    noteDesktopTheme("light_lavender");
     expect(document.documentElement.getAttribute("data-theme")).toBe("light_lavender");
+    noteDesktopTheme("dark");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
     setPhoneTheme("soft_dark");
     noteDesktopTheme("fancy_light");
     expect(document.documentElement.getAttribute("data-theme")).toBe("soft_dark");
@@ -88,7 +88,7 @@ describe("phone theme choice", () => {
     noteDesktopTheme("<script>");
     noteDesktopTheme(42);
     applyPhoneTheme();
-    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light_lavender");
   });
 
   it("resolves System by the phone's own OS and marks it, for the octagon bubbles", () => {

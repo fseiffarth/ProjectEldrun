@@ -900,60 +900,6 @@ html:not([data-theme^="fancy_"]) .steering-legend-orbit .tok-tag {
 button.steering-legend-hub:hover::before {
   background: var(--accent-hover);
 }
-/* The folded badge pulses so "steering is still on" can't be missed: a
-   hexagonal accent ring behind it grows and fades — the hexagon with its
-   2px-inset twin cut out (evenodd). No keyframe animation: an infinite one
-   repaints the clip-path ring every frame, which is expensive on WebKitGTK's
-   software path. `SteeringPulse` steps `data-beat` on a slow timer instead,
-   and each beat is a static frame (0 and 4 are rest). */
-.steering-legend-fab-pulse {
-  position: absolute;
-  inset: 0;
-  z-index: -2;
-  pointer-events: none;
-}
-.steering-legend-fab-pulse::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: var(--accent);
-  clip-path: polygon(
-    evenodd,
-    50% 0,
-    100% 25%,
-    100% 75%,
-    50% 100%,
-    0 75%,
-    0 25%,
-    50% 0,
-    50% 4.4%,
-    4.4% 27.2%,
-    4.4% 72.8%,
-    50% 95.6%,
-    95.6% 72.8%,
-    95.6% 27.2%,
-    50% 4.4%
-  );
-  opacity: 0;
-}
-.steering-legend-fab-pulse[data-beat="1"]::before {
-  transform: scale(1.2);
-  opacity: 0.7;
-}
-.steering-legend-fab-pulse[data-beat="2"]::before {
-  transform: scale(1.5);
-  opacity: 0.4;
-}
-.steering-legend-fab-pulse[data-beat="3"]::before {
-  transform: scale(1.8);
-  opacity: 0.15;
-}
-@media (prefers-reduced-motion: reduce) {
-  .steering-legend-fab-pulse::before {
-    transform: scale(1.25);
-    opacity: 0.6;
-  }
-}
 .steering-legend-fab-button kbd,
 .steering-legend-hub kbd {
   position: absolute;
@@ -2512,6 +2458,45 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   cursor: var(--cur-pointer, pointer);
 }
 .terminal-reader-picker-close:hover { color: var(--text-primary); }
+/* Codex /status, anchored to the same facts row as the other chat controls. */
+.terminal-reader-status {
+  width: min(620px, calc(100% - 28px));
+  gap: 14px;
+  padding: 16px;
+  font-size: var(--text-sm);
+}
+.terminal-reader-status .terminal-reader-picker-head > strong { margin-right: auto; }
+.terminal-reader-status .terminal-reader-picker-head { flex-wrap: wrap; }
+.terminal-reader-status-model { display: flex; flex-direction: column; gap: 4px; }
+.terminal-reader-status-model > strong { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.terminal-reader-status-label,
+.terminal-reader-status-note,
+.terminal-reader-status-model > small { color: var(--text-muted); }
+.terminal-reader-status-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(155px, 100%), 1fr)); gap: 10px; }
+.terminal-reader-status-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+.terminal-reader-status-meter-head { display: flex; flex-direction: column; gap: 6px; }
+.terminal-reader-status-meter-head > span,
+.terminal-reader-status-meter > small { color: var(--text-muted); }
+.terminal-reader-status-meter-head > strong { color: var(--accent); font-size: var(--text-lg); font-variant-numeric: tabular-nums; }
+.terminal-reader-status-track { height: 6px; overflow: hidden; background: var(--bg-hover); border-radius: 3px; }
+.terminal-reader-status-track > span { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.terminal-reader-status-meter.low .terminal-reader-status-meter-head > strong { color: var(--warning, #f0a35e); }
+.terminal-reader-status-meter.low .terminal-reader-status-track > span { background: var(--warning, #f0a35e); }
+.terminal-reader-status-details { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+.terminal-reader-status-details > div { display: grid; grid-template-columns: minmax(95px, 1fr) minmax(0, 3fr); gap: 12px; }
+.terminal-reader-status-details dt { color: var(--text-muted); }
+.terminal-reader-status-details dd { margin: 0; font-family: var(--font-mono); overflow-wrap: anywhere; }
+.terminal-reader-status-raw { color: var(--text-muted); }
+.terminal-reader-status-raw summary { cursor: var(--cur-pointer, pointer); }
+.terminal-reader-status-raw pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-xs); }
 /* The live screen's rows under the chat (`lib/agents/readerLive`): the
    choice the session waits on, as buttons, and the agent at work. */
 .terminal-reader-question {
@@ -2599,6 +2584,21 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
 .terminal-reader-option:disabled {
   opacity: 0.55;
   cursor: var(--cur-default, default);
+}
+/* A question kept in the chat once answered (`AskedQuestions`): quieter
+   than the live one, its rows not buttons — the ones the answer took lit,
+   the rest dimmed as a sent list's are. */
+.terminal-reader-question.asked {
+  border-color: var(--border-color);
+}
+.terminal-reader-question.asked .terminal-reader-option {
+  cursor: var(--cur-default, default);
+  opacity: 0.55;
+}
+.terminal-reader-question.asked .terminal-reader-option.chosen {
+  opacity: 1;
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 .terminal-reader-option-number {
   flex: none;

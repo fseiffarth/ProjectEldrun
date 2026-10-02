@@ -11,6 +11,9 @@ describe(`${BRAND.display} Mobile agent busy reader`, () => {
     expect(agentWorking(rows("› fix the tests", "• Working (0s • esc to interrupt)"))).toBe(true);
     expect(agentWorking(rows("⠏ Thinking about it (esc to cancel, 3s)", "> Type your message"))).toBe(true);
     expect(agentWorking(rows(" BUILD  ⬝⬝■■  esc interrupt"))).toBe(true);
+    // OpenCode's full TUI: the hint is a column, with context and keys after it.
+    expect(agentWorking(rows(" ⬝⬝■■■⬝⬝⬝ esc interrupt          12.3K (5%)  ctrl+p commands"))).toBe(true);
+    expect(agentWorking(rows(" ⬝⬝■■■⬝⬝⬝ esc again to interrupt          ctrl+p commands"))).toBe(true);
     // Claude Code 2.1.278: no hint in the spinner row any more.
     expect(agentWorking(rows("✶ Cascading… (36s · ↓ 2.1k tokens)", "  ⎿  Tip: Use /permissions to pre-approve", "❯ ", "  ⏵⏵ auto mode on (shift+tab to cycle)"))).toBe(true);
     expect(agentWorking(rows("✢ Reticulating… (1m 4s · ↑ 310 tokens · thinking)", "❯ "))).toBe(true);
