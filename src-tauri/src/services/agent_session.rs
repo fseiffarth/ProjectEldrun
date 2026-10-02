@@ -1906,7 +1906,16 @@ fn container_hook_script_path() -> PathBuf {
 /// tab's record over, so the phone read that Codex's rollout (2026-09-24). A Codex
 /// tab (`TABTIVITY_TAB_AGENT=codex`) mints its own ids, so its record is free-form
 /// — except that a Claude fired inside it (`CLAUDECODE` is set by Claude for its
-/// children, never by Codex) is refused outright.
+/// children, never by Codex) is refused outright. A `clear`/`resume` start is
+/// taken only from a Claude with no other Claude above it among the tab's
+/// processes (POSIX, via `/proc`): a `claude -p --resume <id>` run from the
+/// agent's Bash tool sent `source: resume` under its own id and moved the
+/// record, so the Reader showed that run's conversation until the tab's next
+/// `Stop` (2.1.287, 2026-10-02). Claude's env can't tell them apart — every
+/// hook, the tab's own too, gets `CLAUDECODE` and `CLAUDE_CODE_CHILD_SESSION`
+/// — and its self-relaunch execs in place (it spawns a child only when that
+/// exec fails), so it adds no Claude above itself.
+/// The PowerShell twin has no such check yet.
 #[cfg(not(windows))]
 fn hook_script_body(live_dir: &str) -> String {
     posix_hook_script_body(live_dir)
@@ -1964,7 +1973,17 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          \x20      [ \"$tnull\" = null ] && exit 0\n\
          \x20      case \"$tpath\" in \"\"|*/\"$sid\".jsonl) ;; *) exit 0 ;; esac\n\
          \x20      case \"$src\" in\n\
-         \x20        clear|resume) ;;\n\
+         \x20        # A /clear or /resume typed in the tab comes from the tab's own CLI;\n\
+         \x20        # a `claude --resume` nested under it (the agent's Bash tool) sends\n\
+         \x20        # the same start. Among the tab's processes — those carrying its\n\
+         \x20        # {UPPER}_TAB_UID — the tab's CLI has no claude above it, a nested\n\
+         \x20        # one has. Without /proc nothing is counted and the start is taken.\n\
+         \x20        clear|resume) n=0; p=$PPID\n\
+         \x20          while [ -r \"/proc/$p/environ\" ] && tr '\\0' '\\n' < \"/proc/$p/environ\" | grep -qx \"{UPPER}_TAB_UID=${UPPER}_TAB_UID\"; do\n\
+         \x20            [ \"$(cat \"/proc/$p/comm\" 2>/dev/null)\" = claude ] && n=$((n + 1))\n\
+         \x20            p=$(sed 's/.*) [^ ]* \\([0-9]*\\).*/\\1/' \"/proc/$p/stat\" 2>/dev/null)\n\
+         \x20          done\n\
+         \x20          [ \"$n\" -lt 2 ] || exit 0 ;;\n\
          \x20        # Claude relaunches itself (switching its renderer, updating) and,\n\
          \x20        # while its session has no transcript yet, comes back under a fresh\n\
          \x20        # id with a plain start. The tab's own session is then the one with\n\
@@ -3082,6 +3101,61 @@ mod tests {
         let other = "66666666-6666-4666-8666-666666666666";
         let (rec, mode) = run_hook(&script, &live, other, claude, true, r#"{"permission_mode":"plan"}"#);
         assert!(rec.is_none() && mode.is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A `claude --resume` (or a `/clear`) nested under the tab's own Claude —
+    /// the agent's Bash tool running the CLI — sends the same start a `/resume`
+    /// typed in the tab does. Only the process chain tells them apart: a
+    /// `claude` (here: `sh` under that name) under another one, both carrying
+    /// the tab's id, is refused; one alone, or under a `claude` that is not the
+    /// tab's, is followed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hook_script_refuses_a_clear_or_resume_from_a_claude_nested_under_the_tabs() {
+        let tmp = unique_tmp(concat!(crate::app_slug!(), "-hook-nested"));
+        let live = tmp.join("live");
+        let bin = tmp.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let script = tmp.join("hook.sh");
+        std::fs::write(&script, hook_script_body(&live.to_string_lossy())).unwrap();
+        let claude_bin = bin.join("claude");
+        std::os::unix::fs::symlink("/bin/sh", &claude_bin).unwrap();
+        let uid = "11111111-1111-4111-8111-111111111111";
+        let other = "22222222-2222-4222-8222-222222222222";
+        let payload = tmp.join("payload.json");
+        // `; true` keeps each shell alive under its command (no exec tail call).
+        let hook = r#"sh "$SCRIPT" < "$PAYLOAD"; true"#;
+        let run = |src: &str, chain: &str| {
+            std::fs::create_dir_all(&live).unwrap();
+            std::fs::write(live.join(uid), uid).unwrap();
+            std::fs::write(&payload, format!(r#"{{"session_id":"{other}","hook_event_name":"SessionStart","source":"{src}"}}"#)).unwrap();
+            let status = std::process::Command::new(&claude_bin)
+                .arg("-c")
+                .arg(chain)
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env(crate::app_env!("TAB_UID"), uid)
+                .env(TAB_AGENT_ENV, "claude")
+                .env("SCRIPT", &script)
+                .env("PAYLOAD", &payload)
+                .env("CLAUDE_BIN", &claude_bin)
+                .env("HOOK", hook)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            std::fs::read_to_string(live.join(uid)).unwrap()
+        };
+        let alone = format!("{hook}; true");
+        let nested = r#""$CLAUDE_BIN" -c "$HOOK"; true"#.to_string();
+        // A `claude` above the tab's own (the app launched from a Claude session).
+        let tab_uid = crate::app_env!("TAB_UID");
+        let outside = format!(r#"env -u {tab_uid} "$CLAUDE_BIN" -c '{tab_uid}="$0" "$CLAUDE_BIN" -c "$HOOK"; true' "${tab_uid}"; true"#);
+        for src in ["resume", "clear"] {
+            assert_eq!(run(src, &alone), other, "{src} from the tab's own claude");
+            assert_eq!(run(src, &nested), uid, "{src} from a claude nested under it");
+            assert_eq!(run(src, &outside), other, "{src} under a claude outside the tab");
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
