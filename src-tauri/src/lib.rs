@@ -2071,6 +2071,8 @@ pub fn run() {
             commands::agents::agent_usage,
             commands::agents::agent_versions,
             commands::agents::dismiss_agent_version,
+            commands::agents::check_agent_updates,
+            commands::agents::update_agent,
             commands::agents::agent_tab_model,
             commands::agents::agent_tab_goal,
             commands::agents::agent_tab_last_prompt,

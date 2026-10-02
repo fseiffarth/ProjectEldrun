@@ -29,6 +29,7 @@ pub mod agent_usage;
 // were checked against: the version recipes, the "verified against" notes from
 // docs/third_party_update_checklist.md as data, and the day-long probe cache.
 pub mod agent_versions;
+pub mod agent_latest;
 // Default-on Linux filesystem boundary for local agent tabs.  The authority
 // decision and root computation stay AppHandle-free; terminal spawn only applies
 // the resulting bubblewrap argv.

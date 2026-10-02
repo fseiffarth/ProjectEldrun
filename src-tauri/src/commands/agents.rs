@@ -873,16 +873,34 @@ fn manual_install_cmd(spec: &AgentSpec) -> &'static str {
 /// failure. The post-install probe is the real source of truth.
 #[tauri::command]
 pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, String> {
-    use std::io::{BufRead, BufReader};
-    use tauri::Emitter;
-
     let spec = find_spec(&id).ok_or_else(|| format!("unknown agent: {id}"))?;
 
     if spec_is_installed(spec) {
         return Ok(format!("{} is already installed.", spec.label));
     }
+    run_installer(app, spec)
+}
 
-    let id_owned = id.clone();
+/// Update an installed agent CLI: its official installer run again, which
+/// fetches the newest release — into Tabtivity's install home, whose launcher
+/// dirs come ahead of any host copy on PATH (`services::agent_install`). Same
+/// `agent-install-progress` stream as [`install_agent`].
+#[tauri::command]
+pub async fn update_agent(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    let spec = find_spec(&id).ok_or_else(|| format!("unknown agent: {id}"))?;
+    if !spec_is_installed(spec) {
+        return Err(format!("{} is not installed.", spec.label));
+    }
+    run_installer(app, spec)
+}
+
+/// Run `spec`'s installer, streaming its output; the body of [`install_agent`]
+/// and [`update_agent`].
+fn run_installer(app: tauri::AppHandle, spec: &'static AgentSpec) -> Result<String, String> {
+    use std::io::{BufRead, BufReader};
+    use tauri::Emitter;
+
+    let id_owned = spec.id.to_string();
     let emit = move |line: &str| {
         let _ = app.emit(
             "agent-install-progress",
@@ -1759,6 +1777,85 @@ pub async fn agent_versions(
         .collect()
 }
 
+/// One installed CLI against its newest published release
+/// (`services::agent_latest`).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUpdateReport {
+    agent: String,
+    /// The installed version, when it could be read: the CLI's `--version`
+    /// recipe, else the package metadata beside its executable.
+    current: Option<String>,
+    /// The newest published version.
+    latest: Option<String>,
+    /// Both versions read and `latest` genuinely newer — never `latest` alone.
+    update_available: bool,
+    /// Whether a registry is known for this CLI at all.
+    checkable: bool,
+    error: Option<String>,
+}
+
+/// Ask each installed CLI's registry for its newest release — Manage CLIs'
+/// "Check for CLI updates", the agent twin of `check_ollama_updates`. Only on
+/// a click: one request per installed CLI that has a known registry, all at
+/// once, each settled on its own so one registry being down costs only its row.
+/// The installed versions are re-read first, so a CLI that updated itself
+/// since the last probe is not offered the update it already has.
+#[tauri::command]
+pub async fn check_agent_updates() -> Vec<AgentUpdateReport> {
+    use crate::services::{agent_latest, agent_versions};
+
+    let mut probed: std::collections::HashMap<String, Option<String>> = agent_versions(Some(true))
+        .await
+        .into_iter()
+        .map(|report| (report.agent, report.version))
+        .collect();
+    let mut checks = Vec::new();
+    for spec in AGENTS {
+        let Some(path) = resolve_spec_path(spec) else {
+            continue;
+        };
+        let source = agent_latest::source_for(spec.id);
+        let current = probed
+            .remove(spec.id)
+            .flatten()
+            .or_else(|| source.and_then(|source| agent_latest::installed_version_near(&path, source)));
+        checks.push(tokio::spawn(async move {
+            let latest = match source {
+                Some(source) => Some(agent_latest::fetch_latest(source).await),
+                None => None,
+            };
+            (spec.id, current, latest)
+        }));
+    }
+
+    let mut reports = Vec::new();
+    for check in checks {
+        let Ok((agent, current, latest)) = check.await else {
+            continue;
+        };
+        let (latest, error) = match latest {
+            Some(Ok(version)) => (Some(version), None),
+            Some(Err(error)) => (None, Some(error)),
+            None => (None, None),
+        };
+        let update_available = matches!(
+            (&current, &latest),
+            (Some(current), Some(latest))
+                if agent_versions::version_cmp(latest, current) == std::cmp::Ordering::Greater
+        );
+        reports.push(AgentUpdateReport {
+            agent: agent.to_string(),
+            checkable: agent_latest::source_for(agent).is_some(),
+            current,
+            latest,
+            update_available,
+            error,
+        });
+    }
+    reports
+}
+
 /// Whether the host's `claude` takes `--name` at launch, from the version store
 /// alone — a tab spawn never waits on a probe. A missing or day-old entry is
 /// refreshed in the background (one probe at a time, however many tabs a
@@ -2285,6 +2382,25 @@ mod tests {
     /// for `irm … | iex`, `cmd /C` for plain npm/python lines (which may chain
     /// with `&&` — cmd parses that, Windows PowerShell 5.1 does not), and a
     /// clear error when there is no one-line Windows installer at all.
+    #[test]
+    fn every_update_source_names_a_registry_agent() {
+        for (id, _) in crate::services::agent_latest::SOURCES {
+            assert!(find_spec(id).is_some(), "agent_latest::SOURCES names unknown agent {id}");
+        }
+    }
+
+    #[test]
+    fn an_npm_installed_agent_checks_the_package_it_installs() {
+        use crate::services::agent_latest::{source_for, Source};
+        for spec in AGENTS {
+            if let Some(pkg) = npm_package_from_cmd(spec.install_cmd) {
+                if let Some(source) = source_for(spec.id) {
+                    assert_eq!(source, Source::Npm(pkg), "{}", spec.id);
+                }
+            }
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_installer_command_picks_interpreter_per_command() {

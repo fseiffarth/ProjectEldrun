@@ -267,6 +267,7 @@ export const UNTESTED = {
   "settingsSubPanels.3": { area: "layout", what: "SettingsSubPanels · Re-check version" },
   "settingsSubPanels.4": { area: "layout", what: "SettingsSubPanels · Install in a terminal" },
   "settingsSubPanels.agentOrder": { area: "layout", what: "Manage CLIs · installed agents reorder with ↑/↓ and show their Ctrl+1–9 chord; the + menu's Agents rows and the chords follow that order (in popouts too)" },
+  "settingsSubPanels.agentUpdates": { area: "layout", what: "Manage CLIs · Check for CLI updates asks npm/PyPI/GitHub for each installed CLI's newest release; a newer one turns the card's version chip into `current → latest`, which re-runs the installer" },
   "shortcutHelp.title": { area: "layout", what: "ShortcutHelpOverlay · Keyboard Shortcuts" },
   "statusCluster.settingLabel": { area: "layout", what: "SettingsPanel · Collapse header status indicators" },
   "theme.presets": { area: "layout", what: "ThemeCustomizer · Saved themes" },

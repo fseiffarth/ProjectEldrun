@@ -567,6 +567,23 @@ interface AgentVersionReport {
   dismissed: boolean;
 }
 
+/** One installed CLI against its newest published release (backend
+ *  `check_agent_updates`, `services::agent_latest`). */
+interface AgentUpdateReport {
+  agent: string;
+  /** The installed version, when it could be read. */
+  current: string | null;
+  latest: string | null;
+  /** Both versions read and `latest` genuinely newer. */
+  updateAvailable: boolean;
+  /** Whether a registry is known for this CLI at all. */
+  checkable: boolean;
+  error: string | null;
+}
+
+/** What the last "Check for CLI updates" click found, for the row's own note. */
+type AgentUpdateCheck = { ok: true; updates: number; unread: number } | { ok: false; reason: string };
+
 interface AgentInfo {
   id: string;
   label: string;
@@ -1592,6 +1609,10 @@ export function AgentsPanel({
   // Per-agent installed version + drift verdict, keyed by agent id.
   const [versions, setVersions] = useState<Record<string, AgentVersionReport>>({});
   const [checkingVersions, setCheckingVersions] = useState(false);
+  // Newest published release per installed CLI — only after a click.
+  const [updates, setUpdates] = useState<Record<string, AgentUpdateReport>>({});
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updateCheck, setUpdateCheck] = useState<AgentUpdateCheck | null>(null);
   // Filter over the *not installed* half only (see the two sections below).
   const [search, setSearch] = useState("");
   const logRef = useRef<HTMLPreElement>(null);
@@ -1658,6 +1679,59 @@ export function AgentsPanel({
     );
     try {
       await invoke<string>("install_agent", { id });
+      refresh();
+      notifyAgentRegistryChanged();
+      loadVersions(true);
+    } catch (err) {
+      setErrors((e) => ({ ...e, [id]: String(err) }));
+    } finally {
+      unlisten();
+      setInstalling(null);
+    }
+  };
+
+  // Ask every installed CLI's registry for its newest release — the agent twin
+  // of the local-model "Check for Ollama updates" row, and like it explicit
+  // only: one request per CLI, when clicked and at no other time. The backend
+  // re-reads the installed versions first, so the version chips refresh too.
+  const checkUpdates = () => {
+    setCheckingUpdates(true);
+    setUpdateCheck(null);
+    invoke<AgentUpdateReport[]>("check_agent_updates")
+      .then((rows) => {
+        setUpdates(Object.fromEntries(rows.map((row) => [row.agent, row])));
+        setUpdateCheck({
+          ok: true,
+          updates: rows.filter((row) => row.updateAvailable).length,
+          unread: rows.filter((row) => !row.updateAvailable && (!row.latest || !row.current)).length,
+        });
+        loadVersions(false);
+      })
+      .catch(() => setUpdateCheck({ ok: false, reason: t("agents.updateCheckNoBackend") }))
+      .finally(() => setCheckingUpdates(false));
+  };
+
+  // Run the CLI's own installer again, which fetches the newest release (into
+  // Tabtivity's install home, ahead of a host copy on PATH). Same live log as an
+  // install; the card stays in the installed list throughout.
+  const updateAgent = async (id: string) => {
+    setInstalling(id);
+    setErrors(({ [id]: _drop, ...rest }) => rest);
+    setLogs((l) => ({ ...l, [id]: "" }));
+    const unlisten = await listen<{ id: string; line: string }>(
+      "agent-install-progress",
+      (e) => {
+        if (e.payload.id !== id) return;
+        setLogs((l) => ({
+          ...l,
+          [id]: l[id] ? `${l[id]}\n${e.payload.line}` : e.payload.line,
+        }));
+      },
+    );
+    try {
+      await invoke<string>("update_agent", { id });
+      setUpdates(({ [id]: _drop, ...rest }) => rest);
+      setLogs(({ [id]: _drop, ...rest }) => rest);
       refresh();
       notifyAgentRegistryChanged();
       loadVersions(true);
@@ -1792,6 +1866,8 @@ export function AgentsPanel({
   const versionNotice = (a: AgentInfo) => {
     const report = versions[a.id];
     if (!report) return null;
+    const update = updates[a.id];
+    const current = report.version ?? update?.current ?? null;
     const moved = report.state === "moved" && !report.dismissed;
     const staleLabel = (note: AgentVersionStale) =>
       t(
@@ -1805,18 +1881,61 @@ export function AgentsPanel({
     return (
       <>
         <div className="agent-version-row">
-          {report.version && (
-            <span
-              className="agent-version-chip"
-              title={t("agents.versionTitle", {
-                label: a.label,
-                raw: report.raw ?? report.version,
-              })}
+          {/* After a check found a newer release the chip turns into the
+              update itself — `2.1.284 → 2.1.287`, the Ollama row's version
+              pair — because the new number is what the user wants to act on. */}
+          {update?.updateAvailable && current && update.latest ? (
+            <button
+              type="button"
+              className="local-model-version-note has-update"
+              disabled={installing !== null || removing !== null}
+              title={t("agents.updateTitle", { label: a.label, current, latest: update.latest })}
+              onClick={() => void updateAgent(a.id)}
             >
-              {report.version}
-            </span>
+              {installing === a.id ? (
+                t("agents.updating")
+              ) : (
+                <>
+                  {current}
+                  <span className="local-model-version-arrow" aria-hidden="true">
+                    →
+                  </span>
+                  <span className="local-model-version-new">{update.latest}</span>
+                </>
+              )}
+            </button>
+          ) : (
+            current && (
+              <span
+                className="agent-version-chip"
+                title={t("agents.versionTitle", {
+                  label: a.label,
+                  raw: report.raw ?? current,
+                })}
+              >
+                {current}
+              </span>
+            )
           )}
-          {!report.supported && (
+          {/* Newest release known but the installed one unreadable: no claim
+              of an update, but the installer can still be run again for it. */}
+          {update && !update.updateAvailable && update.latest && !current && (
+            <button
+              type="button"
+              className="ollama-action-btn"
+              disabled={installing !== null || removing !== null}
+              title={t("agents.updateUnreadTitle", { label: a.label, latest: update.latest })}
+              onClick={() => void updateAgent(a.id)}
+            >
+              {installing === a.id ? t("agents.updating") : t("agents.updateToLatest", { latest: update.latest })}
+            </button>
+          )}
+          {update?.error && <span className="local-model-update-note">{t("agents.updateCouldntCheck")}</span>}
+          {update && !update.checkable && (
+            <span className="local-model-update-note">{t("agents.updateNoRegistry")}</span>
+          )}
+          {update && <UntestedTag id="settingsSubPanels.agentUpdates" />}
+          {!report.supported && !current && (
             <span className="settings-help">{t("agents.versionUnsupported")}</span>
           )}
           {report.state === "unverified" && (
@@ -2036,9 +2155,14 @@ export function AgentsPanel({
               title={t("agents.reinstallTitle")}
               onClick={() => void reinstallAgent(a.id)}
             >
-              {removing === a.id || installing === a.id ? t("agents.reinstalling") : t("agents.reinstall")}
+              {removing === a.id ? t("agents.reinstalling") : t("agents.reinstall")}
             </button>
           </div>
+          {logs[a.id] && (
+            <pre className="ollama-install-log" ref={installing === a.id ? logRef : undefined}>
+              {logs[a.id]}
+            </pre>
+          )}
           {errors[a.id] && (
             <div className="project-dialog-error">{errors[a.id]}</div>
           )}
@@ -2227,7 +2351,39 @@ export function AgentsPanel({
             {installedAgents.length === 0 ? (
               <p className="settings-help">{t("agents.noneInstalled")}</p>
             ) : (
-              <SettingsList>{installedAgents.map(agentCard)}</SettingsList>
+              <>
+                {/* The local-model menu's check row, same markup: what a check
+                    *finds* shows on each card (the version pair), so the note
+                    here only speaks for the results that have no other place —
+                    a clean check, a failed one, and CLIs it couldn't compare. */}
+                <div className="local-model-check-row">
+                  <button
+                    type="button"
+                    className="tab-new-menu-item"
+                    disabled={checkingUpdates}
+                    title={t("agents.checkUpdatesTitle")}
+                    onClick={checkUpdates}
+                  >
+                    <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
+                      ●
+                    </span>
+                    {checkingUpdates ? t("agents.checkingUpdates") : t("agents.checkUpdates")}
+                    {!checkingUpdates && updateCheck && (
+                      <span className="local-model-update-note">
+                        {!updateCheck.ok
+                          ? updateCheck.reason
+                          : updateCheck.updates > 0
+                            ? t("agents.updatesFound", { count: String(updateCheck.updates) })
+                            : updateCheck.unread > 0
+                              ? t("agents.updatesNoneKnown", { count: String(updateCheck.unread) })
+                              : t("agents.updatesNone")}
+                      </span>
+                    )}
+                  </button>
+                  <UntestedTag id="settingsSubPanels.agentUpdates" />
+                </div>
+                <SettingsList>{installedAgents.map(agentCard)}</SettingsList>
+              </>
             )}
           </SettingsSection>
           <SettingsSection title={t("agents.availableGroup")}>
