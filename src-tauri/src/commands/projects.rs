@@ -4914,18 +4914,24 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
     copy_tree_core(src, dst, false)
 }
 
-/// Mint a pseudo-UUID without an external dep. Time-based (nanos), so callers
-/// that mint several ids back-to-back (e.g. box creation in a loop) must guard
-/// against collisions — see `commands::boxes::create_box`, which re-mints if the
-/// generated id already exists in the list.
+/// Mint a random RFC 4122 v4 UUID (36 chars, `8-4-4-4-12`). It must be a real
+/// UUID: it is passed as `claude --session-id` and checked by
+/// `agent_session::is_uuid_shaped`. Ids minted by older builds repeat a
+/// nanosecond timestamp in every group (85 chars); they stay valid as ids.
+/// Should the system RNG fail, the bytes fall back to the clock, so callers
+/// that mint several ids back-to-back keep their collision guards (see
+/// `commands::boxes::create_box`).
 pub(crate) fn uuid_v4() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    // Simple UUID v4 without external deps for now.
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{ts:016x}-{ts:08x}-4{ts:03x}-8{ts:03x}-{ts:012x}")
+    let mut b = [0u8; 16];
+    if getrandom::fill(&mut b).is_err() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        b = ts.to_le_bytes();
+    }
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
 }
 
 fn chrono_now() -> String {
@@ -4937,6 +4943,17 @@ fn chrono_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A minted id is a real v4 UUID: `claude --session-id` rejects anything else.
+    #[test]
+    fn uuid_v4_is_a_real_v4_uuid() {
+        let a = uuid_v4();
+        assert_eq!(a.len(), 36);
+        assert!(crate::services::agent_session::is_uuid_shaped(&a), "{a}");
+        assert_eq!(&a[14..15], "4");
+        assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"), "{a}");
+        assert_ne!(a, uuid_v4());
+    }
 
     /// `forget_project` purges only Tabtivity's state dirs about a project: a dir
     /// that is there goes, one that never existed is not an error, and a
