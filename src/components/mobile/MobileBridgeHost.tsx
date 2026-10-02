@@ -13,7 +13,7 @@ import { ensureRootScopeHydrated, useRootOverlayStore } from "../../stores/rootO
 import { closeTabInScope } from "../../lib/remote/closeRemoteTab";
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
-import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
+import { agentTabState, lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
 import { agentTabModelTag, tabModeMarks, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { holdPhonePrompt } from "../../lib/agents/phoneHolds";
@@ -471,9 +471,9 @@ function agentStatuses(projectId?: string): AgentTabStatus[] {
  * done on its own evidence.
  */
 function mobileAgentState(ptyId: string): MobileAgentState {
+  const live = agentTabState(ptyId);
+  if (live !== "idle") return live;
   const activity = useActivityStore.getState();
-  if (activity.busyByTab[ptyId]) return "working";
-  if (activity.attentionByTab[ptyId] === "decision") return "question";
   if (activity.attentionByTab[ptyId] === "interrupted") return "interrupted";
   if (activity.attentionByTab[ptyId] === "done") return "done";
   const doneAt = activity.lastDoneByTab[ptyId];

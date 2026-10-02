@@ -116,6 +116,7 @@ export const UNTESTED = {
   "pdfViewer.1": { area: "embed", what: "PdfViewer · Contents" },
   "pdfViewer.2": { area: "embed", what: "PdfViewer · Back" },
   "pdfViewer.3": { area: "embed", what: "PdfViewer · Black out text" },
+  "desktop.markup": { area: "embed", what: "PdfViewer · Mark up (local project PDF, main window): pen/highlighter/note/eraser over the pages (mouse, pen pressure, touch), colours, undo/redo (Ctrl+Z / Ctrl+Shift+Z), Clear page; layer kept in this window's IndexedDB; Submit bakes <stem>-marked.pdf into .eldrun/inbox/ and queues the prompt into an agent tab of the project (picker when several, last-opened default; disabled with a hint when none), straight into its queue while it works; the strip stays open, sent marks dim, a pill follows the tab (Sent / Queued / working / asking / Agent finished); a recompile while marking waits for Reload; button disabled on an arranged/unsaved PDF and in a second pane on the same file; hidden for remote, root, box and popout" },
   "pdfViewer.4": { area: "embed", what: "PdfViewer · Remarks in this document" },
   "pdfViewer.5": { area: "embed", what: "PdfViewer · Metadata" },
   "pdfViewer.6": { area: "embed", what: "PdfViewer · {n} remarks on {pages} pages" },

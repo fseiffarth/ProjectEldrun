@@ -1224,3 +1224,25 @@ if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
     /* no IPC bridge (tests) */
   }
 }
+
+/** What an agent tab is doing right now, in the three words a markup pill
+ *  needs (`mobile-web/src/markup/submitState.ts`'s `AgentSignal`). */
+export type AgentTabState = "working" | "question" | "idle";
+
+/** An agent tab's live state off this store's lamps: its busy flag, then a
+ *  decision prompt waiting on it. Pure over the two maps, so a component can
+ *  select it (`useActivityStore((s) => agentTabStateOf(s, ptyId))`). */
+export function agentTabStateOf(
+  state: { busyByTab: Record<string, boolean>; attentionByTab: Record<string, AttentionKind> },
+  ptyId: string,
+): AgentTabState {
+  if (state.busyByTab[ptyId]) return "working";
+  if (state.attentionByTab[ptyId] === "decision") return "question";
+  return "idle";
+}
+
+/** {@link agentTabStateOf} on the store as it is now — for the phone's agent
+ *  status (`MobileBridgeHost`) and the desktop markup mode's Submit. */
+export function agentTabState(ptyId: string): AgentTabState {
+  return agentTabStateOf(useActivityStore.getState(), ptyId);
+}

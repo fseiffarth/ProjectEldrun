@@ -505,7 +505,7 @@ file's own bytes, so comments, delimiters, quoting, and line endings survive, an
 they withhold the affordance rather than mangle a construct they cannot rewrite
 safely. The full list, with per-viewer behaviour, is in `README.md`.
 
-Three that carry design decisions worth recording here:
+Four that carry design decisions worth recording here:
 
 - **TeX** opens as a *single workspace tab per document* (deduped on
   `resolve_tex_root`): a left sidebar of the main file's `\input` children and
@@ -515,6 +515,16 @@ Three that carry design decisions worth recording here:
 - **PDF redaction** rasterises the pages you marked on save, so covered text is
   gone from the file rather than hidden under a shape that any copy, extract, or
   annotation-delete would lift. Only marked pages are flattened.
+- **PDF markup** (✎ **Mark up** in the PDF toolbar, the TeX workspace's PDF
+  too) is the phone's markup on the desktop: pen, highlighter, typed notes and
+  eraser over the pages, kept in this window's own storage — never in the
+  project or the session — until **Submit** bakes `<name>-marked.pdf` into
+  `.eldrun/inbox/` (`pdf_markup_submit`, `commands/pdf_markup.rs`) and queues the
+  prompt for an agent tab of the same project, straight into its queue if it
+  works. The strip stays open with the same rounds and pill as the phone; a
+  recompile while marks are on the pages waits for **Reload PDF** rather than
+  sliding new pages under them. Local projects in the main window only, on the
+  PDF as saved (no page edits pending), one pane per file.
 - **Markdown** renders fenced `mermaid` code blocks and `$…$`/`$$…$$` math; KaTeX runs
   with `trust: false` and mermaid script-free.
 

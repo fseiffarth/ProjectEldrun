@@ -3607,6 +3607,15 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA, desktop — **Mark up** in the desktop PDF viewer (2026-10-02; untested id `desktop.markup`; ✅ automated: `PdfMarkupCore.test.ts`, `PdfMarkupLayer.test.tsx`, `PdfMarkupSubmit.test.tsx`, `PdfMarkupViewer.test.tsx`, Rust `commands::pdf_markup`; ⚠️ never run live; needs a rebuilt Eldrun for `pdf_markup_submit` — `npm run backend:stale`): a local project with an agent tab → open its PDF (or the TeX workspace's PDF) → the toolbar's **✎ Mark up** (beside ▮) → a strip opens under the toolbar; draw with the mouse (pen ✎, highlighter ▭, note T: click to type, Enter adds, drag a note to move it; eraser ⌫ takes whole marks), colours, ↶/↷ and Ctrl+Z / Ctrl+Shift+Z undo strokes (not page edits), Clear page; zoom in/out — marks stay put and sharp; remarks stay visible but don't react, right-click places none; ▮ and the rail are off. **Submit** → the agent tab receives the prompt (`.eldrun/inbox/…-marked.pdf` beside the layer PNGs; open it — the marks are annotations), the strokes dim, the pill follows the tab (Sent / working / asking / Agent finished). While it works add marks and Submit again → typed into its queue at once. Let the agent rebuild the PDF: the pages do **not** repaint under the marks — the status line says the PDF changed → **Reload PDF** brings it at the same zoom and scroll, sent marks still shown dimmed; the eraser removes a checked one, nothing removes one automatically. Two agent tabs: a "Send to" picker lists both, defaulting to the one you looked at last; the pick receives the prompt. No agent tab: Submit disabled with "Open an agent tab in this project to send". The same PDF in a second pane: its Mark up says it is being marked up in another pane. Pending page edits (rail) → Mark up disabled with the reason. Remote project, root console, a box and a popout window: no Mark up button. Quit and restart Eldrun → the unsent marks are still there. A pen tablet draws with pressure; touch draws.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31bu — A plain `opencode` tab's chat fills its facts and shows it working** (2026-10-01;
   ✅ code-complete, automated tests passing — `MobileOpenCodeMini.test.ts`

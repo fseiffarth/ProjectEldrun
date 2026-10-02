@@ -202,7 +202,7 @@ stores stay at the top. No `index.ts` barrels.
 | `embed/YamlGrid.tsx` | Optional YAML/JSON card view ("Cards"): drill navigation — one main card, its level, its children; cards show scalar fields only. |
 | `embed/TableView.tsx` | CSV/TSV table (read-only `.xlsx`). Edits splice text so untouched cells keep their bytes; sort/filter carry source row index (`RowRef`). Separator sniffed, overridable per tab; column hiding via `ColumnsMenu`. |
 | `embed/GifView.tsx` | Animated-GIF viewer: decodes frames (`lib/viewers/gif.ts`) onto canvas with transport controls, sharing the image viewer's zoom/pan; falls back to native `<img>`. |
-| `embed/pdf/PdfViewer.tsx` | PDF viewer: pdf.js canvas stack, zoom/find/print toolbar, SyncTeX, page rail, contents sidebar, painted link layer (`links.ts`). Always load through `lib/viewers/pdfLoad.ts`. |
+| `embed/pdf/PdfViewer.tsx` | PDF viewer: pdf.js canvas stack, zoom/find/print toolbar, SyncTeX, page rail, contents sidebar, painted link layer (`links.ts`). Always load through `lib/viewers/pdfLoad.ts`. Every on-disk change goes through `diskChanged()` (stale banner / markup Reload / reload). |
 | `embed/pdf/pdfDoc.ts` | Source documents of an arrangement + `buildPdf`, the only place a PDF is written (pdf-lib). Blackout redaction flattens marked sheets to pixels — never an overlay rectangle. |
 | `embed/pdf/outline.ts` | Outline model (pure): embedded bookmarks → file pages, font-size heading fallback. `resolveDest`/`destTop` are the one destination resolver, shared with the link layer. |
 | `embed/pdf/pageFingerprint.ts` | Cheap per-page fingerprint from the operator list so a recompile repaints only changed sheets. |
@@ -211,6 +211,7 @@ stores stay at the top. No `index.ts` barrels.
 | `embed/pdf/pageInk.ts` | "Does the page draw anything here?" from a raster rendered at `AnnotationMode.DISABLE`; the link layer's second stage and the only thing allowed to drop a link. |
 | `embed/pdf/notes.ts` | The PDF's own `/Text` and `/Highlight` annotations as remarks; `links.ts`'s sibling, same `SyncRect` space. |
 | `embed/pdf/PdfNoteLayer.tsx` | Remark markers + highlights, placement menu and remark card. `PdfNote.quads` decides pin vs highlight. |
+| `embed/pdf/PdfMarkup{Layer,Bar}.tsx` + `usePdfMarkup.ts` | Desktop **Mark up** (`docs/pdf_markup_rounds_plan.md` §2.6): the phone's `mobile-web/src/markup/` core imported as is; per-page layer over every page layer (pointer → page points), strip from the redact/copy bars; IndexedDB layer keyed by project + absolute path; Submit → `pdf_markup_submit` → `queuePromptForTab` + `holdPhonePrompt`; pill off `agentTabState`. Gate/claims/disk-change rule/error codes: `lib/viewers/pdfMarkup.ts`. |
 | `embed/pdf/PdfNotesPane.tsx` | Remarks panel: every comment in one list in reading order (`placedNotes`); Next/Previous walk a ring (`stepNote`). |
 | `embed/pdf/PdfTextLayer.tsx` | Selectable text layer (pdf.js `TextLayer`) over rendered pages. Not a mode — always on. |
 | `embed/pdf/PdfSelectionBar.tsx` | Selection bar over selected text: 4 highlighter colours (swatch = action), highlight + remark, copy. |
@@ -251,7 +252,7 @@ stores stay at the top. No `index.ts` barrels.
 | `detached.ts` | Detached subwindow protocol (#42): channels, pure reducers, main-window host (`listenDetachedHost`) that reseeds popouts on store changes and mirrors tab statuses back. |
 | `detachedContext.ts` | Popout store seam (#231): a popout's stores hold no tabs, so store actions consult this module and forward writes to the main window. Don't add per-call-site window logic. |
 | `drag.ts` | Isolated per-frame drag state (reference for fine-grained selectors). |
-| `activity.ts` | Working / decision / finished / interrupted state of every PTY tab, published on a 300 ms tick. Agent hooks (`turnByPty`, from `services::agent_turn`) are authoritative; byte heuristics only as fallback. `busyKindByTab` says what a busy tab is busy *with* — agent turn, command, or both — and `busyStateClass` turns that into the strips' state class. |
+| `activity.ts` | Working / decision / finished / interrupted state of every PTY tab, published on a 300 ms tick. Agent hooks (`turnByPty`, from `services::agent_turn`) are authoritative; byte heuristics only as fallback. `busyKindByTab` says what a busy tab is busy *with* — agent turn, command, or both — and `busyStateClass` turns that into the strips' state class. `agentTabState(ptyId)` = working / question / idle, shared by `MobileBridgeHost` and the desktop markup pill. |
 | `timer.ts` | Per-project time-tracking state. |
 | `usage.ts` | Usage counters: in-memory accumulator (`bumpUsage`) flushed in batches to `usage_bump`, + the recap's read store. |
 | `hpcPipeline.ts` | Open/closed state of the HPC pipeline wizard (`HpcPipelineWizardHost` in `AppShell`). Mirrors `remoteMachines`. |

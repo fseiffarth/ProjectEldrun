@@ -1819,6 +1819,7 @@ pub fn run() {
             commands::fs::write_file_bytes,
             commands::pdf_clip::pdf_clip_set,
             commands::pdf_clip::pdf_clip_get,
+            commands::pdf_markup::pdf_markup_submit,
             commands::fs::file_mtime,
             commands::format::format_source,
             commands::format::formatter_available,

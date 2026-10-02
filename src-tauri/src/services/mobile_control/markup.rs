@@ -121,6 +121,15 @@ pub enum MarkupError {
     Unsupported,
     Files(files::FilesError),
     Outbox(outbox::OutboxError),
+    /// Desktop only: the path is not inside the project's folder.
+    OutsideProject,
+    /// Desktop only: the path crosses a name the file browser hides
+    /// (`files::hidden` — `.git`, `.eldrun` but its outbox, `.env*`).
+    HiddenPath,
+    /// Desktop only: a layer is not a PNG of a sane size.
+    InvalidLayer,
+    /// Desktop only: a layer could not be written into the inbox.
+    Inbox(inbox::InboxError),
 }
 
 impl MarkupError {
@@ -131,6 +140,10 @@ impl MarkupError {
             MarkupError::Unsupported => "unsupported_source",
             MarkupError::Files(error) => error.code(),
             MarkupError::Outbox(error) => error.code(),
+            MarkupError::OutsideProject => "outside_project",
+            MarkupError::HiddenPath => "hidden_path",
+            MarkupError::InvalidLayer => "invalid_layer",
+            MarkupError::Inbox(error) => error.code(),
         }
     }
 }
@@ -150,16 +163,30 @@ fn inbox_leaf(reference: &str) -> Option<&str> {
     (inbox::valid_global_name(leaf) && leaf.to_ascii_lowercase().ends_with(".png")).then_some(leaf)
 }
 
-/// Every shape and bound the request must meet before anything is read.
+/// Every shape and bound the phone's request must meet before anything is
+/// read: its source's shape (`validate_source`) and its body's
+/// (`validate_body`).
 pub fn validate(request: &MarkupRequest) -> Result<(), MarkupError> {
+    validate_source(&request.source)?;
+    validate_body(request)
+}
+
+/// The phone's source reference: a bounded token or an outbox leaf. The
+/// desktop names its source by path instead (`resolve_local_source`).
+pub fn validate_source(source: &MarkupSource) -> Result<(), MarkupError> {
+    match source {
+        MarkupSource::Files(token) if token.is_empty() || token.len() > 8_192 => Err(MarkupError::Invalid),
+        MarkupSource::Outbox(name) if !outbox::valid_name(name) => Err(MarkupError::Invalid),
+        _ => Ok(()),
+    }
+}
+
+/// The pages, marks, layer references, picture and instruction bounds —
+/// everything but `request.source`, which each caller proves its own way.
+pub fn validate_body(request: &MarkupRequest) -> Result<(), MarkupError> {
     let invalid = Err(MarkupError::Invalid);
     if request.pages.is_empty() || request.pages.len() > MAX_PAGES {
         return invalid;
-    }
-    match &request.source {
-        MarkupSource::Files(token) if token.is_empty() || token.len() > 8_192 => return invalid,
-        MarkupSource::Outbox(name) if !outbox::valid_name(name) => return invalid,
-        _ => {}
     }
     if request.picture.as_deref().is_some_and(|picture| inbox_leaf(picture).is_none()) {
         return invalid;
@@ -291,20 +318,47 @@ pub fn submit(
     request: &MarkupRequest,
     send_back: bool,
 ) -> Result<Submitted, MarkupError> {
-    // The path goes into a prompt sent as the user's own words: a project
-    // file named with a line break or a backtick could speak in it.
+    speakable(source)?;
+    layers_present(root, request)?;
+    let (bytes, kind) = read_source(root, source)?;
+    bake_and_prompt(root, source, request, send_back, bytes, kind)
+}
+
+/// The path goes into a prompt sent as the user's own words: a project file
+/// named with a line break or a backtick could speak in it.
+fn speakable(source: &ResolvedSource) -> Result<(), MarkupError> {
     if source.rel().chars().any(|c| c.is_control() || c == '`') {
         return Err(MarkupError::Unsupported);
     }
+    Ok(())
+}
+
+fn layers_present(root: &Path, request: &MarkupRequest) -> Result<(), MarkupError> {
     let layers_ok = request.pages.iter().all(|page| inbox_png(root, &page.layer))
         && request.picture.as_deref().is_none_or(|picture| inbox_png(root, picture));
     if !layers_ok {
         return Err(MarkupError::LayerMissing);
     }
-    let (bytes, kind) = match source {
-        ResolvedSource::Files(rel) => files::read(root, rel).map_err(MarkupError::Files)?,
-        ResolvedSource::Outbox(name) => outbox::read(root, name).map_err(MarkupError::Outbox)?,
-    };
+    Ok(())
+}
+
+fn read_source(root: &Path, source: &ResolvedSource) -> Result<(Vec<u8>, &'static str), MarkupError> {
+    match source {
+        ResolvedSource::Files(rel) => files::read(root, rel).map_err(MarkupError::Files),
+        ResolvedSource::Outbox(name) => outbox::read(root, name).map_err(MarkupError::Outbox),
+    }
+}
+
+/// The one bake path, phone and desktop: the source's bytes as read, a
+/// PDF's marked copy into the inbox, the prompt.
+fn bake_and_prompt(
+    root: &Path,
+    source: &ResolvedSource,
+    request: &MarkupRequest,
+    send_back: bool,
+    bytes: Vec<u8>,
+    kind: &str,
+) -> Result<Submitted, MarkupError> {
     let is_pdf = kind == "application/pdf";
     let is_picture = kind.starts_with("image/");
     // A picture is one page with its composed copy; a PDF has no such copy.
@@ -342,6 +396,124 @@ pub fn submit(
         send_back,
     });
     Ok(Submitted { prompt, marked })
+}
+
+/// The largest layer PNG the desktop viewer may hand over, and all of one
+/// submit's together. A layer is `LAYER_WIDTH` (1200) px wide and mostly
+/// transparent (`mobile-web/src/markup/rasterize.ts`).
+pub const MAX_LAYER_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_LAYERS_TOTAL: usize = 64 * 1024 * 1024;
+/// The widest or tallest a layer PNG may claim to be.
+const MAX_LAYER_SIDE: u32 = 16_384;
+const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// One page the desktop viewer marked: its marks, as the phone sends them,
+/// and its layer PNG's bytes (stored into the inbox here, not uploaded first).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalPage {
+    pub n: u32,
+    pub size: [f64; 2],
+    pub marks: Vec<Mark>,
+    pub layer_png: Vec<u8>,
+}
+
+/// Whether `bytes` is a PNG of sane size: the signature, then the `IHDR`
+/// chunk first with a width and height in `1..=MAX_LAYER_SIDE`.
+pub fn check_layer_png(bytes: &[u8]) -> Result<(), MarkupError> {
+    if bytes.len() > MAX_LAYER_BYTES || bytes.len() < 33 || !bytes.starts_with(PNG_MAGIC) || &bytes[8..16] != b"\0\0\0\x0dIHDR" {
+        return Err(MarkupError::InvalidLayer);
+    }
+    let side = |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    if !(1..=MAX_LAYER_SIDE).contains(&side(16)) || !(1..=MAX_LAYER_SIDE).contains(&side(20)) {
+        return Err(MarkupError::InvalidLayer);
+    }
+    Ok(())
+}
+
+/// Where the desktop viewer's `path` sits in the project whose folder is
+/// `root` (the directory `projects.json` records; the caller has refused a
+/// remote project). Lexical and strict: `path` must be absolute and lie below
+/// `root` as recorded or as canonicalized, by plain names only — no `..`, no
+/// `.`. `files::read` / `outbox::read` then re-prove every segment with no
+/// link on the way, so a symlink anywhere on the path is `file_not_found`.
+/// `.eldrun/outbox/<leaf>` reads as an outbox source; any other name the file
+/// browser hides (`files::hidden`) is `HiddenPath`.
+pub fn resolve_local_source(root: &Path, path: &Path) -> Result<ResolvedSource, MarkupError> {
+    if !path.is_absolute() {
+        return Err(MarkupError::OutsideProject);
+    }
+    let canonical = root.canonicalize().map_err(|_| MarkupError::Files(files::FilesError::Unavailable))?;
+    let rest = path
+        .strip_prefix(root)
+        .or_else(|_| path.strip_prefix(&canonical))
+        .map_err(|_| MarkupError::OutsideProject)?;
+    let mut segments = Vec::new();
+    for component in rest.components() {
+        match component {
+            std::path::Component::Normal(name) => {
+                segments.push(name.to_str().ok_or(MarkupError::Files(files::FilesError::NotFound))?)
+            }
+            _ => return Err(MarkupError::OutsideProject),
+        }
+    }
+    if segments.is_empty() {
+        return Err(MarkupError::Files(files::FilesError::NotFound));
+    }
+    let rel = segments.join("/");
+    if let Some(leaf) = rel.strip_prefix(outbox::OUTBOX_DIR).and_then(|rest| rest.strip_prefix('/')) {
+        if outbox::valid_name(leaf) {
+            return Ok(ResolvedSource::Outbox(leaf.to_string()));
+        }
+    }
+    if segments.iter().any(|segment| files::hidden(segment)) {
+        return Err(MarkupError::HiddenPath);
+    }
+    Ok(ResolvedSource::Files(rel))
+}
+
+/// The desktop viewer's Submit (`commands::pdf_markup`): the phone's submit
+/// over a project path instead of a sealed token. Everything — path, marks,
+/// layer PNGs, the source being a readable PDF — is checked before the first
+/// write; then the layers go into the inbox (`<stem>-p<n>-layer.png`) and the
+/// one bake path makes the marked copy and the prompt. The prompt has no
+/// `eldrun-send` line: the viewer reloads the file from disk. The
+/// instruction is `DEFAULT_INSTRUCTION` (no desktop setting in v1). PDFs only
+/// — the desktop marks no pictures.
+pub fn submit_local(root: &Path, path: &Path, pages: Vec<LocalPage>) -> Result<Submitted, MarkupError> {
+    let source = resolve_local_source(root, path)?;
+    let placeholder = format!("{}/layer.png", inbox::INBOX_DIR);
+    let (marks, layers): (Vec<MarkupPage>, Vec<Vec<u8>>) = pages
+        .into_iter()
+        .map(|page| (MarkupPage { n: page.n, size: page.size, marks: page.marks, layer: placeholder.clone() }, page.layer_png))
+        .unzip();
+    let mut request = MarkupRequest {
+        // Never read: `bake_and_prompt` works from `source` resolved above.
+        source: MarkupSource::Files(String::new()),
+        pages: marks,
+        picture: None,
+        instruction: None,
+    };
+    validate_body(&request)?;
+    let mut total = 0usize;
+    for png in &layers {
+        check_layer_png(png)?;
+        total += png.len();
+    }
+    if total > MAX_LAYERS_TOTAL {
+        return Err(MarkupError::InvalidLayer);
+    }
+    speakable(&source)?;
+    let (bytes, kind) = read_source(root, &source)?;
+    if kind != "application/pdf" {
+        return Err(MarkupError::Unsupported);
+    }
+    let stem = source.stem();
+    for (page, png) in request.pages.iter_mut().zip(&layers) {
+        let stored = inbox::store(root, &format!("{stem}-p{}-layer.png", page.n), png).map_err(MarkupError::Inbox)?;
+        page.layer = stored.reference;
+    }
+    layers_present(root, &request)?;
+    bake_and_prompt(root, &source, &request, false, bytes, kind)
 }
 
 /// What the prompt is built from.
