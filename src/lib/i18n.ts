@@ -104,6 +104,7 @@ export const enSource = {
   "mobile.composer.undoClear": "Undo",
   "mobile.project.recentlyClosed": "Recently closed",
   "mobile.project.reopenHint": "Reopen {label}: its conversation comes back",
+  "mobile.project.reopening": "Reopening {label}…",
   "mobile.project.scheduledAt": "Scheduled for {at} (desktop time)",
   "mobile.project.reopenGone": "That tab can no longer be reopened.",
   "mobile.project.desktopUnavailable": "Desktop unavailable — the Mobile host answers from {app}'s files: sessions open, a new agent (or a shell, if shells are allowed on the phone) starts here, tabs rename, close and reopen, and the next {app} window picks it all up. Mail, alerts and a mode, worktree, cloud, local-model or sign-in launch wait for the window.",

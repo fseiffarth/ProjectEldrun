@@ -4151,6 +4151,7 @@ export const dict: Dict = {
   "newTabMenu.groupRecentlyClosed": "Zuletzt geschlossen",
   "mobile.project.recentlyClosed": "Zuletzt geschlossen",
   "mobile.project.reopenHint": "{label} wieder öffnen: die Unterhaltung kommt zurück",
+  "mobile.project.reopening": "{label} wird wieder geöffnet…",
   "mobile.project.scheduledAt": "Geplant für {at} (Desktop-Zeit)",
   "mobile.project.reopenGone": "Dieser Tab kann nicht mehr geöffnet werden.",
   "mobile.project.desktopUnavailable": "Desktop nicht erreichbar — der Mobile-Host antwortet aus {app}s Dateien: Sitzungen öffnen sich, ein neuer Agent (oder eine Shell, wenn Shells am Telefon erlaubt sind) startet hier, Tabs lassen sich umbenennen, schließen und wieder öffnen, und das nächste {app}-Fenster übernimmt alles. Mail, Hinweise sowie ein Start mit Modus, Worktree, Cloud, lokalem Modell oder Anmeldung warten auf das Fenster.",

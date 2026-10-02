@@ -4149,6 +4149,7 @@ export const dict: Dict = {
   "newTabMenu.groupRecentlyClosed": "Fermés récemment",
   "mobile.project.recentlyClosed": "Fermés récemment",
   "mobile.project.reopenHint": "Rouvrir {label} : sa conversation revient",
+  "mobile.project.reopening": "Réouverture de {label}…",
   "mobile.project.scheduledAt": "Programmé pour {at} (heure du bureau)",
   "mobile.project.reopenGone": "Cet onglet ne peut plus être rouvert.",
   "mobile.project.desktopUnavailable": "Bureau indisponible — l'hôte mobile répond depuis les fichiers d'{app} : les sessions s'ouvrent, un nouvel agent (ou un shell, si les shells sont autorisés sur le téléphone) démarre ici, les onglets se renomment, se ferment et se rouvrent, et la prochaine fenêtre {app} reprend tout. Le courrier, les alertes et un lancement avec mode, worktree, cloud, modèle local ou connexion attendent la fenêtre.",

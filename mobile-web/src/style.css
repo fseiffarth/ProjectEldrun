@@ -310,6 +310,9 @@ small { color:#9498aa; }
 .lamp.off { background:#d15b66; box-shadow:none; }
 .create { display:grid; gap:9px; margin-top:22px; }
 .reopen-closed > button { text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* The row whose reopen is in flight: working dots, not dimmed with the rest. */
+.reopen-closed > button.reopening { display:flex; align-items:center; gap:8px; border-color:#8fb8ff; }
+.reopen-closed > button.reopening:disabled { opacity:1; }
 .agent-create > button:first-child { flex:1; text-align:left; }
 .mode { text-transform:capitalize; }
 /* The shell remains a clear first action; the agents fit two across without

@@ -543,11 +543,15 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       <small className="reopen-closed-label">{t("mobile.project.recentlyClosed")}{isUntested("mobile.project.reopenClosed") && <span className="untested">{t("mobile.newTab.untested")}</span>}</small>
       {detail.closed.slice(0, 3).map((row) => <button
         key={row.id}
+        className={reopeningId === row.id ? "reopening" : undefined}
         disabled={reopeningId !== null}
+        aria-busy={reopeningId === row.id}
         onClick={() => void reopen(row)}
         aria-label={t("mobile.project.reopenHint", { label: row.label })}
         title={t("mobile.project.reopenHint", { label: row.label })}
-      ><span aria-hidden="true">↺</span> {row.label}</button>)}
+      >{reopeningId === row.id
+        ? <><span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span> {t("mobile.project.reopening", { label: row.label })}{isUntested("mobile.project.reopening") && <span className="untested">{t("mobile.newTab.untested")}</span>}</>
+        : <><span aria-hidden="true">↺</span> {row.label}</>}</button>)}
     </section>}
     {detail?.project.status === "inactive" && <section className="create"><button className="primary" disabled={activating} onClick={() => void activate()}>Activate project</button></section>}
     <section className="create"><button disabled={!detail} onClick={() => setPromptsOpen(true)} aria-haspopup="dialog" aria-expanded={promptsOpen}>◷ Collected prompts</button></section>

@@ -4147,6 +4147,7 @@ export const dict: Dict = {
   "newTabMenu.groupRecentlyClosed": "Cerradas recientemente",
   "mobile.project.recentlyClosed": "Cerradas recientemente",
   "mobile.project.reopenHint": "Reabrir {label}: su conversación vuelve",
+  "mobile.project.reopening": "Reabriendo {label}…",
   "mobile.project.scheduledAt": "Programado para {at} (hora del escritorio)",
   "mobile.project.reopenGone": "Esa pestaña ya no se puede reabrir.",
   "mobile.project.desktopUnavailable": "Escritorio no disponible — el host móvil responde desde los archivos de {app}: las sesiones se abren, un nuevo agente (o un shell, si los shells están permitidos en el teléfono) arranca aquí, las pestañas se renombran, se cierran y se reabren, y la próxima ventana de {app} lo recoge todo. El correo, las alertas y un inicio con modo, worktree, nube, modelo local o inicio de sesión esperan a la ventana.",
