@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useT } from "../../lib/i18n";
@@ -12,23 +12,26 @@ import {
 } from "../../lib/agents/agentReader";
 import { NO_LIVE, STOP_KEY, answerKeys, readReaderLive, sameReaderLive, type ReaderLive } from "../../lib/agents/readerLive";
 import { onSentPrompt } from "../../lib/agents/sentPrompts";
+import { readerDraft, setReaderDraft } from "../../lib/agents/readerDrafts";
 import { sendSteeringPrompt } from "../../lib/shortcuts/steeringAgent";
 import { writePtyInput } from "../../lib/terminal/terminalInput";
 import { terminalFor } from "../../lib/terminal/terminalRegistry";
 import { isInterruptInput, noteUserInput } from "../../stores/activity";
 import { useUse24h } from "../../lib/timeFormat";
 import { agentTabLabel, agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
+import { useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { SIGN_IN_CARD_CLASS } from "./TerminalSignInCard";
 import { TerminalReaderFacts } from "./TerminalReaderFacts";
 import { UntestedTag } from "../common/UntestedTag";
 import { TabStatusMark } from "../tabs/TabLocalityBadges";
-import { answerHtml } from "../../../mobile-web/src/terminal/answerMarkdown";
+import { answerHtml, promptHtml } from "../../../mobile-web/src/terminal/answerMarkdown";
 import { chatDayLabel, chatMoment, chatTime, dayOpeners } from "../../../mobile-web/src/terminal/chatTimes";
 import { openSubagent, openSubagentRunning, siblingPosition, stepSibling, subagentAtWork, workingModelName, type SubagentStep } from "../../../mobile-web/src/terminal/subagents";
 import { commandArgsInline, transcriptTurns, type TranscriptTurn } from "../../../mobile-web/src/terminal/transcriptTurns";
-import type { RunningShell } from "../../../mobile-web/src/api";
+import { afterClear, clearMark } from "../../../mobile-web/src/terminal/clearedSession";
+import type { AskedQuestion, RunningShell } from "../../../mobile-web/src/api";
 
 /** How often a shown Reader asks for the transcript again. The backend
  * answers an unchanged file by its fingerprint, without a parse. */
@@ -151,6 +154,53 @@ function LiveQuestion({ live, answered, onAnswer }: {
   );
 }
 
+/** A question the agent asked, kept in the chat once answered (the phone's
+ * `AskedCard`): `LiveQuestion`'s card, its rows no longer buttons — the ones
+ * the answer took ticked, an answer typed instead of picked as a row of its
+ * own, and one turned down saying so. */
+function AskedQuestions({ questions, time }: { questions: readonly AskedQuestion[]; time: ReactNode }) {
+  const t = useT();
+  return (
+    <div className="terminal-reader-question asked" role="group" aria-label={t("mobile.transcript.asked")}>
+      <small className="terminal-reader-question-head">{t("mobile.transcript.asked")} <UntestedTag id="mobile.focus.askedCard" /></small>
+      {questions.map((asked, index) => {
+        const typed = asked.answer !== undefined && !asked.options?.some((option) => option.chosen);
+        return (
+          <Fragment key={index}>
+            {asked.header && <div className="terminal-reader-question-tabs"><span>{asked.header}</span></div>}
+            <p className="terminal-reader-question-ask">{asked.question}</p>
+            <div className="terminal-reader-options">
+              {asked.options?.map((option, row) => {
+                const recommended = RECOMMENDED.exec(option.label);
+                return (
+                  <div key={row} className={option.chosen ? "terminal-reader-option chosen" : "terminal-reader-option"}>
+                    <span className="terminal-reader-option-number">{option.chosen ? "✓" : row + 1}</span>
+                    <span className="terminal-reader-option-label">
+                      <span>
+                        {recommended ? option.label.slice(0, recommended.index) : option.label}
+                        {recommended && <em className="terminal-reader-recommended">{t("terminal.reader.recommended")}</em>}
+                      </span>
+                      {option.description && <small>{option.description}</small>}
+                    </span>
+                  </div>
+                );
+              })}
+              {typed && (
+                <div className="terminal-reader-option chosen">
+                  <span className="terminal-reader-option-number">✓</span>
+                  <span className="terminal-reader-option-label"><span>{asked.answer}</span></span>
+                </div>
+              )}
+            </div>
+            {asked.answer === undefined && <small className="terminal-reader-question-more">{t("mobile.transcript.notAnswered")}</small>}
+          </Fragment>
+        );
+      })}
+      {time}
+    </div>
+  );
+}
+
 interface PendingPrompt { id: number; text: string; sentAt: number }
 
 /** One answer as formatted text (`answerHtml`, the phone's: formatting only,
@@ -158,6 +208,13 @@ interface PendingPrompt { id: number; text: string; sentAt: number }
  * a new turn does not re-render every answer above it. */
 const AnswerText = memo(function AnswerText({ text }: { text: string }) {
   const html = useMemo(() => answerHtml(text), [text]);
+  return <div className="markdown-body terminal-reader-md" dangerouslySetInnerHTML={{ __html: html }} />;
+});
+
+/** A prompt, formatted the same way (`promptHtml`: an answer's formatting,
+ * its single line breaks kept) — a subagent's brief reads as written. */
+const PromptText = memo(function PromptText({ text }: { text: string }) {
+  const html = useMemo(() => promptHtml(text), [text]);
   return <div className="markdown-body terminal-reader-md" dangerouslySetInnerHTML={{ __html: html }} />;
 });
 
@@ -203,8 +260,9 @@ function Turn({ turn, cutLabel, planLabel, agentLabel, use24h, onOpenAgent }: {
     </>;
   }
   if (turn.kind === "prompt") {
-    return <div className="terminal-reader-turn user" data-prompt={turn.text}><p>{turn.text}</p>{cut}{time}</div>;
+    return <div className="terminal-reader-turn user" data-prompt={turn.text}><PromptText text={turn.text} />{cut}{time}</div>;
   }
+  if (turn.questions) return <AskedQuestions questions={turn.questions} time={time} />;
   return (
     <div className={turn.plan ? "terminal-reader-turn agent plan" : "terminal-reader-turn agent"}>
       {turn.plan && <small className="terminal-reader-plan-head">{planLabel}</small>}
@@ -220,19 +278,25 @@ function Turn({ turn, cutLabel, planLabel, agentLabel, use24h, onOpenAgent }: {
  * box, never the conversation above it — with a long chat that was every turn
  * and the facts row per key, on the one renderer thread typing waits for.
  * Mounted while steering holds the keyboard (drawn as nothing), so a draft
- * survives steering. Sends through the prompt box's path
- * (`sendSteeringPrompt`); ↑/↓ walk `history`; Esc is `onEscape`.
+ * survives steering; an unsent draft is kept per tab (`readerDrafts`), so
+ * it survives the Reader unmounting too — another tab shown, the switch
+ * flipped. Sends through the prompt box's path (`sendSteeringPrompt`); ↑/↓
+ * walk `history`; Esc is `onEscape`.
  */
-function ReaderComposer({ tabRef, history, focused, visible, steering, onEscape }: {
+function ReaderComposer({ scope, tabKey, tabRef, history, focused, visible, steering, onEscape, onStatus }: {
+  scope: string;
+  tabKey: string;
   tabRef: RefObject<TabEntry | undefined>;
   history: readonly string[];
   focused: boolean;
   visible: boolean;
   steering: boolean;
   onEscape: () => void;
+  onStatus: () => void;
 }) {
   const t = useT();
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => readerDraft(scope, tabKey));
+  useEffect(() => setReaderDraft(scope, tabKey, draft), [scope, tabKey, draft]);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -251,6 +315,13 @@ function ReaderComposer({ tabRef, history, focused, visible, steering, onEscape 
     const current = tabRef.current;
     const text = draft.trim();
     if (!current || !text || sending) return;
+    if (current.cmd === "codex" && text === "/status") {
+      onStatus();
+      setDraft("");
+      setSendError("");
+      historyAt.current = null;
+      return;
+    }
     setSending(true);
     setSendError("");
     try {
@@ -385,6 +456,10 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
   const workingSeenAt = useRef(0);
   const [answered, setAnswered] = useState("");
   const [picking, setPicking] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [statusRequest, setStatusRequest] = useState(0);
+  const requestStatus = () => { setStatusOpen(true); setStatusRequest((request) => request + 1); };
+  const closeStatus = () => setStatusOpen(false);
   /** Steering holds the keyboard (or its prompt box does): a composer on show
    * would take typing that goes to steering, so it stands aside — the Prompt
    * key (I) is how a prompt goes in then. */
@@ -522,13 +597,32 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
     };
   }, [visible, scope, cwd, subToken, subLimit, sessionId]);
 
-  const entries = useMemo(() => (transcript?.available ? transcript.entries : []), [transcript]);
+  const storedEntries = useMemo(() => (transcript?.available ? transcript.entries : []), [transcript]);
+  // A clear (`agentClearUndo`) empties the chat at once, before its card
+  // offers it back: what is read now is the cleared conversation, every record
+  // of it — no prompt has gone into the new one while the card stands. Codex
+  // reads that session until its first prompt, so the mark outlives the card.
+  const clearOffered = useAgentClearUndoStore((state) => !!state.cleared[ptyId]);
+  const clearedAt = useAgentClearUndoStore((state) => state.marks[ptyId]);
+  useEffect(() => {
+    if (clearOffered && clearedAt === undefined && transcript) {
+      useAgentClearUndoStore.getState().setMark(ptyId, clearMark(storedEntries));
+    }
+  }, [clearOffered, clearedAt, transcript, storedEntries, ptyId]);
+  /** The new chat's records while the cleared one is still what is read. */
+  const sinceClear = useMemo(() => afterClear(storedEntries, clearedAt ?? null), [storedEntries, clearedAt]);
+  const entries = sinceClear ?? storedEntries;
   /** The open subagent's conversation, once read. */
   const subTranscript = subRead && subRead.token === subToken ? subRead.transcript : null;
   /** The conversation on screen — the session's, or the open subagent's —
    * which is where a card clicked in it was opened from. */
   const shownTranscript = openStep ? subTranscript : transcript;
-  const levelEntries = useMemo(() => (shownTranscript?.available ? shownTranscript.entries : []), [shownTranscript]);
+  const levelEntries = useMemo(
+    () => (openStep ? (subTranscript?.available ? subTranscript.entries : []) : entries),
+    [openStep, subTranscript, entries],
+  );
+  /** Earlier turns to read in: none of the cleared conversation's. */
+  const levelTruncated = !!shownTranscript?.available && shownTranscript.truncated && !(sinceClear && !openStep);
   const levelEntriesRef = useRef(levelEntries);
   levelEntriesRef.current = levelEntries;
   const turns = useMemo(() => transcriptTurns(levelEntries), [levelEntries]);
@@ -674,7 +768,7 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
   const backLabel = t("mobile.subagent.back", {
     name: subagentPath.length > 1 ? subagentPath[subagentPath.length - 2].task : t("mobile.subagent.main"),
   });
-  const moreEarlier = !!transcript?.available && transcript.truncated;
+  const moreEarlier = !!transcript?.available && transcript.truncated && !sinceClear;
   /** The open subagent at work — it has not reported back, and the session
    * is at work or it runs in the background — and the model its own
    * conversation names. */
@@ -748,7 +842,7 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
       )}
       <div className="terminal-reader-stream">
         <div ref={listRef} className="terminal-reader-list" onScroll={onScroll}>
-          {shownTranscript?.available && shownTranscript.truncated && (
+          {levelTruncated && (
             <button type="button" className="terminal-reader-earlier" onClick={showEarlier}>
               {t("terminal.reader.earlier")}
             </button>
@@ -784,7 +878,7 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
           })}
           {!openStep && pending.map((item) => (
             <div key={item.id} className="terminal-reader-turn user pending" data-prompt={item.text}>
-              <p>{item.text}</p>
+              <PromptText text={item.text} />
               <small className="terminal-reader-time">{t("terminal.reader.sending")}</small>
             </div>
           ))}
@@ -847,21 +941,28 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
           agentLabel={agentLabel}
           live={live}
           modelTag={modelTag}
-          usage={transcript?.available ? transcript.usage : undefined}
+          usage={transcript?.available && !sinceClear ? transcript.usage : undefined}
           visible={visible}
           path={tab.cwd || cwd}
           effort={seenEffort}
           typeKeys={typeIntoPane}
           onPicking={setPicking}
+          statusOpen={statusOpen}
+          statusRequest={statusRequest}
+          onStatusRequest={requestStatus}
+          onStatusClose={closeStatus}
         />
       )}
       <ReaderComposer
+        scope={scope}
+        tabKey={tabKey}
         tabRef={tabRef}
         history={history}
         focused={focused}
         visible={visible}
         steering={steering}
-        onEscape={openStep ? subagentUp : onShowTerminal}
+        onEscape={statusOpen ? closeStatus : openStep ? subagentUp : onShowTerminal}
+        onStatus={requestStatus}
       />
     </div>,
     host,

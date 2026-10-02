@@ -38,6 +38,7 @@ import {
   type OutboxFile,
   type ProjectDetail,
   type SessionTranscript,
+  type AskedQuestion,
   type TabRow,
   type TranscriptEntry,
 } from "../api";
@@ -94,10 +95,10 @@ import { agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
 import { COMMIT_CHOICES, COMMIT_PROMPTS, type CommitChoice } from "../terminal/commitPrompts";
 import { agentWork } from "../terminal/agentBusy";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
-import { answerHtml } from "../terminal/answerMarkdown";
+import { answerHtml, promptHtml } from "../terminal/answerMarkdown";
 import { chatDayLabel, chatMoment, chatTime, dayOpeners } from "../terminal/chatTimes";
 import { commandArgsInline, slashCommand, transcriptTurns, type SlashCommand, type TranscriptTurn } from "../terminal/transcriptTurns";
-import { openSubagent, openSubagentRunning, siblingPosition, stepSibling, workingModelName, type SubagentStep } from "../terminal/subagents";
+import { compactTokens, openSubagent, openSubagentRunning, siblingPosition, stepSibling, workingElapsed, workingModelName, type SubagentStep } from "../terminal/subagents";
 import { MAX_PENDING, arrivedPending, pendingPrompt, reworded, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
 import { outboxPosts, type OutboxPost as ChatPost } from "../terminal/outboxPosts";
 import { afterClear, clearMark, type ClearMark } from "../terminal/clearedSession";
@@ -404,6 +405,13 @@ const AnswerText = memo(function AnswerText({ text }: { text: string }) {
   return <div className="transcript-md" dangerouslySetInnerHTML={{ __html: html }} />;
 });
 
+/** A prompt of the stored session, formatted the same way (`promptHtml`:
+ * an answer's formatting, its single line breaks kept). */
+const PromptText = memo(function PromptText({ text }: { text: string }) {
+  const html = useMemo(() => promptHtml(text), [text]);
+  return <div className="transcript-md" dangerouslySetInnerHTML={{ __html: html }} />;
+});
+
 /** A subagent the agent spawned, in its place in the chat: what it was sent
  * to do under its kind, when it started, a tap away from its own
  * conversation. Not a bubble — the agent did not say it — but a card on the
@@ -483,11 +491,13 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, part, cutLabel,
     </div>}
     {turn.kind === "agent"
       ? <SubagentCard turn={turn} label={agentLabel} untested={agentUntested} time={time} onOpen={onOpenAgent} />
+      : turn.questions
+      ? <AskedCard questions={turn.questions} label={t("mobile.transcript.asked")} notAnswered={t("mobile.transcript.notAnswered")} untested={isUntested("mobile.focus.askedCard") ? t("mobile.focus.untested") : ""} time={time} press={hold(turn.key, () => turn.text)} />
       : turn.command
       ? <CommandDivider command={turn.command} label={promptLabel} press={hold(turn.key, () => turn.text)} />
       : turn.kind === "prompt"
       ? <div className="readable-turn user" role="group" aria-label={promptLabel} data-prompt={turn.text} data-send-failed={turn.failed || undefined} {...hold(turn.key, () => turn.text, turn.held && onEdit && turn.pending !== undefined ? onEdit.bind(null, turn.pending) : undefined)}>
-          <p className="transcript-text">{turn.text}</p>
+          <PromptText text={turn.text} />
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
           {time}
           {/* The link never acknowledged this prompt's frames: it stays where
@@ -590,6 +600,48 @@ function QuestionList({ prompt, tabs, question, sent, sendingLabel, onPick }: {
       </li>;
     })}</ul>
   </>;
+}
+
+/**
+ * A question the agent asked, kept in the chat once it is answered: the card
+ * the live one was (`QuestionList`), its rows no longer taps — the ones the
+ * answer took ticked, an answer typed instead of picked as a row of its own,
+ * and a question turned down saying so. It is one record, so it is drawn once
+ * and never changes.
+ */
+function AskedCard({ questions, label, notAnswered, untested, time, press }: {
+  questions: readonly AskedQuestion[];
+  label: string;
+  notAnswered: string;
+  untested: string;
+  time: ReactNode;
+  press: HoldHandlers;
+}) {
+  return <div className="transcript-screen transcript-asked" role="group" aria-label={label} {...press}>
+    <small>{label}{untested && <> · {untested}</>}</small>
+    {questions.map((asked, index) => {
+      const typed = asked.answer !== undefined && !asked.options?.some((option) => option.chosen);
+      return <Fragment key={index}>
+        {asked.header && <div className="question-tabs"><span>{asked.header}</span></div>}
+        <div className="question-ask"><div className="readable-line">{asked.question}</div></div>
+        <ul className="option-list question-list asked-list">
+          {asked.options?.map((option, row) => {
+            const recommended = RECOMMENDED.exec(option.label);
+            return <li key={row} className={option.chosen ? "chosen" : undefined}>
+              <span>
+                <strong>{recommended ? option.label.slice(0, recommended.index) : option.label}{recommended && <em className="question-recommended">{recommended[1]}</em>}</strong>
+                {option.description && <small>{option.description}</small>}
+              </span>
+              {option.chosen && <span className="asked-check" aria-hidden="true">✓</span>}
+            </li>;
+          })}
+          {typed && <li className="chosen"><span><strong>{asked.answer}</strong></span><span className="asked-check" aria-hidden="true">✓</span></li>}
+        </ul>
+        {asked.answer === undefined && <small className="asked-none">{notAnswered}</small>}
+      </Fragment>;
+    })}
+    {time}
+  </div>;
 }
 
 /** `pickModel`: the tab card's model was tapped, so the session opens with its
@@ -752,15 +804,20 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * newer one further down (the reader already shows a prompt, and a pinned
    * older one would read as the question to the answer below it). Read off
    * the chat as drawn (`data-prompt`), so the stored session and the screen
-   * reading pin alike. */
+   * reading pin alike. The subagent index sticks over the top of the chat:
+   * a bubble behind it is out of sight too, and the pin sits under it
+   * (`pinnedTop`, px below the view's top) — drawn over it, it was hidden. */
   const [pinnedPrompt, setPinnedPrompt] = useState("");
+  const [pinnedTop, setPinnedTop] = useState(0);
   const pinnedPromptEl = useRef<HTMLElement | null>(null);
   const checkPinnedPrompt = useCallback(() => {
     const stream = readableHost.current;
     const prompts = stream?.querySelectorAll<HTMLElement>("[data-prompt]") ?? [];
     const view = stream?.getBoundingClientRect();
-    const top = view?.top ?? 0;
+    const index = stream?.querySelector<HTMLElement>(":scope > .subagent-index");
+    const top = Math.max(view?.top ?? 0, index?.getBoundingClientRect().bottom ?? 0);
     const bottom = view?.bottom ?? 0;
+    setPinnedTop(top - (view?.top ?? 0));
     let owner: HTMLElement | null = null;
     for (let i = prompts.length - 1; i >= 0; i--) {
       const box = prompts[i].getBoundingClientRect();
@@ -3188,7 +3245,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     }
   };
   // New turns push the prompt up as surely as a scroll does.
-  useLayoutEffect(checkPinnedPrompt, [checkPinnedPrompt, view, sessionShown, sessionEntries, screenStream, openStep]);
+  useLayoutEffect(checkPinnedPrompt, [checkPinnedPrompt, view, sessionShown, sessionEntries, screenStream, openStep, subagentListOpen]);
   const jumpToLatest = () => {
     const stream = readableHost.current;
     if (!stream) return;
@@ -3343,6 +3400,25 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * model, not the session's. */
   const subagentWorking = openSubagentRunning(subagentPath, sessionEntries, sessionBusy);
   const subagentModel = workingModelName(subTranscript?.model);
+  /** What the subagent's working row says beside the dots, as the session's
+   * does: how long since it was spawned (its entry's stamp, else its own
+   * first record's) and the tokens its newest request carried. */
+  const subagentStart = openStep?.at ?? (subTranscript && !subTranscript.truncated ? subTranscript.entries[0]?.at : undefined);
+  const subagentTimed = subagentWorking && !!subagentStart;
+  const [subagentNow, setSubagentNow] = useState(() => Date.now());
+  // The elapsed time counts on by the second while the row is up.
+  useEffect(() => {
+    if (!subagentTimed) return;
+    setSubagentNow(Date.now());
+    const timer = window.setInterval(() => setSubagentNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [subagentTimed]);
+  const subagentTokens = compactTokens(subTranscript?.tokens);
+  const subagentFacts = [
+    workingElapsed(subagentStart, subagentNow),
+    subagentTokens ? t("mobile.focus.workingTokens", { count: subagentTokens }) : undefined,
+  ].filter((fact): fact is string => !!fact);
+  const subagentRowUntested = isUntested("mobile.subagent.working") || isUntested("mobile.subagent.workingFacts");
   const subagentParent = subagentPath.length > 1 ? subagentPath[subagentPath.length - 2].task : t("mobile.subagent.main");
   /** A subagent's conversation in the Reader: under a bar that goes back up
    * to the conversation it was opened from and steps through the subagents
@@ -3379,7 +3455,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
           {subagentWorking && <div className="transcript-working" role="status" data-testid="subagent-working">
             <span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span>
             {subagentModel ? t("mobile.focus.workingModel", { model: subagentModel }) : t("mobile.focus.working")}
-            {isUntested("mobile.subagent.working") && <small className="transcript-working-facts"><em>{t("mobile.focus.untested")}</em></small>}
+            {(subagentFacts.length > 0 || subagentRowUntested) && <small className="transcript-working-facts">
+              {subagentFacts.join(" · ")}
+              {subagentRowUntested && <em>{subagentFacts.length > 0 && " · "}{t("mobile.focus.untested")}</em>}
+            </small>}
           </div>}
         </div>}
   </>;
@@ -3524,7 +3603,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
                   </>}
               </div>}
         </section>
-        {!openStep && pinnedPrompt && <button className="readable-pinned-prompt" aria-label={t("mobile.focus.lastPrompt")}
+        {!openStep && pinnedPrompt && <button className="readable-pinned-prompt" style={pinnedTop ? { top: pinnedTop + 6 } : undefined} aria-label={t("mobile.focus.lastPrompt")}
           onClick={() => pinnedPromptEl.current?.scrollIntoView({ block: "start", behavior: "smooth" })}>
           <span className="readable-pinned-prompt-text">{pinnedPrompt}</span>
           {isUntested("mobile.focus.pinnedPrompt") && <em>{t("mobile.focus.untested")}</em>}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Terminal } from "@xterm/xterm";
 import { CanvasAddon } from "@xterm/addon-canvas";
@@ -429,6 +429,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const viewerUpdateSeq = useRef(0);
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
+  // The pane's element for the overlays drawn into it (Reader, cards), as
+  // state: a ref read while rendering is null on the first render, and a pane
+  // nothing re-renders afterwards (a new Claude tab, its session id fixed at
+  // spawn) would open on its terminal although its CLI's choice is the Reader.
+  const [host, setHost] = useState<HTMLDivElement | null>(null);
+  useLayoutEffect(() => setHost(containerRef.current), []);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const unlistenOutput = useRef<(() => void) | null>(null);
@@ -512,6 +518,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const [signIn, setSignIn] = useState<SignInRequest | null>(null);
   // The session in this pane was just cleared: offer to take it back.
   const undoClearOffered = useAgentClearUndoStore((state) => !!state.cleared[id]);
+  // Over the Reader, only once it has let go of the cleared chat (its mark).
+  const readerCleared = useAgentClearUndoStore((state) => state.marks[id] !== undefined);
   const dismissedSignIns = useRef(new Set<string>());
   const signInCopiedRef = useRef(t("terminal.signIn.copied"));
   signInCopiedRef.current = t("terminal.signIn.copied");
@@ -2054,9 +2062,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         reader={readerAvailable ? { open: readerOn, onToggle: () => setReader(!readerOn) } : undefined}
       />
     )}
-    {readerOn && splitId && containerRef.current && (
+    {readerOn && splitId && host && (
       <TerminalReaderView
-        host={containerRef.current}
+        host={host}
         ptyId={id}
         scope={splitId.scope}
         tabKey={splitId.key}
@@ -2066,10 +2074,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         onShowTerminal={() => setReader(false)}
       />
     )}
-    {signIn && containerRef.current && (
+    {signIn && host && (
       <TerminalSignInCard
         key={signIn.url}
-        host={containerRef.current}
+        host={host}
         request={signIn}
         onOpen={() => void invoke("open_external_url", { url: signIn.url }).catch(() => {})}
         onCopy={() => {
@@ -2091,14 +2099,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         onDismiss={() => dismissSignIn(signIn.url)}
       />
     )}
-    {undoClearOffered && !signIn && containerRef.current && (
-      <TerminalUndoClearCard host={containerRef.current} ptyId={id} />
+    {undoClearOffered && (!readerOn || readerCleared) && !signIn && host && (
+      <TerminalUndoClearCard host={host} ptyId={id} />
     )}
     {/* The host's CLI only: a remote or container tab runs another install. */}
-    {zoomable && !remoteHostId && !sandbox && !undoClearOffered && !signIn && containerRef.current && (
-      <TerminalVersionCard host={containerRef.current} cmd={cmd} />
+    {zoomable && !remoteHostId && !sandbox && !undoClearOffered && !signIn && host && (
+      <TerminalVersionCard host={host} cmd={cmd} />
     )}
-    {keySelecting && containerRef.current && createPortal(
+    {keySelecting && host && createPortal(
       // The keyboard-steering legend's look, pinned inside the pane.
       <div className="steering-legend terminal-key-select" role="status">
         <span className="steering-legend-title">
@@ -2111,7 +2119,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         <span className="steering-legend-item"><kbd>Enter</kbd>{t("terminal.keySelect.copy")}</span>
         <span className="steering-legend-item"><kbd>Esc</kbd>{t("terminal.keySelect.leave")}</span>
       </div>,
-      containerRef.current,
+      host,
     )}
     {dialogs}
     </>

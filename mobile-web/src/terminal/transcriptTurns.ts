@@ -1,4 +1,4 @@
-import type { TranscriptEntry } from "../api";
+import type { AskedQuestion, TranscriptEntry } from "../api";
 
 /**
  * One bubble of the stored-session chat: a prompt, or one message the agent
@@ -32,6 +32,8 @@ export interface TranscriptTurn {
   finished?: boolean;
   /** On an `answer`: the plan the agent put up for approval. */
   plan?: boolean;
+  /** On an `answer`: the questions it asked, as answered. */
+  questions?: readonly AskedQuestion[];
   /** A prompt sent from this phone the session has not recorded yet, by its
    * id; `failed` once the link lost it, `retrying` while a resend waits;
    * `held` while the desktop still holds it and its words can change;
@@ -85,6 +87,7 @@ export function transcriptTurns(entries: readonly TranscriptEntry[]): Transcript
       command: entry.kind === "prompt" ? slashCommand(entry.text) : null,
       ...(entry.kind === "agent" ? { subagent: entry.subagent, role: entry.role, ...(entry.finished ? { finished: true } : {}) } : {}),
       ...(entry.kind === "answer" && entry.plan === true ? { plan: true } : {}),
+      ...(entry.kind === "answer" && entry.questions?.length ? { questions: entry.questions } : {}),
       ...(entry.pending !== undefined ? { pending: entry.pending, failed: entry.failed === true, retrying: entry.retrying === true, ...(entry.held ? { held: true } : {}), ...(entry.queued ? { queued: true } : {}) } : {}),
     };
   });

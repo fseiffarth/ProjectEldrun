@@ -21,10 +21,12 @@ import { TerminalPromptStrip } from "../../components/terminal/TerminalPromptStr
 import { composerHistory, mergeTranscript, readerOffered, readerRequest, rememberReader, rememberedReader, shortPath } from "../../lib/agents/agentReader";
 import { worktreeOfPath } from "../../lib/agents/agentWorktrees";
 import { useAgentReaderStore, useReaderOpen } from "../../stores/agents/agentReader";
+import { useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
 import { noteSentPrompt } from "../../lib/agents/sentPrompts";
+import { setReaderDraft } from "../../lib/agents/readerDrafts";
 import type { Terminal } from "@xterm/xterm";
 
 /** A pane's xterm as far as the Reader reads it: its active buffer. */
@@ -63,6 +65,8 @@ describe("the agent pane's Reader", () => {
       Promise.resolve(command === "agent_tab_transcript" ? transcript : []));
     useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [tab] } }));
     useAgentReaderStore.setState({ byAgent: {} });
+    useAgentClearUndoStore.setState({ cleared: {}, marks: {} });
+    setReaderDraft("p", "agent-1", "");
     host = document.createElement("div");
     document.body.appendChild(host);
   });
@@ -123,6 +127,23 @@ describe("the agent pane's Reader", () => {
     expect((box as HTMLTextAreaElement).value).toBe("hello");
   });
 
+  it("keeps an unsent draft per tab when the Reader goes away and comes back", async () => {
+    const first = reader(host);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "not sent yet" } });
+    first.unmount();
+    const other = render(
+      <TerminalReaderView host={host} ptyId="p:agent-2" scope="p" tabKey="agent-2" cwd="/p" visible focused onShowTerminal={() => {}} />,
+    );
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+    other.unmount();
+    reader(host);
+    const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(box.value).toBe("not sent yet");
+    sendSteeringPrompt.mockResolvedValue(undefined);
+    await act(async () => { fireEvent.keyDown(box, { key: "Enter" }); });
+    expect(box.value).toBe("");
+  });
+
   it("goes back to the terminal on Esc", async () => {
     const back = vi.fn();
     reader(host, back);
@@ -174,6 +195,18 @@ describe("the agent pane's Reader", () => {
     } finally {
       act(() => useKeyboardSteeringStore.getState().exit());
     }
+  });
+
+  it("empties the chat on a clear while the cleared session is still what is read", async () => {
+    reader(host);
+    await screen.findByText("fix the parser");
+    act(() => useAgentClearUndoStore.getState().noteRoll("p:agent-1", "clear"));
+    await waitFor(() => expect(host.textContent).not.toContain("fix the parser"));
+    expect(useAgentClearUndoStore.getState().marks["p:agent-1"]).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Show earlier turns" })).toBeNull();
+    // Taken back: the whole conversation again.
+    act(() => useAgentClearUndoStore.getState().noteRoll("p:agent-1", "resume"));
+    await screen.findByText("fix the parser");
   });
 
   it("says why when there is no session to read", async () => {
@@ -553,6 +586,59 @@ describe("the Reader's live rows", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByRole("button", { name: "Haiku 4.5" })).toBeTruthy();
+  });
+
+  it("visualizes Codex /status with remaining meters and the CLI's details", async () => {
+    submitCommand.mockClear();
+    useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [{ ...tab, cmd: "codex", label: "Codex", scheduleTargetId: "st-1" }] } }));
+    const rows = ["›", "gpt-6 · 80% context left"];
+    term = fakeTerminal(rows);
+    registerTerminal("p:agent-1", term);
+    reader(host);
+    await act(async () => { fireEvent.click(await screen.findByRole("button", { name: /^Status/ })); });
+    expect(submitCommand).toHaveBeenCalledWith("st-1", "/status");
+    rows.splice(0, rows.length, "/status", ">_ OpenAI Codex (v0.101.0)",
+      "Model: gpt-6 (high)", "Directory: /p", "Permissions: Custom (workspace-write)",
+      "Context window: 80% left (54K used / 272K)",
+      "5h limit: [██████░░░░] 60% left (resets 13:45)",
+      "Weekly limit: [░░░░░░░░░░] 5% left", "Session: launch-1", "›");
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    const panel = screen.getByRole("dialog", { name: "Codex status" });
+    expect(within(panel).getByRole("meter", { name: "Context window" }).getAttribute("aria-valuenow")).toBe("80");
+    expect(within(panel).getByRole("meter", { name: "5-hour limit" }).getAttribute("aria-valuenow")).toBe("60");
+    expect(within(panel).getByRole("meter", { name: "Weekly limit" }).getAttribute("aria-valuenow")).toBe("5");
+    expect(panel.textContent).toContain("Custom (workspace-write)");
+    expect(panel.querySelector(".terminal-reader-status-meter.low")?.textContent).toContain("5% left");
+    expect(panel.querySelector("details pre")?.textContent).toContain("Session: launch-1");
+    fireEvent.click(within(panel).getByRole("button", { name: "Refresh /status" }));
+    expect(submitCommand).toHaveBeenCalledTimes(2);
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Codex status" })).toBeNull();
+  });
+
+  it("opens /status from Codex's chat composer without sending an agent prompt or replacing busy input", async () => {
+    submitCommand.mockClear();
+    sendSteeringPrompt.mockClear();
+    useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [{ ...tab, cmd: "codex", label: "Codex", scheduleTargetId: "st-1" }] } }));
+    invoke.mockImplementation((command: string) => Promise.resolve(command === "agent_tab_transcript"
+      ? { ...transcript, usage: { contextLeft: 75, session: { used: 40 } } } : []));
+    term = fakeTerminal(["› fix it", "Working (9s · esc to interrupt)", "›", "gpt-6 · 75% context left"]);
+    registerTerminal("p:agent-1", term);
+    const showTerminal = vi.fn();
+    reader(host, showTerminal);
+    await screen.findByText(/is working…/);
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "/status" } });
+    await act(async () => { fireEvent.keyDown(box, { key: "Enter" }); });
+    const panel = screen.getByRole("dialog", { name: "Codex status" });
+    expect(within(panel).getAllByRole("meter")).toHaveLength(2);
+    expect(within(panel).queryByRole("meter", { name: "Weekly limit" })).toBeNull();
+    expect(submitCommand).not.toHaveBeenCalled();
+    expect(sendSteeringPrompt).not.toHaveBeenCalled();
+    expect((box as HTMLTextAreaElement).value).toBe("");
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(showTerminal).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Codex status" })).toBeNull();
   });
 });
 

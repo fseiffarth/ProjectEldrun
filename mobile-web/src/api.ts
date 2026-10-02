@@ -573,6 +573,15 @@ export async function getAgentStatus(tabId: string, refresh = false): Promise<Ag
   return report;
 }
 
+/** A question the agent asked, as answered: its rows, the ones the answer
+ * took marked, and the answer itself — absent when it was turned down. */
+export interface AskedQuestion {
+  header?: string;
+  question: string;
+  options?: { label: string; description?: string; chosen?: boolean }[];
+  answer?: string;
+}
+
 /** One turn of an agent tab's stored conversation, as the desktop reads it
  * off the CLI's own transcript (`services::agent_transcript`). An `agent`
  * entry is a subagent the agent spawned: `text` is what it was sent to do,
@@ -588,6 +597,10 @@ export interface TranscriptEntry {
   /** On an `answer`: the plan the agent put up for approval (Claude's
    * `ExitPlanMode`), set apart from its ordinary answers. */
   plan?: boolean;
+  /** On an `answer`: the questions the agent asked (Claude's
+   * `AskUserQuestion`), with the answers they got — sent once answered, so
+   * the one still waiting is the live screen's. `text` says the same plainly. */
+  questions?: AskedQuestion[];
   /** On an `agent`: it has not reported back yet (Claude's spawn call has
    * no result in the transcript). */
   running?: boolean;
@@ -630,6 +643,9 @@ export interface SessionTranscript {
   usage?: SessionUsage;
   /** The model its newest record names, as an API id — a subagent's own. */
   model?: string;
+  /** The tokens its newest request carried (context plus answer), the count
+   * Claude Code's own subagent row shows — read off a subagent's own file. */
+  tokens?: number;
   /** Desktop Reader only (the phone's API strips it): the shell commands the
    * agent is running now — Claude's `Bash` calls still without a result, and
    * background ones still running. */

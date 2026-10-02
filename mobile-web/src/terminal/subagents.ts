@@ -12,6 +12,8 @@ export interface SubagentRef {
   running?: boolean;
   /** It runs in the background (`background`). */
   background?: boolean;
+  /** When it was spawned: its entry's own stamp (`at`). */
+  at?: string;
 }
 
 /** One conversation the Reader has walked into from the stored session. */
@@ -29,7 +31,7 @@ export interface SubagentStep extends SubagentRef {
  * stepped to. */
 export function subagentsIn(entries: readonly TranscriptEntry[]): SubagentRef[] {
   return entries.flatMap((entry) => entry.kind === "agent" && entry.subagent
-    ? [{ token: entry.subagent, task: entry.text, role: entry.role, ...(entry.running ? { running: true } : {}), ...(entry.background ? { background: true } : {}) }]
+    ? [{ token: entry.subagent, task: entry.text, role: entry.role, ...(entry.running ? { running: true } : {}), ...(entry.background ? { background: true } : {}), ...(entry.at ? { at: entry.at } : {}) }]
     : []);
 }
 
@@ -65,10 +67,32 @@ export function workingModelName(model: string | undefined): string | undefined 
   return family ? `${family[0].toUpperCase()}${family.slice(1)}` : id;
 }
 
+/** How long a subagent has worked, as Claude's own spinner says it: `45s`,
+ * `1m 5s`, `1h 2m`. Nothing for a start not known, or not yet passed. */
+export function workingElapsed(since: string | undefined, now: number): string | undefined {
+  const start = since ? Date.parse(since) : NaN;
+  if (!Number.isFinite(start) || now < start) return undefined;
+  const seconds = Math.floor((now - start) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+/** A token count as a spinner prints it: `950`, `12.3k`, `1.2M`. */
+export function compactTokens(count: number | undefined): string | undefined {
+  if (count === undefined || !Number.isFinite(count) || count <= 0) return undefined;
+  if (count < 1000) return `${Math.round(count)}`;
+  if (count < 1_000_000) return `${(count / 1000).toFixed(1).replace(/\.0$/u, "")}k`;
+  return `${(count / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
+}
+
 /** `path` with `ref` opened from the conversation that holds `entries`,
- * scrolled to `scrollTop`. */
+ * scrolled to `scrollTop` — stamped with when its entry there says it was
+ * spawned, which the working row counts from. */
 export function openSubagent(path: readonly SubagentStep[], ref: SubagentRef, entries: readonly TranscriptEntry[], scrollTop: number): SubagentStep[] {
-  return [...path, { ...ref, siblings: subagentsIn(entries), scrollTop }];
+  const siblings = subagentsIn(entries);
+  const at = ref.at ?? siblings.find((sibling) => sibling.token === ref.token)?.at;
+  return [...path, { ...ref, ...(at ? { at } : {}), siblings, scrollTop }];
 }
 
 /** Where the open subagent stands among its siblings: 0-based, and how many. */
@@ -84,5 +108,6 @@ export function stepSibling(path: readonly SubagentStep[], delta: number): reado
   if (!step) return path;
   const next = step.siblings[siblingPosition(step).index + delta];
   if (!next || siblingPosition(step).index < 0) return path;
-  return [...path.slice(0, -1), { ...step, ...next }];
+  // Its own spawn time, never the one stepped away from.
+  return [...path.slice(0, -1), { ...step, ...next, at: next.at }];
 }

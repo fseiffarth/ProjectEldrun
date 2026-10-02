@@ -17,6 +17,7 @@ import { readableScreen } from "../../../mobile-web/src/terminal/readableScreen"
 import { sessionStatus } from "../../../mobile-web/src/terminal/statusLine";
 import { sessionLimits } from "../../../mobile-web/src/terminal/sessionUsage";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
+import { TerminalReaderStatus } from "./TerminalReaderStatus";
 
 /** The phone's pacing: how often the CLI's usage panel is read again (the
  * backend floors it besides), and how often the reset countdowns tick. */
@@ -46,7 +47,7 @@ const MODE_CYCLE_LIMIT = 6;
  * CLI's usage panel (`agent_usage`, which spends no quota), or — Codex, which
  * has none — from the figures its rollout stores.
  */
-export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, usage, path, effort, visible, typeKeys, onPicking }: {
+export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, usage, path, effort, visible, typeKeys, onPicking, statusOpen, statusRequest, onStatusRequest, onStatusClose }: {
   tab: TabEntry;
   ptyId: string;
   agentLabel: string;
@@ -65,6 +66,10 @@ export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, us
   /** Whether the model list is up: the Reader then leaves the picker out of
    * its own answer buttons. */
   onPicking: (picking: boolean) => void;
+  statusOpen: boolean;
+  statusRequest: number;
+  onStatusRequest: () => void;
+  onStatusClose: () => void;
 }) {
   const t = useT();
   const status = live.status;
@@ -162,6 +167,7 @@ export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, us
 
   const openPicker = () => {
     if (picking) return;
+    onStatusClose();
     closeModes();
     sawPicker.current = false;
     setAnswered(null);
@@ -209,6 +215,7 @@ export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, us
     setModeOpen(false);
   };
   const openModes = () => {
+    onStatusClose();
     if (modeOpen) {
       closeModes();
       return;
@@ -283,6 +290,12 @@ export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, us
 
   return (
     <div className="terminal-reader-facts-wrap">
+      {statusOpen && tab.cmd === "codex" && <TerminalReaderStatus key={ptyId}
+        tab={tab} ptyId={ptyId} visible={visible} request={statusRequest}
+        canRefresh={!live.working && !live.question && !picking && !modeOpen}
+        model={modelLabel} effort={effortLabel} path={shownPath} contextLeft={contextLeft} usage={usage}
+        onClose={onStatusClose} onRefresh={onStatusRequest}
+      />}
       {picking && (
         <div
           className="terminal-reader-picker"
@@ -349,6 +362,11 @@ export function TerminalReaderFacts({ tab, ptyId, agentLabel, live, modelTag, us
         </div>
       )}
       <div className="terminal-reader-facts">
+        {tab.cmd === "codex" && <button type="button" className="terminal-reader-fact-model"
+          onClick={statusOpen ? onStatusClose : () => { close(); closeModes(); onStatusRequest(); }}
+          aria-haspopup="dialog" aria-expanded={statusOpen} title={t("terminal.reader.status.hint")}>
+          {t("terminal.reader.status.button")} <UntestedTag id="terminal.reader.codexStatus" />
+        </button>}
         <button
           type="button"
           className="terminal-reader-fact-model"

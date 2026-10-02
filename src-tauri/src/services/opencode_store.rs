@@ -134,6 +134,7 @@ pub fn session_transcript(
         truncated,
         usage: None,
         model: None,
+        tokens: None,
         shells: Vec::new(),
     })
 }
