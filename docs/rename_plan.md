@@ -154,7 +154,7 @@ below gives each of these its own step.
 | Identifier | Where | Release A | Release B |
 |---|---|---|---|
 | State dir `~/.local/share/eldrun` (`%APPDATA%\eldrun`, mac App Support) → `tabtivity` | `storage.rs:220` `state_dir()` | Move the dir, leave the symlink (decision 4). Rewrite the absolute paths that point into it: `projects.json` remote projects (`<state>/remote-projects/<id>`, `projects.rs:1139,4505`), archive manifests, agent-home hook entries. Stop the mobile host first; on Windows its `.exe` locks the dir. | Scan the path holders for the old prefix; if clean, remove the symlink. |
-| `~/eldrun` tree → `~/tabtivity` | `paths.rs:592` `eldrun_home()` | Fresh installs: `~/tabtivity`. Existing installs: keep using `~/eldrun` (resolution: `~/tabtivity` if it exists, else `~/eldrun` if it exists, else create `~/tabtivity`). Moving it is the separate, optional Phase M. | The `~/eldrun` branch stays until Phase M has run on every machine; then it goes. |
+| `~/eldrun` tree → `~/tabtivity` | `paths.rs:592` `app_home()` | Fresh installs: `~/tabtivity`. Existing installs: keep using `~/eldrun` (resolution: `~/tabtivity` if it exists, else `~/eldrun` if it exists, else create `~/tabtivity`). Moving it is the separate, optional Phase M. | The `~/eldrun` branch stays until Phase M has run on every machine; then it goes, and so does the link Phase M leaves at `~/eldrun` once a holder scan is clean. |
 | Webview data dir `<data>/io.github.fseiffarth.eldrun` (all localStorage, IndexedDB) | Tauri identifier in `tauri.conf.json`; `lib.rs:1045-1053` | New identifier `io.github.fseiffarth.tabtivity`. Before the webview context exists, copy the old data dir to the new one if the new one is absent. Linux path known; Windows (WebView2) and macOS paths *unverified* — check per OS. | Delete the old data dir. |
 | localStorage keys `eldrun.*` (desktop + PWA) | ~33 files | On first load, copy every `eldrun.*` key to `tabtivity.*`, then delete the old key. One shared helper for desktop and PWA. | Delete the helper. |
 | Mail key-derivation labels `eldrun/mail/v1/{field,blob,addr,name,wrap}`, wrap AAD `eldrun/mail/v1/master` | `mail_crypt.rs:374-378,441` | **Highest-risk step: data loss if wrong.** The labels are key inputs. New stores use `tabtivity/mail/v1/…`. The store records which label set it uses. An old store is re-encrypted at the next unlock: back it up, re-encrypt under the new labels, decrypt every record again to verify, then switch. The backup stays until release B. | Remove the old label set once no store reports it, and delete the backups. |
@@ -311,18 +311,324 @@ below gives each of these its own step.
   - update the badges and the `release-signing-keygen.sh` help text
 
 ### Phase M (optional, per machine): move `~/eldrun` to `~/tabtivity`
-- Only on the user's request, from a button, one machine at a time.
-- Move each project through Eldrun's project-move flow, never `mv`. It fixes
-  `projects.json`, worktree `gitdir:` files, container mounts and tmux cwds.
-- Agent session histories are stored by path (Claude's
-  `~/.claude/projects/-home-<user>-eldrun-…`, Codex sessions, the memory dir of
-  this checkout). The move flow must carry them to the new path, or resumes
-  and memory are lost. Check the move flow covers this before offering Phase M.
+
+Status: plan only (2026-10-02). Nothing below is implemented.
+
+#### Goal and scope
+- A pre-release-A install keeps its tree at `~/eldrun` (`projects/`,
+  `projects-ssh/`, `root/`, `boxes/`, `archive/`). `app_home_in`
+  (`paths.rs:609`) resolves: env override, else `~/tabtivity` if it exists,
+  else `~/eldrun` if it exists (legacy hit `home-tree`), else `~/tabtivity`
+  (`resolve_named_dir`, `brand_migration/mod.rs:341`).
+- Phase M moves the tree to `~/tabtivity` on one machine, when the user asks
+  from a button. Afterwards projects, tabs, worktrees, containers, boxes,
+  archive entries, exec approvals and agent conversations (`--resume`,
+  "continue last", memory) all work as before, and `home-tree` stops counting.
+- Out of scope: installs with `TABTIVITY_HOME` set (not offered), projects
+  outside the tree, VM projects, other machines.
+
+#### Findings: what the move flow covers today
+There is no "move to another parent" flow. The "Migrate project" dialog
+(`project_migration_plan/apply`, `commands/projects.rs:3819,3854`) only
+repairs scaffold files. Two flows move folders. `rename_project_dir`
+(`projects.rs:1598`) renames a closed local project's folder within its
+parent; the store closes the project first (`stores/projects.ts:1585`).
+`move_remote_mirror` (`projects.rs:2805`) moves a remote project's mirror.
+
+| Holder | `rename_project_dir` | `move_remote_mirror` |
+|---|---|---|
+| `projects.json` entry, all string values (`storage::rewrite_path_prefix`, `storage.rs:401`) | yes (`:1618`) | `extra.mirror` only (`:2776`) |
+| the project's `project.json` | yes, best effort (`:1642`) | `mirror` only |
+| saved tabs `sessions/<key>/terminals.json` (`terminal_service.rs:260`) | yes (`:1658`) | **no** |
+| linked worktrees (`git worktree repair`, `:1666,1687`) | yes, but bare `git`, not `hookless_git_command_in` (`git.rs:471`) | **no** |
+| worktrees inside the folder that belong to a repo outside it | **no** | **no** |
+| local tmux sessions | indirectly: closing kills them (`stores/projects.ts:1459-1494`) | n/a |
+| project container | indirectly: mounts are in the spec fingerprint, so the next `up` recreates it (`sandbox.rs:177-215,894`); its writable layer is lost | n/a |
+| `.tabtivity/` inbox, outbox, worktrees | yes (they are inside the folder) | yes |
+| `exec_trust.json` approvals, keyed `"<kind>:<dir>"` (`exec_trust.rs:147`) | **no**: the user is asked again | **no** |
+| box folder, member links, box-links doc block (absolute roots, `boxes.rs:255-275,341`) | **no**: stale until `refresh_box_agent_docs` (`boxes.rs:785`) | **no** |
+| archive restore manifests | **no** | **no** |
+| other entries pointing into the folder | refused (`nested`, `:1538`) | no check |
+| agent histories (below) | **no** | **no** |
+| VM, remote, symlinked folders | refused (`:1498`) | remote only |
+
+`rewrite_path_prefix` rewrites whole string values only: not JSON keys, and
+not a path inside a longer string such as a saved `cd …/x && make`.
+
+Already path-free: session dirs, agent homes and scheduled prompts are keyed
+by project id (`agent_home.rs:51`). `live_sessions/<uid>` holds ids only, and
+`agent_prompts.json` / `agent_tasks.json` key by project and tab. The phone
+sees only ids.
+
+##### Agent histories: the main gap
+Each scope's agents run with `$HOME` = `<state>/agent-homes/<project key>`
+(`agent_home.rs:3-14`). The key is not derived from the path. Inside a home,
+though, the CLIs file history by cwd:
+
+| CLI | Filed by cwd | Resume (`stores/tabs.ts:5945`) | Without a carry |
+|---|---|---|---|
+| Claude | `.claude/projects/<cwd, / and . → ->/` (transcripts, `memory/`); `.claude.json` `projects["<cwd>"]`; `.claude/history.jsonl` `project` | `--resume <id>`. The app finds the id in any dir (`agent_session.rs:387`), but Claude itself looks only under the cwd's dir | resume fails, memory is gone, folder trust is asked again |
+| Codex | `.codex/config.toml` `[projects."<cwd>"]`; rollout `session_meta.cwd`; `state_<n>.sqlite` threads (`codex_store.rs`) | `codex resume <id>` (`agent_session.rs:175`) | trust asked again; resume **unverified** |
+| Gemini, Qwen, opencode, Copilot, cursor-agent, Grok, Droid, Antigravity | per-CLI cwd stores (**unverified**) | `--resume latest` / `--continue` | starts a fresh conversation |
+| Vibe | own id, recorded by a hook (`agent_session.rs:56`) | `--resume <id>` | probably fine (**unverified**) |
+
+`token_stats.json` keeps a cursor per home-relative file and moves a gone
+file's tokens to `retired` (`token_stats.rs:10-16`). A renamed transcript
+dir would therefore be counted twice unless its cursor keys move with it.
+
+The user's own `~/.claude/projects/-home-<u>-eldrun-…` only seeds a *new*
+home (`agent_home.rs:183,242`). Phase M neither needs it nor touches it.
+
+##### The rest of the tree and its holders
+- Joined with `app_home()` (`paths.rs:592-653`): `projects/`; `projects-ssh/`
+  (default mirror parent, `projects.rs:99`); `root/` (the root console's cwd,
+  with agent home `root`, `usage_stats.rs:244`, `agent_fence.rs:450`);
+  `boxes/` (`boxes.rs:711`); `archive/` (`projects.rs:949-1342`).
+- Holders of absolute paths into the tree:
+  - state files: `projects.json`, `boxes.json` `folder`, `terminals.json`,
+    `remote-projects/*`, archive manifests, `exec_trust.json` keys;
+  - inside projects: box links and doc blocks, `project.json` (gitignored by
+    default, `projects.rs:3040`, but tracked in some repos), worktree files,
+    venv shebangs and `pyvenv.cfg`, cargo `target/` fingerprints;
+  - agent homes (above), and the agent-global layer, which holds the user's
+    imported config.
+- Dev builds of this checkout name it absolutely. The binary compiles in
+  `TABTIVITY_DEV_SOURCE_ROOT` (`dev_build.rs:28`, `package-dev.sh:112`). The
+  Dev and HotReload `.desktop` files have `Exec=$ROOT/…` (`package-dev.sh:312`,
+  `package-local.sh:62`). The freeze tree is a linked worktree at
+  `$ROOT/target/freeze-tree` (`package-dev-auto.sh:93`).
+- Remote, HPC and lockstep peers never get the local path. Lockstep moves
+  bundles of objects and refs only (`git_peer.rs:1-20`). Byte-sync manifests
+  are local, and remote agents keep their history on the host.
+- Other machines can point *into* this tree. A project whose SSH host is this
+  machine stores `remote_path = /home/<u>/eldrun/projects/x` over there.
+  Nothing local can see or fix that; the link below keeps it working.
+- Project transfer (`docs/context/project_transfer.md`) re-points paths on
+  import but does not carry agent histories either.
+
+#### Design
+
+##### One rename of the tree, not one move per project
+Moving projects one by one splits the tree. The first move creates
+`~/tabtivity`, and `app_home` flips at once. `root/`, `boxes/` and
+`archive/` then resolve to empty folders, archived projects vanish from
+Settings, and the root console opens in an empty folder until the last
+project has moved.
+
+So Phase M makes one atomic `rename(2)` of `~/eldrun` to `~/tabtivity` (same
+parent), leaves a link at `~/eldrun`, and then runs the move flow's re-point
+half for every holder. It is not a bare `mv`: every holder is rewritten in
+the same resumable migration. The migrator already does this for the state
+dir: `move_dir` (`brand_migration/state_dir.rs:160`) handles a crash before
+the link, an empty placeholder, both names present, and the phone host.
+
+##### When: at the next start, before anything opens
+The button only writes a request, `<state>/home-move.json`. The move runs as
+launch steps in `run_at_launch` (`host.rs:163`, `lib.rs:1043`). They run
+before the webview, the registry readers, watchers, tmux and containers, so
+nothing holds a path. Doing it in a live window would mean closing every
+project and the root console and patching every store. The new steps go
+after `agent-homes` in `STARTUP_STEPS` (`mod.rs:243`). Each one returns
+`NothingToDo` when there is no request.
+
+1. `home-gate` stays pending, with a reason, when:
+   - an env override is set;
+   - a live window answers on `desktop-control.sock`;
+   - `~/tabtivity` exists and is not an empty folder;
+   - `~/eldrun` is a mount point.
+
+   It then stops the phone host (`World::stop_host_in`), which could fire a
+   scheduled prompt into a project. The normal launch restarts the host.
+2. `home-tree`: `move_dir(env, "home-tree", ~/eldrun, ~/tabtivity, false)`.
+   The link is made right after the rename, so holders not yet rewritten
+   still resolve. A failed rename (Windows lock, EXDEV) changes nothing and
+   stays pending, and the app keeps running from `~/eldrun`.
+3. `home-paths` rewrites `~/eldrun` → `~/tabtivity` in:
+   - `state_json_files` (`state_dir.rs:326`), via `rewrite_json_locked`;
+   - archive manifests (`state_dir.rs:341`);
+   - `exec_trust.json` keys;
+   - each moved `project.json` and each box doc block.
+4. `home-git` runs `git worktree repair` with the moved worktree paths
+   (`moved_linked_worktrees`). It covers every registered repo that moved,
+   plus every repo outside the tree with a worktree inside it. It uses
+   `hookless_git_command_in` and reads only `.git/worktrees/*/gitdir`. It
+   never walks a project folder, because those are attacker-controlled.
+5. `home-agents`: the history carry, below, for every home and the layer.
+6. `home-done` deletes the request. `home-tree` is no longer counted, since
+   `resolve_named_dir` now finds `~/tabtivity`.
+
+Every step is idempotent: a prefix that is already rewritten no longer
+matches. A crash leaves `started` in `migrations.json`, and the next launch
+resumes before anything reads state. Before step 2 nothing has changed.
+After it, the link keeps the install working.
+
+##### History carry (`home-agents`)
+All writes go through `services::home_io`, because homes are agent-writable.
+For each home's `.claude/projects/*`:
+- Take the real cwd from the transcripts (`transcript_cwd`,
+  `sandbox.rs:1575`), not from the lossy name. If it is under the old tree,
+  rename the dir to Claude's encoding of the new cwd.
+- If that target exists (a partial run, or a tab started since), move the
+  files in without overwriting anything, `memory/` included. Session ids are
+  unique, so nothing collides.
+- In the same pass, rewrite the matching `token_stats.json` cursor keys.
+
+Rewrite path keys and values in `.claude.json`, `.claude/history.jsonl` and
+`.codex/config.toml` with the text-level `replace_path_prefix`
+(`agent_homes.rs:162`). It handles JSON escaping and component boundaries.
+
+Other CLIs get only what M0 proves needed and safe. Codex's SQLite store is
+never written without a backup and a read-back. A CLI with no safe carry
+loses "continue last" once, and the preview says so. The same carry is wired
+into `rename_project_dir` and `move_remote_mirror`, so a one-folder rename
+stops losing history too.
+
+##### The button and the dialog
+- **Where:** Settings → Updates → "Names from before the rename"
+  (`LegacyNamesSummary.tsx`, `UpdatesPanel.tsx:278`), on the `home-tree` row.
+  It is shown only while that hit counts and no override is set.
+- **Dry run:** the dialog uses the shared scheme with an explicit `color`.
+  It shows `home_move_plan`, which writes nothing:
+  - the two paths and the gate's blockers;
+  - every project under the tree (local, mirror, box, root, archived) with
+    what changes: registry, `project.json` ("tracked in git" flagged),
+    tabs, worktrees, container recreate, approvals, and per CLI the history
+    dirs found and whether they will resume;
+  - VM projects and projects outside the tree, listed as unchanged.
+- **Warnings:**
+  - venvs keep absolute shebangs and work through the link;
+  - cargo `target/` rebuilds;
+  - this checkout's dev launchers are affected (see "This checkout");
+  - other machines may point here;
+  - the user's own `~/.claude` is left alone.
+- **Consent:** a checkbox ("terminals and editors outside the app are closed
+  in these folders"), then "Move at next start" or "Quit and move now". The
+  second quits cleanly; the user starts the app again. A pending request can
+  be cancelled until then.
+- **Progress and failure:** the move takes seconds, so there is no progress
+  bar. After the start the same panel shows done, or pending with the step
+  and the reason, plus "Try again at next start". The app is usable in every
+  state.
+- **Strings and pill:** all strings via `useT()` under `updates.homeMove.*`,
+  with every dictionary filled. The button and the dialog carry
+  `<UntestedTag id="updates.homeMove" />`, with a row in `src/lib/untested.ts`.
+
+##### This checkout
+`~/eldrun/projects/projecteldrun` moves with the tree.
+- At launch nothing of the app runs in it.
+- The running dev binary and the `.desktop` launchers name the old path and
+  work through the link.
+- The next commit's post-commit build compiles in the new root and rewrites
+  the Dev `.desktop` (`package-dev.sh:312`).
+- `home-git` repairs the freeze tree and `.claude/worktrees`.
+- The first cargo build afterwards is a full rebuild.
+- Outside processes keep their cwd inode.
+
+Recommendation: include it, and run Phase M right after a commit with
+outside terminals closed. Re-run `package-local.sh` (HotReload entry) before
+release B removes the link.
+
+#### Implementation phases (one subagent each)
+- **M0 Probe the CLIs (no product code).** Work in a copy of an agent home,
+  running each CLI with `env -u TABTIVITY_TAB_UID`. For each CLI: create a
+  session in `/tmp/a`, rename the folder to `/tmp/b`, carry the store, then
+  test `--resume`/`--continue` and memory. Find the stores by grepping for
+  the literal path, Claude's encoding, and sha256/md5 of the path.
+  - Output: the tables above, completed; the minimal carry per CLI; fixtures
+    in `src-tauri/test-fixtures/home_move/`.
+- **M1 Re-point core.** Move the second half of `rename_project_dir` into
+  `services::relocate` (AppHandle-free). It covers the registry,
+  `project.json`, `terminals.json`, `exec_trust` keys, the box refresh, and
+  worktree repair through `hookless_git_command_in`. Both folder movers call
+  it.
+  - Tests: every holder is rewritten; `/p/foobar` is left alone; nested
+    worktrees are repaired; a rerun is a no-op.
+  - Also survey `localStorage` for absolute-path values.
+- **M2 History carry.** `services::agent_history_move`: the Claude dir
+  rename and merge, `.claude.json`, `history.jsonl`, Codex trust, the
+  `token_stats` keys, and the M0 carries. All through `home_io`, wired into
+  M1.
+  - Tests: a lossy name (`a-b` vs `a/b`); a merge into an existing dir; a
+    planted symlink is not followed; token totals are unchanged after a
+    rescan.
+- **M3 Launch steps.** `home-move.json`, `home-gate` … `home-done`, and
+  `World` methods for the live-window probe and the host stop.
+  - Tests with the migrator harness (`brand_migration/testing.rs`,
+    `crash_at`/`fail_at`): a crash at every checkpoint resumes to the same
+    end state; with no request nothing happens; a non-empty `~/tabtivity`
+    stays pending; a fresh install does nothing; afterwards
+    `resolve_named_dir` finds the new path with no hit.
+- **M4 Command and UI.** `home_move_plan`, `home_move_request` and
+  `home_move_cancel`, with camelCase payloads. The dialog, i18n, the
+  untested row, and file-map rows. A boot rewrite beside
+  `brandMigrationBoot.ts`, if M1 found `localStorage` paths.
+  - Vitest: the preview, consent gating, cancel, a pending result.
+- **M5 Copy run and docs.** Add `--home-move` to `scripts/brand-copy-run.sh`
+  / `copy_run.rs`. It copies the tree, state dir and homes into a scratch
+  home, runs the steps, and lists the leftover holders of the old prefix,
+  literal and Claude-encoded (`holders_of`). Then update
+  `docs/context/brand_migration.md` and the help docs.
+
+Each phase runs the six `AGENTS.md` gates and `npm run backend:stale`.
+
+#### Verification
+- Unit tests per phase, as listed.
+- Copy run (M5) on a copy of this machine's real `~/eldrun` and state dir.
+  It passes when:
+  - nothing holds the old prefix except prose inside transcripts;
+  - every registered dir exists;
+  - `git worktree list` is clean in every repo;
+  - every Claude and Codex session id is found under its new cwd.
+- Live, on the frozen dev build, clicked through by the user:
+  1. Settings → Updates: the `home-tree` row has the button. Check the
+     preview's projects and warnings, then cancel.
+  2. Request the move, quit, and start the app. The panel says done,
+     `home-tree` is gone, and `~/eldrun` links to `~/tabtivity`.
+  3. Open this project. The tabs restore in `~/tabtivity/…`, a Claude tab
+     resumes with its memory, and a Codex tab resumes.
+  4. A worktree agent tab works.
+  5. A container project starts, a box's member links work, an archived
+     project restores, and the root console opens in `~/tabtivity/root`.
+  6. Commit asks for no new approval, and today's token totals are
+     unchanged.
+  7. A new project lands in `~/tabtivity/projects`.
+
+#### Open decisions for the user
+1. **One tree rename or a move per project?** Recommend the single rename
+   plus re-pointing every holder. This replaces the old "each project through
+   the move flow" rule, because per-project moves split the tree.
+2. **Leave a link at `~/eldrun`?** Recommend yes, until release B removes it
+   after a holder scan, as for the state dir.
+3. **Next start or the running window?** Recommend next start.
+4. **This checkout?** Recommend moving it with the tree. Excluding it needs
+   a separate move.
+5. **CLIs with no safe carry?** Recommend one fresh start per tab, with a
+   preview warning, rather than blocking Phase M.
+6. **Codex rollout `cwd` / SQLite rewrite?** Only if M0 shows that resume
+   fails without it, and then with a backup.
+7. **Exec approvals?** Recommend carrying the keys. The content fingerprint
+   still guards them.
+8. **A tracked `project.json`?** Recommend rewriting it, with a warning.
+9. **The user's own `~/.claude` dirs?** Leave them alone and list them as
+   untouched.
+
+#### Unverified assumptions
+- Claude `--resume <id>` looks only under the cwd's encoded dir.
+- Codex `resume <id>` from a new cwd works.
+- How each other CLI files history by cwd (M0).
+- `desktop-control.sock` tells a live window from a stale socket.
+- `git worktree repair` fixes both sides when the repo and its worktrees
+  moved together.
+- No `localStorage` value holds an absolute project path that matters.
+- On Windows the `%USERPROFILE%\eldrun` junction serves every holder, and a
+  locked rename fails cleanly. macOS is untested.
+- Nothing synced holds this tree's path, except other machines'
+  `remote_path`.
 
 ### Phase 5: release B — the cleanup
 - Gate: `legacy-hits.json` empty on every machine for a few weeks, no mail
   store on old labels, Phase M done everywhere (or the `~/eldrun` branch
-  kept), the state-dir scan clean.
+  kept), the state-dir scan and the `~/eldrun` link scan clean.
 - Delete the `LEGACY_*` constants except the migrator's, fix what fails to
   compile, remove the dual reads, the fallback log, the shim alias, the dev
   stubs, the old env exports and the state-dir symlink. Delete the mail-store
@@ -387,7 +693,7 @@ below gives each of these its own step.
 - Webview data-dir paths on Windows (WebView2) and macOS, for the copy step.
 - Whether the mail store can be re-encrypted record by record, or needs a
   whole-store rewrite.
-- Whether the project-move flow carries agent session histories (Phase M).
+- ~~Whether the project-move flow carries agent session histories (Phase M).~~ Answered 2026-10-02: it does not; see Phase M.
 
 ## History
 
