@@ -73,9 +73,22 @@ Rules every step follows:
   anything else, under the old name.
 - **A rewrite of a live file goes through its lock.** A Mobile host kept
   running after quit can write the state files while a launch migrates them,
-  so the name rewrite takes the file's `storage::FileLock` and moves the
-  counter the other writers check (`workspaceVersion`, `rev`); a file with
-  nothing to rename is left alone and gets no lock file.
+  so every rewrite of a state file — the name rewrite and the state-path
+  rewrite alike (`persisted::rewrite_json_locked`) — takes the file's
+  `storage::FileLock`, re-reads under it, and moves the counter the other
+  writers check (`workspaceVersion`, `rev`); a file with nothing to change is
+  left alone and gets no lock file. The archive's restore manifests (user's
+  tree, no other writer) are rewritten without one.
+- **Pending until it is really done.** A failed state-dir rename keeps
+  `state-paths` pending too (decided from the record, not from whether the
+  current name exists), and a move whose old-path link could not be made
+  stays pending and links at the next launch. A retried move first stops a
+  phone host running from the old folder (`World::stop_host_in`): the launch
+  that could not move it started the current host in there. An agent-home
+  config file that could not be re-pointed keeps `agent-homes` pending (the
+  markers are renamed regardless); one met at spawn re-opens the step
+  (`reopen_step`). A link or other non-file where a config file belongs is
+  skipped, not a failure.
 - **Nothing outside the file system without `World`.** The service manager and
   the phone host's admin socket are reached through a trait the tests replace.
 

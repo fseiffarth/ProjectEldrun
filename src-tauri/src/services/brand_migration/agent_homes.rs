@@ -179,16 +179,26 @@ fn replace_path_prefix(text: &str, old: &str, new: &str) -> String {
     out
 }
 
-/// Rewrite one config file of a home in place. True when it changed.
-fn rewrite_file(home: &Path, rel: &str, rewrites: &Rewrites) -> bool {
-    let Some(file) = HomeFile::open_existing(home, rel) else {
-        return false;
+/// Rewrite one config file of a home in place. `Ok(true)` when it changed.
+///
+/// Skipped by design (`Ok(false)`, not a failure): a missing file or folder,
+/// and anything at the name that is not a regular file — a link, a folder, a
+/// FIFO. A home is agent-writable, and a planted link must neither be
+/// followed nor keep the step pending for good. A regular file that cannot
+/// be read, or a rewrite that cannot be written, is an `Err`: the old hook
+/// command stays in it and the next spawn would register a second one.
+fn rewrite_file(home: &Path, rel: &str, rewrites: &Rewrites) -> Result<bool, String> {
+    let Some(file) = HomeFile::open_existing(home, rel).filter(HomeFile::is_file) else {
+        return Ok(false);
     };
-    let Some(bytes) = file.read() else { return false };
-    let Ok(text) = String::from_utf8(bytes) else { return false };
+    let bytes = file.read().ok_or_else(|| format!("read {}", file.path().display()))?;
+    let Ok(text) = String::from_utf8(bytes) else { return Ok(false) };
     match rewrites.apply(&text) {
-        Some(new) => file.write(new.as_bytes()).is_ok(),
-        None => false,
+        Some(new) => file
+            .write(new.as_bytes())
+            .map(|()| true)
+            .map_err(|e| format!("write {}: {e}", file.path().display())),
+        None => Ok(false),
     }
 }
 
@@ -203,47 +213,89 @@ fn rename_child(dir: &Path, old: &str, new: &str) -> bool {
 
 /// Copilot loads every file in its hooks folder, so the app's own file is
 /// moved to its current name (with its command re-pointed) rather than left
-/// to be joined by a second one.
-fn move_copilot_hint(pair: &Pair, home: &Path, rewrites: &Rewrites) -> bool {
+/// to be joined by a second one. Skips and fails like [`rewrite_file`].
+fn move_copilot_hint(pair: &Pair, home: &Path, rewrites: &Rewrites) -> Result<bool, String> {
     let Some(old_rel) = pair.legacy(Name::COPILOT_HINT_HOOKS) else {
-        return false;
+        return Ok(false);
     };
-    let Some(old) = HomeFile::open_existing(home, &old_rel) else {
-        return false;
+    let Some(old) = HomeFile::open_existing(home, &old_rel).filter(HomeFile::is_file) else {
+        return Ok(false);
     };
-    let Some(bytes) = old.read() else { return false };
+    let bytes = old.read().ok_or_else(|| format!("read {}", old.path().display()))?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let text = rewrites.apply(&text).unwrap_or(text);
     let Some(new) = HomeFile::open(home, &pair.cur(Name::COPILOT_HINT_HOOKS)) else {
-        return false;
+        // A link where the hooks folder belongs: not followed.
+        return Ok(false);
     };
-    if !new.exists() && new.write(text.as_bytes()).is_err() {
-        return false;
+    if !new.exists() {
+        new.write(text.as_bytes())
+            .map_err(|e| format!("write {}: {e}", new.path().display()))?;
     }
-    old.remove().is_ok()
+    old.remove().map_err(|e| format!("remove {}: {e}", old.path().display()))?;
+    Ok(true)
+}
+
+/// What [`migrate_home`] did to one home.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Migrated {
+    /// Files rewritten or moved, markers renamed.
+    pub changed: usize,
+    /// The config files that still hold the old commands, with why.
+    pub failed: Vec<String>,
 }
 
 /// Bring one home (or the app-wide layer) to the current names. Idempotent.
-/// Returns how many things changed. The seeded marker is renamed last: a
-/// home is "migrated" only once everything else in it is.
-pub fn migrate_home(pair: &Pair, home: &Path, state_dirs: Option<(&Path, &Path)>) -> usize {
+/// The seeded marker is renamed last: a home is "migrated" only once
+/// everything else in it is — but the markers are renamed even when a config
+/// file failed. Left under the old names, the home would count as fresh and
+/// be seeded again while in use; the failure is reported instead, and the
+/// next launch's pass re-points what still matches.
+pub fn migrate_home(pair: &Pair, home: &Path, state_dirs: Option<(&Path, &Path)>) -> Migrated {
+    let mut migrated = Migrated::default();
     if !pair.renamed() || !home.is_dir() {
-        return 0;
+        return migrated;
     }
     let rewrites = Rewrites::new(pair, state_dirs);
-    let mut changed = 0;
+    let mut tally = |result: Result<bool, String>| match result {
+        Ok(changed) => migrated.changed += usize::from(changed),
+        Err(error) => migrated.failed.push(error),
+    };
     if !rewrites.is_empty() {
         for rel in config_files() {
-            changed += usize::from(rewrite_file(home, rel, &rewrites));
+            tally(rewrite_file(home, rel, &rewrites));
         }
     }
-    changed += usize::from(move_copilot_hint(pair, home, &rewrites));
+    tally(move_copilot_hint(pair, home, &rewrites));
     for marker in MARKERS.iter().rev() {
         if let Some(old) = pair.legacy(*marker) {
-            changed += usize::from(rename_child(home, &old, &pair.cur(*marker)));
+            migrated.changed += usize::from(rename_child(home, &old, &pair.cur(*marker)));
         }
     }
-    changed
+    migrated
+}
+
+/// A home met when a tab is spawned in it that still carries a marker under
+/// the old name (it appeared after the launch step ran): bring it over. A
+/// config file that could not be re-pointed puts the launch step `agent-homes`
+/// back to pending, so the next launch's full pass retries it. `state_dir` is
+/// the running app's. Nothing happens while the name is unchanged.
+pub fn migrate_home_at_spawn(pair: &Pair, state_dir: &Path, home: &Path) {
+    if !has_legacy_marker(pair, home) {
+        return;
+    }
+    crate::brand::legacy_hit("agent-home-marker");
+    let migrated = migrate_home(pair, home, None);
+    if !migrated.failed.is_empty() {
+        let reason = failure_note(&migrated.failed);
+        eprintln!("brand migration: agent home {}: {reason}", home.display());
+        super::reopen_step(pair, state_dir, "agent-homes", &reason);
+    }
+}
+
+/// The record's note for config files that could not be re-pointed.
+fn failure_note(failed: &[String]) -> String {
+    format!("{} config file(s) could not be re-pointed: {}", failed.len(), failed.join("; "))
 }
 
 /// Whether a home still carries a marker under its old name.
@@ -269,11 +321,17 @@ pub fn migrate_agent_homes(env: &Env) -> StepResult {
         .filter(|old| *old != env.state_dir.as_path() && state == env.state_dir)
         .map(|old| (old, env.state_dir.as_path()));
     let mut changed = 0;
-    for home in crate::services::agent_home::existing_homes_in(&state) {
+    let mut failed = Vec::new();
+    let homes = crate::services::agent_home::existing_homes_in(&state);
+    for home in &homes {
         env.checkpoint("homes:before-home")?;
-        changed += migrate_home(&env.pair, &home, moved);
+        let migrated = migrate_home(&env.pair, home, moved);
+        changed += migrated.changed;
+        failed.extend(migrated.failed);
     }
-    changed += migrate_home(&env.pair, &crate::services::agent_global::global_dir_in(&state), moved);
+    let layer = migrate_home(&env.pair, &crate::services::agent_global::global_dir_in(&state), moved);
+    changed += layer.changed;
+    failed.extend(layer.failed);
     // The scripts themselves: the launch writes them afresh under their
     // current names, but until it has, the re-pointed commands above must
     // find a script — so the old files take the current names now.
@@ -282,6 +340,11 @@ pub fn migrate_agent_homes(env: &Env) -> StepResult {
         if let Some(old) = env.pair.legacy(script) {
             changed += usize::from(rename_child(&hooks, &old, &env.pair.cur(script)));
         }
+    }
+    // The step is idempotent: the next launch runs it over every home again
+    // and re-points only what still names the old.
+    if !failed.is_empty() {
+        return Ok(Outcome::Pending(failure_note(&failed)));
     }
     if changed == 0 {
         Ok(Outcome::NothingToDo)
@@ -315,7 +378,7 @@ mod tests {
         write(&home.join(UNCHANGED.cur(Name::AGENT_HOME_MARKER)), "");
         write(&home.join(".claude").join("settings.json"), "{\"hooks\":{}}");
         let before = snapshot(&home);
-        assert_eq!(migrate_home(&UNCHANGED, &home, None), 0);
+        assert_eq!(migrate_home(&UNCHANGED, &home, None), Migrated::default());
         assert_eq!(snapshot(&home), before);
         assert!(!has_legacy_marker(&UNCHANGED, &home));
     }
@@ -421,13 +484,135 @@ mod tests {
         let machine = Machine::new();
         let home = machine.seed_agent_home(&LEGACY, "late");
         assert!(has_legacy_marker(&RENAMED, &home));
-        assert!(migrate_home(&RENAMED, &home, None) > 0);
+        assert!(migrate_home(&RENAMED, &home, None).changed > 0);
         assert!(!has_legacy_marker(&RENAMED, &home));
         assert!(home.join(RENAMED.cur(Name::AGENT_HOME_MARKER)).is_file());
         // A second pass finds nothing to do.
         let before = snapshot(&home);
-        assert_eq!(migrate_home(&RENAMED, &home, None), 0);
+        assert_eq!(migrate_home(&RENAMED, &home, None), Migrated::default());
         assert_eq!(snapshot(&home), before);
+    }
+
+    /// Makes a folder read-only until dropped, so creating a file in it
+    /// fails (an agent chmodded its config folder). `None` as root, where
+    /// the mode would not stop the write.
+    #[cfg(unix)]
+    struct ReadOnly(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl ReadOnly {
+        fn new(dir: std::path::PathBuf) -> Option<Self> {
+            use std::os::unix::fs::PermissionsExt;
+            if unsafe { libc::geteuid() } == 0 {
+                return None;
+            }
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+            Some(Self(dir))
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ReadOnly {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    /// A config file that cannot be rewritten keeps its old hook command, so
+    /// the step is not done: it stays pending, the markers are renamed all
+    /// the same (or the home would be seeded again), and the next launch
+    /// re-points the file — after which the registration finds its entry.
+    #[cfg(unix)]
+    #[test]
+    fn a_config_file_that_cannot_be_written_keeps_the_step_pending_until_a_launch_rewrites_it() {
+        let machine = Machine::new();
+        machine.seed_install(&LEGACY);
+        let old_home = machine.state_dir(&LEGACY).join("agent-homes").join("alpha");
+        // Reached through the old path's link once the folder has moved.
+        let Some(read_only) = ReadOnly::new(old_home.join(".claude")) else { return };
+        let env = machine.env(RENAMED);
+        let report = super::super::run_startup(&env);
+        let (_, note) = report.pending.iter().find(|(id, _)| *id == "agent-homes").expect("agent-homes pending");
+        assert!(note.contains("could not be re-pointed") && note.contains("settings.json"), "{note}");
+        assert_eq!(env.record().state_of("agent-homes"), Some(super::super::StepState::Pending));
+
+        let home = env.state_dir.join("agent-homes").join("alpha");
+        let old_hook = machine.hook_command(&LEGACY);
+        let new_hook = machine.hook_command(&RENAMED.cur);
+        assert!(home.join(RENAMED.cur(Name::AGENT_HOME_MARKER)).is_file());
+        assert!(!has_legacy_marker(&RENAMED, &home));
+        let settings = read_json(&home.join(".claude").join("settings.json"));
+        assert_eq!(groups_running(&settings, "Stop", &old_hook), 1, "the unwritable file kept the old command");
+        // The rest of the home was re-pointed.
+        let codex = std::fs::read_to_string(home.join(".codex").join("config.toml")).expect("read");
+        assert!(!codex.contains(&old_hook));
+
+        drop(read_only);
+        let report = super::super::run_startup(&env);
+        assert!(report.pending.is_empty(), "{report:?}");
+        assert_eq!(env.record().state_of("agent-homes"), Some(super::super::StepState::Done));
+        let settings_file = HomeFile::open(&home, ".claude/settings.json").expect("settings");
+        crate::services::agent_session::register_hook_in_settings_as(&settings_file, &new_hook).expect("register");
+        let settings = read_json(&home.join(".claude").join("settings.json"));
+        for event in crate::services::agent_session::HOOK_EVENTS {
+            assert_eq!(groups_running(&settings, event, &new_hook), 1, "{event}");
+            assert_eq!(groups_running(&settings, event, &old_hook), 0, "{event}");
+        }
+    }
+
+    /// A home met at spawn whose config cannot be rewritten puts the launch
+    /// step back to pending, so the next launch's full pass finishes it.
+    #[cfg(unix)]
+    #[test]
+    fn a_home_met_at_spawn_that_cannot_be_rewritten_reopens_the_launch_step() {
+        let machine = Machine::new();
+        machine.seed_install(&LEGACY);
+        let env = machine.env(RENAMED);
+        super::super::run_startup(&env);
+        assert_eq!(env.record().state_of("agent-homes"), Some(super::super::StepState::Done));
+
+        // Restored from a backup after the launch: old markers, old commands.
+        let home = machine.seed_agent_home(&LEGACY, "late");
+        let home = env.state_dir.join("agent-homes").join(home.file_name().expect("name"));
+        let Some(read_only) = ReadOnly::new(home.join(".claude")) else { return };
+        migrate_home_at_spawn(&RENAMED, &env.state_dir, &home);
+        assert!(!has_legacy_marker(&RENAMED, &home), "the markers moved all the same");
+        let record = env.record();
+        assert_eq!(record.state_of("agent-homes"), Some(super::super::StepState::Pending));
+        assert!(record.steps["agent-homes"].note.contains("could not be re-pointed"));
+
+        drop(read_only);
+        let report = super::super::run_startup(&env);
+        assert!(report.pending.is_empty(), "{report:?}");
+        let settings = read_json(&home.join(".claude").join("settings.json"));
+        assert_eq!(groups_running(&settings, "Stop", &machine.hook_command(&LEGACY)), 0);
+        assert_eq!(groups_running(&settings, "Stop", &machine.hook_command(&RENAMED.cur)), 1);
+    }
+
+    /// A link planted where a config file belongs is neither followed nor a
+    /// failure: it would otherwise keep the step pending for good.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_place_of_a_config_file_is_skipped_and_the_step_finishes() {
+        let machine = Machine::new();
+        machine.seed_install(&LEGACY);
+        let old_home = machine.state_dir(&LEGACY).join("agent-homes").join("alpha");
+        let outside = machine.home.join("outside.json");
+        let planted = serde_json::json!({ "hooks": { "Stop": [{ "hooks": [{ "command": machine.hook_command(&LEGACY) }] }] } })
+            .to_string();
+        write(&outside, &planted);
+        let settings = old_home.join(".claude").join("settings.json");
+        std::fs::remove_file(&settings).expect("remove");
+        std::os::unix::fs::symlink(&outside, &settings).expect("link");
+
+        let env = machine.env(RENAMED);
+        let report = super::super::run_startup(&env);
+        assert!(report.pending.is_empty(), "{report:?}");
+        assert_eq!(env.record().state_of("agent-homes"), Some(super::super::StepState::Done));
+        assert_eq!(std::fs::read_to_string(&outside).expect("read"), planted, "the link was not followed");
+        let moved = env.state_dir.join("agent-homes").join("alpha").join(".claude").join("settings.json");
+        assert!(std::fs::symlink_metadata(&moved).expect("link").file_type().is_symlink());
     }
 
     #[test]

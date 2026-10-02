@@ -116,26 +116,28 @@ impl Renames {
     }
 }
 
-/// Rewrite one state file if it carries an old name. A Mobile host kept
-/// running after quit may be writing the same file while the window's launch
-/// runs this step, so the rewrite holds the file's lock — the one every
-/// cross-process writer takes (`storage::FileLock`) — and moves the counter
-/// those writers check: a tab set's `workspaceVersion` (a window re-syncs),
-/// a document's `rev` (a compare-and-swap writer that read before the rewrite
-/// retries instead of writing the old names back). A file with nothing to
-/// rename is not locked, so no lock file appears beside it.
-fn rewrite_file(file: &std::path::Path, renames: &Renames) -> Result<bool, String> {
+/// Rewrite one state file in place with `apply` (which says whether it
+/// changed anything). A Mobile host kept running after quit may be writing
+/// the same file while the window's launch runs a step, so the rewrite holds
+/// the file's lock — the one every cross-process writer takes
+/// (`storage::FileLock`) — re-reads under it, and moves the counter those
+/// writers check: a tab set's `workspaceVersion` (a window re-syncs), a
+/// document's `rev` (a compare-and-swap writer that read before the rewrite
+/// retries instead of writing the old value back). A file `apply` leaves
+/// alone is not locked, so no lock file appears beside it. Shared by the
+/// name rewrite and the state-path rewrite (`state_dir::rewrite_state_paths`).
+pub(super) fn rewrite_json_locked(file: &std::path::Path, apply: impl Fn(&mut Value) -> bool) -> Result<bool, String> {
     let Ok(mut probe) = crate::storage::read_json::<Value>(file) else {
         return Ok(false);
     };
-    if !renames.apply(&mut probe) {
+    if !apply(&mut probe) {
         return Ok(false);
     }
     let _lock = crate::storage::FileLock::exclusive(file).map_err(|e| format!("lock {}: {e}", file.display()))?;
     let Ok(mut value) = crate::storage::read_json::<Value>(file) else {
         return Ok(false);
     };
-    if !renames.apply(&mut value) {
+    if !apply(&mut value) {
         return Ok(false);
     }
     crate::services::workspace::bump_raw_version(&mut value);
@@ -144,6 +146,11 @@ fn rewrite_file(file: &std::path::Path, renames: &Renames) -> Result<bool, Strin
     }
     crate::storage::write_json_atomic(file, &value).map_err(|e| format!("rewrite {}: {e}", file.display()))?;
     Ok(true)
+}
+
+/// Rewrite one state file if it carries an old name.
+fn rewrite_file(file: &std::path::Path, renames: &Renames) -> Result<bool, String> {
+    rewrite_json_locked(file, |value| renames.apply(value))
 }
 
 /// Step `persisted-names`.

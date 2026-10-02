@@ -60,7 +60,7 @@ pub fn move_state_dir(env: &Env) -> StepResult {
     let Some(old) = env.legacy_state_dir.as_deref() else {
         return Ok(Outcome::NothingToDo);
     };
-    move_dir(env, "state-dir", old, &env.state_dir)
+    move_dir(env, "state-dir", old, &env.state_dir, true)
 }
 
 /// Step `share-dir`: the same for `~/.local/share/<name>` where that is not
@@ -69,7 +69,7 @@ pub fn move_share_dir(env: &Env) -> StepResult {
     let Some((old, new)) = env.share_dir.as_ref() else {
         return Ok(Outcome::NothingToDo);
     };
-    move_dir(env, "share-dir", old, new)
+    move_dir(env, "share-dir", old, new, false)
 }
 
 /// Whether `path` is itself a link (a symlink, or a junction on Windows),
@@ -154,7 +154,10 @@ fn links_to(at: &Path, target: &Path) -> bool {
 /// The record is marked `started` inside `old` before the rename and travels
 /// with the folder, so a crash between the rename and the link is told apart
 /// from a fresh install (which must never get a link under the old name).
-fn move_dir(env: &Env, id: &'static str, old: &Path, new: &Path) -> StepResult {
+///
+/// `host_runs_inside`: the phone host may run from inside `old` (the state
+/// dir). See the stop before the rename.
+fn move_dir(env: &Env, id: &'static str, old: &Path, new: &Path, host_runs_inside: bool) -> StepResult {
     if old == new {
         return Ok(Outcome::NothingToDo);
     }
@@ -170,10 +173,7 @@ fn move_dir(env: &Env, id: &'static str, old: &Path, new: &Path) -> StepResult {
         // Never there, or already moved by a run that stopped before the
         // link was made.
         if began && new.is_dir() {
-            return match link_dir(new, old) {
-                Ok(()) => Ok(Outcome::Done("moved; the old path links here".into())),
-                Err(error) => Ok(Outcome::Done(format!("moved; no link at the old path ({error})"))),
-            };
+            return link_old_path(env, new, old);
         }
         return Ok(Outcome::NothingToDo);
     }
@@ -192,9 +192,22 @@ fn move_dir(env: &Env, id: &'static str, old: &Path, new: &Path) -> StepResult {
             )));
         }
     }
+    if host_runs_inside && began && old.join("mobile-control").is_dir() {
+        // An earlier launch could not move the folder and ran from it, so the
+        // ordinary launch path installed and started the *current* phone host
+        // in there. `mobile-host` is done by now and only ever retired the
+        // old-named one, so nothing else stops this one — and on Windows its
+        // executable locks the folder, failing every later rename. Stop it;
+        // the ordinary launch path starts it again from the moved folder.
+        env.world.stop_host_in(old);
+    }
     super::mark_started(env, id, "moving");
     env.checkpoint("dir:before-rename")?;
-    if let Err(error) = fs::rename(old, new) {
+    let renamed = env
+        .injected("dir:rename")
+        .map_err(std::io::Error::other)
+        .and_then(|()| fs::rename(old, new));
+    if let Err(error) = renamed {
         crate::brand::legacy_hit(id);
         return Ok(Outcome::Pending(format!(
             "could not rename {} to {}: {error}",
@@ -205,9 +218,23 @@ fn move_dir(env: &Env, id: &'static str, old: &Path, new: &Path) -> StepResult {
     env.checkpoint("dir:after-rename")?;
     // `old` was the user's own link to another disk: it moved as a link, and
     // the folder behind it stayed where it is.
-    match link_dir(new, old) {
+    link_old_path(env, new, old)
+}
+
+/// Leave the link at `old` after the move. Without it the step is not done:
+/// the link is the net for every absolute path nothing rewrote (a VM
+/// overlay's base image, a running tmux session's cwd), so a failed one stays
+/// `pending`, is listed in Settings → About, and is tried again at the next
+/// launch (the record moved with the folder, so `began` holds there).
+///
+/// A `pending` result is recorded without marking the install upgraded
+/// (`run_startup` sets [`Record::upgraded`](super::Record::upgraded) only on
+/// `done`). The steps after this one (`state-paths`, `persisted-names`) find
+/// the old state in the moved folder on the same launch and set it.
+fn link_old_path(env: &Env, new: &Path, old: &Path) -> StepResult {
+    match env.injected("dir:link").and_then(|()| link_dir(new, old)) {
         Ok(()) => Ok(Outcome::Done("moved; the old path links here".into())),
-        Err(error) => Ok(Outcome::Done(format!("moved; no link at the old path ({error})"))),
+        Err(error) => Ok(Outcome::Pending(format!("moved; the old path could not be linked: {error}"))),
     }
 }
 
@@ -218,6 +245,12 @@ fn move_dir(env: &Env, id: &'static str, old: &Path, new: &Path) -> StepResult {
 /// The holders are the app's own JSON state — the registry files in the state
 /// dir, each project's saved session and sync state, and the archive's
 /// restore manifests. A file is rewritten only when a path in it changed.
+///
+/// The state files go through their lock and move their counters, like the
+/// name rewrite ([`super::persisted::rewrite_json_locked`]): a phone host the
+/// previous launch started can be writing them now. The archive's manifests
+/// have no other writer and sit in the user's own tree, so they are rewritten
+/// plainly and get no lock file beside them.
 pub fn rewrite_state_paths(env: &Env) -> StepResult {
     let Some(old) = env.legacy_state_dir.as_deref() else {
         return Ok(Outcome::NothingToDo);
@@ -226,15 +259,30 @@ pub fn rewrite_state_paths(env: &Env) -> StepResult {
     if old == new {
         return Ok(Outcome::NothingToDo);
     }
+    // Not moved yet: something still sits at the old path and the move has
+    // not finished. Decided before looking at `new` — after a failed rename
+    // the current name does not exist, and "nothing there" must not read as a
+    // fresh install, or this step is marked done and never re-points the
+    // paths once the move succeeds. Asked of the record rather than of the
+    // old path's kind, so a user's own link there that has not moved yet
+    // counts as not moved. (Moved and linked: `state-dir` is done. Moved but
+    // the link failed: nothing is at the old path.)
+    if present(old) && env.record().state_of("state-dir") != Some(StepState::Done) {
+        return Ok(Outcome::Pending("the state dir has not moved yet".into()));
+    }
     if !new.is_dir() {
         return Ok(Outcome::NothingToDo);
     }
-    if !is_link(old) && present(old) {
-        return Ok(Outcome::Pending("the state dir has not moved yet".into()));
-    }
     let (old, new) = (old.to_string_lossy().into_owned(), new.to_string_lossy().into_owned());
     let mut rewritten = 0usize;
-    for file in path_holders(env) {
+    for file in state_json_files(&env.state_dir) {
+        env.checkpoint("paths:before-file")?;
+        let changed = super::persisted::rewrite_json_locked(&file, |value| {
+            crate::storage::rewrite_path_prefix(value, &old, &new)
+        })?;
+        rewritten += usize::from(changed);
+    }
+    for file in archive_manifests(env) {
         env.checkpoint("paths:before-file")?;
         let Ok(mut value) = crate::storage::read_json::<serde_json::Value>(&file) else {
             continue;
@@ -288,10 +336,10 @@ pub(super) fn state_json_files(state: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// The files that may hold an absolute path into the state dir: the state
-/// files, and the archive's restore manifests in the home tree.
-fn path_holders(env: &Env) -> Vec<PathBuf> {
-    let mut files = state_json_files(&env.state_dir);
+/// The archive's restore manifests in the home tree(s), which may hold an
+/// absolute path into the state dir (the state files are the other holders).
+fn archive_manifests(env: &Env) -> Vec<PathBuf> {
+    let mut files = Vec::new();
     for tree in &env.home_trees {
         json_files_one_level_down(&tree.join("archive"), &mut files);
     }

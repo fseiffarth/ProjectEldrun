@@ -15,10 +15,17 @@ impl World for Host {
     fn retire_legacy_mobile_host(&self, pair: &Pair, legacy_state_dir: &Path) -> Result<bool, String> {
         retire_legacy_mobile_host(pair, legacy_state_dir)
     }
+
+    fn stop_host_in(&self, state_dir: &Path) {
+        shut_down_host_in(state_dir);
+        // Its executable locks the folder until the process is gone.
+        #[cfg(windows)]
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 }
 
-/// Ask a host that still answers on the old state dir's control socket to
-/// shut down. Best effort and bounded; nothing listening answers at once.
+/// Ask a host that still answers on `state_dir`'s control socket to shut
+/// down. Best effort and bounded; nothing listening answers at once.
 fn shut_down_host_in(state_dir: &Path) {
     use crate::services::mobile_control::{admin, protocol::AdminRequest};
     let socket = state_dir.join("mobile-control").join("admin.sock");
@@ -145,6 +152,7 @@ impl<'a> Env<'a> {
             world,
             now: crate::storage::iso_now,
             crash_at: None,
+            fail_at: None,
         }
     }
 }

@@ -131,6 +131,10 @@ pub trait World {
     /// be gone before the folder moves. `legacy_state_dir` is where it runs
     /// from. `Ok(true)` when there was one.
     fn retire_legacy_mobile_host(&self, pair: &Pair, legacy_state_dir: &Path) -> Result<bool, String>;
+    /// Ask a phone host running from inside `state_dir` to shut down —
+    /// whichever build's it is — and give it a moment to let go of the
+    /// folder. Best effort and bounded: nothing listening answers at once.
+    fn stop_host_in(&self, state_dir: &Path);
 }
 
 /// Everything a run needs to know about the machine. Production builds it
@@ -159,6 +163,9 @@ pub struct Env<'a> {
     pub now: fn() -> String,
     /// Test only: the checkpoint at which the run "crashes".
     pub crash_at: Option<&'static str>,
+    /// Test only: the named file-system operation that fails (see
+    /// [`Env::injected`]).
+    pub fail_at: Option<&'static str>,
 }
 
 impl Env<'_> {
@@ -205,6 +212,16 @@ impl Env<'_> {
     pub fn checkpoint(&self, name: &'static str) -> Result<(), Halt> {
         if self.crash_at == Some(name) {
             return Err(Halt::Crashed);
+        }
+        Ok(())
+    }
+
+    /// A named file-system operation inside a step. A test makes it fail
+    /// here to stand in for a locked folder or a refused link; production
+    /// never does.
+    pub fn injected(&self, name: &'static str) -> Result<(), String> {
+        if self.fail_at == Some(name) {
+            return Err(format!("injected failure: {name}"));
         }
         Ok(())
     }
@@ -286,6 +303,10 @@ pub fn run_startup(env: &Env) -> Report {
                 env.set(step.id, StepState::Done, "");
                 report.done.push(step.id);
             }
+            // Recorded without `found_old`: a pending step may not have met
+            // anything yet. One that did (a moved state dir whose old path
+            // could not be linked) is covered by the steps after it, which
+            // find the old state in the moved folder on the same launch.
             Ok(Outcome::Pending(reason)) | Err(Halt::Failed(reason)) => {
                 env.set(step.id, StepState::Pending, &reason);
                 report.pending.push((step.id, reason));
@@ -370,6 +391,23 @@ pub fn lazy_ran(pair: &Pair, state_dir: &Path, id: &str, note: &str) {
 /// A lazy step tried and has to wait (the reason).
 pub fn lazy_pending(pair: &Pair, state_dir: &Path, id: &str, reason: &str) {
     set_lazy(pair, state_dir, id, StepState::Pending, reason);
+}
+
+/// Put a launch step back to `pending` (with `reason`), done or not, so the
+/// next launch runs it again: something met later — an agent home whose
+/// config could not be re-pointed when a tab was spawned in it — showed its
+/// work is not finished. Only for a launch step that is safe to run again
+/// after it finished. Does nothing while the name is unchanged.
+pub fn reopen_step(pair: &Pair, state_dir: &Path, id: &str, reason: &str) {
+    if !pair.renamed() {
+        return;
+    }
+    let path = state_dir.join(RECORD_FILE);
+    let entry = StepRecord { state: StepState::Pending, at: crate::storage::iso_now(), note: reason.to_string() };
+    let _ = crate::storage::patch_json(&path, Record::default(), |record: &mut Record| {
+        record.steps.insert(id.to_string(), entry);
+        Ok(())
+    });
 }
 
 /// Whether the install under `state_dir` was upgraded across a rename (see

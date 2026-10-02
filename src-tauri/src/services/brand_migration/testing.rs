@@ -37,6 +37,10 @@ impl World for RecordingWorld {
             .push(format!("retire-mobile-host {}", legacy_state_dir.display()));
         Ok(self.legacy_host.get())
     }
+
+    fn stop_host_in(&self, state_dir: &Path) {
+        self.calls.borrow_mut().push(format!("stop-host {}", state_dir.display()));
+    }
 }
 
 /// A machine in a temp dir: a home with the Linux layout on every OS (the
@@ -102,6 +106,7 @@ impl Machine {
             world: &self.world,
             now: fixed_now,
             crash_at: None,
+            fail_at: None,
         }
     }
 

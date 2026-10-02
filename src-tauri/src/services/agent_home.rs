@@ -128,11 +128,7 @@ fn prepare_home_in(
     // bring it to the current names first, or it would count as fresh and be
     // seeded a second time. The launch does this for every home; this covers
     // a home that appeared since. Not reached while the name is unchanged.
-    let pair = crate::brand::PAIR;
-    if crate::services::brand_migration::agent_homes::has_legacy_marker(&pair, home) {
-        crate::brand::legacy_hit("agent-home-marker");
-        crate::services::brand_migration::agent_homes::migrate_home(&pair, home, None);
-    }
+    crate::services::brand_migration::agent_homes::migrate_home_at_spawn(&crate::brand::PAIR, state_dir, home);
     let fresh = !home.join(SEEDED_MARKER).is_file();
     create_private_dir(home)?;
     if fresh {
