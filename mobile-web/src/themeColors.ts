@@ -12,8 +12,9 @@
 // theme's accent recolours everything that was violet.
 //
 // Authors keep writing plain hex. A rule that must keep its literal colours
-// says so with a `/* theme: fixed */` comment inside it (the xterm host is
-// listed in `FIXED_SELECTOR` instead).
+// says so with a `/* theme: fixed */` comment inside it. The xterm host is
+// themed like the rest: xterm itself paints the desktop's terminal palette
+// for the same theme (`theme.phoneTerminalTheme`).
 
 import type { AtRule, Declaration, Plugin, Rule } from "postcss";
 
@@ -176,13 +177,7 @@ function mapOutsideUrls(value: string, map: (chunk: string) => string): string {
   return value.split(/(url\((?:"[^"]*"|'[^']*'|[^)]*)\))/).map((chunk, i) => (i % 2 ? chunk : map(chunk))).join("");
 }
 
-/** The xterm host and its scrollbars: xterm paints the terminal in its own
- * dark palette (`Terminal.tsx`) whatever the theme, and the box around it and
- * its scrollbars have to stay that colour with it. */
-const FIXED_SELECTOR = /\.terminal-body > \.terminal\b|\.terminal \.xterm/;
-
 function isFixedRule(rule: Rule): boolean {
-  if (FIXED_SELECTOR.test(rule.selector)) return true;
   return rule.nodes.some((node) => node.type === "comment" && /^\s*theme:\s*fixed\s*$/.test(node.text));
 }
 

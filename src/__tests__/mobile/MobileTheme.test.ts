@@ -1,7 +1,7 @@
 import postcss from "postcss";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fitColor, fitExpr, themeColors } from "../../../mobile-web/src/themeColors";
-import { applyPhoneTheme, noteDesktopTheme, readPhoneTheme, resolvePhoneTheme, setPhoneTheme } from "../../../mobile-web/src/theme";
+import { applyPhoneTheme, noteDesktopTheme, phoneTerminalTheme, readPhoneTheme, resolvePhoneTheme, setPhoneTheme } from "../../../mobile-web/src/theme";
 
 const run = (css: string, from = "/repo/mobile-web/src/style.css") =>
   postcss([themeColors({ include: (file) => file.includes("/mobile-web/src/") })]).process(css, { from }).css;
@@ -43,13 +43,12 @@ describe("phone theme stylesheet transform", () => {
     expect(css.startsWith(":root")).toBe(true);
   });
 
-  it("leaves inline SVG, black shades, white paper, anchors, the xterm host and vendor sheets alone", () => {
+  it("leaves inline SVG, black shades, white paper, anchors and vendor sheets alone", () => {
     const svg = `select { background-image:url("data:image/svg+xml,%3Csvg stroke='%239aa0b4'%3E"); }`;
     expect(run(svg)).toBe(svg);
     expect(run(".s { box-shadow:0 8px 24px rgba(0,0,0,.16); }")).toBe(".s { box-shadow:0 8px 24px rgba(0,0,0,.16); }");
     expect(run(".page { background:#fff; color:#fff; }")).toBe(":root { --mc-ffffff:var(--m-n4); }\n.page { background:#fff; color:var(--mc-ffffff); }");
     expect(run(":root { --m-accent:#7c6cff; }")).toBe(":root { --m-accent:#7c6cff; }");
-    expect(run(".terminal .xterm-viewport { scrollbar-color:#454b62 #0b0d13; }")).toBe(".terminal .xterm-viewport { scrollbar-color:#454b62 #0b0d13; }");
     expect(run(".x { color:#e7e9f2; /* theme: fixed */ }")).toBe(".x { color:#e7e9f2; /* theme: fixed */ }");
     expect(run(".xterm { color:#e7e9f2; }", "/repo/node_modules/@xterm/xterm/css/xterm.css")).toBe(".xterm { color:#e7e9f2; }");
   });
@@ -68,6 +67,16 @@ describe("phone theme choice", () => {
     localStorage.clear();
     document.documentElement.removeAttribute("data-theme");
     document.documentElement.removeAttribute("data-theme-pick");
+  });
+
+  it("paints the terminal in the desktop's palette for the phone's theme, with the cursor hidden", () => {
+    expect(phoneTerminalTheme().background).toBe("#000000");
+    setPhoneTheme("light_lavender");
+    const lavender = phoneTerminalTheme();
+    expect(lavender.background).toBe("#faf9fe");
+    expect(lavender.foreground).toBe("#2c2348");
+    expect(lavender.cursor).toBe(lavender.background);
+    expect(lavender.cursorAccent).toBe(lavender.background);
   });
   afterEach(() => localStorage.clear());
 

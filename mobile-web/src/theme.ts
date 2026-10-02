@@ -4,6 +4,8 @@
 // to, which `/status` reports and this module caches, so a cold open paints in
 // the right theme before the first request answers.
 
+import type { ITheme } from "@xterm/xterm";
+import { terminalPalette } from "../../src/lib/terminal/terminalPalette";
 import { readChoice, writeChoice } from "./prefs";
 
 /** The desktop's own themes (`src/types` `THEMES`), "system" included. */
@@ -101,4 +103,13 @@ export function noteDesktopTheme(value: unknown): void {
   if (!isDesktopTheme(value) || value === readDesktopTheme()) return;
   writeChoice("desktopTheme", value);
   applyPhoneTheme();
+}
+
+/** The desktop's terminal palette for the theme the phone paints in
+ * (`data-theme`; a bare root paints Plain Dark), with the cursor drawn in the
+ * background colour: the phone's terminal is output only, and a cursor would
+ * make an agent's prompt look like a field to type into. */
+export function phoneTerminalTheme(): ITheme {
+  const palette = terminalPalette(document.documentElement.getAttribute("data-theme") ?? "dark");
+  return { ...palette, cursor: palette.background, cursorAccent: palette.background };
 }

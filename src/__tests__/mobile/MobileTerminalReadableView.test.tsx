@@ -193,7 +193,7 @@ describe(`${BRAND.display} Mobile readable terminal view`, () => {
       cursorStyle: "bar",
       cursorInactiveStyle: "bar",
       cursorWidth: 2,
-      theme: { cursor: "#0b0d13", cursorAccent: "#0b0d13" },
+      theme: { background: "#000000", cursor: "#000000", cursorAccent: "#000000" },
     });
     expect(terminalState.textarea).toMatchObject({ disabled: true, tabIndex: -1 });
     expect(terminalState.textarea?.getAttribute("aria-hidden")).toBe("true");

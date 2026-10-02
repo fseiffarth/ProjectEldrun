@@ -12,6 +12,7 @@ import { Fragment, memo, type MouseEvent as ReactMouseEvent, type PointerEvent a
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { phoneTerminalTheme } from "../theme";
 import {
   ANY_FILE_ACCEPT,
   ApiError,
@@ -1203,11 +1204,12 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       cursorWidth: 2,
       fontSize: 14,
       scrollback: PHONE_SCROLLBACK,
-      // A shell/agent prompt remains part of PTY output, but it must not look
-      // like an editable field on the phone.
-      theme: { background: "#0b0d13", foreground: "#e7e9f2", cursor: "#0b0d13", cursorAccent: "#0b0d13" },
+      theme: phoneTerminalTheme(),
     });
     const fit = new FitAddon(); term.loadAddon(fit); term.open(host.current); fit.fit();
+    // A theme picked while the terminal is open repaints it too.
+    const themeWatch = new MutationObserver(() => { term.options.theme = phoneTerminalTheme(); });
+    themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     setCopiedLink(null);
     setLinkAsking(false);
     setLinkMissing(false);
@@ -1797,6 +1799,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "detached" }));
       ws?.close();
       trimWatch?.dispose();
+      themeWatch.disconnect();
       term.dispose();
       window.clearTimeout(linkTimer.current);
       clearInterval(ping);
