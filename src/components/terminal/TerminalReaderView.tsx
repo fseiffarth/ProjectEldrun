@@ -415,7 +415,7 @@ function ReaderComposer({ scope, tabKey, tabRef, history, focused, visible, stee
  * row names its model. Prompts always go to the session, and
  * sending one goes back to it.
  */
-export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, focused, onShowTerminal }: {
+export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, focused }: {
   host: HTMLElement;
   /** The pane's PTY: its live screen is read, answers and Stop typed into it. */
   ptyId: string;
@@ -424,9 +424,6 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
   cwd: string | undefined;
   visible: boolean;
   focused: boolean;
-  /** Back to the terminal, keyboard included (Esc in the composer, once no
-   * subagent is open; the prompt strip's switch is the other way). */
-  onShowTerminal: () => void;
 }) {
   const t = useT();
   const tab = useTabsStore((state) => state.tabsByScope[scope]?.find((entry) => entry.key === tabKey));
@@ -475,6 +472,11 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
    * the session prints, its first word (`Opus is working…`). */
   const workingModel = (live.status?.model ?? modelTag)?.trim().split(/\s+/)[0];
   const typeIntoPane = useCallback((keys: string[]) => typeKeys(ptyId, keys), [ptyId]);
+  /** Esc in the composer, once no status panel or subagent is open: the key
+   * the terminal would get — it stops the turn, closes the CLI's own menus —
+   * typed into the session, the chat staying shown (the prompt strip's switch
+   * is the way back to the terminal). */
+  const pressEscape = useCallback(() => { void typeIntoPane(["\u001b"]).catch(() => {}); }, [typeIntoPane]);
   /** The Changes panel beside the chat (the prompt strip's Diffs switch). */
   const changesOpen = useReaderChangesOpen(tab?.cmd ?? "");
   const changesWidth = useAgentReaderStore((state) => state.changesWidth);
@@ -971,7 +973,7 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
         focused={focused}
         visible={visible}
         steering={steering}
-        onEscape={statusOpen ? closeStatus : openStep ? subagentUp : onShowTerminal}
+        onEscape={statusOpen ? closeStatus : openStep ? subagentUp : pressEscape}
         onStatus={requestStatus}
       />
     </div>

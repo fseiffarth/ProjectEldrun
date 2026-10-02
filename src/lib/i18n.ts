@@ -3712,7 +3712,7 @@ export const enSource = {
   "terminal.reader.showReader": "Chat",
   "terminal.reader.showReaderHint": "Talk to this agent as a chat — its conversation as messages, over the terminal",
   "terminal.reader.showTerminal": "Terminal",
-  "terminal.reader.showTerminalHint": "Back to the terminal (Esc in the chat's text box)",
+  "terminal.reader.showTerminalHint": "Back to the terminal",
   "terminal.reader.changes": "Diffs",
   "terminal.reader.changesHint": "Show the files this agent changed, as diffs, beside the chat",
   "terminal.reader.changesHideHint": "Hide the diffs beside the chat",

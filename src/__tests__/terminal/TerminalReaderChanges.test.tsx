@@ -28,7 +28,7 @@ const changes = {
 
 function reader(host: HTMLElement) {
   return render(
-    <TerminalReaderView host={host} ptyId="p:agent-1" scope="p" tabKey="agent-1" cwd="/p" visible focused onShowTerminal={() => {}} />,
+    <TerminalReaderView host={host} ptyId="p:agent-1" scope="p" tabKey="agent-1" cwd="/p" visible focused />,
   );
 }
 

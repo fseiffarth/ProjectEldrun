@@ -50,9 +50,9 @@ const transcript = {
   ],
 };
 
-function reader(host: HTMLElement, onShowTerminal = () => {}) {
+function reader(host: HTMLElement) {
   return render(
-    <TerminalReaderView host={host} ptyId="p:agent-1" scope="p" tabKey="agent-1" cwd="/p" visible focused onShowTerminal={onShowTerminal} />,
+    <TerminalReaderView host={host} ptyId="p:agent-1" scope="p" tabKey="agent-1" cwd="/p" visible focused />,
   );
 }
 
@@ -133,7 +133,7 @@ describe("the agent pane's Reader", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "not sent yet" } });
     first.unmount();
     const other = render(
-      <TerminalReaderView host={host} ptyId="p:agent-2" scope="p" tabKey="agent-2" cwd="/p" visible focused onShowTerminal={() => {}} />,
+      <TerminalReaderView host={host} ptyId="p:agent-2" scope="p" tabKey="agent-2" cwd="/p" visible focused />,
     );
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     other.unmount();
@@ -145,12 +145,16 @@ describe("the agent pane's Reader", () => {
     expect(box.value).toBe("");
   });
 
-  it("goes back to the terminal on Esc", async () => {
-    const back = vi.fn();
-    reader(host, back);
+  it("types Esc into the session on Esc, staying in the chat with the draft kept", async () => {
+    written.length = 0;
+    reader(host);
     await screen.findByText("fix the parser");
-    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
-    expect(back).toHaveBeenCalled();
+    const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "half typed" } });
+    await act(async () => { fireEvent.keyDown(box, { key: "Escape" }); });
+    expect(written).toEqual(["\u001b"]);
+    expect(screen.getByRole("textbox")).toBe(box);
+    expect(box.value).toBe("half typed");
   });
 
   it("walks the session's prompts with ↑ and ↓, as the CLI's box, and gives the draft back", async () => {
@@ -625,8 +629,7 @@ describe("the Reader's live rows", () => {
       ? { ...transcript, usage: { contextLeft: 75, session: { used: 40 } } } : []));
     term = fakeTerminal(["› fix it", "Working (9s · esc to interrupt)", "›", "gpt-6 · 75% context left"]);
     registerTerminal("p:agent-1", term);
-    const showTerminal = vi.fn();
-    reader(host, showTerminal);
+    reader(host);
     await screen.findByText(/is working…/);
     const box = screen.getByRole("textbox");
     fireEvent.change(box, { target: { value: "/status" } });
@@ -638,7 +641,6 @@ describe("the Reader's live rows", () => {
     expect(sendSteeringPrompt).not.toHaveBeenCalled();
     expect((box as HTMLTextAreaElement).value).toBe("");
     fireEvent.keyDown(box, { key: "Escape" });
-    expect(showTerminal).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog", { name: "Codex status" })).toBeNull();
   });
 });
