@@ -348,7 +348,7 @@ describe("the Reader's subagents", () => {
 
   it("names the open subagent's own model while it is still at work", async () => {
     const running = { ...session, version: "s2", entries: session.entries.map((entry) => (entry.subagent === "sa-1" ? { ...entry, running: true } : entry)) };
-    const sub = { ...(conversations["sa-1"] as object), model: "claude-haiku-4-5-20251001" };
+    const sub = { ...(conversations["sa-1"] as object), model: "claude-haiku-4-5-20251001", tokens: 12_345 };
     invoke.mockImplementation((command: string, args?: { subagent?: string | null }) => {
       if (command !== "agent_tab_transcript") return Promise.resolve([]);
       return Promise.resolve(args?.subagent === "sa-1" ? sub : args?.subagent ? conversations[args.subagent] : running);
@@ -363,8 +363,10 @@ describe("the Reader's subagents", () => {
     expect(busy).toHaveLength(1);
     expect(busy[0].closest("button")?.textContent).toContain("Find the parser");
     await openListed("Find the parser");
-    expect(await screen.findByText("Haiku is working…")).toBeTruthy();
+    const row = (await screen.findByText("Haiku is working…")).closest(".terminal-reader-working")!;
     expect(screen.queryByText("Opus is working…")).toBeNull();
+    // Its own figures, as the phone's row shows them.
+    expect(row.querySelector("small")?.textContent).toMatch(/12\.3k tokens/);
     // A sibling that has reported back shows no working row.
     fireEvent.click(screen.getByRole("button", { name: "Next subagent" }));
     await screen.findByText("Tests sit beside the sources.");

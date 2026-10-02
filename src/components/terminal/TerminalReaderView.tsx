@@ -31,7 +31,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { TabStatusMark } from "../tabs/TabLocalityBadges";
 import { answerHtml, promptHtml } from "../../../mobile-web/src/terminal/answerMarkdown";
 import { chatDayLabel, chatMoment, chatTime, dayOpeners } from "../../../mobile-web/src/terminal/chatTimes";
-import { openSubagent, openSubagentRunning, siblingPosition, stepSibling, subagentAtWork, workingModelName, type SubagentStep } from "../../../mobile-web/src/terminal/subagents";
+import { compactTokens, openSubagent, openSubagentRunning, siblingPosition, stepSibling, subagentAtWork, workingElapsed, workingModelName, type SubagentStep } from "../../../mobile-web/src/terminal/subagents";
 import { commandArgsInline, transcriptTurns, type TranscriptTurn } from "../../../mobile-web/src/terminal/transcriptTurns";
 import { afterClear, clearMark } from "../../../mobile-web/src/terminal/clearedSession";
 import type { AskedQuestion, RunningShell } from "../../../mobile-web/src/api";
@@ -782,6 +782,24 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
    * conversation names. */
   const subagentWorking = openSubagentRunning(subagentPath, entries, !!live.working);
   const subagentModel = workingModelName(subTranscript?.model);
+  /** What the subagent's working row says beside its name, as the phone's
+   * does: how long since it was spawned (its entry's stamp, else its own
+   * first record's) and the tokens its newest request carried. */
+  const subagentStart = openStep?.at ?? (subTranscript?.available && !subTranscript.truncated ? subTranscript.entries[0]?.at : undefined);
+  const subagentTimed = subagentWorking && !!subagentStart;
+  const [subagentNow, setSubagentNow] = useState(() => Date.now());
+  // The elapsed time counts on by the second while the row is up.
+  useEffect(() => {
+    if (!subagentTimed || !visible) return;
+    setSubagentNow(Date.now());
+    const timer = window.setInterval(() => setSubagentNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [subagentTimed, visible]);
+  const subagentTokens = compactTokens(subTranscript?.tokens);
+  const subagentFacts = [
+    workingElapsed(subagentStart, subagentNow),
+    subagentTokens && t("terminal.reader.workingTokens", { count: subagentTokens }),
+  ].filter(Boolean).join(" · ");
   /** Subagents sent to the background still at work once the session's own
    * turn is over: the main conversation's working row stands for them. */
   const backgroundAtWork = openStep || live.working ? 0 : sessionAgents.filter((entry) => subagentAtWork(entry, false)).length;
@@ -908,6 +926,7 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
             <div className="terminal-reader-working" role="status">
               <span className="terminal-reader-working-dots" aria-hidden="true"><i /><i /><i /></span>
               <span>{subagentModel ? t("terminal.reader.workingModel", { model: subagentModel }) : t("terminal.reader.working")}</span>
+              {subagentFacts && <small>{subagentFacts} <UntestedTag id="terminal.reader.subagentWorkingFacts" /></small>}
               <UntestedTag id="terminal.reader.subagentWorking" />
               {/* Esc stops the session's turn: nothing to stop while only a
                   background subagent works on. */}
