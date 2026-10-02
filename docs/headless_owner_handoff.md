@@ -602,7 +602,7 @@ is not counted by the window's usage recap (`recordAuthorizedInput`).
 
 ## H3 — the remaining phone requests, as built
 
-All 34 `DesktopRequest` kinds now have a decision. **Every kind keeps the
+All 34 `DesktopRequest` kinds now have a decision (36 since develop added the held-prompt pair, below). **Every kind keeps the
 H0/H1b shape: the window is asked first and answers as before; only on
 `desktop_unavailable` (no window, or one past the sidecar's deadline) does
 the owner answer from its files, flagged `desktop_available: false`.** No
@@ -620,6 +620,7 @@ its own write path (CalDAV push, the activity store, the registry's
 | `TabSeen` | `headless::mark_seen`: `<state_dir>/mobile-control/seen/<uid>` = epoch seconds, written on every attach/detach (window open or not); `turn_readings` turns a `done` at or before the stamp into a timing row | `host.rs::mark_tab_seen`, `headless::turn_readings` |
 | `TabInput` | nothing — the hooks' `.turn` record is what the headless readings classify by; the desktop call still goes out for an open window | `host.rs::mark_tab_input` |
 | `TabPrompt` | `headless::record_prompt` → `agent_prompts::record_at` (`result: delivered`, the tab's label / launch id / agent); `is_session_command` (the `isSessionCommand` twin) skips `/clear`-style commands; answered `recorded: false` then | `host.rs::sent_prompt` |
+| `HoldPrompt` / `EditHeldPrompt` (develop, after H3; owner half 2026-10-01) | `headless::hold_prompt`: `invalid_prompt` for an empty line or a session command, `tab_not_found` with no `scheduleTargetId`; else `queue_prompt` (the `queuePromptForTab` twin, now shared with `prompt_mutate`'s send) adds a send-now rule under a random v4 UUID — `uuid_v4()` is a timestamp past the route's 64-char id limit. `headless::edit_held_prompt`: only a waiting one-time rule, `upsert_in(…, Some(target))`, `schedule_busy` → `held_busy`, `schedule_gone` → `held_gone`. Both then mark the id in `scheduler::PhoneHolds` (shared by host and scheduler, in memory like `phoneHolds.ts`) and wake the loop: a held rule skips the idle gate — typed into the CLI's queue once `queueable_while_busy` (CLI up, not on a `decision`, not a `SessionEnd` shell). A file error answers `desktop_unavailable`, so the phone types it itself. | `host.rs::held_call`, `scheduler::{PhoneHolds,deliver_claimed}` |
 | `UndoClear` | `agent_session::undo_clear_plan` (read off the process's state dir — production's is the sidecar's) then `headless::apply_undo_plan`: `Type` → `runner.probe` must see the session, then `runner.deliver` of one unbracketed submission (`/resume <id>`); `Relaunch` → `runner.kill`, the tab record's `args` set to `resume_args`, `launch(launch_options)`; `None` → `nothing_to_undo` (409); no session → `tab_not_ready` (503) | `host.rs::undo_clear_headless` |
 | `TodoMutate` | `headless_board::todo_mutate`: `taskFromInput` / `subtasksFromInput` / `toggleTaskDone` / `dropAccepted` / `provisionalRank` ported over `commands::calendar::{create,update,delete}_task_at`, `move_tasks_at`, `columns_set_at` (all `transact` = CAS on the file `rev`); opaque ids re-derived with the host key over the file (`task`, `subtask`, `calendar`, `project`); refusals: `task_not_found` (404), `invalid_task` / `invalid_column` / `column_follows_date` (400); answered with `headless::todo_board` | `host.rs::todo_mutate` |
 | `CalendarMutate` | `headless_board::calendar_mutate` over `{create,update,delete}_event_at`, `{create,update,delete}_calendar_at`; **a calendar with `caldav_account_id` (or `readonly`) is refused `calendar_unavailable`** — the window pushes to the server from the write itself (`docs/context/caldav.md`, "Push"), not by diffing the file, so an edit here would sit unpushed and be overwritten by the next sync; answered with `headless::calendar_month` | `host.rs::calendar_mutate` |
@@ -678,6 +679,8 @@ tab is added, `refreshWorkspaceScope`).
 session. The closed record decides (`workspace::owns_tmux_session`): only a
 session the tab minted is killed, as the desktop's × does
 (`closing_an_attach_tab_does_not_own_the_session_it_rode`).
+
+**History rows carry the tab's binding** (develop 9caff763, ported 2026-10-01): a tab with no launch id stamps `tab_id = scheduleTargetId` on its rows, or the window's `historyTabId` match drops them; the owner's three writers (`scheduler::retire`, `headless::record_prompt`, `prompt_mutate`'s send) do the same.
 
 **H3 parity gaps, recorded not fixed**: a headless reopen of an agent other than Claude
 / Codex continues its latest conversation, as the window's reopen does; the

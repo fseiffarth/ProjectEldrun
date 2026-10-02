@@ -32,10 +32,15 @@
 //! CLI has come up and settled. Backed off, so a tab that dies at once is
 //! not restarted every tick.
 //!
+//! **A phone prompt** held with no window (`PhoneHolds`, the window's
+//! `phoneHolds.ts`) does not wait for the idle point: it is typed into the
+//! CLI's own queue as soon as the pane takes keystrokes and is not on a
+//! question, as a prompt typed then would go.
+//!
 //! Not here (recorded in `docs/headless_owner_handoff.md`): the window's
 //! after-link chaining and prompt blame, both of which need its stores.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -223,6 +228,48 @@ pub fn ready(record: Option<(TurnState, Option<u64>)>, probe: SessionProbe, now:
         Some((TurnState::Idle, _)) => false,
         Some((TurnState::Done, Some(at))) => now.saturating_sub(at) >= DONE_STABLE_SECS && quiet(OUTPUT_SETTLE_SECS),
         Some((TurnState::Done, None)) | None => quiet(HOOKLESS_QUIET_SECS),
+    }
+}
+
+/// Whether a phone prompt may go in while the agent works
+/// (`queueableWhileBusy`): the CLI is up and the pane is not on a question,
+/// whose choices a typed line would answer. A hook record after the session
+/// started says the CLI is up; with none, the hookless quiet stands in.
+pub fn queueable_while_busy(record: Option<(TurnState, Option<u64>)>, probe: SessionProbe, now: u64) -> bool {
+    let record = record.filter(|(_, at)| at.is_none_or(|at| at >= probe.created));
+    match record {
+        Some((TurnState::Working, _)) | Some((TurnState::Done, Some(_))) => true,
+        // A question, or a `SessionEnd` that left a shell behind.
+        Some((TurnState::Decision, _)) | Some((TurnState::Idle, _)) => false,
+        Some((TurnState::Done, None)) | None => ready(None, probe, now),
+    }
+}
+
+/// The send-now rules that carry a prompt the phone sent while the agent
+/// worked and the owner holds (no window was open to hold it), by rule id —
+/// the window's `phoneHolds.ts`. Shared by the host, which marks them, and
+/// the scheduler, which types them at once. In memory only: a rule whose
+/// mark is lost with the sidecar is an ordinary send-now rule, delivered at
+/// the agent's next idle point (the same holds for a window that opens).
+#[derive(Default)]
+pub struct PhoneHolds {
+    ids: Mutex<HashSet<String>>,
+    wake: tokio::sync::Notify,
+}
+
+impl PhoneHolds {
+    /// Mark `schedule_id` for the CLI's queue and wake the scheduler for it.
+    pub fn hold(&self, schedule_id: &str) {
+        self.ids.lock().unwrap_or_else(PoisonError::into_inner).insert(schedule_id.to_string());
+        self.wake.notify_one();
+    }
+
+    pub fn due(&self, schedule_id: &str) -> bool {
+        self.ids.lock().unwrap_or_else(PoisonError::into_inner).contains(schedule_id)
+    }
+
+    pub fn forget(&self, schedule_id: &str) {
+        self.ids.lock().unwrap_or_else(PoisonError::into_inner).remove(schedule_id);
     }
 }
 
@@ -448,12 +495,19 @@ pub struct Context {
     pub state_dir: PathBuf,
     pub runner: Arc<dyn Runner>,
     pub launch: HeadlessLaunch,
+    pub holds: Arc<PhoneHolds>,
     relaunched: Mutex<HashMap<String, Instant>>,
 }
 
 impl Context {
     pub fn new(state_dir: PathBuf, runner: Arc<dyn Runner>, launch: HeadlessLaunch) -> Self {
-        Self { state_dir, runner, launch, relaunched: Mutex::new(HashMap::new()) }
+        Self { state_dir, runner, launch, holds: Arc::default(), relaunched: Mutex::new(HashMap::new()) }
+    }
+
+    /// The host's holds, so a phone prompt it marks is typed from here.
+    pub fn with_holds(mut self, holds: Arc<PhoneHolds>) -> Self {
+        self.holds = holds;
+        self
     }
 
     fn may_relaunch(&self, tmux: &str) -> bool {
@@ -491,7 +545,9 @@ fn retire(state_dir: &Path, target: &Target, schedule: &ScheduledAgentPrompt, oc
                 schedule_origin: schedule.origin.clone(),
                 tab_label: target.tab.label.clone(),
                 session_id: target.tab.session_id.clone(),
-                tab_id: None,
+                // A tab with no launch id is told apart by its binding
+                // (`prompt/adopt.historyTabId`), as the window stamps it.
+                tab_id: target.uid().is_none().then(|| target.target_id.clone()),
                 preface: schedule.preface.clone(),
                 agent: Some(target.tab.cmd.clone()),
                 result: Some(result_word.to_string()),
@@ -567,51 +623,80 @@ pub async fn tick(ctx: &Context, now: DateTime<Local>) -> Vec<Event> {
             };
             let record = target.uid().and_then(|uid| headless::turn_record(&ctx.state_dir, &target.project_id, uid));
             if !ready(record, probe, secs) {
+                // Only a phone prompt goes in meanwhile.
+                if queueable_while_busy(record, probe, secs) {
+                    let held = schedules.iter().find_map(|schedule| match verdict(schedule, now) {
+                        Verdict::Wait { key } if ctx.holds.due(&schedule.id) => Some((schedule, key)),
+                        _ => None,
+                    });
+                    if let Some((schedule, key)) = held {
+                        ctx.holds.forget(&schedule.id);
+                        if let Some(event) = deliver_claimed(ctx, &target, schedule, &key, now).await {
+                            events.push(event);
+                        }
+                    }
+                }
                 break;
             }
-            if agent_tasks::claim_in(&tasks, &target.project_id, &target.target_id, &schedule.id, &key, now) != Ok(true) {
-                continue;
+            ctx.holds.forget(&schedule.id);
+            if let Some(event) = deliver_claimed(ctx, &target, schedule, &key, now).await {
+                events.push(event);
             }
-            let runner = ctx.runner.clone();
-            let tmux = target.tmux.clone();
-            let submissions = submissions(schedule, &target.tab.cmd);
-            let delivered = if submissions.is_empty() {
-                Err("scheduled prompt is empty".to_string())
-            } else {
-                tokio::task::spawn_blocking(move || runner.deliver(&tmux, &submissions))
-                    .await
-                    .unwrap_or_else(|e| Err(format!("delivery task: {e}")))
-            };
-            let (result, event) = match delivered {
-                Ok(()) => (
-                    AgentScheduleResult::Delivered,
-                    Event::Delivered { tmux: target.tmux.clone(), schedule_id: schedule.id.clone(), occurrence: key.clone() },
-                ),
-                Err(error) => (
-                    AgentScheduleResult::Failed,
-                    Event::Failed { tmux: target.tmux.clone(), schedule_id: schedule.id.clone(), occurrence: key.clone(), error },
-                ),
-            };
-            let _ = agent_tasks::complete_in(&tasks, &target.project_id, &target.target_id, &schedule.id, &key, result);
-            retire(&ctx.state_dir, &target, schedule, &key, result);
-            events.push(event);
             break;
         }
     }
     events
 }
 
+/// Claim `key` of `schedule`, type it into the tab and record the outcome.
+/// `None` when another process claimed the occurrence first.
+async fn deliver_claimed(ctx: &Context, target: &Target, schedule: &ScheduledAgentPrompt, key: &str, now: DateTime<Local>) -> Option<Event> {
+    let tasks = agent_tasks::file_path(&ctx.state_dir);
+    if agent_tasks::claim_in(&tasks, &target.project_id, &target.target_id, &schedule.id, key, now) != Ok(true) {
+        return None;
+    }
+    let runner = ctx.runner.clone();
+    let tmux = target.tmux.clone();
+    let submissions = submissions(schedule, &target.tab.cmd);
+    let delivered = if submissions.is_empty() {
+        Err("scheduled prompt is empty".to_string())
+    } else {
+        tokio::task::spawn_blocking(move || runner.deliver(&tmux, &submissions))
+            .await
+            .unwrap_or_else(|e| Err(format!("delivery task: {e}")))
+    };
+    let (result, event) = match delivered {
+        Ok(()) => (
+            AgentScheduleResult::Delivered,
+            Event::Delivered { tmux: target.tmux.clone(), schedule_id: schedule.id.clone(), occurrence: key.to_string() },
+        ),
+        Err(error) => (
+            AgentScheduleResult::Failed,
+            Event::Failed { tmux: target.tmux.clone(), schedule_id: schedule.id.clone(), occurrence: key.to_string(), error },
+        ),
+    };
+    let _ = agent_tasks::complete_in(&tasks, &target.project_id, &target.target_id, &schedule.id, key, result);
+    retire(&ctx.state_dir, target, schedule, key, result);
+    Some(event)
+}
+
 /// The sidecar's loop: a tick every [`TICK`] until `shutdown` says so.
 /// Every firing is announced on stderr — the sidecar's journal is the one
 /// place a schedule that fired with no window can be accounted for.
-pub async fn run(state_dir: PathBuf, launch: HeadlessLaunch, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+pub async fn run(
+    state_dir: PathBuf,
+    launch: HeadlessLaunch,
+    holds: Arc<PhoneHolds>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
     let runner: Arc<dyn Runner> = Arc::new(TmuxRunner::new(&state_dir, None));
-    let ctx = Context::new(state_dir, runner, launch);
+    let ctx = Context::new(state_dir, runner, launch).with_holds(holds.clone());
     let mut interval = tokio::time::interval(TICK);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
-            _ = interval.tick() => {
+            // A phone prompt goes in now, not on the next sweep.
+            _ = async { tokio::select! { _ = interval.tick() => {}, _ = holds.wake.notified() => {} } } => {
                 for event in tick(&ctx, Local::now()).await {
                     match event {
                         Event::WindowHoldsLease(_) => {}
@@ -881,6 +966,42 @@ mod tests {
         let events = tick(&ctx, now).await;
         assert!(events.is_empty(), "{events:?}");
         assert_eq!(recorder.delivered.lock().unwrap().len(), 1);
+    }
+
+    /// A phone prompt the owner holds goes into the CLI's queue while the
+    /// agent works — not while the pane is on a question — and an unheld
+    /// send-now rule beside it still waits for the idle point.
+    #[tokio::test]
+    async fn a_held_phone_prompt_goes_in_mid_turn_but_never_onto_a_question() {
+        let now = Local::now();
+        let key = occurrence_key(&now);
+        let held = ScheduledAgentPrompt { id: "s-held".into(), message: "also fix the docs".into(), ..rule_once(&key) };
+        let plain = rule_once(&key);
+        let fixture = Fixture::new(vec![plain, held]);
+        let recorder = Arc::new(Recorder::default());
+        let (ctx, _launched) = context(&fixture, &recorder);
+        let secs = now.timestamp() as u64;
+        *recorder.probe.lock().unwrap() = Some(SessionProbe { created: secs - 600, activity: secs });
+
+        // Working, nothing held: everything waits.
+        fixture.turn(&format!("working {}", secs - 30));
+        assert!(tick(&ctx, now).await.is_empty());
+
+        // On a question, held: a typed line would answer it — still waits.
+        ctx.holds.hold("s-held");
+        fixture.turn(&format!("decision {}", secs - 5));
+        assert!(tick(&ctx, now).await.is_empty());
+        assert!(recorder.delivered.lock().unwrap().is_empty());
+
+        // Back at work: the held one goes in, the other keeps waiting.
+        fixture.turn(&format!("working {}", secs - 2));
+        let events = tick(&ctx, now).await;
+        assert!(matches!(events.as_slice(), [Event::Delivered { schedule_id, .. }] if schedule_id == "s-held"), "{events:?}");
+        assert_eq!(recorder.delivered.lock().unwrap()[0].1[0].text, "also fix the docs");
+        assert!(!ctx.holds.due("s-held"), "a delivered hold is forgotten");
+        let rules = fixture.tasks().projects[PROJECT][TARGET].schedules.clone();
+        assert_eq!(rules.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["s-once"]);
+        assert!(tick(&ctx, now).await.is_empty(), "the unheld rule waits for idle");
     }
 
     /// A recurring rule keeps its receipt and stays; a hook's `working`

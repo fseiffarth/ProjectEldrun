@@ -78,6 +78,9 @@ struct HostState {
     /// session through it. Production is `scheduler::TmuxRunner` on the
     /// default socket; a test swaps in a recorder.
     runner: Arc<dyn scheduler::Runner>,
+    /// The phone prompts the owner holds with no window, which the
+    /// scheduler types into the CLI's queue at once (`scheduler::PhoneHolds`).
+    holds: Arc<scheduler::PhoneHolds>,
 }
 
 /// The owner's spawn seam (headless owner plan, H1b): `launch` starts a
@@ -2283,21 +2286,48 @@ fn valid_held_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-async fn held_call(state: &HostState, request: DesktopRequest) -> (StatusCode, Json<serde_json::Value>) {
+/// Ask the window to hold or edit a phone prompt; with no window the owner
+/// does it (`headless` — `fallback` answers the held id), marks the rule as a
+/// phone hold for its own scheduler and pokes a window that may be opening.
+async fn held_call(
+    state: &HostState,
+    request: DesktopRequest,
+    fallback: impl FnOnce() -> Result<String, String>,
+) -> (StatusCode, Json<serde_json::Value>) {
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
-    match admin::desktop_call(&desktop_socket, &request).await {
-        Ok(DesktopResponse::Held { held_id }) => (StatusCode::OK, Json(json!({ "id": held_id }))),
-        Ok(DesktopResponse::Error { code, .. }) => api_error(
-            match code.as_str() {
-                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
-                "tab_not_found" => StatusCode::NOT_FOUND,
-                "held_gone" | "held_busy" => StatusCode::CONFLICT,
-                _ => StatusCode::BAD_REQUEST,
-            },
-            &code,
-        ),
-        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
-    }
+    let response = admin::desktop_call(&desktop_socket, &request).await;
+    let code = if desktop_down(&response) {
+        match fallback() {
+            Ok(held_id) => {
+                state.holds.hold(&held_id);
+                if let DesktopRequest::HoldPrompt { project_id, .. } | DesktopRequest::EditHeldPrompt { project_id, .. } = &request {
+                    poke_window(state, Some(project_id), &["schedules"]);
+                }
+                return (StatusCode::OK, Json(json!({ "id": held_id, "desktop_available": false })));
+            }
+            Err(code) if matches!(code.as_str(), "tab_not_found" | "held_gone" | "held_busy" | "invalid_prompt") => code,
+            Err(why) => {
+                // A file the owner could not write: the phone types the words.
+                eprintln!("mobile: holding a phone prompt with no window failed: {why}");
+                "desktop_unavailable".to_string()
+            }
+        }
+    } else {
+        match response {
+            Ok(DesktopResponse::Held { held_id }) => return (StatusCode::OK, Json(json!({ "id": held_id }))),
+            Ok(DesktopResponse::Error { code, .. }) => code,
+            _ => "desktop_unavailable".to_string(),
+        }
+    };
+    api_error(
+        match code.as_str() {
+            "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+            "tab_not_found" => StatusCode::NOT_FOUND,
+            "held_gone" | "held_busy" => StatusCode::CONFLICT,
+            _ => StatusCode::BAD_REQUEST,
+        },
+        &code,
+    )
 }
 
 /// `POST /api/v1/tabs/{id}/held` — the phone's composer sent `message` while
@@ -2321,19 +2351,21 @@ async fn hold_prompt(
         Ok(message) => message,
         Err(error) => return error,
     };
-    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+    let (project_id, tab) = match agent_tab(&state, &tab_id) {
         Ok(target) => target,
         Err(error) => return error,
     };
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    let state_dir = state.config.state_dir.clone();
     let (status, body) = held_call(
         &state,
         DesktopRequest::HoldPrompt {
             request_id,
-            project_id,
-            tmux_session,
-            message,
+            project_id: project_id.clone(),
+            tmux_session: tab.tmux_name.clone(),
+            message: message.clone(),
         },
+        || headless::hold_prompt(&state_dir, &project_id, &tab, &message, chrono::Local::now()),
     )
     .await;
     (if status == StatusCode::OK { StatusCode::CREATED } else { status }, body)
@@ -2361,20 +2393,22 @@ async fn edit_held_prompt(
         Ok(message) => message,
         Err(error) => return error,
     };
-    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+    let (project_id, tab) = match agent_tab(&state, &tab_id) {
         Ok(target) => target,
         Err(error) => return error,
     };
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    let state_dir = state.config.state_dir.clone();
     held_call(
         &state,
         DesktopRequest::EditHeldPrompt {
             request_id,
-            project_id,
-            tmux_session,
-            held_id,
-            message,
+            project_id: project_id.clone(),
+            tmux_session: tab.tmux_name.clone(),
+            held_id: held_id.clone(),
+            message: message.clone(),
         },
+        || headless::edit_held_prompt(&state_dir, &project_id, &tab, &held_id, &message).map(|()| held_id.clone()),
     )
     .await
 }
@@ -4359,6 +4393,7 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
         spawner: HeadlessSpawner::default(),
         readings: Arc::new(Mutex::new(headless::ReadingCache::default())),
         runner: Arc::new(scheduler::TmuxRunner::new(&state_dir, None)),
+        holds: Arc::default(),
     };
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     // A Serve verification failure must be a real service failure. A clean
@@ -4384,7 +4419,12 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
     // The owner's timers (headless owner plan, H2): scheduled prompts fire
     // from here while no window holds the timer lease, through the same
     // launch seam the headless create uses. Ends with the server.
-    tokio::spawn(scheduler::run(state.config.state_dir.clone(), state.spawner.launch.clone(), shutdown_tx.subscribe()));
+    tokio::spawn(scheduler::run(
+        state.config.state_dir.clone(),
+        state.spawner.launch.clone(),
+        state.holds.clone(),
+        shutdown_tx.subscribe(),
+    ));
     tokio::spawn(alarms::run(state.config.state_dir.clone(), state.auth.clone(), shutdown_tx.subscribe()));
     let publisher_shutdown = shutdown_tx.clone();
     let publisher_origin = config.origin.clone();
@@ -4504,6 +4544,7 @@ mod tests {
                     spawner: HeadlessSpawner::default(),
                     readings: Arc::new(Mutex::new(headless::ReadingCache::default())),
                     runner,
+                    holds: Arc::default(),
                 },
             }
         }
@@ -5113,6 +5154,51 @@ mod tests {
             .expect("session fixture"),
         )
         .expect("write session");
+    }
+
+    /// With no window open the owner holds a prompt the phone sent mid-turn:
+    /// a send-now rule on the tab's binding, marked for its scheduler to type
+    /// at once, and editable until delivered — nothing raw crossing.
+    #[tokio::test]
+    async fn a_phone_prompt_is_held_and_edited_by_the_owner_with_no_window() {
+        let host = Fixture::with_project();
+        bind_schedule_target(&host);
+        let state_dir = host.state.config.state_dir.clone();
+        let cookie = host.pair_device(&signing_key(57)).await.0;
+        let (_, tab_id) = project_and_tab(&host, &cookie).await;
+        let held_uri = format!("/api/v1/tabs/{tab_id}/held");
+
+        let (status, _, body) = host
+            .send(request_as("POST", &held_uri, &cookie, Some(json!({ "message": "also update the docs" }))))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], false);
+        assert!(!body.contains("tgt-1") && !body.contains(RAW_PROJECT), "{body}");
+        let held_id = json(&body)["id"].as_str().expect("held id").to_string();
+        assert!(host.state.holds.due(&held_id), "marked for the scheduler");
+        let rules = crate::services::agent_tasks::list_at(&state_dir, RAW_PROJECT, "tgt-1").expect("rules");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].id, held_id);
+        assert_eq!(rules[0].message, "also update the docs");
+
+        let (status, _, body) = host
+            .send(request_as("PUT", &format!("{held_uri}/{held_id}"), &cookie, Some(json!({ "message": "update the docs and the tests" }))))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["id"], held_id);
+        let rules = crate::services::agent_tasks::list_at(&state_dir, RAW_PROJECT, "tgt-1").expect("rules");
+        assert_eq!(rules[0].message, "update the docs and the tests");
+
+        let (status, _, body) = host
+            .send(request_as("PUT", &format!("{held_uri}/gone-1"), &cookie, Some(json!({ "message": "x" }))))
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT, "answered: {body}");
+        assert_eq!(json(&body)["error"], "held_gone");
+        let (status, _, body) = host
+            .send(request_as("POST", &held_uri, &cookie, Some(json!({ "message": "/clear" }))))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a command is typed by the phone: {body}");
+        assert_eq!(json(&body)["error"], "invalid_prompt");
     }
 
     /// H3 (the plan's exit, the writes half): with no window open, the

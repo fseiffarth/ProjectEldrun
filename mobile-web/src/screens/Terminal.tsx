@@ -2237,8 +2237,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * next idle point (`holdPrompt`) instead of it going into the CLI's own
    * queue, where nothing can reach it again — so until the agent takes it in,
    * its bubble's hold menu offers Edit. The bubble shows at once, as any
-   * prompt's does. A desktop that cannot hold it (no window, an older build)
-   * costs nothing: the words are typed as they always were. The delivery
+   * prompt's does. With no window the Mobile host holds it itself. A host
+   * that cannot hold it (an older build, a tab with no binding) costs nothing: the words are typed as they always were. The delivery
    * records the prompt in the desktop's history, so it is not reported here. */
   const holdDraft = (id: number, text: string, fromComposer = true) => {
     setLastSent(text);

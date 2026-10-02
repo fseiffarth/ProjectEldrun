@@ -922,7 +922,9 @@ pub fn record_prompt(state_dir: &Path, project_id: &str, tab: &ResolvedTab, mess
                 schedule_origin: None,
                 tab_label: tab.public.label.clone(),
                 session_id: tab.session_id.clone(),
-                tab_id: None,
+                // A tab with no launch id is told apart by its binding
+                // (`prompt/adopt.historyTabId`), as the window stamps it.
+                tab_id: tab.session_id.is_none().then(|| tab.schedule_target_id.clone()).flatten(),
                 preface: Vec::new(),
                 agent: Some(tab.cmd.clone()),
                 result: Some("delivered".to_string()),
@@ -1116,25 +1118,7 @@ pub fn prompt_mutate(
                 .into_iter()
                 .find(|row| row.id == prompt_id)
                 .ok_or_else(|| "prompt_not_found".to_string())?;
-            let path = agent_tasks::file_path(state_dir);
-            let existing = agent_tasks::list_at(state_dir, project_id, &target.schedule_target_id)?;
-            for pruned in schedules_to_prune_for_send(&existing) {
-                agent_tasks::delete_in(&path, project_id, &target.schedule_target_id, &pruned, false)?;
-            }
-            let clash = existing
-                .iter()
-                .any(|rule| rule.id == prompt.id && !matches!(rule.rule, AgentScheduleRule::Once { .. }));
-            let id = if clash { crate::commands::projects::uuid_v4() } else { prompt.id.clone() };
-            let rule = ScheduledAgentPrompt {
-                id,
-                enabled: true,
-                message: prompt.message.clone(),
-                rule: AgentScheduleRule::Once { at: now.format("%Y-%m-%dT%H:%M").to_string() },
-                preface: Vec::new(),
-                last: None,
-                origin: None,
-            };
-            agent_tasks::upsert_in(&path, project_id, &target.schedule_target_id, rule, None)?;
+            queue_prompt(state_dir, project_id, &target.schedule_target_id, &prompt.message, Some(&prompt.id), now)?;
             agent_prompts::archive_at(
                 state_dir,
                 project_id,
@@ -1142,8 +1126,8 @@ pub fn prompt_mutate(
                 SentAgentPromptInput {
                     schedule_origin: None,
                     tab_label: target.label,
+                    tab_id: target.session_id.is_none().then(|| target.schedule_target_id.clone()),
                     session_id: target.session_id,
-                    tab_id: None,
                     preface: Vec::new(),
                     agent: Some(target.agent),
                     result: None,
@@ -1152,6 +1136,94 @@ pub fn prompt_mutate(
                 },
             )
         }
+    }
+}
+
+/// `queuePromptForTab`: a one-time rule at this machine's current minute —
+/// finished one-time rules pruned first at the tab's cap, `id` re-minted
+/// when a recurring rule holds it (or none was given). Returns the rule's id.
+fn queue_prompt(
+    state_dir: &Path,
+    project_id: &str,
+    target_id: &str,
+    message: &str,
+    id: Option<&str>,
+    now: DateTime<Local>,
+) -> Result<String, String> {
+    let path = agent_tasks::file_path(state_dir);
+    let existing = agent_tasks::list_at(state_dir, project_id, target_id)?;
+    for pruned in schedules_to_prune_for_send(&existing) {
+        agent_tasks::delete_in(&path, project_id, target_id, &pruned, false)?;
+    }
+    let id = id
+        .filter(|id| {
+            !existing
+                .iter()
+                .any(|rule| rule.id == *id && !matches!(rule.rule, AgentScheduleRule::Once { .. }))
+        })
+        .map_or_else(random_rule_id, str::to_string);
+    let rule = ScheduledAgentPrompt {
+        id: id.clone(),
+        enabled: true,
+        message: message.to_string(),
+        rule: AgentScheduleRule::Once { at: now.format("%Y-%m-%dT%H:%M").to_string() },
+        preface: Vec::new(),
+        last: None,
+        origin: None,
+    };
+    agent_tasks::upsert_in(&path, project_id, target_id, rule, None)?;
+    Ok(id)
+}
+
+/// A rule id the way the window mints one (`crypto.randomUUID`): a random
+/// v4 UUID, which the phone's held-prompt route accepts back.
+fn random_rule_id() -> String {
+    let mut b = [0u8; 16];
+    let _ = getrandom::fill(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
+}
+
+/// The words of a held prompt, or `invalid_prompt`: a command is the CLI's
+/// own and never waits — the phone types those.
+fn held_words(message: &str) -> Result<&str, String> {
+    let text = message.trim();
+    if text.is_empty() || is_session_command(text) {
+        return Err("invalid_prompt".into());
+    }
+    Ok(text)
+}
+
+/// `HoldPrompt` with no window (`holdTabPrompt`): the phone sent `message`
+/// while the agent worked; it is queued as a send-now rule on the tab's
+/// binding, which the caller marks as a phone hold so the scheduler types it
+/// at once. Returns the rule's id, which the phone edits it by.
+pub fn hold_prompt(state_dir: &Path, project_id: &str, tab: &ResolvedTab, message: &str, now: DateTime<Local>) -> Result<String, String> {
+    let target = tab.schedule_target_id.as_deref().filter(|id| !id.is_empty()).ok_or_else(|| "tab_not_found".to_string())?;
+    let text = held_words(message)?;
+    queue_prompt(state_dir, project_id, target, text, None, now)
+}
+
+/// `EditHeldPrompt` with no window (`editHeldTabPrompt`): new words for a
+/// held prompt, kept only while its rule still waits. `held_gone` once it is
+/// delivered (or is not a waiting one-time rule of this tab), `held_busy`
+/// while it is being typed — never re-created, which would send it twice.
+pub fn edit_held_prompt(state_dir: &Path, project_id: &str, tab: &ResolvedTab, held_id: &str, message: &str) -> Result<(), String> {
+    let target = tab.schedule_target_id.as_deref().filter(|id| !id.is_empty()).ok_or_else(|| "tab_not_found".to_string())?;
+    let text = held_words(message)?;
+    let held = agent_tasks::list_at(state_dir, project_id, target)?
+        .into_iter()
+        .find(|rule| rule.id == held_id)
+        .filter(|rule| matches!(rule.rule, AgentScheduleRule::Once { .. }) && rule.last.is_none())
+        .ok_or_else(|| "held_gone".to_string())?;
+    let rule = ScheduledAgentPrompt { message: text.to_string(), ..held };
+    match agent_tasks::upsert_in(&agent_tasks::file_path(state_dir), project_id, target, rule, Some(target)) {
+        Ok(_) => Ok(()),
+        Err(code) if code == agent_tasks::SCHEDULE_BUSY_ERROR => Err("held_busy".into()),
+        Err(code) if code == agent_tasks::SCHEDULE_GONE_ERROR => Err("held_gone".into()),
+        Err(error) => Err(error),
     }
 }
 
@@ -1403,6 +1475,57 @@ mod tests {
         assert!(prompts(dir.path(), "p2").unwrap().is_empty());
         // Nothing was written back.
         assert!(std::fs::read_to_string(dir.path().join("agent_tasks.json")).unwrap().contains("\"never\""));
+    }
+
+    #[test]
+    fn a_phone_prompt_to_a_tab_without_a_launch_id_is_stamped_with_its_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut gemini = tab("gemini", None);
+        gemini.schedule_target_id = Some("target-gemini".into());
+        assert!(record_prompt(dir.path(), "p1", &gemini, "look at the logs").unwrap());
+        let mut claude = tab("claude", Some("launch-1"));
+        claude.schedule_target_id = Some("target-claude".into());
+        assert!(record_prompt(dir.path(), "p1", &claude, "run the tests").unwrap());
+        let file: serde_json::Value = crate::storage::read_json(&agent_prompts::file_path(dir.path())).unwrap();
+        let rows = file["history"]["p1"].as_array().unwrap();
+        let row = |message: &str| rows.iter().find(|row| row["message"] == message).unwrap().clone();
+        // The window's `historyTabId`: the launch id, else the binding.
+        assert_eq!(row("look at the logs")["tab_id"], "target-gemini");
+        assert_ne!(row("run the tests")["tab_id"], "target-claude");
+    }
+
+    #[test]
+    fn a_held_phone_prompt_is_a_send_now_rule_edited_only_while_it_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut gemini = tab("gemini", None);
+        assert_eq!(hold_prompt(dir.path(), "p1", &gemini, "go on", Local::now()).unwrap_err(), "tab_not_found", "an unbound tab");
+        gemini.schedule_target_id = Some("target-gemini".into());
+        assert_eq!(hold_prompt(dir.path(), "p1", &gemini, "/clear", Local::now()).unwrap_err(), "invalid_prompt");
+        assert_eq!(hold_prompt(dir.path(), "p1", &gemini, "   ", Local::now()).unwrap_err(), "invalid_prompt");
+
+        let id = hold_prompt(dir.path(), "p1", &gemini, " then the docs ", Local::now()).unwrap();
+        assert_eq!(id.len(), 36, "a UUID the phone can name back: {id}");
+        let rules = agent_tasks::list_at(dir.path(), "p1", "target-gemini").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].id, id);
+        assert_eq!(rules[0].message, "then the docs");
+        assert!(matches!(rules[0].rule, AgentScheduleRule::Once { .. }));
+
+        edit_held_prompt(dir.path(), "p1", &gemini, &id, "then the tests").unwrap();
+        assert_eq!(agent_tasks::list_at(dir.path(), "p1", "target-gemini").unwrap()[0].message, "then the tests");
+        assert_eq!(edit_held_prompt(dir.path(), "p1", &gemini, "nope", "x").unwrap_err(), "held_gone");
+
+        // Being typed: busy; delivered: gone — never re-created.
+        let path = agent_tasks::file_path(dir.path());
+        let key = match &agent_tasks::list_at(dir.path(), "p1", "target-gemini").unwrap()[0].rule {
+            AgentScheduleRule::Once { at } => at.clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(agent_tasks::claim_in(&path, "p1", "target-gemini", &id, &key, Local::now()), Ok(true));
+        assert_eq!(edit_held_prompt(dir.path(), "p1", &gemini, &id, "x").unwrap_err(), "held_busy");
+        agent_tasks::complete_in(&path, "p1", "target-gemini", &id, &key, crate::schema::agent_tasks::AgentScheduleResult::Delivered).unwrap();
+        assert_eq!(edit_held_prompt(dir.path(), "p1", &gemini, &id, "x").unwrap_err(), "held_gone");
+        assert_eq!(agent_tasks::list_at(dir.path(), "p1", "target-gemini").unwrap()[0].message, "then the tests");
     }
 
     use chrono::TimeZone;
