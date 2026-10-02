@@ -405,18 +405,33 @@ fn systemd_path(path: &Path) -> Result<String, String> {
 /// It did not fail that way in testing only because a systemd *user* manager
 /// needs an unprivileged user namespace to build a mount namespace, and
 /// distributions that set `kernel.apparmor_restrict_unprivileged_userns=1`
-/// (Ubuntu 24.04+) deny it. systemd then skips the namespacing options silently
-/// — `systemctl show` still reports `PrivateTmp=yes` while the process runs on
-/// the host mount table. So the directive bought nothing where userns is
-/// blocked and broke tab discovery where it is allowed, with the outcome
-/// decided by a kernel policy this unit never checks.
+/// (Ubuntu 24.04+) do not let it finish. systemd then skips the namespacing
+/// options silently — `systemctl show` still reports `PrivateTmp=yes` while
+/// the process runs on the host mount table. So the directive bought nothing
+/// where userns is restricted and broke tab discovery where it is allowed,
+/// with the outcome decided by a kernel policy this unit never checks.
 ///
-/// `NoNewPrivileges` is a `prctl` and applies regardless; the remaining
-/// directives need the namespace but are harmless when skipped, and correct
-/// when honoured — the sidecar only ever writes inside `ReadWritePaths`.
-/// `BindPaths=-/tmp/tmux-%U` was the alternative and is worse: the directory
-/// does not exist when tmux has not started yet, and one created later never
-/// appears inside an already-built namespace.
+/// **No mount-namespace directive of any kind** (`ProtectSystem=`,
+/// `ProtectHome=`, `ReadWritePaths=`, `PrivateTmp=`, `BindPaths=`, …), for
+/// a worse reason than the skipped sandbox. Where userns is restricted, the
+/// user manager's `unshare(CLONE_NEWUSER)` still *succeeds*: Ubuntu's AppArmor
+/// transitions the unconfined process into its `unprivileged_userns` profile,
+/// which denies every capability. The mount setup that follows then fails,
+/// systemd treats that as "containerized, ignore" and runs the service anyway
+/// — inside a capability-less user namespace, confined for life, and so is
+/// every child it spawns (`pix /** -> &unprivileged_userns`). The sidecar's
+/// own work survives that; its agent fence does not: `bwrap` stacked under
+/// that profile cannot create its sandbox, `agent_fence::bwrap_available`
+/// fails closed, and every phone "+ Claude" with the window closed was refused
+/// with "bubblewrap is unavailable" on a machine where the window fenced
+/// every tab with it. The window process never asked systemd for a namespace,
+/// which is the whole difference. (`BindPaths=-/tmp/tmux-%U` was also worse
+/// on its own terms: the directory does not exist before tmux has started,
+/// and one created later never appears inside an already-built namespace.)
+///
+/// `NoNewPrivileges` is a `prctl`, needs no namespace, and does not get in
+/// the fence's way: AppArmor allows an *unconfined* task to attach to `bwrap`'s
+/// profile under `no_new_privs`, and bwrap sets that bit on itself anyway.
 ///
 /// **`StartLimitIntervalSec=0` is load-bearing.** The sidecar exits non-zero on
 /// a Tailscale Serve verification failure precisely so `Restart=on-failure`
@@ -429,9 +444,47 @@ fn systemd_path(path: &Path) -> Result<String, String> {
 /// configuration cannot spin here: the binary exits 0 for it, which
 /// `on-failure` does not restart.
 #[cfg(target_os = "linux")]
-fn systemd_unit(binary: &Path, state_dir: &Path) -> Result<String, String> {
-    Ok(format!(concat!("[Unit]\nDescription=", crate::app_name!(), " Mobile Host\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart={} --mobile-host\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={}\n\n[Install]\nWantedBy=default.target\n"), systemd_path(binary)?, systemd_path(state_dir)?))
+fn systemd_unit(binary: &Path) -> Result<String, String> {
+    Ok(format!(concat!("[Unit]\nDescription=", crate::app_name!(), " Mobile Host\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart={} --mobile-host\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\n\n[Install]\nWantedBy=default.target\n"), systemd_path(binary)?))
 }
+
+/// Every `[Service]` directive that makes systemd build a mount namespace for
+/// the unit (systemd's `exec_needs_mount_namespace`, "Sandboxing" in
+/// `systemd.exec(5)`), plus `PrivateUsers`, the user namespace an unprivileged
+/// manager has to open first. [`systemd_unit`] must emit none of them, see its
+/// rationale; the test holds it to this list.
+#[cfg(all(test, target_os = "linux"))]
+const MOUNT_NAMESPACE_DIRECTIVES: &[&str] = &[
+    "BindPaths",
+    "BindReadOnlyPaths",
+    "ExecPaths",
+    "ExtensionDirectories",
+    "ExtensionImages",
+    "InaccessiblePaths",
+    "LogNamespace",
+    "MountAPIVFS",
+    "MountFlags",
+    "MountImages",
+    "NoExecPaths",
+    "PrivateDevices",
+    "PrivateIPC",
+    "PrivateMounts",
+    "PrivateTmp",
+    "PrivateUsers",
+    "ProcSubset",
+    "ProtectControlGroups",
+    "ProtectHome",
+    "ProtectKernelLogs",
+    "ProtectKernelModules",
+    "ProtectKernelTunables",
+    "ProtectProc",
+    "ProtectSystem",
+    "ReadOnlyPaths",
+    "ReadWritePaths",
+    "RootDirectory",
+    "RootImage",
+    "TemporaryFileSystem",
+];
 
 /// Delete every `bin/<version>/` directory except `keep`.
 ///
@@ -613,14 +666,11 @@ async fn disable_host_service() -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-async fn enable_host_service(target: &Path, config: &HostConfig) -> Result<(), String> {
+async fn enable_host_service(target: &Path, _config: &HostConfig) -> Result<(), String> {
     let unit_dir = crate::paths::home_dir().join(".config/systemd/user");
     std::fs::create_dir_all(&unit_dir).map_err(|e| e.to_string())?;
-    std::fs::write(
-        unit_dir.join(crate::brand::MOBILE_HOST_UNIT),
-        systemd_unit(target, &config.state_dir)?,
-    )
-    .map_err(|e| e.to_string())?;
+    std::fs::write(unit_dir.join(crate::brand::MOBILE_HOST_UNIT), systemd_unit(target)?)
+        .map_err(|e| e.to_string())?;
     let reload = crate::paths::command_no_window("systemctl")
         .args(["--user", "daemon-reload"])
         .status()
@@ -1075,17 +1125,15 @@ mod tests {
     }
 
     #[test]
-    fn systemd_unit_quotes_installed_and_state_paths() {
-        let unit = systemd_unit(Path::new("/tmp/mobile host%1"), Path::new("/tmp/state dir"))
-            .expect("unit");
+    fn systemd_unit_quotes_the_installed_path() {
+        let unit = systemd_unit(Path::new("/tmp/mobile host%1")).expect("unit");
         assert!(unit.contains("ExecStart=\"/tmp/mobile host%%1\" --mobile-host"));
-        assert!(unit.contains("ReadWritePaths=\"/tmp/state dir\""));
     }
 
     #[test]
     fn systemd_unit_never_hides_the_tmux_socket_behind_a_private_tmp() {
         let unit =
-            systemd_unit(Path::new(concat!("/opt/", crate::app_slug!(), "-mobile-host")), Path::new("/state")).expect("unit");
+            systemd_unit(Path::new(concat!("/opt/", crate::app_slug!(), "-mobile-host"))).expect("unit");
         // tmux listens on /tmp/tmux-$UID/default. A private /tmp makes every tab
         // report `available: false` with nothing in the log to explain it, on
         // exactly those systems that permit unprivileged user namespaces.
@@ -1096,14 +1144,42 @@ mod tests {
         assert!(!unit.contains("BindPaths"), "see systemd_unit's rationale");
         // The hardening that costs nothing stays.
         assert!(unit.contains("NoNewPrivileges=true"));
-        assert!(unit.contains("ProtectSystem=strict"));
-        assert!(unit.contains("ProtectHome=read-only"));
+    }
+
+    /// The sidecar now spawns fenced agents itself (a phone "+ Claude" with the
+    /// window closed). Any directive that has systemd build a mount namespace
+    /// makes an unprivileged user manager open a user namespace first — which
+    /// Ubuntu's AppArmor confines into `unprivileged_userns` (every capability
+    /// denied) instead of refusing — and systemd then runs the service inside
+    /// it when the mounts fail. Every `bwrap` the sidecar spawns inherits that
+    /// profile, cannot create its sandbox, and the fence fails closed with
+    /// "bubblewrap is unavailable" on a machine where the window fences fine.
+    #[test]
+    fn systemd_unit_asks_systemd_for_no_namespace_at_all() {
+        let unit =
+            systemd_unit(Path::new(concat!("/opt/", crate::app_slug!(), "-mobile-host"))).expect("unit");
+        let service = unit
+            .split("[Service]")
+            .nth(1)
+            .and_then(|rest| rest.split("\n[").next())
+            .expect("a [Service] section");
+        let offending: Vec<&str> = service
+            .lines()
+            .filter(|line| {
+                line.split_once('=')
+                    .is_some_and(|(key, _)| super::MOUNT_NAMESPACE_DIRECTIVES.contains(&key.trim()))
+            })
+            .collect();
+        assert!(
+            offending.is_empty(),
+            "these directives put the sidecar — and its agent fence — in a capability-less user namespace: {offending:?}"
+        );
     }
 
     #[test]
     fn systemd_unit_survives_a_transient_tailscale_outage() {
         let unit =
-            systemd_unit(Path::new(concat!("/opt/", crate::app_slug!(), "-mobile-host")), Path::new("/state")).expect("unit");
+            systemd_unit(Path::new(concat!("/opt/", crate::app_slug!(), "-mobile-host"))).expect("unit");
         // The sidecar exits non-zero while tailscaled is down so it is
         // restarted — but systemd's default start limit (5 in 10s) turns a
         // fast crash loop into a permanently `failed` unit. The limit must be

@@ -716,7 +716,7 @@ pub fn bwrap_available() -> bool {
             let Some(bwrap) = crate::paths::system_executable("bwrap") else {
                 return false;
             };
-            crate::paths::command_no_window(bwrap)
+            let probe = crate::paths::command_no_window(bwrap)
                 .args([
                     "--ro-bind",
                     "/",
@@ -730,11 +730,61 @@ pub fn bwrap_available() -> bool {
                     "--",
                     "/bin/true",
                 ])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
+                .output();
+            match probe {
+                Ok(out) if out.status.success() => true,
+                Ok(out) => {
+                    report_probe_failure(&String::from_utf8_lossy(&out.stderr));
+                    false
+                }
+                Err(e) => {
+                    report_probe_failure(&e.to_string());
+                    false
+                }
+            }
         })
     }
+}
+
+/// Say once per process why a `bwrap` that *exists* still could not sandbox —
+/// on stderr, which is the window's log or the sidecar's journal. The refusal
+/// the user sees stays the install advice, which is right for the common case;
+/// this is for the other one, where the binary is fine and the *process* is
+/// not, and nothing else in the log would ever say so.
+#[cfg(target_os = "linux")]
+fn report_probe_failure(stderr: &str) {
+    static REPORTED: std::sync::Once = std::sync::Once::new();
+    REPORTED.call_once(|| {
+        let label = std::fs::read_to_string("/proc/self/attr/current").ok();
+        eprintln!("agent_fence: {}", probe_failure_note(stderr, label.as_deref()));
+    });
+}
+
+/// The log line for a failed probe: bwrap's own words and this process's
+/// AppArmor label. A label under Ubuntu's `unprivileged_userns` profile is
+/// named for what it is — the process already sits in a user namespace that
+/// denies every capability (a systemd unit with a mount-namespace directive
+/// puts a user service there, see `commands::mobile_control::systemd_unit`),
+/// so no bwrap it spawns can ever create a sandbox, whatever is installed.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn probe_failure_note(stderr: &str, apparmor_label: Option<&str>) -> String {
+    let detail = match stderr.trim() {
+        "" => "no output",
+        words => words,
+    };
+    let label = apparmor_label
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .unwrap_or("unknown");
+    let mut note = format!(
+        "bubblewrap is installed but its probe failed (AppArmor label of this process: {label}): {detail}"
+    );
+    if label.contains("unprivileged_userns") {
+        note.push_str(
+            " — this process already runs inside a user namespace AppArmor confines, so nothing it starts can create a sandbox; a systemd user unit with a mount-namespace directive (ProtectSystem=, ProtectHome=, PrivateTmp=, …) lands there on Ubuntu",
+        );
+    }
+    note
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
@@ -1926,6 +1976,26 @@ mod tests {
     use super::*;
     use crate::schema::boxes::ProjectBox;
     use serde_json::{json, Value};
+
+    #[test]
+    fn a_failed_probe_under_the_userns_profile_names_the_namespace_not_the_package() {
+        // The Mobile sidecar's case: bwrap installed and root-owned, the
+        // window fencing fine, and the probe still failing because systemd put
+        // the service in a user namespace Ubuntu's AppArmor confines.
+        let note = probe_failure_note(
+            "bwrap: No permissions to create a new namespace\n",
+            Some("unprivileged_userns (enforce)\n"),
+        );
+        assert!(note.contains("unprivileged_userns (enforce)"), "{note}");
+        assert!(note.contains("No permissions to create a new namespace"), "{note}");
+        assert!(note.contains("mount-namespace directive"), "{note}");
+        // An unconfined process that fails gets bwrap's words and no such guess.
+        let plain = probe_failure_note("", Some("unconfined\n"));
+        assert!(plain.contains("unconfined"), "{plain}");
+        assert!(plain.contains("no output"), "{plain}");
+        assert!(!plain.contains("mount-namespace"), "{plain}");
+        assert!(probe_failure_note("x", None).contains("label of this process: unknown"));
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
