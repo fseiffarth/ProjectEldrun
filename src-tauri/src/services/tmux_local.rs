@@ -628,11 +628,43 @@ pub fn local_tmux_argv(session: &str, opts: &PtyOptions, detached: bool) -> Vec<
         }
     }
     if detached {
-        if let Some(at) = args.iter().position(|a| a == "-A") {
+        detach(&mut args);
+    }
+    args
+}
+
+/// `-d` right after `new-session -A`: the session is created without
+/// attaching the calling client. A no-op on an argv that already has it.
+fn detach(args: &mut Vec<String>) {
+    if let Some(at) = args.iter().position(|a| a == "-A") {
+        if args.get(at + 1).map(String::as_str) != Some("-d") {
             args.insert(at + 1, "-d".into());
         }
     }
-    args
+}
+
+/// Whether `opts` is already the tmux client's launch — what
+/// [`wrap_pty_options_local`] (and so `launch_prep::prepare`) leaves behind:
+/// `cmd` is `tmux` and the argv creates a session.
+fn is_tmux_wrapped(opts: &PtyOptions) -> bool {
+    opts.cmd == "tmux" && opts.args.iter().any(|a| a == "new-session")
+}
+
+/// The argv [`spawn_detached_with`] hands the tmux client for `session`.
+/// A launch that `launch_prep::prepare` wrapped already carries the full
+/// `new-session -A … '<fenced command>; exec "$SHELL" -l'` argv, so only
+/// `-d` is added — wrapping it a second time put a `tmux new-session -A`
+/// *inside* the session, which refused to nest ("unset $TMUX to force")
+/// and left the pane on the trailing login shell instead of the agent. An
+/// unwrapped launch is wrapped here, detached.
+pub fn detached_argv(session: &str, opts: &PtyOptions) -> Vec<String> {
+    if is_tmux_wrapped(opts) {
+        let mut args = opts.args.clone();
+        detach(&mut args);
+        args
+    } else {
+        local_tmux_argv(session, opts, true)
+    }
 }
 
 /// Start `opts`'s command in a **detached** local tmux session named by
@@ -644,7 +676,8 @@ pub fn local_tmux_argv(session: &str, opts: &PtyOptions, detached: bool) -> Vec<
 /// `update-environment`, never the argv (#864). `socket` names a private tmux
 /// server (`-L`), for tests only: production passes `None` and shares the
 /// default server with the window's spawns. `opts` must already be prepared
-/// (`launch_prep::prepare`) and must not have been tmux-wrapped.
+/// (`launch_prep::prepare`), which tmux-wraps it; the argv is then used as
+/// is plus `-d` ([`detached_argv`]), never wrapped a second time.
 #[cfg(unix)]
 pub fn spawn_detached_with(opts: &PtyOptions, socket: Option<&str>) -> Result<(), String> {
     let Some(session) = opts.tmux_session.as_deref() else {
@@ -653,7 +686,7 @@ pub fn spawn_detached_with(opts: &PtyOptions, socket: Option<&str>) -> Result<()
     if !tmux_available() {
         return Err("terminal: tmux is not installed".to_string());
     }
-    let args = local_tmux_argv(session, opts, true);
+    let args = detached_argv(session, opts);
     let mut cmd = crate::paths::command_no_window("tmux");
     if let Some(socket) = socket {
         cmd.args(["-L", socket, "-f", "/dev/null"]);
@@ -1145,6 +1178,42 @@ mod tests {
         expected.insert(at + 1, "-d".into());
         assert_eq!(detached, expected);
         assert!(!attached.contains(&"-d".to_string()));
+    }
+
+    /// The headless spawn runs what `launch_prep::prepare` hands it, and
+    /// `prepare` has already tmux-wrapped the fenced agent. The detached argv
+    /// must be that one wrapping plus `-d`: one `new-session`, the agent as
+    /// the session's command, no `tmux` inside the session — a second wrap
+    /// nested a tmux client that refused ("unset $TMUX to force") and left
+    /// the pane on the trailing login shell.
+    #[test]
+    fn a_prepared_launch_is_detached_without_a_nested_tmux() {
+        let session = concat!(crate::app_slug!(), "-p--agent-x");
+        let mut opts = detached_fixture(session, "/p");
+        opts.cmd = "claude".into();
+        opts.args = vec!["--session-id".into(), "u1".into()];
+        opts.env.insert(crate::app_env!("AGENT_FENCE").into(), "1".into());
+        // What `wrap_pty_options_local` leaves behind (`prepare`'s last step).
+        let wrapped = local_tmux_args_with(session, &opts.cmd, &opts.args, &opts.env, true);
+        opts.args = wrapped.clone();
+        opts.cmd = "tmux".into();
+
+        let args = detached_argv(session, &opts);
+        let mut expected = wrapped;
+        detach(&mut expected);
+        assert_eq!(args, expected);
+        assert_eq!(args.iter().filter(|a| *a == "new-session").count(), 1, "{args:?}");
+        let at = args.iter().position(|a| a == "-A").unwrap();
+        assert_eq!(args[at + 1], "-d");
+        let name = args.iter().position(|a| a == "-s").unwrap();
+        assert_eq!(args[name + 1], session);
+        let line = &args[name + 2];
+        assert!(line.starts_with("'claude' '--session-id' 'u1'; "), "{line}");
+        assert!(line.contains("exec \"${SHELL:-/bin/bash}\" -l"), "{line}");
+        assert!(!args.iter().any(|a| a.contains("tmux")), "nested tmux: {args:?}");
+        // Wrapping the prepared launch again is the bug this guards against.
+        let twice = local_tmux_argv(session, &opts, true);
+        assert!(twice.iter().any(|a| a.contains("'tmux'")), "{twice:?}");
     }
 
     #[test]
