@@ -81,6 +81,7 @@ import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/remote/vpn/vpnAutoC
 import type { StoredVpnConfig } from "../../types";
 import { MobileSettings } from "../mobile/MobileSettings";
 import { UpdatesPanel } from "./UpdatesPanel";
+import { DEFAULT_PDF_MARKUP_APPLY, DEFAULT_PDF_MARKUP_INSTRUCTION, MAX_PDF_MARKUP_PROMPT } from "../../lib/viewers/pdfMarkup";
 import { BugIcon, PlayIcon, WarningIcon } from "../common/icons/Icon";
 import {
   SETTINGS_ANCHORS,
@@ -124,6 +125,43 @@ interface WorkspaceCapabilities {
  * command is missing (a backend older than this frontend). Not on Windows or
  * macOS, whose backends always park.
  */
+/** One Mark up prompt of the desktop PDF viewer (Settings → PDF markup): a
+ *  free-text field that starts from the default, kept as typed; Use the
+ *  default clears it (`undefined` = the default). */
+function PdfMarkupPromptCard({ id, label, help, value, fallback, onChange }: {
+  id: string;
+  label: string;
+  help: string;
+  value: string | undefined;
+  fallback: string;
+  onChange: (value: string | undefined) => void;
+}) {
+  const t = useT();
+  const custom = value?.trim() ? value : undefined;
+  return (
+    <SettingsCard>
+      <label className="settings-card-label" htmlFor={id}>{label}</label>
+      <textarea
+        id={id}
+        className="settings-prompt-text"
+        rows={4}
+        maxLength={MAX_PDF_MARKUP_PROMPT}
+        value={custom ?? fallback}
+        onChange={(e) => {
+          const next = e.target.value.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+          onChange(next.trim() && next.trim() !== fallback ? next : undefined);
+        }}
+      />
+      <p className="settings-help">{help}</p>
+      <div className="settings-link-row">
+        <button type="button" className="settings-btn sm" disabled={custom === undefined} onClick={() => onChange(undefined)}>
+          {t("settings.pdfMarkupReset")}
+        </button>
+      </div>
+    </SettingsCard>
+  );
+}
+
 export function WorkspaceParkingNote() {
   const t = useT();
   const [caps, setCaps] = useState<WorkspaceCapabilities | null>(null);
@@ -1067,6 +1105,7 @@ const MAIN_SECTIONS = [
   "browser",
   "calendar",
   "usageStats",
+  "pdfMarkup",
   "rootConsole",
   "remoteFeatures",
   "vm",
@@ -1092,7 +1131,7 @@ function sectionOfAnchor(anchor: string | undefined): MainSection {
 const SETTINGS_GROUPS: { key: "general" | "workspace" | "agents" | "remote" | "system"; entries: NavEntry[] }[] = [
   { key: "general", entries: ["general", "layout", "clock", "hintsOnboarding", "shortcuts", "updates", "help"] },
   { key: "workspace", entries: ["global", "filetypes", "downloads", "browser", "calendar", "usageStats", "archive", "scaffoldRepair"] },
-  { key: "agents", entries: ["agents", "ollama", "rootConsole"] },
+  { key: "agents", entries: ["agents", "ollama", "pdfMarkup", "rootConsole"] },
   { key: "remote", entries: ["remoteFeatures", "git", "remoteHosts", "vpn", "vm", "mobile"] },
   { key: "system", entries: ["performance", "resourceMonitor", "experimental"] },
 ];
@@ -1110,6 +1149,7 @@ const SEARCH_KEYS: Record<NavEntry, TranslationKey[]> = {
   browser: ["settings.browserHome", "settings.browserSearch", "settings.browserLinkTarget", "settings.browserRestoreNavigate", "settings.browserLivePages"],
   calendar: ["settings.calendarGlobalApp", "settings.todoBoard", "settings.weekStartsOn", "settings.defaultView", "settings.dayGridStart", "settings.defaultReminder"],
   usageStats: ["settings.dailyRecap", "settings.openUsageStats"],
+  pdfMarkup: ["settings.pdfMarkupInstruction", "settings.pdfMarkupApply"],
   rootConsole: ["settings.rootMcp", "settings.rootMcpLocalOnly", "settings.rootMcpMail", "settings.rootMcpMailLocalOnly", "settings.rootMcpMailLocalRead", "rootReview.setting", "mcpSecurity.title"],
   remoteFeatures: ["settings.vpnEnabled", "settings.machinesEnabled", "settings.headlessRemote"],
   vm: ["settings.vmPrerequisites", "projectDialog.vmInstallBtn"],
@@ -1709,6 +1749,29 @@ export function SettingsDialog({
                 {t("settings.openUsageStats")}
               </button>
             </div>
+            </>)}
+
+            {section === "pdfMarkup" && (<>
+            {/* The desktop PDF viewer's Mark up prompts — the desktop's own, as
+                the phone keeps its own (Home → This phone → Mark up prompt).
+                Blank = the default, shown as the starting text. */}
+            <SettingsSection anchor="settings-anchor-pdfMarkup" title={<>{t("settings.pdfMarkup")} <UntestedTag id="desktop.markup.apply" /></>} help={t("settings.pdfMarkupHelp")} />
+            <PdfMarkupPromptCard
+              id="pdf-markup-instruction"
+              label={t("settings.pdfMarkupInstruction")}
+              help={t("settings.pdfMarkupInstructionHelp")}
+              value={settings?.pdf_markup_instruction}
+              fallback={DEFAULT_PDF_MARKUP_INSTRUCTION}
+              onChange={(value) => void updateSettings({ pdf_markup_instruction: value })}
+            />
+            <PdfMarkupPromptCard
+              id="pdf-markup-apply"
+              label={t("settings.pdfMarkupApply")}
+              help={t("settings.pdfMarkupApplyHelp")}
+              value={settings?.pdf_markup_apply}
+              fallback={DEFAULT_PDF_MARKUP_APPLY}
+              onChange={(value) => void updateSettings({ pdf_markup_apply: value })}
+            />
             </>)}
 
             {section === "rootConsole" && (<>

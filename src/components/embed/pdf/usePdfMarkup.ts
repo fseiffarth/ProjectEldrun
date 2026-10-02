@@ -17,11 +17,14 @@ import { useT } from "../../../lib/i18n";
 import { holdPhonePrompt } from "../../../lib/agents/phoneHolds";
 import {
   blobBase64,
+  DEFAULT_PDF_MARKUP_APPLY,
   markupErrorCode,
   markupReasonKey,
+  pdfMarkupPrompt,
   submitPdfMarkup,
   type PdfMarkupPage,
 } from "../../../lib/viewers/pdfMarkup";
+import { useSettingsStore } from "../../../stores/settings";
 import { agentTabStateOf, lastTabReadAt, useActivityStore } from "../../../stores/activity";
 import { queuePromptForTab } from "../../../stores/agents/agentPrompts";
 import { useTabsStore, type TabEntry } from "../../../stores/tabs";
@@ -49,6 +52,7 @@ import {
 import { layerPng } from "../../../../mobile-web/src/markup/rasterize";
 import { layerKey, loadLayer, saveLayer, stale, type Fingerprint } from "../../../../mobile-web/src/markup/store";
 import {
+  canApply,
   followRound,
   nextCheck,
   startRound,
@@ -395,7 +399,8 @@ export function usePdfMarkup({
         const page = present.pages[n];
         body.push({ n, size: page.size, marks: page.marks, layerPng: await blobBase64(await layerPng(page)) });
       }
-      prompt = (await submitPdfMarkup(projectId, path, body)).prompt;
+      const instruction = pdfMarkupPrompt(useSettingsStore.getState().settings?.pdf_markup_instruction);
+      prompt = (await submitPdfMarkup(projectId, path, body, instruction)).prompt;
     } catch (error) {
       setSending(false);
       setFailure(t("pdfMarkup.sendFailed", { reason: reason(error) }));
@@ -420,6 +425,26 @@ export function usePdfMarkup({
     setRound(startRound(queued, Date.now()));
     setSending(false);
   }, [projectId, target, sending, note, history.present, pageCount, path, t]);
+
+  /** **Make these changes**: the agent listed what the marks ask for (the
+   *  default instruction edits nothing until told) — one click tells it to go
+   *  ahead, worded in Settings → PDF markup (`pdf_markup_apply`). */
+  const apply = useCallback(async () => {
+    if (!projectId || !target || sending) return;
+    setFailure(null);
+    const text = pdfMarkupPrompt(useSettingsStore.getState().settings?.pdf_markup_apply) ?? DEFAULT_PDF_MARKUP_APPLY;
+    const queued = agentTabStateOf(useActivityStore.getState(), target.ptyId) === "working";
+    try {
+      const { id } = await queuePromptForTab(projectId, target.scheduleTargetId, text);
+      holdPhonePrompt(id);
+    } catch (error) {
+      const code = markupErrorCode(error);
+      setFailure(t("pdfMarkup.applyFailed", { reason: t(markupReasonKey(code), { code }) }));
+      return;
+    }
+    setReloaded(false);
+    setRound(startRound(queued, Date.now(), true));
+  }, [projectId, target, sending, t]);
 
   /** About to load the file's new pages under the layer: the sent marks stay
    *  on show so the reader can check the agent's changes against them and
@@ -452,6 +477,9 @@ export function usePdfMarkup({
     redo: () => setHistory(redoHistory),
     clearPage: (n: number) => setHistory((now) => commit(now, clearLayerPage(now.present, n, showSent))),
     clearSent: () => setHistory((now) => commit(now, clearLayerSent(now.present))),
+    /** **Make these changes** fits: the agent is done with a Submit's marks. */
+    canApply: target !== null && canApply(round),
+    apply,
     hasUnsent: !isEmpty(history.present),
     sentShown,
     /** Marks are on the file, or a round is out: a new version waits for Reload. */

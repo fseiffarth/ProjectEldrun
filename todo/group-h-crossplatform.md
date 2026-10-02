@@ -3616,6 +3616,15 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA — **Make these changes** + the desktop's own markup prompts (2026-10-02; plan §2.8; untested ids `mobile.markup.apply`, `desktop.markup.apply`; ✅ automated: `MobileMarkupRounds.test.tsx`, `MobileMarkupRoundsCore.test.ts`, `PdfMarkupSubmit.test.tsx`, `DesktopSettings.test.tsx`, `pdf_markup.rs` tests; ⚠️ never live). Phone: Submit marks → the agent lists the changes → the pill says Agent finished and offers **Make these changes** → tap: the go-ahead appears in the chat as your prompt, the pill follows that turn and offers no second Make these changes; when it finishes, **Reload PDF** leads. Home → This phone → Mark up prompt: the second field changes what the button sends; Use the default resets both. Desktop: Settings → Agents → **PDF markup** shows both prompts starting from the defaults; a changed Mark up prompt ends the next Submit's prompt in the agent tab; **Make these changes** in the markup strip queues the go-ahead into the target tab.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31bu — A plain `opencode` tab's chat fills its facts and shows it working** (2026-10-01;
   ✅ code-complete, automated tests passing — `MobileOpenCodeMini.test.ts`

@@ -84,8 +84,11 @@ reopen, because the phone attaches to its terminal session.
   **Submit** sends the marks to that tab. The view stays open — the sent marks
   dim, a pill says what the agent is doing, you can keep marking (the next
   Submit sends only the new marks), and once the agent is done **Reload PDF**
-  shows the rebuilt file under your marks. The desktop's PDF viewer has the
-  same **Mark up** for local projects.
+  shows the rebuilt file under your marks. The sent marks stay until you erase
+  them, so you can check each change. The agent first only lists the changes;
+  tap **Make these changes** to let it go ahead (both prompts: Home → This
+  phone → **Mark up prompt**). The desktop's PDF viewer has the same **Mark up**
+  for local projects, with its own prompts in Settings → Agents → **PDF markup**.
 - **No shells on the phone** (under **Project access**, on by default) keeps
   the phone to agent tabs: shell tabs are left off its lists, an open one
   disconnects within seconds, and **＋** offers no shell. Switch it off to

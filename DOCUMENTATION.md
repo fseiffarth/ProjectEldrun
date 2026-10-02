@@ -527,7 +527,10 @@ Four that carry design decisions worth recording here:
   works. The strip stays open with the same rounds and pill as the phone; a
   recompile while marks are on the pages waits for **Reload PDF** rather than
   sliding new pages under them. Local projects in the main window only, on the
-  PDF as saved (no page edits pending), one pane per file.
+  PDF as saved (no page edits pending), one pane per file. **Make these
+  changes** appears once the agent has listed them; both prompts — the one a
+  Submit ends with and that go-ahead — are the desktop's own, in Settings →
+  Agents → **PDF markup** (`pdf_markup_instruction`, `pdf_markup_apply`).
 - **Markdown** renders fenced `mermaid` code blocks and `$…$`/`$$…$$` math; KaTeX runs
   with `trust: false` and mermaid script-free.
 

@@ -339,6 +339,28 @@ Two quick Submits make two queued prompts, in order — acceptable.
   rounds, and a new desktop item with the four platform ✅/❌ pairs;
   `docs/help/mobile.md` sentence on rounds; mark this plan implemented.
 
+### 2.8 Make these changes, and the desktop's own prompts (2026-10-02)
+
+The user answered §5 item 1 with "yes" to both:
+
+- **Make these changes**: with the default instruction the agent only lists
+  the changes. Once a Submit's round is `finished` (or `unconfirmed`), the pill
+  offers **Make these changes** (`submitState.canApply`); it sends a plain
+  follow-up prompt the client words — phone through `onSend` like a typed
+  prompt, desktop through `queuePromptForTab` + `holdPhonePrompt` — and starts
+  a round with `applied: true`, which never offers the button again; when that
+  turn finishes, Reload leads. No backend change: the follow-up is not a
+  markup request.
+- **Wording**: phone — a second field in Home → This phone → Mark up prompt
+  (`markupInstruction.ts` `readMarkupApply`/`writeMarkupApply`, default
+  `DEFAULT_MARKUP_APPLY`, ends with `eldrun-send`); desktop — Settings → Agents
+  → **PDF markup** (`Settings.pdf_markup_instruction` / `pdf_markup_apply`,
+  defaults `DEFAULT_PDF_MARKUP_INSTRUCTION` / `DEFAULT_PDF_MARKUP_APPLY` in
+  `lib/viewers/pdfMarkup.ts`, no `eldrun-send` since the viewer reloads from
+  disk). The desktop instruction goes to `pdf_markup_submit` as
+  `instruction`, bounded like the phone's (`MAX_INSTRUCTION`, plain text).
+- Untested ids `mobile.markup.apply`, `desktop.markup.apply`.
+
 ## 3. Phases (one implementing subagent each)
 
 All work happens **in the shared working tree on `develop`** — the phone
@@ -493,7 +515,8 @@ Open questions only the user can decide:
    reply in the chat. Keep it that way (the plan's default: the pill follows
    the follow-up turn), or add a one-tap **"Make these changes"** button in the
    markup view once the agent has finished listing? And should the desktop get
-   its own "Mark up prompt" setting (v1 uses the default)?
+   its own "Mark up prompt" setting (v1 uses the default)? — **Decided
+   2026-10-02: both, see §2.8.**
 2. **Desktop prompts while the agent works** go straight into the CLI's queue
    (as the phone's do since 2026-09-30). If you would rather have desktop
    markup prompts wait until the agent is idle, say so — it costs the

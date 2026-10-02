@@ -203,6 +203,17 @@ export function PdfMarkupBar({
             </span>
           )}
           {markup.stale && !(round?.phase === "finished") && <span>{t("pdfMarkup.stale")}</span>}
+          {markup.canApply && (
+            <button
+              type="button"
+              className={`file-viewer-zoom-btn file-viewer-zoom-text${reloadLeads ? "" : " active"}`}
+              onClick={() => void markup.apply()}
+              disabled={busy}
+              title={t("mobile.markup.applyTitle")}
+            >
+              {t("mobile.markup.apply")} <UntestedTag id="desktop.markup.apply" />
+            </button>
+          )}
           {canReload && (
             <button
               type="button"

@@ -54,9 +54,15 @@ fn local_root(is_remote: bool, directory: Option<String>) -> Result<PathBuf, &'s
     directory.filter(|dir| !dir.is_empty()).map(PathBuf::from).ok_or("project_not_found")
 }
 
-/// Decodes the payload and runs the shared core. Blocking (file reads, the
-/// bake, inbox writes).
+#[cfg(test)]
 fn submit_in(root: &Path, path: &str, pages: Vec<PdfMarkupPage>) -> Result<PdfMarkupSubmitted, String> {
+    submit_in_with(root, path, pages, None)
+}
+
+/// Decodes the payload and runs the shared core. Blocking (file reads, the
+/// bake, inbox writes). `instruction`: the desktop's own Mark up prompt
+/// setting; `None` or blank is `DEFAULT_INSTRUCTION`.
+fn submit_in_with(root: &Path, path: &str, pages: Vec<PdfMarkupPage>, instruction: Option<String>) -> Result<PdfMarkupSubmitted, String> {
     if pages.is_empty() || pages.len() > markup::MAX_PAGES {
         return Err(markup::MarkupError::Invalid.code().into());
     }
@@ -71,24 +77,26 @@ fn submit_in(root: &Path, path: &str, pages: Vec<PdfMarkupPage>) -> Result<PdfMa
             .map_err(|_| markup::MarkupError::InvalidLayer.code().to_string())?;
         local.push(LocalPage { n: page.n, size: page.size, marks: page.marks, layer_png });
     }
-    markup::submit_local(root, Path::new(path), local)
+    markup::submit_local(root, Path::new(path), local, instruction)
         .map(|done| PdfMarkupSubmitted { prompt: done.prompt, marked: done.marked })
         .map_err(|error| error.code().into())
 }
 
-/// `pdf_markup_submit({ projectId, path, pages })` → `{ prompt, marked }`.
+/// `pdf_markup_submit({ projectId, path, pages, instruction? })` →
+/// `{ prompt, marked }`.
 #[tauri::command]
 pub async fn pdf_markup_submit(
     project_id: String,
     path: String,
     pages: Vec<PdfMarkupPage>,
+    instruction: Option<String>,
 ) -> Result<PdfMarkupSubmitted, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = local_root(
             remote::remote_target_for(&project_id).is_some(),
             remote::project_directory(&project_id),
         )?;
-        submit_in(&root, &path, pages)
+        submit_in_with(&root, &path, pages, instruction)
     })
     .await
     .map_err(|_| "markup_failed".to_string())?
@@ -185,6 +193,21 @@ mod tests {
         assert!(done.prompt.contains("- p3: \"use the 2024 numbers\""));
         assert!(done.prompt.ends_with(markup::DEFAULT_INSTRUCTION), "desktop: default instruction, no eldrun-send");
         assert!(!done.prompt.contains(&root.to_string_lossy().to_string()), "no absolute path in the prompt");
+    }
+
+    #[test]
+    fn the_desktop_instruction_replaces_the_default_and_is_bounded() {
+        let (_dir, root, _pdf) = project();
+        let path = path_of(&root, "docs/draft.pdf");
+        let done = submit_in_with(&root, &path, vec![page(1)], Some("Fix only the typos.".into())).unwrap();
+        assert!(done.prompt.ends_with("Fix only the typos."));
+        assert!(!done.prompt.contains(markup::DEFAULT_INSTRUCTION));
+        let blank = submit_in_with(&root, &path, vec![page(1)], Some("  \n ".into())).unwrap();
+        assert!(blank.prompt.ends_with(markup::DEFAULT_INSTRUCTION));
+        let before = inbox_names(&root).len();
+        let long = "x".repeat(markup::MAX_INSTRUCTION + 1);
+        assert_eq!(submit_in_with(&root, &path, vec![page(1)], Some(long)), Err("invalid_markup".into()));
+        assert_eq!(inbox_names(&root).len(), before, "a refused instruction writes nothing");
     }
 
     #[test]

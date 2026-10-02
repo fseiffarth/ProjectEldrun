@@ -32,6 +32,10 @@ vi.mock("../../../mobile-web/src/markup/rasterize", async (original) => ({
 import { PdfMarkupBar } from "../../components/embed/pdf/PdfMarkupBar";
 import { usePdfMarkup } from "../../components/embed/pdf/usePdfMarkup";
 import { useActivityStore } from "../../stores/activity";
+import { useSettingsStore } from "../../stores/settings";
+import type { Settings } from "../../types";
+import { DEFAULT_PDF_MARKUP_APPLY } from "../../lib/viewers/pdfMarkup";
+import { SETTLE_MS } from "../../../mobile-web/src/markup/submitState";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { EMPTY_LAYER, addMark, type Layer } from "../../../mobile-web/src/markup/layer";
 
@@ -79,6 +83,7 @@ beforeEach(() => {
   mocks.saveLayer.mockClear();
   useTabsStore.setState({ tabsByScope: { p1: [agentTab("t1", "s1", "Claude")] } });
   useActivityStore.setState({ busyByTab: {}, attentionByTab: {} });
+  useSettingsStore.setState({ settings: null });
 });
 afterEach(() => cleanup());
 
@@ -102,6 +107,34 @@ describe("desktop markup Submit", () => {
     await waitFor(() => expect(lastSaved()).toEqual({ pages: {}, sent: { pages: LAYER.pages, rounds: 1 } }));
     expect(screen.getByText("Sent — waiting for the agent")).toBeTruthy();
     expect(submitButton().disabled).toBe(true);
+  });
+
+  it("sends the desktop's own Mark up prompt setting with the marks", async () => {
+    useSettingsStore.setState({ settings: { ...useSettingsStore.getState().settings, pdf_markup_instruction: "  Fix only typos.  " } as Settings });
+    render(<Harness />);
+    await waitFor(() => expect(submitButton().disabled).toBe(false));
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(mocks.holdPhonePrompt).toHaveBeenCalled());
+    const call = mocks.invoke.mock.calls.find(([command]) => command === "pdf_markup_submit")!;
+    expect(call[1]).toMatchObject({ instruction: "Fix only typos." });
+  });
+
+  it("offers Make these changes once the agent is done, queues the follow-up and offers it once", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(submitButton().disabled).toBe(false));
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(mocks.holdPhonePrompt).toHaveBeenCalledWith("sched-1"));
+    expect(screen.queryByRole("button", { name: /Make these changes/ })).toBeNull();
+    act(() => useActivityStore.setState({ busyByTab: { "p1:t1": true }, attentionByTab: {} }));
+    expect(await screen.findByText("Agent is working…")).toBeTruthy();
+    act(() => useActivityStore.setState({ busyByTab: {}, attentionByTab: {} }));
+    const apply = await screen.findByRole("button", { name: /Make these changes/ }, { timeout: SETTLE_MS + 2_000 });
+    mocks.queuePromptForTab.mockResolvedValueOnce({ pruned: 0, id: "sched-2" });
+    fireEvent.click(apply);
+    await waitFor(() => expect(mocks.holdPhonePrompt).toHaveBeenCalledWith("sched-2"));
+    expect(mocks.queuePromptForTab).toHaveBeenLastCalledWith("p1", "s1", DEFAULT_PDF_MARKUP_APPLY);
+    expect(await screen.findByText("Sent — waiting for the agent")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Make these changes/ })).toBeNull();
   });
 
   it("follows the agent tab: working at Submit shows it at work", async () => {

@@ -402,6 +402,17 @@ pub struct Settings {
     /// back to `"claude"` when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_agent_cmd: Option<String>,
+    /// The desktop PDF viewer's Mark up prompts (`docs/pdf_markup_rounds_plan.md`
+    /// §2.8), the desktop's own as the phone keeps its own: what a Submit tells
+    /// the agent after the file references (`None`/blank = `markup::
+    /// DEFAULT_INSTRUCTION`), and what **Make these changes** sends once the
+    /// agent has listed them (`None`/blank = the viewer's default). Free text
+    /// the user typed; the viewer passes the first to `pdf_markup_submit`,
+    /// which bounds it like the phone's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_markup_instruction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_markup_apply: Option<String>,
     /// Built-in agent registry ids shown before a search in the compact Agents
     /// group of the + tab menu. Chosen through the 🧠 menu's "+ tab" chips.
     /// Unset is interpreted by the frontend as Claude/Codex/Gemini; an empty

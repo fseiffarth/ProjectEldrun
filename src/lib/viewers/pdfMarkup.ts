@@ -134,8 +134,23 @@ export type PdfMarkupResult = { prompt: string; marked: string | null };
  * answers the prompt to queue (`commands/pdf_markup.rs`). Rejects with the
  * backend's plain code string (see `markupReasonKey`).
  */
-export function submitPdfMarkup(projectId: string, path: string, pages: PdfMarkupPage[]): Promise<PdfMarkupResult> {
-  return invoke<PdfMarkupResult>("pdf_markup_submit", { projectId, path, pages });
+export function submitPdfMarkup(projectId: string, path: string, pages: PdfMarkupPage[], instruction?: string | null): Promise<PdfMarkupResult> {
+  return invoke<PdfMarkupResult>("pdf_markup_submit", { projectId, path, pages, ...(instruction ? { instruction } : {}) });
+}
+
+/** What a desktop Submit tells the agent after the file references, as the
+ * backend's `markup::DEFAULT_INSTRUCTION` words it — the setting's starting
+ * point (the phone keeps the same default, `markupInstruction.ts`). */
+export { DEFAULT_MARKUP_INSTRUCTION as DEFAULT_PDF_MARKUP_INSTRUCTION, MAX_MARKUP_INSTRUCTION as MAX_PDF_MARKUP_PROMPT } from "../../../mobile-web/src/markupInstruction";
+
+/** What **Make these changes** sends on the desktop: no `eldrun-send` line —
+ * the viewer reloads the rebuilt file from disk. */
+export const DEFAULT_PDF_MARKUP_APPLY = "Make the changes you listed from my marks now: edit the sources the PDF is built from and rebuild it.";
+
+/** A prompt setting as it is used: trimmed, `null` when blank. */
+export function pdfMarkupPrompt(value: string | undefined | null): string | null {
+  const text = value?.trim();
+  return text ? text : null;
 }
 
 /** A refusal's code, from whatever the call threw: the command rejects with

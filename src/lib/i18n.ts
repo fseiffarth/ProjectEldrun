@@ -977,6 +977,13 @@ export const en = {
 
   // Settings — usage stats.
   "settings.usageStats": "Usage stats",
+  "settings.pdfMarkup": "PDF markup",
+  "settings.pdfMarkupHelp": "What the PDF viewer’s Mark up sends to the agent. Kept on this computer; the phone has its own (Home → This phone → Mark up prompt).",
+  "settings.pdfMarkupInstruction": "Mark up prompt",
+  "settings.pdfMarkupInstructionHelp": "Put after the file, the marked copy, the layers and your typed notes with each Submit. The default asks the agent to list the changes and edit nothing until told.",
+  "settings.pdfMarkupApply": "“Make these changes” prompt",
+  "settings.pdfMarkupApplyHelp": "Sent by the Make these changes button once the agent has listed what your marks ask for.",
+  "settings.pdfMarkupReset": "Use the default",
   "settings.dailyRecap": "Show the recap at the start of each day",
   "settings.openUsageStats": "Open usage stats",
 
@@ -6613,6 +6620,7 @@ export const en = {
   "pdfMarkup.unsaved": "Not saved — this window's storage is unavailable. Submit before you close the PDF.",
   "pdfMarkup.sendFailed": "Nothing was sent: {reason}.",
   "pdfMarkup.queueFailed": "The marked copy is in .eldrun/inbox/, but the prompt could not be queued ({reason}). Your marks are kept — Submit again.",
+  "pdfMarkup.applyFailed": "Could not send “Make these changes” to the agent ({reason}).",
   "pdfMarkup.reason.remote": "remote projects can't be marked up yet",
   "pdfMarkup.reason.project": "the project folder is unavailable",
   "pdfMarkup.reason.outside": "the PDF is not inside this project",

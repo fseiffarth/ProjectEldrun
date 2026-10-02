@@ -477,9 +477,10 @@ pub fn resolve_local_source(root: &Path, path: &Path) -> Result<ResolvedSource, 
 /// write; then the layers go into the inbox (`<stem>-p<n>-layer.png`) and the
 /// one bake path makes the marked copy and the prompt. The prompt has no
 /// `eldrun-send` line: the viewer reloads the file from disk. The
-/// instruction is `DEFAULT_INSTRUCTION` (no desktop setting in v1). PDFs only
-/// — the desktop marks no pictures.
-pub fn submit_local(root: &Path, path: &Path, pages: Vec<LocalPage>) -> Result<Submitted, MarkupError> {
+/// instruction is the desktop's own setting (`Settings::pdf_markup_instruction`,
+/// passed in by the viewer, bounded like the phone's), `DEFAULT_INSTRUCTION`
+/// when unset. PDFs only — the desktop marks no pictures.
+pub fn submit_local(root: &Path, path: &Path, pages: Vec<LocalPage>, instruction: Option<String>) -> Result<Submitted, MarkupError> {
     let source = resolve_local_source(root, path)?;
     let placeholder = format!("{}/layer.png", inbox::INBOX_DIR);
     let (marks, layers): (Vec<MarkupPage>, Vec<Vec<u8>>) = pages
@@ -491,7 +492,7 @@ pub fn submit_local(root: &Path, path: &Path, pages: Vec<LocalPage>) -> Result<S
         source: MarkupSource::Files(String::new()),
         pages: marks,
         picture: None,
-        instruction: None,
+        instruction,
     };
     validate_body(&request)?;
     let mut total = 0usize;
