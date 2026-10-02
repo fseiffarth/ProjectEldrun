@@ -1425,6 +1425,8 @@ mod tests {
     /// A master's temporary socket must fit `sun_path`, or ssh logs in and then
     /// exits: the state dir is kept while it fits, the runtime dir takes over
     /// when it does not, and with no usable runtime dir nothing changes.
+    /// Unix only: Windows has no control socket (`resolve_control_path`).
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn the_control_dir_leaves_room_for_the_master_socket() {
         use std::path::Path;
