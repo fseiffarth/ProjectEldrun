@@ -1032,7 +1032,7 @@ function scheduleTargetTab(projectId: string, tmuxSession: string) {
  * rule, because the bridge is reachable without going through that route. */
 const MAX_TAB_LABEL = 120;
 
-function renameAgentTab(projectId: string, tmuxSession: string, label: string): DesktopResponse {
+async function renameAgentTab(projectId: string, tmuxSession: string, label: string): Promise<DesktopResponse> {
   const scope = mobileScope(projectId);
   if (!scope) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
@@ -1044,6 +1044,9 @@ function renameAgentTab(projectId: string, tmuxSession: string, label: string): 
   const tab = scheduleTargetTab(scope.id, tmuxSession);
   if (!tab) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
   useTabsStore.getState().renameTabInScope(scope.id, tab.key, next);
+  // Written before the answer, as a colour is: the sidecar answers the phone
+  // from the session file, which would otherwise still hold the old label.
+  await persistScopeLayout(scope.id);
   return { status: "renamed", label: next };
 }
 

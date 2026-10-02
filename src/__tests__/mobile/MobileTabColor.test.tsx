@@ -123,6 +123,25 @@ describe("Mobile bridge — colouring a tab", () => {
     expect(payload.tabs.find((tab) => tab.label === "Shell")?.color).toBe("red");
   });
 
+  it("a rename, too, reaches disk before the phone is answered", async () => {
+    // A restorable agent tab (a sessionId), so it is in the file at all.
+    useTabsStore.setState((s) => ({
+      tabsByScope: { ...s.tabsByScope, [project.id]: s.tabsByScope[project.id].map((t) => (t.key === "agent-1" ? { ...t, sessionId: "uid-1" } : t)) },
+    }));
+    expect(await ask({ type: "rename_tab", request_id: "r1", project_id: project.id, tmux_session: AGENT_TMUX, label: "Renamed" }))
+      .toEqual({ status: "renamed", label: "Renamed" });
+    // The sidecar answers the phone out of the session file: a save after the
+    // answer left the phone showing the old label until the next poll.
+    const calls = vi.mocked(invoke).mock.calls;
+    const saved = calls.findIndex(([command, args]) =>
+      command === "workspace_sync"
+      && (args as { tabs: { label: string }[] }).tabs.some((tab) => tab.label === "Renamed"));
+    const answered = calls.findIndex(([command, args]) =>
+      command === "mobile_desktop_respond" && (args as { requestId: string }).requestId === "r1");
+    expect(saved).toBeGreaterThanOrEqual(0);
+    expect(saved).toBeLessThan(answered);
+  });
+
   it("clears a colour on a null or absent field", async () => {
     await ask({ type: "color_tab", request_id: "c3", project_id: project.id, tmux_session: AGENT_TMUX, color: "green" });
     expect(await ask({ type: "color_tab", request_id: "c4", project_id: project.id, tmux_session: AGENT_TMUX, color: null }))
