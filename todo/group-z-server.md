@@ -146,3 +146,29 @@ the desktop groundwork the hosted plan's P1 builds on.*
       - [ ] ❌ Doesn't work on Windows
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
+
+2340. **Show on the phone why a new tab could not be opened.** (2026-10-02,
+    found in the headless owner's live test.) A failed ＋ shows only a short
+    red flash: `Project.tsx`'s create `catch` sets the error and then calls
+    `load()`, whose success path clears it again (`setError("")`). Keep the
+    error until the user dismisses it or starts another action. Also say
+    *why*: the Mobile host only sends `launch_failed` / `persist_failed` and logs the
+    reason to the journal (`host.rs`, "a create with no window failed"), so
+    the phone can only say "The desktop could not open that tab." Add a short
+    fixed set of reason codes the phone maps to text (e.g. the agent
+    sandbox is unavailable, a remote project needs the window, the agent
+    failed to start). Never send the raw message: it carries paths and
+    commands, which must not cross the browser API (`services::mobile_control`).
+    - [ ] 🤖 Automated test — a create that fails leaves the error visible
+      after the follow-up reload; each new reason code has phone text.
+    - [ ] 🖐️ Manual test — with the window closed and the cause still
+      present (or one forced), ＋ → Claude on the phone shows a lasting
+      message naming the reason.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
