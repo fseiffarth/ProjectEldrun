@@ -82,7 +82,8 @@ type FormKind = ScheduleRule["type"] | "in";
 
 export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initialPromptId }: Props) {
   const t = useT();
-  const leaseHeld = useTimerLeaseStore((s) => s.held);
+  // Named only when another window holds it — not before this one's first grant.
+  const leaseElsewhere = useTimerLeaseStore((s) => !s.held && s.holder !== undefined);
   const lang = useI18nStore((state) => state.lang);
   const use24h = useUse24h();
   const targetId = tab.scheduleTargetId;
@@ -328,7 +329,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
           {/* Two Tabtivity windows on one state dir: only the one holding the timer
               lease delivers (headless owner plan, H2 interim). Said here, where
               a schedule is written, rather than discovered when it does not fire. */}
-          {!leaseHeld && (
+          {leaseElsewhere && (
             <p className="agent-schedule-notice">
               {t("agentSchedule.leaseElsewhere")} <UntestedTag id="agentSchedule.leaseElsewhere" />
             </p>
