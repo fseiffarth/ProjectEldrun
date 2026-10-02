@@ -118,3 +118,31 @@ the desktop groundwork the hosted plan's P1 builds on.*
       - [ ] ❌ Doesn't work on Windows
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
+
+2339. **Serve the agent MCP servers from the Mobile host (headless spawns).**
+    The schedule, git-push, help and root MCP listener and the per-run tokens
+    it checks live in the window process (`services::root_mcp::runtime()`).
+    An agent tab the phone creates with no window open, or that the sidecar's
+    scheduler restarts (`docs/headless_owner_handoff.md`, H3 parity gaps),
+    therefore starts without `tabtivity-schedule` / `-git` / `-help`, and
+    keeps running without them after a window attaches. Move the listener and
+    token minting into the sidecar (it becomes the per-user daemon in
+    [`docs/tabtivity_hosted_plan.md`](../docs/tabtivity_hosted_plan.md) P1),
+    keeping the window as the place approval cards appear; until then, a tab
+    started headless needs a restart from a window to get its tools.
+    - [ ] 🤖 Automated test — a headless `Create` of a Claude tab records
+      `PtyOptions` carrying the schedule/help MCP config and a token the
+      sidecar's listener accepts; a token minted by one process is refused by
+      the other's listener after a restart.
+    - [ ] 🖐️ Manual test — with no window open, create a Claude tab from the
+      phone; in it, `/mcp` lists `tabtivity-schedule` and `tabtivity-help`;
+      a schedule proposal waits for approval and the card appears once a
+      window opens.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS

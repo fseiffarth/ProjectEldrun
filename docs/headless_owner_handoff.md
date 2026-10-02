@@ -690,7 +690,20 @@ seen stamp is never pruned (one small file per uid under
 bridge answers `desktop_error`, harmless); `TabInput` records nothing, so a
 hookless agent typed into from the phone with no window still shows no
 status (as before). The mail memory note (`project_mail_mcp_tools.md`)
-still applies.
+still applies. **No MCP servers in a headless spawn** (found at the develop
+merge, 2026-10-02): the root/schedule/git-push/help listener and its per-run
+tokens live in the window (`root_mcp::runtime()` is `None` in the sidecar),
+so an agent the phone creates or the scheduler restarts with no window runs
+without `tabtivity-schedule` / `-git` / `-help` — and keeps running without
+them after a window attaches, until the tab is restarted. Recorded as
+`todo/group-z-server.md` #2339 (the listener moves into the sidecar). **Phone holds stay in memory, by decision**
+(2026-10-02): the sidecar's `scheduler::PhoneHolds` and the window's
+`phoneHolds.ts` are each process-local, so a hold taken with no window is
+forgotten when a window opens and takes the lease (likewise a hold taken in a
+window that does not hold the lease, or across a restart). The rule itself is
+in `agent_tasks.json`, so the prompt is never lost: it goes in at the agent's
+next idle point instead of into the CLI's queue mid-turn, and the bubble's
+Edit keeps working while it waits.
 
 ## Merging into develop — step by step
 
