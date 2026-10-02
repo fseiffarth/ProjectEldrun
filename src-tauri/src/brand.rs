@@ -66,7 +66,7 @@ macro_rules! app_tab_command {
 #[macro_export]
 macro_rules! app_repo {
     () => {
-        "fseiffarth/ProjectEldrun"
+        "fseiffarth/tabtivity"
     };
 }
 

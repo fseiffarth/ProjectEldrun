@@ -43,7 +43,7 @@ Run these in your own terminal, not in a fenced agent tab — the fence hides
 3. **Set the secret:** <!-- privacy-check: ok — a step heading, no secret -->
 
    ```bash
-   gh secret set RELEASE_SIGNING_KEY --repo fseiffarth/ProjectEldrun \
+   gh secret set RELEASE_SIGNING_KEY --repo fseiffarth/tabtivity \
      < ~/.config/tabtivity-release-signing/release-signing.key.pem
    ```
 
@@ -54,7 +54,7 @@ Run these in your own terminal, not in a fenced agent tab — the fence hides
 4. **Check it is there:**
 
    ```bash
-   gh secret list --repo fseiffarth/ProjectEldrun   # lists RELEASE_SIGNING_KEY
+   gh secret list --repo fseiffarth/tabtivity   # lists RELEASE_SIGNING_KEY
    ```
 
    The next `git push` stays quiet: the hook sees the secret and writes

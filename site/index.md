@@ -13,8 +13,8 @@ Tabtivity is a project-centric desktop layer. Switch projects and your whole
 working context swaps as one unit: windows, files, apps, Git state, layout,
 and especially your AI agent terminals.
 
-**[Download the latest release](https://github.com/fseiffarth/ProjectEldrun/releases/latest)**
-· [Source on GitHub](https://github.com/fseiffarth/ProjectEldrun)
+**[Download the latest release](https://github.com/fseiffarth/tabtivity/releases/latest)**
+· [Source on GitHub](https://github.com/fseiffarth/tabtivity)
 · Linux, Windows, macOS · **Alpha**
 
 ![The Tabtivity window: project bar, tiled agent terminals, and the side panel](assets/eldrun-current.png)
@@ -73,7 +73,7 @@ terminal while Tabtivity handles switching the desktop between projects.
 ## Download
 
 Grab a package from the
-[latest release](https://github.com/fseiffarth/ProjectEldrun/releases/latest).
+[latest release](https://github.com/fseiffarth/tabtivity/releases/latest).
 Nothing else is required. Once Tabtivity is installed, **Settings → Updates** can
 fetch newer builds for you.
 
@@ -98,12 +98,12 @@ host) for remote projects, Docker for containers, QEMU for VMs, Tailscale for
 Tabtivity Mobile, and Ollama for local-model features.
 
 To build Tabtivity yourself, see
-[Building from source](https://github.com/fseiffarth/ProjectEldrun#building-from-source).
+[Building from source](https://github.com/fseiffarth/tabtivity#building-from-source).
 
 ---
 
-[Documentation](https://github.com/fseiffarth/ProjectEldrun#readme) ·
-[Status](https://github.com/fseiffarth/ProjectEldrun/blob/main/STATUS.md) ·
-[Roadmap](https://github.com/fseiffarth/ProjectEldrun/blob/main/ROADMAP.md) ·
-[Issues](https://github.com/fseiffarth/ProjectEldrun/issues) ·
+[Documentation](https://github.com/fseiffarth/tabtivity#readme) ·
+[Status](https://github.com/fseiffarth/tabtivity/blob/main/STATUS.md) ·
+[Roadmap](https://github.com/fseiffarth/tabtivity/blob/main/ROADMAP.md) ·
+[Issues](https://github.com/fseiffarth/tabtivity/issues) ·
 Dual-licensed MIT or Apache-2.0

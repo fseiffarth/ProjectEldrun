@@ -8,9 +8,9 @@
 
 # You open projects not applications
 
-[![CI](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml)
+[![CI](https://github.com/fseiffarth/tabtivity/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/fseiffarth/tabtivity/actions/workflows/ci-cd.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](#license)
-[![Release](https://img.shields.io/github/v/release/fseiffarth/ProjectEldrun)](https://github.com/fseiffarth/ProjectEldrun/releases)
+[![Release](https://img.shields.io/github/v/release/fseiffarth/tabtivity)](https://github.com/fseiffarth/tabtivity/releases)
 ![Status: Alpha](https://img.shields.io/badge/status-alpha-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri)
@@ -29,7 +29,7 @@ Tabtivity is a project-centric desktop layer that swaps your entire working cont
 ## Get started
 
 1. **Install.** Grab a package from the
-   [latest release](https://github.com/fseiffarth/ProjectEldrun/releases/latest)
+   [latest release](https://github.com/fseiffarth/tabtivity/releases/latest)
    (see [Download](#download)) or [build from source](#building-from-source).
    Nothing else is required; [optional tools](#optional-tools) unlock single
    features.
@@ -186,8 +186,8 @@ desktop between projects.
 ## Download
 
 Prebuilt packages are published on the
-[Releases page](https://github.com/fseiffarth/ProjectEldrun/releases). From the
-[latest release](https://github.com/fseiffarth/ProjectEldrun/releases/latest),
+[Releases page](https://github.com/fseiffarth/tabtivity/releases). From the
+[latest release](https://github.com/fseiffarth/tabtivity/releases/latest),
 grab the `.AppImage` (portable Linux) or `.deb` (Debian/Ubuntu), or the `.exe`
 installer on Windows, or the unsigned universal Intel/Apple Silicon `.dmg`
 on macOS. The CI release workflow publishes each platform whose packaging job
@@ -765,7 +765,7 @@ On Linux you can also use the convenience scripts in `docs/`:
 `docs/start-tabtivity-tauri.sh` (packaged build) and
 `docs/start-tabtivity-tauri-hotreload.sh` (hot reload). The desktop launchers
 `docs/Tabtivity.desktop` and `docs/TabtivityHotReload.desktop` carry a
-`/path/to/projecteldrun/...` placeholder — point them at your checkout, then
+`/path/to/tabtivity/...` placeholder — point them at your checkout, then
 install them:
 
 ```bash

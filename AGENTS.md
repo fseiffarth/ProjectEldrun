@@ -1,4 +1,4 @@
-# ProjectEldrun — Agents
+# Tabtivity — Agents
 
 Canonical instructions for every AI coding agent here; `CLAUDE.md` and
 `GEMINI.md` `@import` this file. Write guidance **here**. Keep it to rules an

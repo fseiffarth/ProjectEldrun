@@ -448,7 +448,7 @@ export function shortenPath(path: string): string {
 const OPTION_ROW = /^\s*[>›❯*]\s*\d{1,2}[.)]\s/u;
 
 /** The rule an agent draws across the top of its input box, with the project
- * or model name sitting in it (`──────── ProjectEldrun ─`). `readableScreen`
+ * or model name sitting in it (`──────── my-project ─`). `readableScreen`
  * drops the strokes but preserves the original in `frameText`, so the input
  * frame can still be distinguished from an ordinary output line. */
 function labelledRule(text: string) {

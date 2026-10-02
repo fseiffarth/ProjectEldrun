@@ -1,4 +1,4 @@
-# ProjectEldrun — Status
+# Tabtivity — Status
 
 Current implementation snapshot, reviewed **2026-09-15** against **v0.1.68**
 (`c5c0e2d`). Product overview: [README.md](README.md). Remaining direction:

@@ -615,7 +615,7 @@ pub fn get_projects() -> Result<ProjectsList, String> {
 /// Old Tabtivity versions (pre-Group-D) wrote entries that omit fields the current
 /// code and pill/hover UI expect. This backfills those from information the
 /// entry already carries, so a legacy project (e.g. the self-hosting
-/// ProjectEldrun entry, which predates persisted `directory`) becomes
+/// checkout's own entry, which predates persisted `directory`) becomes
 /// indistinguishable from a freshly-created one. Purely additive/canonicalizing:
 /// it never overwrites a value the entry already sets.
 ///
@@ -5664,7 +5664,7 @@ mod tests {
     // ── normalize_entry ────────────────────────────────────────────────────
 
     fn legacy_entry() -> ProjectEntry {
-        // A pre-Group-D stub like the real ProjectEldrun entry: core fields only,
+        // A pre-Group-D stub like the self-hosting checkout's entry: core fields only,
         // no `directory`, no `git_type`.
         ProjectEntry {
             id: "legacy-id".to_string(),

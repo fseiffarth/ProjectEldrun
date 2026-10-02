@@ -1,4 +1,4 @@
-# ProjectEldrun Plan — Grouped & Numbered Open Ideas
+# Tabtivity Plan — Grouped & Numbered Open Ideas
 
 ## Context
 

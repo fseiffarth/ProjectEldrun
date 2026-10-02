@@ -1,4 +1,4 @@
-# ProjectEldrun — Feature Checklist
+# Tabtivity — Feature Checklist
 
 A manual-QA matrix for the current **Tauri 2 + React + TypeScript** Tabtivity
 (the former Python/GTK `app/` implementation and its `plan_*.md` / `tests/`

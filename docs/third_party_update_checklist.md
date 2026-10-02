@@ -1109,13 +1109,13 @@ first), then `npm run package:dev` and click through the viewers.
 
 **Where** `services/app_update.rs`, `commands/app_update.rs`.
 
-**Assumes** `https://api.github.com/repos/fseiffarth/ProjectEldrun/releases/latest`
+**Assumes** `https://api.github.com/repos/fseiffarth/tabtivity/releases/latest`
 (unauthenticated, rate-limited), asset names
 `tabtivity_<v>_amd64.AppImage`, `Tabtivity_<v>_x64-setup.exe`, `.dmg`, `.deb`,
-download only from `https://github.com/fseiffarth/ProjectEldrun/releases/download/`.
+download only from `https://github.com/fseiffarth/tabtivity/releases/download/`.
 A GitHub API or release-naming change breaks the update banner.
 
-**Verify** `curl -s https://api.github.com/repos/fseiffarth/ProjectEldrun/releases/latest | jq '.assets[].name'`.
+**Verify** `curl -s https://api.github.com/repos/fseiffarth/tabtivity/releases/latest | jq '.assets[].name'`.
 
 ---
 

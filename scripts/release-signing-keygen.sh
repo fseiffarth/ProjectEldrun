@@ -6,7 +6,7 @@
 # the RELEASE_SIGNING_KEY GitHub secret, keep an offline copy (a password
 # manager), then delete the file:
 #
-#   gh secret set RELEASE_SIGNING_KEY --repo fseiffarth/ProjectEldrun < <key file>
+#   gh secret set RELEASE_SIGNING_KEY --repo fseiffarth/tabtivity < <key file>
 #
 # Rotating the key means a new public key ships in a release signed with the
 # OLD key — builds carrying only the old key cannot verify anything else.
@@ -38,4 +38,4 @@ chmod 644 "$pub"
 
 echo "private key: $key"
 echo "public key:  $pub (commit this)"
-echo "next: gh secret set RELEASE_SIGNING_KEY --repo fseiffarth/ProjectEldrun < \"$key\""
+echo "next: gh secret set RELEASE_SIGNING_KEY --repo fseiffarth/tabtivity < \"$key\""

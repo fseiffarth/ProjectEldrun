@@ -1,4 +1,4 @@
-# ProjectEldrun — Roadmap
+# Tabtivity — Roadmap
 
 Reviewed **2026-09-15** against **v0.1.68**. This file records direction and
 sequencing; [STATUS.md](STATUS.md) describes the implementation and verification

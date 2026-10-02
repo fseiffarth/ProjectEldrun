@@ -124,7 +124,7 @@ The desktop launchers are `docs/Tabtivity.desktop` for the packaged app,
 (`npm run package:dev` builds and installs it — real state, no hot reload;
 it and the hot-reload window run one at a time, each launcher refusing while
 the other is up); all carry a
-`/path/to/projecteldrun/...` placeholder to point at your checkout.
+`/path/to/tabtivity/...` placeholder to point at your checkout.
 
 ### Staying Current
 

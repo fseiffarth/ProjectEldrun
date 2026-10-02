@@ -3395,7 +3395,7 @@ fn detect_git_providers_blocking() -> Result<HashMap<String, DetectedOrigin>, St
             }
         }
         // The project's working directory. Legacy entries (created before
-        // `directory` was persisted — e.g. the self-hosting ProjectEldrun
+        // `directory` was persisted — e.g. the self-hosting checkout's own
         // entry) omit the key; fall back to `local_file`'s parent, which is
         // always `<directory>/project.json`, so they still get sniffed/badged.
         let dir: String = match entry.extra.get("directory") {
