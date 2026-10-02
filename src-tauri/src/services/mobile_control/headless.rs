@@ -673,9 +673,18 @@ fn tab_record(kind: &CreateTabKind, agent: Option<&AgentChoice>, cwd: &Path, req
     }
 }
 
+/// The size a session started with no window gets. Nobody looks at it at that
+/// size, but the phone adopts the window's geometry, and at tmux's default
+/// 80×24 a long footer — Claude's status line, which carries the model — was
+/// cut off, so the phone showed "Agent is working…" with no model. A window
+/// that attaches later resizes it to its own (`window-size largest`).
+const HEADLESS_COLS: u16 = 200;
+const HEADLESS_ROWS: u16 = 50;
+
 /// The launch of a stored tab record, for the detached spawn: what the
-/// window's `TerminalView` hands `pty_spawn`, at a fixed 80×24 nobody is
-/// looking at. `project_id` is the raw scope id (a project's or a box's).
+/// window's `TerminalView` hands `pty_spawn`, at a fixed
+/// [`HEADLESS_COLS`]×[`HEADLESS_ROWS`]. `project_id` is the raw scope id (a
+/// project's or a box's).
 pub(super) fn launch_options(project_id: &str, tab: &TabEntry) -> PtyOptions {
     let strings = |key: &str| -> Vec<String> {
         tab.extra
@@ -701,8 +710,8 @@ pub(super) fn launch_options(project_id: &str, tab: &TabEntry) -> PtyOptions {
         args: strings("args"),
         env,
         cwd: tab.cwd.clone(),
-        cols: 80,
-        rows: 24,
+        cols: HEADLESS_COLS,
+        rows: HEADLESS_ROWS,
         local_only: false,
         sandbox: false,
         agent: tab.extra.get("kind").and_then(serde_json::Value::as_str) == Some("agent"),

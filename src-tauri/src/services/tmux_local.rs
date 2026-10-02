@@ -628,17 +628,25 @@ pub fn local_tmux_argv(session: &str, opts: &PtyOptions, detached: bool) -> Vec<
         }
     }
     if detached {
-        detach(&mut args);
+        detach(&mut args, opts.cols, opts.rows);
     }
     args
 }
 
 /// `-d` right after `new-session -A`: the session is created without
 /// attaching the calling client. A no-op on an argv that already has it.
-fn detach(args: &mut Vec<String>) {
+/// With no client, tmux gives the window its `default-size` (80×24), and the
+/// phone adopts the window's geometry (`pty_bridge::window_size`) — so a
+/// detached session also gets `-x cols -y rows`, or an agent's long footer
+/// (Claude's status line with the model in it) is cut at 80 columns.
+fn detach(args: &mut Vec<String>, cols: u16, rows: u16) {
     if let Some(at) = args.iter().position(|a| a == "-A") {
         if args.get(at + 1).map(String::as_str) != Some("-d") {
             args.insert(at + 1, "-d".into());
+        }
+        if cols > 0 && rows > 0 && !args.iter().any(|a| a == "-x") {
+            let size = ["-x".to_string(), cols.to_string(), "-y".to_string(), rows.to_string()];
+            args.splice(at + 2..at + 2, size);
         }
     }
 }
@@ -660,7 +668,7 @@ fn is_tmux_wrapped(opts: &PtyOptions) -> bool {
 pub fn detached_argv(session: &str, opts: &PtyOptions) -> Vec<String> {
     if is_tmux_wrapped(opts) {
         let mut args = opts.args.clone();
-        detach(&mut args);
+        detach(&mut args, opts.cols, opts.rows);
         args
     } else {
         local_tmux_argv(session, opts, true)
@@ -1176,6 +1184,7 @@ mod tests {
         let at = attached.iter().position(|a| a == "-A").unwrap();
         let mut expected = attached.clone();
         expected.insert(at + 1, "-d".into());
+        expected.splice(at + 2..at + 2, ["-x", "80", "-y", "24"].map(String::from));
         assert_eq!(detached, expected);
         assert!(!attached.contains(&"-d".to_string()));
     }
@@ -1200,11 +1209,13 @@ mod tests {
 
         let args = detached_argv(session, &opts);
         let mut expected = wrapped;
-        detach(&mut expected);
+        detach(&mut expected, opts.cols, opts.rows);
         assert_eq!(args, expected);
         assert_eq!(args.iter().filter(|a| *a == "new-session").count(), 1, "{args:?}");
         let at = args.iter().position(|a| a == "-A").unwrap();
         assert_eq!(args[at + 1], "-d");
+        // Sized by the launch, not tmux's 80×24 default the phone would adopt.
+        assert_eq!(args[at + 2..at + 6], ["-x", "80", "-y", "24"]);
         let name = args.iter().position(|a| a == "-s").unwrap();
         assert_eq!(args[name + 1], session);
         let line = &args[name + 2];

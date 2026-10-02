@@ -3364,10 +3364,15 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     sessionWork?.elapsed,
     sessionWork?.tokens ? t("mobile.focus.workingTokens", { count: sessionWork.tokens }) : undefined,
   ].filter((fact): fact is string => !!fact);
+  /** The model the stored session last answered with, by its family word
+   * (`claude-opus-4-5-…` → `Opus`). Read on every transcript poll, so it
+   * follows the session — unlike `tab.agent_model`, which is the row as it
+   * was when this screen opened (a tab the phone just created has none yet). */
+  const transcriptModel = sinceClear ? undefined : workingModelName(transcript?.model);
   /** Who the working row names: the model's family word as the session prints
-   * it (`Opus 4.5` → `Opus`), or the tab's published model behind it; a tab
-   * with neither keeps the generic "Agent". */
-  const workingModel = (status?.model ?? tab.agent_model)?.trim().split(/\s+/)[0];
+   * it (`Opus 4.5` → `Opus`), else the stored session's, else the tab's
+   * published model; a tab with none keeps the generic "Agent". */
+  const workingModel = (status?.model ?? transcriptModel ?? tab.agent_model)?.trim().split(/\s+/)[0];
   /** The screen's lines as the reading view shows them: the revealed history,
    * the open chunk, then the live tail. */
   const screenStream = useMemo(
@@ -3490,12 +3495,12 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * does not blink empty on the way to the next step. */
   /** The model chip's label: the model the session prints, with the reasoning
    * effort beside it where the session prints one too (Antigravity). Without a
-   * readable status it falls back to the tab's published model — the desktop's
-   * reading of this same line, composed the same way, or the transcript's id
-   * behind it. */
+   * readable status it falls back to the stored session's model, then the
+   * tab's published one — the desktop's reading of this same line, composed
+   * the same way, or the transcript's id behind it. */
   const modelChip = status?.model
     ? (status.effort ? `${status.model} · ${status.effort}` : status.model)
-    : tab.agent_model ?? "Model";
+    : transcriptModel ?? tab.agent_model ?? "Model";
   const shownStep = listedStep ?? (answered && picker ? answered : null);
   /** The highlighted row — where it was before a reveal walk moved it. */
   const shownAt = reveal?.origin ?? picker?.options[picker.current]?.number;
