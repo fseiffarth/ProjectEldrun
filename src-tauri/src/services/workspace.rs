@@ -721,7 +721,7 @@ pub fn reopen_tab_in(path: &Path, scope: &str, closed_id: Option<&str>) -> Resul
         };
         let mut tab = closed.remove(index).tab;
         set_closed_tabs(session, closed);
-        for key in [TAB_ID_KEY, TAB_CREATED_KEY, TAB_UPDATED_KEY, TMUX_SESSION_KEY, "mobileRequestHash"] {
+        for key in [TAB_ID_KEY, TAB_CREATED_KEY, TAB_UPDATED_KEY, TMUX_SESSION_KEY, "mobileRequestHash", "launchedAt"] {
             tab.extra.remove(key);
         }
         tab.key = format!("headless-{}", crate::commands::projects::uuid_v4());

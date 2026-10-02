@@ -96,6 +96,30 @@ struct SavedTab {
     /// it runs for the same reason.
     #[serde(default)]
     cloud: bool,
+    /// The args the tab was launched with, and the launch moment (epoch ms) a
+    /// headless create stamps (`headless::tab_record`): together they say
+    /// whether an OpenCode tab began a session of its own — see
+    /// [`ResolvedTab::since`]. Loose `Value`s, so an odd shape in either never
+    /// drops the whole file.
+    #[serde(default)]
+    args: Option<Value>,
+    #[serde(default)]
+    launched_at: Option<Value>,
+}
+
+/// [`ResolvedTab::since`] off the saved record: its stamped launch moment,
+/// unless it was started on `--continue` (the window's rule in
+/// `agentReader.ts`).
+fn fresh_since(tab: &SavedTab) -> Option<i64> {
+    let continued = tab
+        .args
+        .as_ref()
+        .and_then(Value::as_array)
+        .is_some_and(|args| args.iter().any(|arg| arg.as_str() == Some("--continue")));
+    if continued {
+        return None;
+    }
+    tab.launched_at.as_ref().and_then(|at| at.as_i64().or_else(|| at.as_f64().map(|ms| ms as i64)))
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +262,11 @@ pub struct ResolvedTab {
     /// folder is a raw path and never crosses the browser API.
     pub cmd: String,
     pub cwd: String,
+    /// The launch moment (epoch ms) of a tab opened fresh rather than started
+    /// on its continue flag — what keeps a new OpenCode tab from reading the
+    /// folder's older session (`opencode_store`), as the window's
+    /// `launchedAt` does. `None` once its args carry `--continue`.
+    pub since: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -936,6 +965,7 @@ fn resolve_scope(
             schedule_target_id: tab.schedule_target_id.clone(),
             cmd: tab.cmd.clone(),
             cwd: tab.cwd.clone(),
+            since: fresh_since(&tab),
         });
     }
     let last_activity = tabs.iter().filter_map(|t| t.public.last_activity).max();
@@ -1310,6 +1340,25 @@ mod tests {
         assert!(!is_root_scope_id("rooted"));
     }
 
+    /// A tab a headless create stamped reads only sessions begun since its
+    /// launch; one started on `--continue`, or never stamped, reads the
+    /// folder's newest.
+    #[test]
+    fn a_fresh_tab_reads_since_its_launch_unless_continued() {
+        let saved = |args: Value, launched_at: Option<Value>| {
+            serde_json::from_value::<SavedTab>(serde_json::json!({
+                "label": "OpenCode", "cmd": "opencode", "cwd": "/p", "kind": "agent",
+                "args": args, "launchedAt": launched_at,
+            }))
+            .expect("saved tab")
+        };
+        assert_eq!(fresh_since(&saved(serde_json::json!([]), Some(serde_json::json!(1_700_000_000_123_i64)))), Some(1_700_000_000_123));
+        assert_eq!(fresh_since(&saved(serde_json::json!(["--continue"]), Some(serde_json::json!(5)))), None);
+        assert_eq!(fresh_since(&saved(serde_json::json!([]), None)), None);
+        // An odd shape is no stamp, never a file that fails to parse.
+        assert_eq!(fresh_since(&saved(serde_json::json!("x"), Some(serde_json::json!("soon")))), None);
+    }
+
     /// The phone learns which agent a tab runs from the registry, not from the
     /// tab's label, so a renamed tab still says "Claude"; an unlisted agent
     /// keeps its label, and the command itself is never what is published.
@@ -1330,6 +1379,8 @@ mod tests {
             schedule_target_id: None,
             sign_in: false,
             cloud: false,
+            args: None,
+            launched_at: None,
         };
         assert_eq!(agent_label_of(&tab("release review", "claude")), "Claude");
         assert_eq!(agent_label_of(&tab("Codex", "codex")), "Codex");

@@ -295,8 +295,9 @@ const TRANSCRIPT_AGENTS: &[&str] = &["claude", "codex", "opencode"];
 /// `agentTranscriptFor` off the tab record: the same two "not yet" answers
 /// (`no_session` for a transcript family whose hook has not recorded a
 /// session yet, `unsupported` for the rest), then the CLI's own transcript.
-/// Without a window there is no launch time, so an OpenCode tab reads its
-/// folder's newest session.
+/// An OpenCode tab reads its folder's newest session — begun since the
+/// launch a headless create stamped (`ResolvedTab::since`), so a new tab is
+/// a new chat rather than the folder's last conversation.
 pub fn transcript(
     project_id: &str,
     tab: &ResolvedTab,
@@ -312,7 +313,7 @@ pub fn transcript(
         &tab.cmd,
         Some(project_id),
         Some(&tab.cwd),
-        None,
+        tab.since,
         session_id,
         subagent,
         version,
@@ -653,6 +654,9 @@ fn tab_record(kind: &CreateTabKind, agent: Option<&AgentChoice>, cwd: &Path, req
             extra.insert("kind".into(), json!("agent"));
             extra.insert("args".into(), json!(args));
             extra.insert("env".into(), json!({ crate::app_env!("TAB_UID"): uuid }));
+            // The window's `launchedAt`: tells this tab's own OpenCode session
+            // from the folder's older ones (`ResolvedTab::since`).
+            extra.insert("launchedAt".into(), json!(epoch_ms_now()));
             (agent.public.label.clone(), agent.bin.to_string(), Some(uuid))
         }
         _ => {
@@ -671,6 +675,13 @@ fn tab_record(kind: &CreateTabKind, agent: Option<&AgentChoice>, cwd: &Path, req
         session_id,
         extra,
     }
+}
+
+fn epoch_ms_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// The size a session started with no window gets. Nobody looks at it at that
@@ -1565,7 +1576,24 @@ mod tests {
             schedule_target_id: None,
             cmd: cmd.into(),
             cwd: "/nowhere".into(),
+            since: None,
         }
+    }
+
+    /// A created agent tab carries its launch moment, so its OpenCode reads
+    /// a new chat rather than the folder's last session; a shell has none.
+    #[test]
+    fn a_created_agent_tab_is_stamped_with_its_launch() {
+        let agent = AgentChoice {
+            public: AgentCatalogEntry { id: "a".into(), label: "OpenCode".into(), modes: Vec::new() },
+            bin: "opencode",
+        };
+        let before = epoch_ms_now();
+        let record = tab_record(&CreateTabKind::Agent, Some(&agent), Path::new("/p"), "h");
+        let stamped = record.extra.get("launchedAt").and_then(serde_json::Value::as_i64).expect("stamped");
+        assert!(stamped >= before && stamped <= epoch_ms_now());
+        let shell = tab_record(&CreateTabKind::Shell, None, Path::new("/p"), "h");
+        assert!(!shell.extra.contains_key("launchedAt"));
     }
 
     #[test]
