@@ -1995,6 +1995,14 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
 .terminal-reader-turn.user.pending {
   opacity: 0.65;
 }
+.terminal-reader-pending-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  color: color-mix(in srgb, var(--accent) 45%, var(--text-secondary));
+}
 .terminal-reader-turn.agent {
   align-self: flex-start;
   border-bottom-left-radius: 4px;

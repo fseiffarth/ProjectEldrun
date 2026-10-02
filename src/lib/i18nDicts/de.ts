@@ -3683,6 +3683,7 @@ export const dict: Dict = {
   "terminal.reader.placeholder": "Nachricht an den Agenten — Enter sendet, Umschalt+Enter für eine neue Zeile",
   "terminal.reader.send": "Senden",
   "terminal.reader.sending": "Wird gesendet…",
+  "terminal.reader.sendNowHint": "Noch in der Warteschlange — Esc hält den Schritt an und sendet sie sofort",
   "terminal.reader.sendFailed": "Nicht gesendet — das Terminal des Agenten nimmt keine Eingabe an. Dein Text bleibt hier.",
   "terminal.reader.question": "Wartet auf deine Antwort",
   "terminal.reader.moreChoices": "Weitere Optionen stehen im Terminal.",

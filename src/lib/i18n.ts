@@ -3759,6 +3759,7 @@ export const enSource = {
   "terminal.reader.placeholder": "Message the agent — Enter sends, Shift+Enter for a new line",
   "terminal.reader.send": "Send",
   "terminal.reader.sending": "Sending…",
+  "terminal.reader.sendNowHint": "Still queued — press Esc to stop the turn and send it now",
   "terminal.reader.sendFailed": "Not sent — the agent's terminal is not taking input. Your text is still here.",
   "terminal.reader.question": "Waiting for your answer",
   "terminal.reader.moreChoices": "More choices are listed in the terminal.",

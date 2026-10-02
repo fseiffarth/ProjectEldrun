@@ -3674,6 +3674,7 @@ export const dict: Dict = {
   "terminal.reader.placeholder": "Mensaje al agente — Intro envía, Mayús+Intro para una nueva línea",
   "terminal.reader.send": "Enviar",
   "terminal.reader.sending": "Enviando…",
+  "terminal.reader.sendNowHint": "Aún en cola — pulsa Esc para detener el turno y enviarlo ya",
   "terminal.reader.sendFailed": "No enviado — el terminal del agente no acepta entrada. Tu texto sigue aquí.",
   "terminal.reader.question": "Esperando tu respuesta",
   "terminal.reader.moreChoices": "Hay más opciones en el terminal.",

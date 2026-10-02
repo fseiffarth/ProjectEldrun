@@ -15,6 +15,7 @@ import { onSentPrompt } from "../../lib/agents/sentPrompts";
 import { readerDraft, setReaderDraft } from "../../lib/agents/readerDrafts";
 import { sendSteeringPrompt } from "../../lib/shortcuts/steeringAgent";
 import { writePtyInput } from "../../lib/terminal/terminalInput";
+import { isClaudeCommand } from "../../lib/terminal/terminalControl";
 import { terminalFor } from "../../lib/terminal/terminalRegistry";
 import { isInterruptInput, noteUserInput } from "../../stores/activity";
 import { useUse24h } from "../../lib/timeFormat";
@@ -891,6 +892,14 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
           {!openStep && pending.map((item) => (
             <div key={item.id} className="terminal-reader-turn user pending" data-prompt={item.text}>
               <PromptText text={item.text} />
+              {/* Queued behind a busy turn: Esc stops it and Claude sends the
+                  queue at once. */}
+              {live.working && isClaudeCommand(tab?.cmd) && (
+                <small className="terminal-reader-pending-hint">
+                  {t("terminal.reader.sendNowHint")}
+                  <UntestedTag id="terminal.reader.sendNowHint" />
+                </small>
+              )}
               <small className="terminal-reader-time">{t("terminal.reader.sending")}</small>
             </div>
           ))}
