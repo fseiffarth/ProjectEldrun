@@ -1,14 +1,20 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
 import { ApiError, MAX_INBOX_FILE, sentName, submitMarkup, uploadToInbox, viewerFileUrl, type MarkupSource, type OutboxFile, type ViewerScope } from "../api";
 import { acceptFrameMessage, MAX_FRAME_PAGES, MAX_RENDER_WIDTH, type FrameFailure } from "../markup/frameProtocol";
 import {
-  addMark, canAdd, canReplace, clampToPage, clearPage, commit, eraseAt, finishStroke, inkWidth, isEmpty, MARK_COLORS, markedPages, redo, replaceMark,
-  round, startHistory, textBox, undo, type BoxMark, type History, type InkMark, type Layer, type Mark, type MarkColor, type PageLayer, type TextMark,
+  addMark, canAdd, canReplace, clampToPage, clearPage, clearSent, commit, eraseAt, finishStroke, hasSent, inkWidth, isEmpty, MARK_COLORS, markedPages,
+  markSent, moveNote, noteAt, redo, replaceMark, round, startHistory, undo,
+  type BoxMark, type History, type InkMark, type Layer, type Mark, type MarkColor, type PageLayer, type TextMark,
 } from "../markup/layer";
-import { composedPng, drawMark, drawPage, INK, layerPng } from "../markup/rasterize";
-import { clearLayer, layerKey, loadLayer, saveLayer, stale, type Fingerprint } from "../markup/store";
+import { composedPng, drawMark, drawPage, INK, layerPng, type Paint } from "../markup/rasterize";
+import { layerKey, loadLayer, moveLayer, saveLayer, stale, type Fingerprint } from "../markup/store";
+import { followRound, nextCheck, startRound, stepRound, type AgentSignal, type Round, type RoundPhase } from "../markup/submitState";
+import { readMarkupInstruction } from "../markupInstruction";
+import { sizeLabel } from "../terminal/fileLabels";
+import { AGENT_STATUS_GLYPH } from "./AgentStatusPill";
+import type { MarkupSend } from "./OutboxViewer";
 
 type Tool = "ink" | "box" | "text" | "eraser";
 type Size = [number, number];
@@ -17,6 +23,10 @@ type Failure = FrameFailure | "tooLarge" | "fetch" | "timeout" | "picture";
 
 /** Room between pages, CSS pixels. */
 const GAP = 12;
+/** The widest a page fits to before a pinch: an iPad held sideways would
+ * otherwise show a third of a page at a time, rendered past the frame's
+ * pixel cap. Narrower pages sit centred. */
+const FIT_WIDTH = 960;
 /** How far the view zooms in. */
 const MAX_ZOOM = 4;
 /** Page pictures kept alive at once — Safari's canvas memory is the limit. */
@@ -25,8 +35,24 @@ const MAX_ALIVE = 6;
  * and to draw one page before that page is. */
 const OPEN_TIMEOUT = 45_000;
 const RENDER_TIMEOUT = 20_000;
-/** Remembered once a pen has drawn here: from then on fingers only scroll. */
+/** Remembered once a pen has drawn here: from then on only the pen draws,
+ * unless the reader turns "pen only" off again. */
 const PEN_KEY = "eldrun-markup-pen";
+/** How far a finger or pen travels on a note before it is a drag, not a tap. */
+const DRAG_SLOP = 8;
+/** How strongly the marks of earlier rounds show — sent, never sent again. */
+const SENT_ALPHA = 0.35;
+
+/** The round pill's words, by phase; `finished` takes the PDF check's. */
+const ROUND_KEYS: Record<Exclude<RoundPhase, "finished">, TranslationKey> = {
+  sent: "mobile.markup.round.sent",
+  queued: "mobile.markup.round.queued",
+  working: "mobile.markup.round.working",
+  question: "mobile.markup.round.question",
+  unconfirmed: "mobile.markup.round.unconfirmed",
+};
+/** The desktop's glyph the pill wears, where a phase has one. */
+const ROUND_GLYPH: Partial<Record<RoundPhase, "working" | "question" | "done">> = { working: "working", question: "question", finished: "done" };
 
 const FAILURE_KEYS: Record<Failure, TranslationKey> = {
   unreadable: "mobile.markup.failed.unreadable",
@@ -51,17 +77,45 @@ const REASON_KEYS: Record<string, TranslationKey> = {
   project_unavailable: "mobile.markup.reason.project",
 };
 
-function readPenSeen(): boolean {
-  try { return localStorage.getItem(PEN_KEY) === "1"; } catch { return false; }
+/** `none`: no pen has drawn here, so a finger draws. `pen`: only the pen
+ * draws and fingers scroll. `fingers`: a pen has drawn, but fingers draw too. */
+type PenMode = "none" | "pen" | "fingers";
+
+function readPenMode(): PenMode {
+  try {
+    const stored = localStorage.getItem(PEN_KEY);
+    return stored === "1" ? "pen" : stored === "fingers" ? "fingers" : "none";
+  } catch { return "none"; }
 }
-function rememberPen(): void {
-  try { localStorage.setItem(PEN_KEY, "1"); } catch { /* a convenience only */ }
+function rememberPenMode(mode: Exclude<PenMode, "none">): void {
+  try { localStorage.setItem(PEN_KEY, mode === "pen" ? "1" : "fingers"); } catch { /* a convenience only */ }
 }
 
 /** The file name without its extension — what the inbox copies are called after. */
 function stemOf(name: string): string {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(0, dot) : name;
+}
+
+/** A file's fingerprint — what its layer was drawn against. */
+function fingerprintOf(file: OutboxFile): Fingerprint {
+  return { size: file.size, modified: file.modified };
+}
+
+/** Whether `next` is another file than `shown`, or the same one changed. */
+function otherFile(shown: OutboxFile, next: OutboxFile): boolean {
+  return next.name !== shown.name || next.size !== shown.size || next.modified !== shown.modified;
+}
+
+/** The sent marks dimmed, then the unsent ones over them. */
+function paintLayer(ctx: Paint, page: PageLayer | undefined, sent: PageLayer | undefined, scale: number) {
+  if (sent) {
+    ctx.save();
+    ctx.globalAlpha = SENT_ALPHA;
+    drawPage(ctx, sent, scale);
+    ctx.restore();
+  }
+  if (page) drawPage(ctx, page, scale);
 }
 
 /** One page's place in the scroller: its top and height, CSS pixels. */
@@ -95,9 +149,11 @@ function PagePicture({ picture }: { picture: Picture | undefined }) {
 }
 
 /** The marks of one page, drawn over its picture. */
-function LayerCanvas({ size, page, preview, pixelWidth, register, n, handlers }: {
+function LayerCanvas({ size, page, sent, preview, pixelWidth, register, n, handlers }: {
   size: Size;
   page: PageLayer | undefined;
+  /** The page's marks from earlier rounds, drawn dimmed under `page`. */
+  sent: PageLayer | undefined;
   /** A box being dragged out, drawn on top until it is let go. */
   preview: Mark | null;
   pixelWidth: number;
@@ -123,14 +179,14 @@ function LayerCanvas({ size, page, preview, pixelWidth, register, n, handlers }:
     if (!ctx) return;
     ctx.clearRect(0, 0, element.width, element.height);
     const scale = pixelWidth / size[0];
-    if (page) drawPage(ctx, page, scale);
+    paintLayer(ctx, page, sent, scale);
     if (preview) {
       ctx.save();
       ctx.scale(scale, scale);
       drawMark(ctx, preview);
       ctx.restore();
     }
-  }, [page, preview, pixelWidth, size]);
+  }, [page, sent, preview, pixelWidth, size]);
   return <canvas
     ref={(element) => { canvas.current = element; register(n, element); }}
     className="markup-page-layer"
@@ -146,7 +202,9 @@ type Gesture =
   | { kind: "ink"; n: number; pointerId: number; mark: InkMark; last: [number, number] }
   | { kind: "box"; n: number; pointerId: number; start: [number, number]; end: [number, number] }
   | { kind: "erase"; n: number; pointerId: number }
-  | { kind: "text"; n: number; pointerId: number; start: [number, number]; clientX: number; clientY: number };
+  /** A tap places or edits a note; a drag from a note (`index`) moves it,
+   * held where it was grabbed (`grab`, page units from its corner). */
+  | { kind: "text"; n: number; pointerId: number; start: [number, number]; clientX: number; clientY: number; index: number; grab: [number, number]; moved: boolean };
 
 /** A note being typed: where it goes, and which existing note it replaces. */
 type NoteDraft = { n: number; at: [number, number]; index: number | null; text: string; color: MarkColor; size: number };
@@ -164,29 +222,66 @@ type NoteDraft = { n: number; at: [number, number]; index: number | null; text: 
  * never parses it; page pictures come back as bitmaps. A picture is shown by
  * the browser itself.
  *
- * Input: a pen always draws and fingers scroll and pinch; while a pen is down
- * every finger is ignored (a resting palm). A device that has not seen a pen
- * gets a ✋ / ✎ switch, and in ✎ one finger draws, two scroll.
+ * Input, as the phone's own Markup has it: until a pen has drawn here one
+ * finger draws and two scroll and pinch; once one has, only the pen draws and
+ * fingers scroll — "Draw with the pen only" in the palette's ⋯ turns that
+ * back. While a pen is down every finger is ignored (a resting palm). With
+ * the note tool a finger may always tap a note to edit it or drag it.
+ *
+ * With `reader`, the same view first reads a PDF — the outbox viewer's page
+ * view, the head carrying the viewer's own actions. The PDF stays inside the
+ * app; handed to the phone's own viewer, the installed app could not be got
+ * back to. Where marks can be sent (`onSend`), its Mark up switches the
+ * markup on in place — same page, same zoom — and Done switches it off,
+ * leaving the marks on show. Without `reader` the view opens marking, and
+ * Done leaves it (`onClose`).
+ *
+ * Submit keeps the view open (`docs/pdf_markup_rounds_plan.md`): the round's
+ * marks move to the layer's sent side, drawn dimmed and never sent again, and
+ * a pill follows the agent (`submitState.ts`) — sent / queued / working /
+ * asking / finished. Marking goes on meanwhile; the next Submit sends only
+ * the new marks. Once the agent has finished, **Reload PDF** draws the file
+ * as it is now (or its newer copy, `refresh`) under the same layer.
  */
-export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClose }: {
-  tabId: string;
+export function MarkupView({ tabId = "", projectId = "", scope, file: givenFile, place, onSend, agent = "idle", refresh, onClose, reader }: {
+  tabId?: string;
   /** The project the file belongs to — the phone-side layer's key. */
-  projectId: string;
+  projectId?: string;
   scope: ViewerScope;
   file: OutboxFile;
   /** A project file's folder trail (names), for its layer's key: a file
    * token is sealed afresh with every listing. */
   place?: string;
-  /** Sends the desktop's prompt into the chat; `false` when it could not. */
-  onSend: (text: string) => boolean;
+  /** Sends the desktop's prompt into the chat: `"queued"` behind the
+   * agent's current step, `"sent"` straight in, `false` when it could not.
+   * Absent, nothing can be marked. */
+  onSend?: (text: string) => MarkupSend;
+  /** What the agent is doing now, for the round's pill. */
+  agent?: AgentSignal;
+  /** The file as it is now, for Reload — its fresh row or a newer copy; the
+   * view keeps the file it shows itself, so its host never remounts it. */
+  refresh?: (file: OutboxFile) => Promise<OutboxFile | null>;
   onClose: () => void;
+  /** Opens reading: the head's actions (Save, Share), and what went wrong
+   * with one of them. */
+  reader?: { actions: ReactNode; alert?: string };
 }) {
   const t = useT();
+  /** The file shown — the host's, until a Reload finds a newer one. */
+  const [file, setFile] = useState(givenFile);
   const isPdf = file.kind === "application/pdf";
+  const reading = reader !== undefined;
+  const canMark = onSend !== undefined;
   const url = viewerFileUrl(scope, file);
   const source = useMemo<MarkupSource>(() => ("files" in scope ? { files: file.ref ?? "" } : { outbox: file.name }), [scope, file.ref, file.name]);
-  const key = useMemo(() => layerKey(projectId, "files" in scope ? { files: `${place ?? ""}/${file.name}` } : { outbox: file.name }), [projectId, scope, place, file.name]);
+  const keyOf = useCallback(
+    (name: string) => layerKey(projectId, "files" in scope ? { files: `${place ?? ""}/${name}` } : { outbox: name }),
+    [projectId, scope, place],
+  );
+  const key = useMemo(() => keyOf(file.name), [keyOf, file.name]);
   const fingerprint = useMemo<Fingerprint>(() => ({ size: file.size, modified: file.modified }), [file.size, file.modified]);
+  const fingerprintRef = useRef(fingerprint);
+  fingerprintRef.current = fingerprint;
   const stem = stemOf(sentName(file));
 
   const [sizes, setSizes] = useState<Size[] | null>(null);
@@ -201,8 +296,9 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
   const [changed, setChanged] = useState(false);
   const [tool, setTool] = useState<Tool>("ink");
   const [color, setColor] = useState<MarkColor>("red");
-  const [penSeen, setPenSeen] = useState(readPenSeen);
-  const [fingerDraws, setFingerDraws] = useState(false);
+  const [marking, setMarking] = useState(!reading && canMark);
+  const [penMode, setPenMode] = useState(readPenMode);
+  const [popover, setPopover] = useState<"colors" | "more" | null>(null);
   const [note, setNote] = useState<NoteDraft | null>(null);
   const [limitHit, setLimitHit] = useState(false);
   const [sending, setSending] = useState<string | null>(null);
@@ -213,6 +309,22 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
   const [scrollTop, setScrollTop] = useState(0);
   const [zoom, setZoom] = useState(1);
   const [settledZoom, setSettledZoom] = useState(1);
+  /** The last Submit's round, as the agent has taken it; `null` until one
+   * went out from this view, or the agent is seen at work over sent marks. */
+  const [submitted, setSubmitted] = useState<Round | null>(null);
+  const [roundTick, setRoundTick] = useState(0);
+  /** What the look at the file found when the agent finished. */
+  const [check, setCheck] = useState<"changed" | "unchanged" | null>(null);
+  const [showSent, setShowSent] = useState(true);
+  /** Bumped by Reload: the sealed frame opens once, so it is remounted. */
+  const [generation, setGeneration] = useState(0);
+  /** The reloaded document has not told its pages yet — the old sizes stand
+   * in, so the scroll holds, but no page is asked for. */
+  const [reopening, setReopening] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [reloadNote, setReloadNote] = useState<TranslationKey | null>(null);
+  /** Reloaded since the agent last finished: Reload steps back to secondary. */
+  const [reloaded, setReloaded] = useState(false);
 
   const scroller = useRef<HTMLDivElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -230,6 +342,14 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
   const pinch = useRef<{ distance: number; zoom: number; mid: [number, number]; left: number; top: number } | null>(null);
   const pageCount = useRef(MAX_FRAME_PAGES);
   const skipSave = useRef(false);
+  /** The key a Reload moved the layer to: the marks in hand are the ones to
+   * keep there, not read back. */
+  const movedTo = useRef<string | null>(null);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const fileRef = useRef(file);
+  fileRef.current = file;
+  const awaitingMeta = useRef(true);
   const renderTimer = useRef<number | undefined>(undefined);
   const sizesRef = useRef<Size[] | null>(null);
   sizesRef.current = sizes;
@@ -237,12 +357,18 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
   picturesRef.current = pictures;
   const scratchRef = useRef<Layer | null>(null);
   const zoomRef = useRef(zoom);
+  const markingRef = useRef(marking);
+  markingRef.current = marking;
   const fingerDrawsRef = useRef(false);
-  fingerDrawsRef.current = fingerDraws && !penSeen;
+  fingerDrawsRef.current = marking && penMode !== "pen";
 
   const layer = scratch ?? history.present;
-  const baseWidth = Math.max(160, viewWidth - 2 * GAP);
+  const baseWidth = Math.max(160, Math.min(FIT_WIDTH, viewWidth - 2 * GAP));
   const cssWidth = baseWidth * zoom;
+  /** The pages' left margin at zoom `z`: centred while they fit. */
+  const insetAt = (z: number) => Math.max(GAP, (viewWidth - baseWidth * z) / 2);
+  const insetRef = useRef(insetAt);
+  insetRef.current = insetAt;
   const settledWidth = baseWidth * settledZoom;
   const dpr = Math.min(2, typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
   const pixelWidth = Math.min(MAX_RENDER_WIDTH, Math.max(1, Math.round(settledWidth * dpr)));
@@ -270,8 +396,11 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
     [near, current],
   );
 
-  // The saved layer, once.
+  // The saved layer, once per file — not again when a Reload gives the same
+  // file a new fingerprint, which would call the marks drawn on it stale.
   useEffect(() => {
+    if (!canMark) return;
+    if (movedTo.current === key) { movedTo.current = null; return; }
     let live = true;
     void loadLayer(key).then((stored) => {
       if (!live) return;
@@ -281,19 +410,19 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
         // fingerprint on marks drawn against its old one.
         skipSave.current = true;
         setHistory(startHistory(stored.layer));
-        setChanged(stale(stored, fingerprint));
+        setChanged(stale(stored, fingerprintRef.current));
       }
       setLoaded(true);
     });
     return () => { live = false; };
-  }, [key, fingerprint]);
+  }, [canMark, key]);
 
   // Saved as each change lands — never before the saved one was read.
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !canMark) return;
     if (skipSave.current) { skipSave.current = false; return; }
     void saveLayer(key, history.present, fingerprint).then((ok) => setStorage(ok ? "saved" : "unsaved"));
-  }, [loaded, key, history.present, fingerprint]);
+  }, [loaded, canMark, key, history.present, fingerprint]);
 
   useLayoutEffect(() => {
     const element = scroller.current;
@@ -361,9 +490,10 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
         bytes.current = data;
         openIfReady();
       }, () => { if (!controller.signal.aborted) setFailure("fetch"); });
-    const timer = window.setTimeout(() => { if (!sizesRef.current) setFailure((was) => was ?? "timeout"); }, OPEN_TIMEOUT);
+    const timer = window.setTimeout(() => { if (awaitingMeta.current) setFailure((was) => was ?? "timeout"); }, OPEN_TIMEOUT);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [isPdf, url, file.size, openIfReady]);
+    // `generation`: a Reload fetches the bytes again, for the new frame.
+  }, [isPdf, url, file.size, openIfReady, generation]);
 
   useEffect(() => {
     if (!isPdf) return;
@@ -384,6 +514,8 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
         openIfReady();
       } else if (message.type === "meta") {
         pageCount.current = message.pages.length;
+        awaitingMeta.current = false;
+        setReopening(false);
         setSizes(message.pages.map(({ w, h }) => [w, h]));
       } else if (message.type === "page") {
         window.clearTimeout(renderTimer.current);
@@ -406,7 +538,7 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
   // One page in flight at a time, the nearest to where the reader is first;
   // pictures far away are let go.
   useEffect(() => {
-    if (!isPdf || !sizes || failure) return;
+    if (!isPdf || !sizes || failure || reopening) return;
     const keep = new Set(alive);
     setPictures((known) => {
       const drop = Object.keys(known).map(Number).filter((n) => !keep.has(n));
@@ -424,7 +556,7 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
     // up every other page.
     window.clearTimeout(renderTimer.current);
     renderTimer.current = window.setTimeout(() => renderFailed(wanted), RENDER_TIMEOUT);
-  }, [isPdf, sizes, failure, alive, pictures, pageFailures, pixelWidth, post, renderTick, renderFailed]);
+  }, [isPdf, sizes, failure, reopening, alive, pictures, pageFailures, pixelWidth, post, renderTick, renderFailed]);
 
   useEffect(() => () => {
     // Bitmaps are GPU memory; hand them back as the view goes.
@@ -437,9 +569,13 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
     const element = scroller.current;
     if (!element) return;
     const isStylus = (event: TouchEvent) => [...event.changedTouches].some((touch) => (touch as Touch & { touchType?: string }).touchType === "stylus");
+    // A finger that came down on a note to move it (its pointerdown fires
+    // first) must not scroll the page instead.
+    const holdsNote = () => { const g = gesture.current; return g?.kind === "text" && g.index >= 0; };
     const onTouchStart = (event: TouchEvent) => {
-      // The Pencil would scroll the page and start a text selection.
-      if (penDown.current || isStylus(event)) { event.preventDefault(); return; }
+      // The Pencil would scroll the page and start a text selection — unless
+      // the markup is off, where it scrolls like a finger.
+      if (markingRef.current && (penDown.current || isStylus(event))) { event.preventDefault(); return; }
       if (event.touches.length === 2) {
         const [a, b] = [event.touches[0], event.touches[1]];
         const rect = element.getBoundingClientRect();
@@ -453,10 +589,10 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
         event.preventDefault();
         return;
       }
-      if (fingerDrawsRef.current && event.touches.length === 1 && (event.target as Element).closest?.(".markup-page-layer")) event.preventDefault();
+      if (event.touches.length === 1 && (holdsNote() || (fingerDrawsRef.current && (event.target as Element).closest?.(".markup-page-layer")))) event.preventDefault();
     };
     const onTouchMove = (event: TouchEvent) => {
-      if (penDown.current || isStylus(event)) { if (event.cancelable) event.preventDefault(); return; }
+      if (markingRef.current && (penDown.current || isStylus(event))) { if (event.cancelable) event.preventDefault(); return; }
       const start = pinch.current;
       if (start && event.touches.length === 2) {
         if (event.cancelable) event.preventDefault();
@@ -465,9 +601,14 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
         const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
         const next = Math.min(MAX_ZOOM, Math.max(1, start.zoom * (start.distance ? distance / start.distance : 1)));
         const mid: [number, number] = [(a.clientX + b.clientX) / 2 - rect.left, (a.clientY + b.clientY) / 2 - rect.top];
-        // What was under the fingers stays under them, and follows them.
+        // What was under the fingers stays under them, and follows them —
+        // measured from the pages' own edge, which moves while they are centred.
         const ratio = next / start.zoom;
-        const target = { left: (start.left + start.mid[0]) * ratio - mid[0], top: (start.top + start.mid[1]) * ratio - mid[1] };
+        const inset = insetRef.current;
+        const target = {
+          left: (start.left + start.mid[0] - inset(start.zoom)) * ratio + inset(next) - mid[0],
+          top: (start.top + start.mid[1]) * ratio - mid[1],
+        };
         if (next === zoomRef.current) {
           // A plain two-finger drag: nothing re-renders, so scroll now.
           element.scrollLeft = target.left;
@@ -479,7 +620,7 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
         }
         return;
       }
-      if (fingerDrawsRef.current && gesture.current && event.cancelable) event.preventDefault();
+      if (gesture.current && (fingerDrawsRef.current || holdsNote()) && event.cancelable) event.preventDefault();
     };
     const onTouchEnd = (event: TouchEvent) => {
       if (event.touches.length < 2) pinch.current = null;
@@ -516,10 +657,11 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
 
   const onPointerDown = (n: number, event: ReactPointerEvent<HTMLCanvasElement>) => {
     const size = pageSize(n);
-    if (!size || sending || !loaded) return;
+    if (!size || sending || !loaded || !marking) return;
+    setPopover(null);
     if (event.pointerType === "pen") {
       penDown.current = true;
-      if (!penSeen) { setPenSeen(true); rememberPen(); }
+      if (penMode === "none") { setPenMode("pen"); rememberPenMode("pen"); }
     } else if (event.pointerType === "touch") {
       touches.current.add(event.pointerId);
       // A resting palm while the pen writes; a second finger is a pinch.
@@ -534,7 +676,9 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
         if (abandoned) overlayRedraw(abandoned.n);
         return;
       }
-      if (!fingerDrawsRef.current) return;
+      // Where only the pen draws, a finger still taps and drags notes; one
+      // that turns out to scroll is cancelled by the browser.
+      if (!fingerDrawsRef.current && tool !== "text") return;
     }
     const canvas = event.currentTarget;
     canvas.setPointerCapture?.(event.pointerId);
@@ -547,10 +691,15 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
       gesture.current = { kind: "box", n, pointerId: event.pointerId, start: at, end: at };
     } else if (tool === "eraser") {
       gesture.current = { kind: "erase", n, pointerId: event.pointerId };
-      scratchRef.current = eraseAt(history.present, n, at[0], at[1], 12 * unitsPerPixel(n, canvas));
+      scratchRef.current = eraseAt(history.present, n, at[0], at[1], 12 * unitsPerPixel(n, canvas), showSent);
       setScratch(scratchRef.current);
     } else {
-      gesture.current = { kind: "text", n, pointerId: event.pointerId, start: at, clientX: event.clientX, clientY: event.clientY };
+      const index = noteAt(history.present.pages[n], at[0], at[1]);
+      const grabbed = index >= 0 ? (history.present.pages[n].marks[index] as TextMark) : null;
+      gesture.current = {
+        kind: "text", n, pointerId: event.pointerId, start: at, clientX: event.clientX, clientY: event.clientY,
+        index, grab: grabbed ? [at[0] - grabbed.at[0], at[1] - grabbed.at[1]] : [0, 0], moved: false,
+      };
     }
   };
 
@@ -580,8 +729,7 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
     const ctx = canvas?.getContext("2d");
     if (!canvas || !size || !ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const page = history.present.pages[n];
-    if (page) drawPage(ctx, page, canvas.width / size[0]);
+    paintLayer(ctx, history.present.pages[n], showSent ? history.present.sent?.pages[n] : undefined, canvas.width / size[0]);
   };
 
   const onPointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -603,7 +751,16 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
       setPreview({ n: g.n, mark: boxOf(g.start, g.end, color) });
     } else if (g.kind === "erase") {
       const at = toPage(g.n, canvas, event.clientX, event.clientY);
-      scratchRef.current = eraseAt(scratchRef.current ?? history.present, g.n, at[0], at[1], 12 * unitsPerPixel(g.n, canvas));
+      scratchRef.current = eraseAt(scratchRef.current ?? history.present, g.n, at[0], at[1], 12 * unitsPerPixel(g.n, canvas), showSent);
+      setScratch(scratchRef.current);
+    } else if (g.kind === "text" && g.index >= 0) {
+      if (!g.moved && Math.hypot(event.clientX - g.clientX, event.clientY - g.clientY) < DRAG_SLOP) return;
+      g.moved = true;
+      const size = pageSize(g.n);
+      const grabbed = history.present.pages[g.n]?.marks[g.index];
+      if (!size || grabbed?.kind !== "text") return;
+      const at = toPage(g.n, canvas, event.clientX, event.clientY);
+      scratchRef.current = replaceMark(history.present, g.n, g.index, moveNote(grabbed, [at[0] - g.grab[0], at[1] - g.grab[1]], size));
       setScratch(scratchRef.current);
     }
   };
@@ -617,8 +774,9 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
     const size = pageSize(g.n);
     if (!size) return;
     if (event.type === "pointercancel" && g.kind !== "erase") {
-      // A gesture the browser took over (a scroll) is not a mark.
+      // A gesture the browser took over (a scroll) is not a mark, nor a move.
       setPreview(null);
+      if (g.kind === "text") { scratchRef.current = null; setScratch(null); }
       overlayRedraw(g.n);
       return;
     }
@@ -633,11 +791,15 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
       scratchRef.current = null;
       setScratch(null);
       if (erased) setHistory((now) => commit(now, erased));
+    } else if (g.moved) {
+      const moved = scratchRef.current;
+      scratchRef.current = null;
+      setScratch(null);
+      if (moved) setHistory((now) => commit(now, moved));
     } else if (Math.hypot(event.clientX - g.clientX, event.clientY - g.clientY) < 12) {
       // A tap: edit the note under it, or start a new one there.
-      const page = history.present.pages[g.n];
-      const index = page ? page.marks.findIndex((mark) => mark.kind === "text" && insideBox(textBox(mark), g.start)) : -1;
-      const existing = index >= 0 ? (page!.marks[index] as TextMark) : null;
+      const existing = g.index >= 0 ? (history.present.pages[g.n].marks[g.index] as TextMark) : null;
+      const index = g.index;
       setNote(existing
         ? { n: g.n, at: existing.at, index, text: existing.text, color: existing.color, size: existing.size }
         : { n: g.n, at: [round(g.start[0]), round(g.start[1])], index: null, text: "", color, size: Math.min(200, Math.max(4, Math.round(size[0] / 40))) });
@@ -645,29 +807,52 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
   };
   const handlers = { onPointerDown, onPointerMove, onPointerUp };
 
-  /** `text` null deletes the note being edited. */
-  const saveNote = (text: string | null) => {
+  /** `text` null deletes the note being edited. Gives the layer it leaves. */
+  const saveNote = (text: string | null): Layer => {
     const draft = note;
     setNote(null);
-    if (!draft) return;
+    if (!draft) return history.present;
     // Every control character but the line break — the desktop refuses them.
     const clean = (text ?? "").replace(/(?!\n)\p{Cc}/gu, "").trim();
     const mark: TextMark | null = clean ? { kind: "text", color: draft.color, at: draft.at, size: draft.size, text: clean } : null;
     if (draft.index !== null) {
-      if (mark && !canReplace(history.present, draft.n, draft.index, mark)) { setLimitHit(true); return; }
-      setHistory((now) => commit(now, replaceMark(now.present, draft.n, draft.index!, mark)));
-    } else if (mark) {
-      add(draft.n, mark);
+      if (mark && !canReplace(history.present, draft.n, draft.index, mark)) { setLimitHit(true); return history.present; }
+      const next = replaceMark(history.present, draft.n, draft.index, mark);
+      setHistory((now) => commit(now, next));
+      return next;
     }
+    if (!mark) return history.present;
+    const size = pageSize(draft.n);
+    if (!size || !canAdd(history.present, draft.n, mark)) { if (size) setLimitHit(true); return history.present; }
+    setLimitHit(false);
+    const next = addMark(history.present, draft.n, size, mark);
+    setHistory((now) => commit(now, next));
+    return next;
+  };
+
+  /** Done: a note still open is kept, as the phone's own Markup keeps it. */
+  const done = () => {
+    gesture.current = null;
+    setPreview(null);
+    setPopover(null);
+    const next = note ? saveNote(note.text) : history.present;
+    if (reading) { setMarking(false); return; }
+    // The view goes away before the save effect would run.
+    if (note && loaded) void saveLayer(key, next, fingerprint).finally(onClose);
+    else onClose();
   };
 
   // --- Submit ----------------------------------------------------------------
+  /** The marked pages a Submit carries: a page past the end of the PDF (it
+   * shrank on a Reload) keeps its marks, but they are not drawn or sent. */
+  const sendable = markedPages(history.present).filter((n) => !isPdf || !sizes || n <= sizes.length);
+  const leftOut = markedPages(history.present).length - sendable.length;
   const reason = (error: unknown) => {
     const code = error instanceof ApiError ? error.code : "";
     return REASON_KEYS[code] ? t(REASON_KEYS[code]) : t("mobile.markup.reason.other", { code: code || "error" });
   };
   const submit = async () => {
-    const marked = markedPages(history.present);
+    const marked = sendable;
     if (!marked.length || sending) return;
     setSendFailure(null);
     const refs = new Map<number, string>();
@@ -697,58 +882,200 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
     }
     setSending(t("mobile.markup.sendingMarks"));
     let prompt: string;
+    const instruction = readMarkupInstruction();
     try {
       prompt = (await submitMarkup(tabId, {
         source,
         pages: marked.map((n) => ({ n, size: history.present.pages[n].size, marks: history.present.pages[n].marks, layer: refs.get(n)! })),
         ...(picture ? { picture } : {}),
+        ...(instruction ? { instruction } : {}),
       })).prompt;
     } catch (error) {
       setSending(null);
       setSendFailure(t("mobile.markup.sendFailed.marks", { reason: reason(error) }));
       return;
     }
-    if (!onSend(prompt)) {
+    const sent = onSend?.(prompt) ?? false;
+    if (!sent) {
       setSending(null);
       setSendFailure(t("mobile.markup.sendFailed.chat"));
       return;
     }
-    await clearLayer(key);
+    // The round's marks go to the sent side — dimmed, never sent again, past
+    // undo — and the view stays open for the next round; the save effect
+    // keeps the record.
+    setHistory((now) => startHistory(markSent(now.present, marked)));
+    setShowSent(true);
+    setCheck(null);
+    setReloadNote(null);
+    setSubmitted(startRound(sent === "queued", Date.now()));
     setSending(null);
-    onClose();
+  };
+
+  // --- The round: what the agent does with the last Submit -------------------
+  const sentShown = hasSent(layer);
+  useEffect(() => {
+    if (!submitted) {
+      // Opened again over sent marks: the pill shows once the agent works.
+      if (sentShown && agent !== "idle") setSubmitted(followRound(agent, Date.now()));
+      return;
+    }
+    const now = Date.now();
+    const next = stepRound(submitted, agent, now);
+    if (next !== submitted) { setSubmitted(next); return; }
+    const wait = nextCheck(submitted, agent, now);
+    if (wait === null) return;
+    const timer = window.setTimeout(() => setRoundTick((tick) => tick + 1), wait);
+    return () => window.clearTimeout(timer);
+  }, [submitted, agent, sentShown, roundTick]);
+
+  // Finished: one look at the file — changed under the marks, or not — so
+  // Reload can say whether it is worth it. No polling.
+  const finishedAt = submitted?.phase === "finished" ? submitted.since : null;
+  useEffect(() => {
+    setCheck(null);
+    setReloaded(false);
+    const look = refreshRef.current;
+    if (finishedAt === null || !isPdf || !look) return;
+    let live = true;
+    const shown = fileRef.current;
+    void look(shown).then(
+      (now) => { if (live && now) setCheck(otherFile(shown, now) ? "changed" : "unchanged"); },
+      () => {},
+    );
+    return () => { live = false; };
+  }, [finishedAt, isPdf]);
+
+  /** **Reload PDF**: the file as it is now — or the newer copy the agent
+   * sent — under the same layer. The sealed frame opens one document, so it
+   * is remounted; the old page sizes stand in until the new ones arrive, so
+   * the scroll holds. Unsent marks stay where they are; the sent ones point
+   * at the old text, so they hide (⋯ shows them again). */
+  const reload = async () => {
+    if (!isPdf || reloading || sending) return;
+    setReloading(true);
+    setReloadNote(null);
+    let next = file;
+    try {
+      next = (await refreshRef.current?.(file)) ?? file;
+    } catch {
+      // The listing failed: the same file, fetched again, is still a reload.
+    }
+    const nextKey = keyOf(next.name);
+    if (nextKey !== key && canMark) {
+      // Before `file` changes: the save effect then writes the marks in hand
+      // under the new key, and the load effect leaves them be.
+      await moveLayer(key, nextKey, fingerprintOf(next));
+      movedTo.current = nextKey;
+    }
+    if (!otherFile(file, next)) {
+      setReloadNote(refreshRef.current && !("files" in scope) ? "mobile.markup.noNewer" : "mobile.markup.unchanged");
+    }
+    window.clearTimeout(renderTimer.current);
+    frameReady.current = false;
+    opened.current = false;
+    inFlight.current = null;
+    bytes.current = null;
+    pageCount.current = MAX_FRAME_PAGES;
+    awaitingMeta.current = true;
+    setPictures((known) => {
+      for (const picture of Object.values(known)) picture.bitmap.close?.();
+      return {};
+    });
+    setPageFailures(new Set());
+    setFailure(null);
+    setChanged(false);
+    setCheck(null);
+    setReloaded(true);
+    setReopening(true);
+    setFile(next);
+    setGeneration((was) => was + 1);
+    setReloading(false);
   };
 
   const empty = isEmpty(history.present);
-  const untested = isUntested("mobile.markup") || isUntested("mobile.markup.send") || (isPdf && isUntested("mobile.markup.frame"));
+  const untested = (reading && isUntested("mobile.outbox.pdf")) || (isPdf && isUntested("mobile.markup.frame"))
+    || (canMark && (isUntested("mobile.markup") || isUntested("mobile.markup.send") || isUntested("mobile.markup.native")));
+  const roundUntested = isUntested("mobile.markup.rounds");
+  /** Reload is offered once anything went out from here, or was before. */
+  const canReload = isPdf && canMark && (submitted !== null || sentShown);
+  const roundWords = submitted && (submitted.phase === "finished"
+    ? t(check === "changed" ? "mobile.markup.round.finishedChanged" : check === "unchanged" ? "mobile.markup.round.finishedUnchanged" : "mobile.markup.round.finished")
+    : t(ROUND_KEYS[submitted.phase]));
+  /** Reload as the pill's own button: the agent is done, or nothing says
+   * what it does — primary unless the file is known to be unchanged. */
+  const pillReload = canReload && submitted && (submitted.phase === "finished" || submitted.phase === "unconfirmed");
+  const reloadPrimary = submitted?.phase === "finished" && check !== "unchanged" && !reloaded;
+  const glyph = submitted ? ROUND_GLYPH[submitted.phase] : undefined;
   const register = useCallback((n: number, canvas: HTMLCanvasElement | null) => {
     if (canvas) overlays.current.set(n, canvas);
     else overlays.current.delete(n);
   }, []);
+  const pickTool = (name: Tool) => {
+    setTool(name);
+    setPopover(null);
+    if (name === "box" && color !== "yellow") setColor("yellow");
+    if (name === "ink" && color === "yellow") setColor("red");
+  };
+  const togglePenOnly = () => {
+    const next = penMode === "pen" ? "fingers" : "pen";
+    setPenMode(next);
+    rememberPenMode(next);
+  };
+  const editNote = (text: string) => setNote((draft) => draft && { ...draft, text });
+  const layerCanvas = (n: number, size: Size) => canMark
+    && <LayerCanvas n={n} size={size} page={layer.pages[n]} sent={showSent ? layer.sent?.pages[n] : undefined} preview={preview?.n === n ? preview.mark : null}
+      pixelWidth={pixelWidth} register={register} handlers={handlers} />;
+  const noteEditor = (n: number, size: Size) => note?.n === n
+    && <NoteEditor note={note} size={size} width={cssWidth} onChange={editNote} onSave={saveNote} onCancel={() => setNote(null)} />;
 
-  return <div className="outbox-viewer markup-view" role="dialog" aria-modal="true" aria-label={t("mobile.markup.title", { name: sentName(file) })}>
+  return <div className={`outbox-viewer markup-view${reading ? " markup-reader" : ""}${marking ? " marking" : ""}`} role="dialog" aria-modal="true"
+    aria-label={marking ? t("mobile.markup.title", { name: sentName(file) }) : sentName(file)}>
     <div className="outbox-viewer-head">
-      <button className="sheet-close" onClick={onClose} aria-label={t("mobile.markup.close")} disabled={sending !== null}>✕</button>
+      {(reading || !marking) && <button className="sheet-close" onClick={onClose} aria-label={t("mobile.outbox.close")} disabled={sending !== null}>✕</button>}
       <div className="outbox-viewer-title">
         <h2>{sentName(file)}</h2>
-        <small>{t("mobile.markup.subtitle")}{untested && <span className="untested">{t("mobile.outbox.untested")}</span>}</small>
+        <small>
+          {marking
+            ? t("mobile.markup.subtitle")
+            : `${sizes && isPdf ? `${t("mobile.outbox.pdfPage", { n: current, count: sizes.length })} · ` : ""}${sizeLabel(file.size)}`}
+          {untested && <span className="untested">{t("mobile.outbox.untested")}</span>}
+        </small>
       </div>
-      <button className="markup-submit" disabled={empty || sending !== null || !online} onClick={() => void submit()} title={t("mobile.markup.submitTitle")}>
-        {t("mobile.markup.submit")}
-      </button>
+      {marking ? <>
+        <button className="markup-submit" disabled={!sendable.length || sending !== null || reloading || !online} onClick={() => void submit()} title={t("mobile.markup.submitTitle")}>
+          {t("mobile.markup.submit")}
+        </button>
+        <button className="outbox-action markup-done" onClick={done} disabled={sending !== null}>{t("mobile.markup.done")}</button>
+      </> : <>
+        {canMark && <button className={`outbox-action markup-toggle${empty ? "" : " has-marks"}`} onClick={() => setMarking(true)}
+          aria-label={t("mobile.markup.openFile", { name: sentName(file) })}>{t("mobile.markup.open")}</button>}
+        {reader?.actions}
+      </>}
     </div>
     <div className="markup-notes">
+      {submitted && roundWords && <div className={`markup-round ${submitted.phase}`} role="status">
+        {glyph && <span className={`agent-status ${glyph}`} aria-hidden="true"><span className="agent-status-glyph">{AGENT_STATUS_GLYPH[glyph]}</span></span>}
+        <span className="markup-round-words">{roundWords}</span>
+        {roundUntested && <span className="untested">{t("mobile.outbox.untested")}</span>}
+        {pillReload && <button className={reloadPrimary ? "markup-submit markup-reload" : "outbox-action markup-reload"} disabled={reloading || sending !== null}
+          onClick={() => void reload()}>{t("mobile.markup.reload")}</button>}
+      </div>}
+      {reloadNote && <p role="status">{t(reloadNote)}</p>}
       {storage === "unsaved" && <p role="status">{t("mobile.markup.unsaved")}</p>}
       {changed && <p role="status">{t("mobile.markup.changed")}</p>}
+      {marking && leftOut > 0 && <p role="status">{t(leftOut === 1 ? "mobile.markup.leftOutOne" : "mobile.markup.leftOut", { count: leftOut })}</p>}
       {limitHit && <p role="alert">{t("mobile.markup.limit")}</p>}
       {sending && <p role="status">{sending}</p>}
       {sendFailure && <p role="alert">{sendFailure}</p>}
       {failure && <p role="alert">{t(FAILURE_KEYS[failure])}</p>}
+      {reader?.alert && <p role="alert">{reader.alert}</p>}
     </div>
     <div ref={scroller} className={`markup-scroller${fingerDrawsRef.current ? " finger-draws" : ""}`}
-      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)} onPointerDown={() => setPopover(null)}>
       {isPdf ? <>
         {!sizes && !failure && <p className="markup-loading">{t("mobile.markup.loading")}</p>}
-        {sizes && <div className="markup-pages" style={{ width: cssWidth, height: contentHeight }}>
+        {sizes && <div className="markup-pages" style={{ width: cssWidth, height: contentHeight, marginLeft: insetAt(zoom) }}>
           {sizes.map((size, i) => {
             const n = i + 1;
             const spot = places[i];
@@ -757,14 +1084,14 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
               {shown && <>
                 <PagePicture picture={pictures[n]} />
                 {!pictures[n] && <span className="markup-page-note">{t(pageFailures.has(n) ? "mobile.markup.pageFailed" : "mobile.markup.pageLoading", { n })}</span>}
-                <LayerCanvas n={n} size={size} page={layer.pages[n]} preview={preview?.n === n ? preview.mark : null} pixelWidth={pixelWidth} register={register} handlers={handlers} />
+                {layerCanvas(n, size)}
               </>}
-              {note?.n === n && <NoteEditor note={note} size={size} width={cssWidth} onSave={saveNote} onCancel={() => setNote(null)} />}
+              {noteEditor(n, size)}
             </div>;
           })}
         </div>}
-        {!failure && <iframe ref={frame} className="markup-frame" title="pdf" sandbox="allow-scripts" src="/pdf-frame.html" />}
-      </> : <div className="markup-pages markup-picture" style={{ width: cssWidth }}>
+        {!failure && <iframe key={generation} ref={frame} className="markup-frame" title="pdf" sandbox="allow-scripts" src="/pdf-frame.html" />}
+      </> : <div className="markup-pages markup-picture" style={{ width: cssWidth, marginLeft: insetAt(zoom) }}>
         <div className="markup-page" style={sizes ? { width: cssWidth, height: cssWidth * sizes[0][1] / sizes[0][0] } : { width: cssWidth }}>
           <img ref={pictureImage} src={url} alt={sentName(file)} draggable={false}
             onLoad={(event) => {
@@ -773,30 +1100,51 @@ export function MarkupView({ tabId, projectId, scope, file, place, onSend, onClo
               else setFailure("picture");
             }}
             onError={() => setFailure("picture")} />
-          {sizes && <LayerCanvas n={1} size={sizes[0]} page={layer.pages[1]} preview={preview?.n === 1 ? preview.mark : null} pixelWidth={pixelWidth} register={register} handlers={handlers} />}
-          {sizes && note?.n === 1 && <NoteEditor note={note} size={sizes[0]} width={cssWidth} onSave={saveNote} onCancel={() => setNote(null)} />}
+          {sizes && layerCanvas(1, sizes[0])}
+          {sizes && noteEditor(1, sizes[0])}
         </div>
       </div>}
     </div>
-    <div className="markup-toolbar" role="toolbar" aria-label={t("mobile.markup.tools")}>
-      {(["ink", "box", "text", "eraser"] as Tool[]).map((name) => <button key={name} aria-pressed={tool === name} className={tool === name ? "selected" : ""}
-        onClick={() => { setTool(name); if (name === "box" && color !== "yellow") setColor("yellow"); if (name === "ink" && color === "yellow") setColor("red"); }}
-        aria-label={t(`mobile.markup.tool.${name}` as TranslationKey)} title={t(`mobile.markup.tool.${name}` as TranslationKey)}>
-        <span aria-hidden="true">{name === "ink" ? "✎" : name === "box" ? "▭" : name === "text" ? "T" : "⌫"}</span>
-      </button>)}
-      <span className="markup-colors" role="group" aria-label={t("mobile.markup.color")}>
+    {marking && <div className="markup-palette">
+      {popover === "colors" && <div className="markup-popover markup-colors" role="group" aria-label={t("mobile.markup.color")}>
         {MARK_COLORS.map((name) => <button key={name} className={`markup-color${color === name ? " selected" : ""}`} aria-pressed={color === name}
-          style={{ background: INK[name] }} onClick={() => setColor(name)} aria-label={t(`mobile.markup.color.${name}` as TranslationKey)} />)}
-      </span>
-      <button onClick={() => setHistory(undo)} disabled={!history.past.length} aria-label={t("mobile.markup.undo")} title={t("mobile.markup.undo")}><span aria-hidden="true">↶</span></button>
-      <button onClick={() => setHistory(redo)} disabled={!history.future.length} aria-label={t("mobile.markup.redo")} title={t("mobile.markup.redo")}><span aria-hidden="true">↷</span></button>
-      <button onClick={() => setHistory((now) => commit(now, clearPage(now.present, current)))} disabled={!history.present.pages[current]}
-        aria-label={t("mobile.markup.clearPage", { n: current })} title={t("mobile.markup.clearPage", { n: current })}><span aria-hidden="true">⌧</span></button>
-      {!penSeen && <button className={fingerDraws ? "selected" : ""} aria-pressed={fingerDraws} onClick={() => setFingerDraws((on) => !on)}
-        aria-label={t(fingerDraws ? "mobile.markup.fingerDraws" : "mobile.markup.fingerScrolls")} title={t(fingerDraws ? "mobile.markup.fingerDraws" : "mobile.markup.fingerScrolls")}>
-        <span aria-hidden="true">{fingerDraws ? "✎" : "✋"}</span>
-      </button>}
-    </div>
+          style={{ background: INK[name] }} onClick={() => { setColor(name); setPopover(null); }} aria-label={t(`mobile.markup.color.${name}` as TranslationKey)} />)}
+      </div>}
+      {popover === "more" && <div className="markup-popover markup-more">
+        <button onClick={() => { setHistory((now) => commit(now, clearPage(now.present, current, showSent))); setPopover(null); }}
+          disabled={!history.present.pages[current] && !(showSent && history.present.sent?.pages[current])}>
+          <span aria-hidden="true">⌧</span>{t("mobile.markup.clearPage", { n: current })}
+        </button>
+        {penMode !== "none" && <button role="switch" aria-checked={penMode === "pen"} onClick={togglePenOnly}>
+          <span aria-hidden="true">✎</span>{t("mobile.markup.penOnly")}<span className="markup-switch" aria-hidden="true" />
+        </button>}
+        {canReload && <button onClick={() => { setPopover(null); void reload(); }} disabled={reloading || sending !== null}>
+          <span aria-hidden="true">⟳</span>{t("mobile.markup.reload")}{roundUntested && <span className="untested">{t("mobile.outbox.untested")}</span>}
+        </button>}
+        {sentShown && <button role="switch" aria-checked={showSent} onClick={() => setShowSent((shown) => !shown)}>
+          <span aria-hidden="true">◌</span>{t("mobile.markup.showSent")}<span className="markup-switch" aria-hidden="true" />
+        </button>}
+        {sentShown && <button onClick={() => { setHistory((now) => commit(now, clearSent(now.present))); setPopover(null); }}>
+          <span aria-hidden="true">⌧</span>{t("mobile.markup.clearSent")}
+        </button>}
+      </div>}
+      {!popover && tool === "text" && !note && <p className="markup-hint">{t("mobile.markup.textHint")}</p>}
+      <div className="markup-toolbar" role="toolbar" aria-label={t("mobile.markup.tools")}>
+        {(["ink", "box", "text", "eraser"] as Tool[]).map((name) => <button key={name} aria-pressed={tool === name} className={tool === name ? "selected" : ""}
+          onClick={() => pickTool(name)} aria-label={t(`mobile.markup.tool.${name}` as TranslationKey)} title={t(`mobile.markup.tool.${name}` as TranslationKey)}>
+          <span aria-hidden="true">{name === "ink" ? "✎" : name === "box" ? "▭" : name === "text" ? "T" : "⌫"}</span>
+        </button>)}
+        <button className="markup-color-well" aria-expanded={popover === "colors"} onClick={() => setPopover((open) => (open === "colors" ? null : "colors"))}
+          aria-label={t("mobile.markup.colorOf", { color: t(`mobile.markup.color.${color}` as TranslationKey) })}>
+          <span style={{ background: INK[color] }} />
+        </button>
+        <span className="markup-toolbar-rule" aria-hidden="true" />
+        <button onClick={() => setHistory(undo)} disabled={!history.past.length} aria-label={t("mobile.markup.undo")} title={t("mobile.markup.undo")}><span aria-hidden="true">↶</span></button>
+        <button onClick={() => setHistory(redo)} disabled={!history.future.length} aria-label={t("mobile.markup.redo")} title={t("mobile.markup.redo")}><span aria-hidden="true">↷</span></button>
+        <button aria-expanded={popover === "more"} onClick={() => setPopover((open) => (open === "more" ? null : "more"))}
+          aria-label={t("mobile.markup.more")} title={t("mobile.markup.more")}><span aria-hidden="true">⋯</span></button>
+      </div>
+    </div>}
   </div>;
 }
 
@@ -806,17 +1154,15 @@ function boxOf(a: [number, number], b: [number, number], color: MarkColor): BoxM
   return { kind: "box", color, rect: [round(x), round(y), round(Math.abs(a[0] - b[0])), round(Math.abs(a[1] - b[1]))] };
 }
 
-function insideBox([x, y, w, h]: [number, number, number, number], [px, py]: [number, number]): boolean {
-  return px >= x && px <= x + w && py >= y && py <= y + h;
-}
-
 /** The typed note, edited where it sits on the page. */
-function NoteEditor({ note, size, width, onSave, onCancel }: { note: NoteDraft; size: Size; width: number; onSave: (text: string | null) => void; onCancel: () => void }) {
+function NoteEditor({ note, size, width, onChange, onSave, onCancel }: {
+  note: NoteDraft; size: Size; width: number; onChange: (text: string) => void; onSave: (text: string | null) => void; onCancel: () => void;
+}) {
   const t = useT();
-  const [text, setText] = useState(note.text);
+  const text = note.text;
   const scale = width / size[0];
   return <div className="markup-note-editor" style={{ left: Math.min(note.at[0] * scale, Math.max(0, width - 220)), top: note.at[1] * scale }}>
-    <textarea autoFocus value={text} maxLength={2000} placeholder={t("mobile.markup.notePlaceholder")} onChange={(event) => setText(event.target.value)}
+    <textarea autoFocus value={text} maxLength={2000} placeholder={t("mobile.markup.notePlaceholder")} onChange={(event) => onChange(event.target.value)}
       style={{ color: INK[note.color] }} aria-label={t("mobile.markup.notePlaceholder")} />
     <div>
       {note.index !== null && <button onClick={() => onSave(null)}>{t("mobile.markup.noteDelete")}</button>}

@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { appleTouchDevice } from "./platform";
 
 /**
  * Push notifications on this phone: calendar reminders, and agent tabs that
@@ -43,9 +44,9 @@ export type PushSupport = "supported" | "needs-install" | "unsupported";
 
 export function pushSupport(): PushSupport {
   if (typeof window === "undefined" || !("serviceWorker" in navigator) || !("Notification" in window)) {
-    return /iPhone|iPad/.test(navigator.userAgent) ? "needs-install" : "unsupported";
+    return appleTouchDevice() ? "needs-install" : "unsupported";
   }
-  if (!("PushManager" in window)) return /iPhone|iPad/.test(navigator.userAgent) ? "needs-install" : "unsupported";
+  if (!("PushManager" in window)) return appleTouchDevice() ? "needs-install" : "unsupported";
   return "supported";
 }
 

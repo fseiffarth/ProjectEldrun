@@ -4,6 +4,7 @@ import { pair } from "../auth";
 import { classifyUnavailable, describeUnavailable, localFailureText } from "../connection";
 import { BrandHead } from "../components/BrandHead";
 import { MIN_NEW_PIN, configureLocalUnlock, platformBiometricAvailable, validPin } from "../localLock";
+import { appleTouchDevice } from "../platform";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
 
@@ -30,7 +31,7 @@ export function describePairFailure(reason: unknown, t: ReturnType<typeof useT>)
 export function Pair({ setupLock, onDone }: { setupLock: boolean; onDone: () => void }) {
   const t = useT();
   const [code, setCode] = useState("");
-  const [name, setName] = useState(navigator.userAgent.includes("iPhone") ? "iPhone" : t("mobile.pair.defaultName"));
+  const [name, setName] = useState(() => appleTouchDevice() ?? t("mobile.pair.defaultName"));
   const [pin, setPin] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");

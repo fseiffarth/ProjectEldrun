@@ -6183,7 +6183,7 @@ mod tests {
         let answer = json(&body);
         let prompt = answer["prompt"].as_str().unwrap();
         let marked = answer["marked"].as_str().unwrap();
-        assert!(prompt.starts_with("Apply the changes I marked by hand on `docs/draft.pdf`."), "{prompt}");
+        assert!(prompt.starts_with("I marked these changes by hand on `docs/draft.pdf`."), "{prompt}");
         assert!(prompt.contains(&format!("Page 2: @{layer}")), "{prompt}");
         assert!(prompt.contains("- p2: \"smaller\""), "{prompt}");
         assert!(marked.starts_with(".eldrun/inbox/") && marked.ends_with("-draft-marked.pdf"), "{marked}");

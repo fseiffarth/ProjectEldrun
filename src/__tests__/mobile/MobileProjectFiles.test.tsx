@@ -122,18 +122,15 @@ describe("Mobile project — read-only file browser", () => {
     fireEvent.click(within(trail).getByRole("button", { name: "Alpha" }));
     await within(sheet).findByRole("button", { name: "Open README.md" });
 
-    // A PDF opens in the viewer first, for its Save and Share (the browser's
-    // own PDF viewer has neither), then goes on to the browser by its token,
-    // with a ticket: that tab is outside the app, where the strict session
-    // cookie does not follow.
+    // A PDF opens in the app's own page view, with Save and Share — never in
+    // the phone's PDF viewer, from which the installed app is not got back to.
     fireEvent.click(within(sheet).getByRole("button", { name: "Open paper.pdf" }));
     const pdf = screen.getByRole("dialog", { name: "paper.pdf" });
     expect(within(pdf).getByRole("link", { name: "Save" }).getAttribute("href"))
       .toBe("/api/v1/projects/p1/files/raw?f=tok-paper&download=1");
-    expect(open).not.toHaveBeenCalled();
-    fireEvent.click(within(pdf).getByRole("button", { name: "Open paper.pdf" }));
-    await waitFor(() => expect(open).toHaveBeenCalledWith("/api/v1/projects/p1/files/raw?f=tok-paper&ticket=t1", "_blank", "noopener"));
+    expect(within(pdf).getByTitle("pdf")).toBeTruthy();
     fireEvent.click(within(pdf).getByRole("button", { name: "Close" }));
+    expect(open).not.toHaveBeenCalled();
 
     // A picture opens full screen, loaded by its token, with Save beside it.
     fireEvent.click(await screen.findByRole("button", { name: "Open plot.png" }));
@@ -184,8 +181,12 @@ describe("Mobile project — read-only file browser", () => {
     }
   });
 
-  it("says the mobile host is outdated instead of opening a PDF it cannot ticket", async () => {
-    vi.stubGlobal("fetch", hostWith(true, false));
+  it("says the mobile host is outdated instead of opening a whole file it cannot ticket", async () => {
+    const host = hostWith(true, false);
+    // A text past what the app reads in itself, so the whole file goes out.
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => String(input) === "/api/v1/projects/p1/files"
+      ? new Response(JSON.stringify({ ...ROOT, entries: ROOT.entries.map((entry) => entry.name === "README.md" ? { ...entry, size: 9_000_000 } : entry) }), { status: 200 })
+      : host(input, init)));
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
     render(<Project id="p1" back={() => {}} terminal={() => {}} />);
@@ -195,8 +196,8 @@ describe("Mobile project — read-only file browser", () => {
       expect(screen.getByRole("dialog", { name: "Files" })).toBeTruthy();
     });
     const sheet = screen.getByRole("dialog", { name: "Files" });
-    fireEvent.click(await within(sheet).findByRole("button", { name: "Open paper.pdf" }));
-    fireEvent.click(within(screen.getByRole("dialog", { name: "paper.pdf" })).getByRole("button", { name: "Open paper.pdf" }));
+    fireEvent.click(await within(sheet).findByRole("button", { name: "Open README.md" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "README.md" })).getByRole("button", { name: "Open the whole file" }));
     await waitFor(() => expect(alert).toHaveBeenCalledWith(expect.stringContaining("Reconnect")));
     expect(open).not.toHaveBeenCalled();
   });

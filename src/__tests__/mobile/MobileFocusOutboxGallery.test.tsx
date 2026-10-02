@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@xterm/xterm", () => ({
@@ -319,12 +319,12 @@ describe("Eldrun Mobile shows the files the agent sent in the chat and in the ga
     expect(Array.from(gallery.querySelectorAll(".outbox-entry strong")).map((name) => name.textContent))
       .toEqual(["paper.pdf", "plot.png"]);
     fireEvent.click(within(gallery).getByRole("button", { name: "Open paper.pdf" }));
-    // An agent tab's PDF opens its viewer first — Open and Mark up there.
+    // An agent tab's PDF opens in the app's page view, with Mark up there.
     const viewer = await screen.findByRole("dialog", { name: "paper.pdf" });
     expect(within(viewer).getByRole("button", { name: "Mark up paper.pdf" })).toBeTruthy();
-    fireEvent.click(within(viewer).getByRole("button", { name: "Open paper.pdf" }));
-    // This host mints no ticket, so the plain URL opens.
-    await waitFor(() => expect(open).toHaveBeenCalledWith("/api/v1/tabs/tab-7/outbox/paper.pdf", "_blank", "noopener"));
+    expect(within(viewer).getByRole("link", { name: "Save" })).toBeTruthy();
+    expect(within(viewer).queryByRole("button", { name: "Open paper.pdf" })).toBeNull();
+    expect(open).not.toHaveBeenCalled();
     fireEvent.click(within(gallery).getByRole("button", { name: "Close" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Terminal" }));

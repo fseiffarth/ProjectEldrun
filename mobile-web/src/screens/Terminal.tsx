@@ -4,7 +4,8 @@ import { useMessageMenu, type HoldHandlers } from "../components/MessageMenu";
 import { OptionSheet, type SheetOption } from "../components/OptionSheet";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
 import { OutboxGallery } from "../components/OutboxGallery";
-import { OutboxViewer } from "../components/OutboxViewer";
+import { OutboxViewer, type MarkupSend, type MarkupTarget } from "../components/OutboxViewer";
+import type { AgentSignal } from "../markup/submitState";
 import { OutboxPost } from "../components/OutboxPost";
 import { ProjectFiles } from "../components/ProjectFiles";
 import { Fragment, memo, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -24,14 +25,13 @@ import {
   listDesktopImages,
   listOutbox,
   MAX_INBOX_FILE,
-  outboxFileUrl,
-  openOutside,
   openSignInTab,
   pickPhoneFiles,
   recoverSession,
   editHeldPrompt,
   holdPrompt,
   reportSentPrompt,
+  sentName,
   undoClear,
   uploadToInbox,
   type DesktopImage,
@@ -2149,13 +2149,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [outboxOpen, gallery]);
-  /** A picture or text opens full-screen here. A PDF in an agent tab does
-   * too — its viewer carries **Mark up** beside Open — and in a shell goes
-   * straight to the browser's own viewer. */
-  const openOutbox = useCallback((file: OutboxFile) => {
-    if (file.kind === "application/pdf" && tab.kind !== "agent") void openOutside(outboxFileUrl({ tab: tab.id }, file.name));
-    else setOutboxOpen(file);
-  }, [tab.id, tab.kind]);
+  /** A picture, a text or a PDF opens full-screen here; in an agent tab the
+   * viewer also carries **Mark up**. */
+  const openOutbox = useCallback((file: OutboxFile) => setOutboxOpen(file), []);
   /** A lone picture takes its own shape once loaded; a chat following its
    * bottom follows the taller bubble (the resize observer watches the view's
    * box, not what grows inside it). */
@@ -2417,21 +2413,31 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       if (tab.kind === "agent" && !editing) fireSendHold();
     },
   };
+  /** Whether a prompt sent now is held — what `submitDraft` decides on, read
+   * by the markup view's Submit, which outlives the render it began in. */
+  const agentAtWorkRef = useRef(agentAtWork);
+  agentAtWorkRef.current = agentAtWork;
   /** The markup view's Submit: the desktop's prompt goes out like a typed
-   * one (held while the agent works), and the viewer and drawer it was
-   * opened from close onto the chat. */
-  const sendMarkup = useCallback((text: string) => {
+   * one — into the agent's queue while it works (a markup prompt is never a
+   * slash command, so `submitDraft` holds it exactly then). The viewer stays
+   * open for the next round (`docs/pdf_markup_rounds_plan.md` §2.5). */
+  const sendMarkup = useCallback((text: string): MarkupSend => {
+    const queued = agentAtWorkRef.current;
     if (!submitDraftRef.current(text, false)) return false;
-    setOutboxOpen(null);
-    setGallery(false);
-    setFilesOpen(false);
-    return true;
+    return queued ? "queued" : "sent";
   }, []);
-  /** An agent tab's viewers offer **Mark up**; a shell has no chat to send to. */
-  const markupTarget = useMemo(
-    () => (tab.kind === "agent" ? { tabId: tab.id, projectId: project ?? `tab:${tab.id}`, onSend: sendMarkup } : undefined),
-    [tab.kind, tab.id, project, sendMarkup],
-  );
+  /** Mark up's Reload on a file the agent sent: the newest copy this tab
+   * sent under the same name — at least as new as the one shown, by the
+   * desktop's clock — else the shown one's fresh row. */
+  const refreshOutboxFile = useCallback(async (file: OutboxFile): Promise<OutboxFile | null> => {
+    const files = await listOutbox({ tab: tab.id });
+    if (!Array.isArray(files)) return null;
+    const name = sentName(file);
+    const newer = files
+      .filter((candidate) => candidate.from_tab && sentName(candidate) === name && candidate.modified >= file.modified)
+      .sort((a, b) => b.modified - a.modified)[0];
+    return newer ?? files.find((candidate) => candidate.name === file.name) ?? null;
+  }, [tab.id]);
   /** Send while the agent works: the desktop holds the prompt for the tab's
    * next idle point (`holdPrompt`) instead of it going into the CLI's own
    * queue, where nothing can reach it again — so until the agent takes it in,
@@ -3254,6 +3260,18 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     () => (liveTail.length > 0 ? readSelectPrompt(liveTail, agentLabel, paneColumns.current) : null),
     [liveTail, agentLabel],
   );
+  /** The agent as the markup view's round pill reads it: the live screen
+   * only — `tab.agent_status` is the snapshot taken when this tab was
+   * opened, and would read "working" forever for a tab opened mid-turn. */
+  const markupAgent: AgentSignal = liveQuestion !== null ? "question" : liveBusy ? "working" : "idle";
+  /** An agent tab's viewers offer **Mark up**; a shell has no chat to send to.
+   * The agent's state is in the deps, so the viewers re-render on its edges. */
+  const markupTarget = useMemo<MarkupTarget | undefined>(
+    () => (tab.kind === "agent"
+      ? { tabId: tab.id, projectId: project ?? `tab:${tab.id}`, onSend: sendMarkup, agent: markupAgent, refresh: refreshOutboxFile }
+      : undefined),
+    [tab.kind, tab.id, project, sendMarkup, markupAgent, refreshOutboxFile],
+  );
   /** The dialog's own question — the block right above its rows, which the
    * list below shows as its heading — and the screen it was drawn onto, which
    * stays as the session drew it. Blank rows at either seam are the dialog's
@@ -3928,7 +3946,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     {gallery && !outboxOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openOutbox} onDetails={setOutboxOpen} onDelete={removeOutbox} onClose={() => setGallery(false)} />}
     {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} scope={outboxScope} file={outboxOpen} pictures={outboxPictures} onStep={setOutboxOpen} onClose={() => setOutboxOpen(null)} markup={markupTarget} />}
     {filesOpen && project && filesLabel !== null && <ProjectFiles key={project} projectId={project} label={filesLabel} onClose={closeFiles}
-      markup={markupTarget && { tabId: markupTarget.tabId, onSend: markupTarget.onSend }} />}
+      markup={markupTarget && { tabId: markupTarget.tabId, onSend: markupTarget.onSend, agent: markupTarget.agent }} />}
 
   </main>;
 }

@@ -1,7 +1,7 @@
 ---
 id: mobile
 title: Eldrun Mobile (phone companion)
-keywords: [mobile, phone, files, browse, project files, read-only, tailscale, tailnet, pair, pairing, remote control, pwa, revoke, push, notifications, reminders, agent, question, connecting, not connecting, stuck, force stop, version]
+keywords: [mobile, phone, files, browse, project files, read-only, mark up, markup, annotate, pdf, tailscale, tailnet, pair, pairing, remote control, pwa, revoke, push, notifications, reminders, agent, question, connecting, not connecting, stuck, force stop, version]
 ---
 
 Eldrun Mobile is a small companion web app for your phone. It shows the
@@ -80,6 +80,17 @@ reopen, because the phone attaches to its terminal session.
   real terminal. A shell tab has no conversation, so its switch reads
   **Reader** (the screen as text) and **Terminal**. The desktop offers the
   same chat on its agent tabs (help topic `agent-clis`).
+- A PDF or picture in an agent tab's viewer has **Mark up**: draw on it and
+  **Submit** sends the marks to that tab. The view stays open — the sent marks
+  dim, a pill says what the agent is doing, you can keep marking (the next
+  Submit sends only the new marks), and once the agent is done **Reload PDF**
+  shows the rebuilt file under your marks. The desktop's PDF viewer has the
+  same **Mark up** for local projects.
+- **No shells on the phone** (under **Project access**, on by default) keeps
+  the phone to agent tabs: shell tabs are left off its lists, an open one
+  disconnects within seconds, and **＋** offers no shell. Switch it off to
+  see and open shells from the phone — they run as you, with no agent's
+  permission prompts in between.
 
 ## Project files on the phone
 

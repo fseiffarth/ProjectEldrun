@@ -926,7 +926,9 @@ export function viewerFileUrl(scope: ViewerScope, file: OutboxFile, download = f
  * the `SameSite=Strict` session cookie stays behind and the file answered
  * `authentication_required`; the URL goes out with a short-lived ticket for
  * exactly that file instead (`POST /api/v1/open-ticket`). If none can be had
- * the plain URL still opens — in a browser tab of the site the cookie rides. */
+ * the plain URL still opens — in a browser tab of the site the cookie rides.
+ * The installed app on an iPhone or iPad cannot be got back to from there
+ * (`openingOutsideStrands`): callers keep the file inside the app instead. */
 export async function openOutside(url: string): Promise<void> {
   let target = url;
   try {
@@ -1023,7 +1025,9 @@ export type MarkupSource = { files: string } | { outbox: string };
 /** One marked page: its displayed size, its marks in that size's units, and
  * its layer PNG's inbox reference (`markup.rs`). */
 export interface MarkupPageBody { n: number; size: [number, number]; marks: Mark[]; layer: string }
-export interface MarkupBody { source: MarkupSource; pages: MarkupPageBody[]; picture?: string }
+/** `instruction` is the phone's own wording of what to do with the marks
+ * (`markupInstruction.ts`), absent while the desktop's default stands. */
+export interface MarkupBody { source: MarkupSource; pages: MarkupPageBody[]; picture?: string; instruction?: string }
 /** The prompt to send into the chat, and the marked copy's reference when the
  * desktop could bake one. */
 export interface MarkupAnswer { prompt: string; marked?: string | null }

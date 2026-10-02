@@ -22,8 +22,15 @@ export type Mark = InkMark | BoxMark | TextMark;
 
 /** One page's marks and the size they are measured in. */
 export type PageLayer = { size: [number, number]; marks: Mark[] };
-/** Every marked page, by 1-based page number. */
-export type Layer = { pages: Record<number, PageLayer> };
+/** The marks earlier Submits sent, drawn dimmed and never sent again
+ * (`docs/pdf_markup_rounds_plan.md` §2.1), and how many rounds went out.
+ * Only the reader removes them (eraser, Clear page, Clear sent marks). */
+export type SentLayer = { pages: Record<number, PageLayer>; rounds: number };
+/** Every marked page, by 1-based page number. `pages` holds only the marks
+ * not yet sent — what notes, undo and Submit see — so sent marks never go
+ * out twice; the eraser and Clear page reach them only when asked. No flag rides on a mark: the
+ * desktop's `markup::Mark` refuses unknown fields. */
+export type Layer = { pages: Record<number, PageLayer>; sent?: SentLayer };
 
 export const EMPTY_LAYER: Layer = { pages: {} };
 
@@ -102,6 +109,26 @@ export function textBox(mark: TextMark): [number, number, number, number] {
   return [mark.at[0], mark.at[1], widest * mark.size * CHAR_WIDTH, lines.length * mark.size * LEADING];
 }
 
+/** The note under `(x, y)` on a page — the topmost, as drawn last — or -1. */
+export function noteAt(page: PageLayer | undefined, x: number, y: number): number {
+  const marks = page?.marks ?? [];
+  for (let i = marks.length - 1; i >= 0; i--) {
+    const mark = marks[i];
+    if (mark.kind !== "text") continue;
+    const [bx, by, bw, bh] = textBox(mark);
+    if (x >= bx && x <= bx + bw && y >= by && y <= by + bh) return i;
+  }
+  return -1;
+}
+
+/** A note moved to `at`, kept on the page as far as it fits. */
+export function moveNote(mark: TextMark, at: [number, number], size: [number, number]): TextMark {
+  const [, , w, h] = textBox(mark);
+  const x = Math.min(Math.max(0, size[0] - w), Math.max(0, at[0]));
+  const y = Math.min(Math.max(0, size[1] - h), Math.max(0, at[1]));
+  return { ...mark, at: [round(x), round(y)] };
+}
+
 export function markCount(layer: Layer): { marks: number; points: number } {
   let marks = 0;
   let points = 0;
@@ -137,7 +164,7 @@ export function canReplace(layer: Layer, n: number, index: number, mark: Mark): 
 
 export function addMark(layer: Layer, n: number, size: [number, number], mark: Mark): Layer {
   const page = layer.pages[n] ?? { size, marks: [] };
-  return { pages: { ...layer.pages, [n]: { size: page.size, marks: [...page.marks, mark] } } };
+  return { ...layer, pages: { ...layer.pages, [n]: { size: page.size, marks: [...page.marks, mark] } } };
 }
 
 /** Replaces the mark at `index` on page `n` — an edited note. An empty
@@ -155,7 +182,7 @@ function withPage(layer: Layer, n: number, page: PageLayer): Layer {
   const pages = { ...layer.pages };
   if (page.marks.length) pages[n] = page;
   else delete pages[n];
-  return { pages };
+  return { ...layer, pages };
 }
 
 /** Whether a mark lies within `radius` of `(x, y)`. */
@@ -174,17 +201,31 @@ export function touches(mark: Mark, x: number, y: number, radius: number): boole
   return x >= bx - radius && x <= bx + bw + radius && y >= by - radius && y <= by + bh + radius;
 }
 
-/** The eraser: every whole mark on page `n` it touches goes. */
-export function eraseAt(layer: Layer, n: number, x: number, y: number, radius: number): Layer {
+/** The eraser: every whole mark on page `n` it touches goes — with
+ * `sent`, the sent marks shown there too: they stay until the reader has
+ * checked the agent's changes and erases them by hand, never automatically. */
+export function eraseAt(layer: Layer, n: number, x: number, y: number, radius: number, sent = false): Layer {
   const page = layer.pages[n];
-  if (!page) return layer;
-  const marks = page.marks.filter((mark) => !touches(mark, x, y, radius));
-  return marks.length === page.marks.length ? layer : withPage(layer, n, { ...page, marks });
+  const marks = page?.marks.filter((mark) => !touches(mark, x, y, radius));
+  const next = page && marks && marks.length !== page.marks.length ? withPage(layer, n, { ...page, marks }) : layer;
+  return sent ? eraseSent(next, n, (mark) => touches(mark, x, y, radius)) : next;
 }
 
-export function clearPage(layer: Layer, n: number): Layer {
-  if (!layer.pages[n]) return layer;
-  return withPage(layer, n, { ...layer.pages[n], marks: [] });
+/** Clears page `n`'s unsent marks — with `sent`, its sent ones too. */
+export function clearPage(layer: Layer, n: number, sent = false): Layer {
+  const next = layer.pages[n] ? withPage(layer, n, { ...layer.pages[n], marks: [] }) : layer;
+  return sent ? eraseSent(next, n, () => true) : next;
+}
+
+function eraseSent(layer: Layer, n: number, hit: (mark: Mark) => boolean): Layer {
+  const page = layer.sent?.pages[n];
+  if (!layer.sent || !page) return layer;
+  const marks = page.marks.filter((mark) => !hit(mark));
+  if (marks.length === page.marks.length) return layer;
+  const pages = { ...layer.sent.pages };
+  if (marks.length) pages[n] = { ...page, marks };
+  else delete pages[n];
+  return { ...layer, sent: { ...layer.sent, pages } };
 }
 
 export function isEmpty(layer: Layer): boolean {
@@ -197,6 +238,53 @@ export function markedPages(layer: Layer): number[] {
     .filter(([, page]) => page.marks.length > 0)
     .map(([n]) => Number(n))
     .sort((a, b) => a - b);
+}
+
+/** Whether earlier rounds left sent marks to show. */
+export function hasSent(layer: Layer): boolean {
+  return Object.values(layer.sent?.pages ?? {}).some((page) => page.marks.length > 0);
+}
+
+function sameSize(a: [number, number], b: [number, number]): boolean {
+  return a[0] === b[0] && a[1] === b[1];
+}
+
+/** A Submit went out: the unsent marks of `only` (every marked page when
+ * left out) join the sent ones and leave `pages`; marks on other pages stay
+ * unsent. Sent marks are never dropped here — the reader checks the agent's
+ * changes against them and erases them by hand. A page whose size changed
+ * since its earlier round (a rebuilt PDF) carries its older marks over,
+ * scaled to the new size. */
+export function markSent(layer: Layer, only?: readonly number[]): Layer {
+  const moving = (only ?? markedPages(layer)).filter((n) => (layer.pages[n]?.marks.length ?? 0) > 0);
+  if (!moving.length) return layer;
+  const rest = { ...layer.pages };
+  const merged = { ...(layer.sent?.pages ?? {}) };
+  for (const n of moving) {
+    const now = layer.pages[n];
+    delete rest[n];
+    const before = merged[n];
+    merged[n] = before ? { size: now.size, marks: [...scaleMarks(before, now.size), ...now.marks] } : now;
+  }
+  return { pages: rest, sent: { pages: merged, rounds: (layer.sent?.rounds ?? 0) + 1 } };
+}
+
+/** A page's marks in another page size's units. */
+function scaleMarks(page: PageLayer, size: [number, number]): Mark[] {
+  if (sameSize(page.size, size)) return page.marks;
+  const sx = size[0] / page.size[0];
+  const sy = size[1] / page.size[1];
+  const s = Math.min(sx, sy);
+  return page.marks.map((mark): Mark => {
+    if (mark.kind === "ink") return { ...mark, width: round(mark.width * s), points: mark.points.map(([x, y, p]) => [round(x * sx), round(y * sy), p]) };
+    if (mark.kind === "box") return { ...mark, rect: [round(mark.rect[0] * sx), round(mark.rect[1] * sy), round(mark.rect[2] * sx), round(mark.rect[3] * sy)] };
+    return { ...mark, at: [round(mark.at[0] * sx), round(mark.at[1] * sy)], size: round(mark.size * s) };
+  });
+}
+
+/** The sent marks gone for good; the unsent ones stay. */
+export function clearSent(layer: Layer): Layer {
+  return layer.sent ? { pages: layer.pages } : layer;
 }
 
 /** Undo and redo over whole layers: each change keeps the one before it. The
@@ -229,7 +317,16 @@ export function redo(history: History): History {
  * phone's own, but it outlives builds and can be anything after a bad write. */
 export function isLayer(value: unknown): value is Layer {
   if (!value || typeof value !== "object") return false;
-  const pages = (value as { pages?: unknown }).pages;
+  if (!validPages((value as { pages?: unknown }).pages)) return false;
+  // A record from before rounds has no `sent`; one that has it must be sound.
+  const sent = (value as { sent?: unknown }).sent;
+  if (sent === undefined) return true;
+  if (!sent || typeof sent !== "object") return false;
+  const { pages, rounds } = sent as { pages?: unknown; rounds?: unknown };
+  return typeof rounds === "number" && Number.isInteger(rounds) && rounds >= 0 && validPages(pages);
+}
+
+function validPages(pages: unknown): boolean {
   if (!pages || typeof pages !== "object") return false;
   const num = (v: unknown) => typeof v === "number" && Number.isFinite(v);
   const color = (v: unknown) => MARK_COLORS.includes(v as MarkColor);

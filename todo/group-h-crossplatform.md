@@ -3580,6 +3580,33 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA, iPad (Pencil) and a pen-less phone — markup that handles like the phone's own (2026-10-01; untested id `mobile.markup.native`; ⚠️ never run on a phone; PWA rebuild first): open a PDF from an agent tab, scroll to page 3 and pinch in → **Mark up**: the floating palette appears and the page and zoom stay where they were; **Done** → the palette goes, the marks stay on show, Mark up carries a red dot; ✕ closes the viewer. On the pen-less phone one finger draws at once and two fingers scroll and pinch. On the iPad the first Pencil stroke makes fingers scroll again; ⋯ → "Draw with the pen only" off lets a finger draw, and the choice survives a reload. The colour dot opens the colour choice; ⋯ also holds Clear page. Note tool: tap → new note; tap a note → edit it; drag a note → it follows the finger or Pencil and stays on the page at the edges (with "pen only" on, a finger drag on a note moves it, a finger drag elsewhere scrolls); Undo puts it back. Type a note and tap Done without Add → the note is kept. A picture: Mark up → Done returns to the picture.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA — the Submit prompt is worded only in the phone's settings (2026-10-02; untested id `mobile.markup.instruction`; ⚠️ never run on a phone; PWA rebuild + `backend:stale` first): Home → This phone → **Mark up prompt** reads "Default: list the changes, edit nothing until asked"; mark up a PDF built from a `.tex` beside it and Submit → the agent lists the changes and touches no file (not the `.tex`, not the PDF) until told. Edit the prompt (e.g. "Apply them to the .tex and rebuild"), Save → the row says "Your own" and the next Submit ends with that text instead; **Use the default** brings the default back. The Mark up view itself has no place to edit it.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual QA, phone — markup rounds: Submit keeps the view open (2026-10-02; plan `docs/pdf_markup_rounds_plan.md`, handoff `docs/pdf_markup_rounds_handoff.md`; untested id `mobile.markup.rounds`; ✅ automated: `MobileMarkupRoundsCore.test.ts`, `MobileMarkupRounds.test.tsx`; ⚠️ never run on a phone; PWA rebuild + `backend:stale` first): an agent tab on a LaTeX project → files drawer → the built PDF → **Mark up** → strike a word → **Submit**: the view stays open, the stroke dims, the pill reads Sent → Agent is working… → Agent finished — PDF unchanged (the default instruction only lists). While it works circle another word and Submit → the pill says Queued, and only the new circle goes out (the chat shows the second prompt). Tell the agent in the chat to make the changes and rebuild → back in the view the pill goes working → "Agent finished — PDF changed" with **Reload PDF** → Reload: the rebuilt pages appear under the layer at the same place, the sent marks stay on show, dimmed, to check each change against — the eraser removes a checked one (⋯ **Show sent marks** hides them, ⋯ **Clear sent marks** drops them; nothing removes one automatically), unsent marks stay. Same on a PDF the agent sent with `eldrun-send` (chat bubble → viewer): Reload picks the newer copy, and closing and reopening that copy shows the layer.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31bu — A plain `opencode` tab's chat fills its facts and shows it working** (2026-10-01;
   ✅ code-complete, automated tests passing — `MobileOpenCodeMini.test.ts`

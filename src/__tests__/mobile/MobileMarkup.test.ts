@@ -10,7 +10,7 @@ import {
 } from "../../../mobile-web/src/markup/frameProtocol";
 import {
   addMark, canAdd, canReplace, clearPage, commit, EMPTY_LAYER, eraseAt, finishStroke, inkWidth, isEmpty, isLayer, LIMITS, markedPages,
-  redo, replaceMark, simplify, startHistory, undo, type InkMark, type Layer, type Mark,
+  moveNote, noteAt, redo, replaceMark, simplify, startHistory, undo, type InkMark, type Layer, type Mark, type TextMark,
 } from "../../../mobile-web/src/markup/layer";
 import { drawPage, strokePieces, type Paint } from "../../../mobile-web/src/markup/rasterize";
 import { clearLayer, layerKey, loadLayer, saveLayer, stale, type LayerBackend } from "../../../mobile-web/src/markup/store";
@@ -57,6 +57,20 @@ describe("markup layer", () => {
     expect(eraseAt(erased, 1, 310, 315, 1).pages[1].marks).toHaveLength(1);
     expect(eraseAt(layer, 1, 500, 500, 2)).toBe(layer);
     expect(replaceMark(layer, 1, 2, null).pages[1].marks).toHaveLength(2);
+  });
+
+  it("finds the topmost note under a point and moves it, kept on the page", () => {
+    const note: TextMark = { kind: "text", color: "black", at: [100, 100], size: 10, text: "abc" };
+    let layer: Layer = addMark(EMPTY_LAYER, 1, SIZE, note);
+    layer = addMark(layer, 1, SIZE, ink([[0, 0, 0.5], [600, 700, 0.5]]));
+    layer = addMark(layer, 1, SIZE, { ...note, color: "red" });
+    expect(noteAt(layer.pages[1], 105, 105)).toBe(2);
+    expect(noteAt(layer.pages[1], 5, 5)).toBe(-1);
+    expect(noteAt(undefined, 105, 105)).toBe(-1);
+    expect(moveNote(note, [200.04, 300.06], SIZE).at).toEqual([200, 300.1]);
+    // Past an edge, the note stops where its whole box still fits.
+    expect(moveNote(note, [-50, 9_000], SIZE).at).toEqual([0, 780]);
+    expect(moveNote(note, [9_000, 10], SIZE).at).toEqual([590.4, 10]);
   });
 
   it("refuses a mark past the desktop's ceilings", () => {

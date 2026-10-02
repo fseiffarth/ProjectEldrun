@@ -64,7 +64,8 @@ export function drawMark(ctx: Paint, mark: Mark): void {
       ctx.stroke();
     }
   } else if (mark.kind === "box") {
-    ctx.globalAlpha = HIGHLIGHT_ALPHA;
+    // Times the alpha around it: sent marks are drawn dimmed as a whole.
+    ctx.globalAlpha *= HIGHLIGHT_ALPHA;
     ctx.globalCompositeOperation = "multiply";
     ctx.fillStyle = INK[mark.color];
     ctx.fillRect(mark.rect[0], mark.rect[1], mark.rect[2], mark.rect[3]);

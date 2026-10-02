@@ -430,6 +430,18 @@ frame with no access to the session or the network. Project files need
 **Settings → Mobile → Project files on the phone**; files the agent sent work
 without it.
 
+Marking up is a loop, not one shot (`docs/pdf_markup_rounds_plan.md`):
+**Submit keeps the view open.** The round's marks stay on show, dimmed, and are
+never sent again; marking goes on while the agent works, and the next Submit
+carries only the new marks (into the agent's queue if it is busy). A pill
+follows the agent since the last Submit — sent, queued, working, asking,
+finished (with whether the PDF changed) — off the live screen. **Reload PDF**
+redraws the file as it is now, or the newer copy the agent sent, under the same
+layer: unsent marks stay, and the sent ones stay too, dimmed, so each change can
+be checked and its mark then erased by hand (the eraser and Clear page reach
+shown sent marks; ⋯ **Show sent marks** hides them). Nothing removes a mark
+automatically.
+
 ### Workspace Apps
 
 Each of these replaced a global-app role, on the same reasoning: what sits

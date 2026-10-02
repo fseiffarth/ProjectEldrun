@@ -34,6 +34,15 @@ pub const MAX_MARKS: usize = 5_000;
 pub const MAX_POINTS: usize = 200_000;
 /// Typed characters one page's notes may hold together.
 pub const MAX_PAGE_TEXT: usize = 2_000;
+/// Characters the phone's own instruction (its settings) may hold.
+pub const MAX_INSTRUCTION: usize = 2_000;
+/// What the agent is told to do with the marks when the phone's settings
+/// hold no instruction of their own. It asks first: a marked PDF is often
+/// built from a `.tex` or `.md` beside it, and an agent told to "apply" the
+/// marks went and edited that file unasked. The phone shows this text as the
+/// setting's starting point (`mobile-web/src/markupInstruction.ts`, kept equal
+/// by a test below).
+pub const DEFAULT_INSTRUCTION: &str = "Read every mark (strike-throughs, insertions, circled parts, margin notes) and list the changes they ask for, and any mark you could not read. Do not change any file yet — not this one, not the sources it is built from, not any other file — until I tell you which changes to make.";
 /// How far outside its page a mark may reach, in page units — a stroke that
 /// leaves the edge by a hair is still the reader's.
 const EDGE_SLACK: f64 = 2.0;
@@ -95,6 +104,10 @@ pub struct MarkupRequest {
     /// on the phone and sent through the inbox like a layer.
     #[serde(default)]
     pub picture: Option<String>,
+    /// What to do with the marks, from the phone's settings; absent or blank
+    /// is `DEFAULT_INSTRUCTION`. The user's own words, as the prompt is.
+    #[serde(default)]
+    pub instruction: Option<String>,
 }
 
 /// Why a submit was refused, as the phone's wire code.
@@ -149,6 +162,11 @@ pub fn validate(request: &MarkupRequest) -> Result<(), MarkupError> {
         _ => {}
     }
     if request.picture.as_deref().is_some_and(|picture| inbox_leaf(picture).is_none()) {
+        return invalid;
+    }
+    if request.instruction.as_deref().is_some_and(|text| {
+        text.chars().count() > MAX_INSTRUCTION || text.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
+    }) {
         return invalid;
     }
     let mut numbers = std::collections::HashSet::new();
@@ -320,6 +338,7 @@ pub fn submit(
         marked: marked.as_deref(),
         failure,
         pages: &request.pages,
+        instruction: request.instruction.as_deref(),
         send_back,
     });
     Ok(Submitted { prompt, marked })
@@ -333,6 +352,8 @@ pub struct Prompt<'a> {
     /// Why there is no marked copy of a PDF.
     pub failure: Option<&'a str>,
     pub pages: &'a [MarkupPage],
+    /// The phone's instruction; `None` or blank is `DEFAULT_INSTRUCTION`.
+    pub instruction: Option<&'a str>,
     pub send_back: bool,
 }
 
@@ -340,7 +361,7 @@ pub struct Prompt<'a> {
 /// shown as interface text), naming files by `@` project-relative references.
 pub fn prompt(parts: &Prompt) -> String {
     let what = if parts.picture { "picture" } else { "PDF" };
-    let mut lines = vec![format!("Apply the changes I marked by hand on `{}`.", parts.source)];
+    let mut lines = vec![format!("I marked these changes by hand on `{}`.", parts.source)];
     match (parts.marked, parts.failure) {
         (Some(marked), _) if parts.picture => {
             lines.push("The picture with my marks drawn on it:".into());
@@ -355,17 +376,15 @@ pub fn prompt(parts: &Prompt) -> String {
     }
     let mut pages: Vec<&MarkupPage> = parts.pages.iter().collect();
     pages.sort_by_key(|page| page.n);
-    if parts.picture {
-        lines.push("My markup layer alone, the size of the picture:".into());
-        for page in &pages {
-            lines.push(format!("@{}", page.layer));
-        }
+    lines.push(if parts.picture {
+        "My markup layer alone, the size of the picture:".into()
     } else {
-        lines.push("My markup layers, one per page, each the size of that page:".into());
-        for page in &pages {
-            lines.push(format!("Page {}: @{}", page.n, page.layer));
-        }
-    }
+        "My markup layers, one per page, each the size of that page:".into()
+    });
+    let layers: Vec<String> = pages
+        .iter()
+        .map(|page| if parts.picture { format!("@{}", page.layer) } else { format!("Page {}: @{}", page.n, page.layer) })
+        .collect();
     let notes: Vec<String> = pages
         .iter()
         .flat_map(|page| {
@@ -378,18 +397,63 @@ pub fn prompt(parts: &Prompt) -> String {
             })
         })
         .collect();
+    let instruction = parts.instruction.map(str::trim).filter(|text| !text.is_empty());
+    let mut tail = vec![instruction.unwrap_or(DEFAULT_INSTRUCTION).to_string()];
+    if parts.send_back {
+        tail.push(format!("Once you have rebuilt the {what}, send it to me with `eldrun-send <file>`."));
+    }
+    // The layer list and the notes share what the fixed lines leave of the
+    // budget; the notes are promised up to half of it, so a 300-page round
+    // cannot crowd every note out. Whole lines only, in page order.
+    let cost = |lines: &[String]| lines.iter().map(|line| line.len() + 1).sum::<usize>();
+    let budget = MAX_PROMPT_BYTES.saturating_sub(cost(&lines) + cost(&tail) + PROMPT_OMISSION_RESERVE);
+    let notes_cost = if notes.is_empty() { 0 } else { "My typed notes:".len() + 1 + cost(&notes) };
+    let layers_budget = budget - notes_cost.min(budget / 2);
+    let shown_layers = fitting(&layers, layers_budget);
+    let left = budget.saturating_sub(cost(&layers[..shown_layers]));
+    let shown_notes = fitting(&notes, left.saturating_sub("My typed notes:".len() + 1));
+    lines.extend_from_slice(&layers[..shown_layers]);
+    if let (Some(first), Some(last)) = (pages.get(shown_layers), pages.last()) {
+        let more = pages.len() - shown_layers;
+        lines.push(format!(
+            "(Pages {}–{}: {more} more layers, beside these in `{}/`, named `…-p<page>-layer.png`.)",
+            first.n,
+            last.n,
+            inbox::INBOX_DIR
+        ));
+    }
     if !notes.is_empty() {
         lines.push("My typed notes:".into());
-        lines.extend(notes);
+        lines.extend_from_slice(&notes[..shown_notes]);
+        let more = notes.len() - shown_notes;
+        if more > 0 {
+            let place = if parts.marked.is_some() && !parts.picture { "the marked copy" } else { "the layers" };
+            lines.push(format!("({more} more notes — read them in {place}.)"));
+        }
     }
-    lines.push("Read every mark (strike-throughs, insertions, circled parts, margin notes).".into());
-    lines.push(format!(
-        "If the {what} is built from sources in this project (LaTeX, Markdown, a script, …), make the changes there and rebuild it; do not edit the {what} itself. List any mark you could not read or apply."
-    ));
-    if parts.send_back {
-        lines.push(format!("When done, send the rebuilt {what} to me with `eldrun-send <file>`."));
-    }
+    lines.extend(tail);
     lines.join("\n")
+}
+
+/// The longest a prompt may grow, in bytes. The phone's held prompts and the
+/// desktop's scheduled ones both pass the 16 KB message cap
+/// (`shared/agentComposer.ts::MAX_AGENT_MESSAGE_BYTES`); the layer list and
+/// the typed notes fill only what the fixed lines leave of this.
+pub const MAX_PROMPT_BYTES: usize = 12 * 1024;
+/// Room kept for the two "… more" lines.
+const PROMPT_OMISSION_RESERVE: usize = 256;
+
+/// How many of `lines`, from the first, fit into `budget` bytes (each line
+/// plus its break).
+fn fitting(lines: &[String], budget: usize) -> usize {
+    let mut used = 0usize;
+    lines
+        .iter()
+        .take_while(|line| {
+            used += line.len() + 1;
+            used <= budget
+        })
+        .count()
 }
 
 #[cfg(test)]
@@ -408,7 +472,7 @@ mod tests {
     }
 
     fn request(source: MarkupSource, pages: Vec<MarkupPage>) -> MarkupRequest {
-        MarkupRequest { source, pages, picture: None }
+        MarkupRequest { source, pages, picture: None, instruction: None }
     }
 
     fn project() -> tempfile::TempDir {
@@ -501,7 +565,7 @@ mod tests {
         assert!(copy.starts_with(&source) && copy.len() > source.len());
         assert_eq!(fs::read(root.join("docs/draft.pdf")).unwrap(), source);
         assert_eq!(fs::metadata(root.join("docs/draft.pdf")).unwrap().modified().unwrap(), before);
-        assert!(done.prompt.starts_with("Apply the changes I marked by hand on `docs/draft.pdf`."));
+        assert!(done.prompt.starts_with("I marked these changes by hand on `docs/draft.pdf`."));
         assert!(done.prompt.contains(&format!("@{marked}")));
         assert!(done.prompt.contains(&format!("Page 3: @{p3}")));
         assert!(done.prompt.contains("- p3: \"use the 2024 numbers here\""));
@@ -562,7 +626,7 @@ mod tests {
         assert_eq!(done.marked.as_deref(), Some(composed.as_str()));
         assert!(done.prompt.contains("The picture with my marks drawn on it:"));
         assert!(done.prompt.contains(&format!("@{l}")));
-        assert!(done.prompt.contains("rebuilt picture"));
+        assert!(done.prompt.contains("rebuilt the picture"));
         // A picture without its composed copy, or a PDF with one, is refused.
         req.picture = None;
         assert_eq!(submit(root, &ResolvedSource::Files("docs/plot.png".into()), &req, true), Err(MarkupError::Unsupported));
@@ -582,21 +646,48 @@ mod tests {
     #[test]
     fn the_prompt_is_deterministic_and_ordered() {
         let pages = vec![page(7, ".eldrun/inbox/b.png"), page(3, ".eldrun/inbox/a.png")];
-        let parts = Prompt { source: "docs/paper/draft.pdf", picture: false, marked: Some(".eldrun/inbox/m.pdf"), failure: None, pages: &pages, send_back: true };
+        let parts = Prompt { source: "docs/paper/draft.pdf", picture: false, marked: Some(".eldrun/inbox/m.pdf"), failure: None, pages: &pages, instruction: None, send_back: true };
         let text = prompt(&parts);
         assert_eq!(text, prompt(&parts));
         assert_eq!(
             text,
-            "Apply the changes I marked by hand on `docs/paper/draft.pdf`.\n\
+            "I marked these changes by hand on `docs/paper/draft.pdf`.\n\
              Marked copy with my handwriting and marks as annotations:\n\
              @.eldrun/inbox/m.pdf\n\
              My markup layers, one per page, each the size of that page:\n\
              Page 3: @.eldrun/inbox/a.png\n\
              Page 7: @.eldrun/inbox/b.png\n\
-             Read every mark (strike-throughs, insertions, circled parts, margin notes).\n\
-             If the PDF is built from sources in this project (LaTeX, Markdown, a script, …), make the changes there and rebuild it; do not edit the PDF itself. List any mark you could not read or apply.\n\
-             When done, send the rebuilt PDF to me with `eldrun-send <file>`."
+             Read every mark (strike-throughs, insertions, circled parts, margin notes) and list the changes they ask for, and any mark you could not read. Do not change any file yet — not this one, not the sources it is built from, not any other file — until I tell you which changes to make.\n\
+             Once you have rebuilt the PDF, send it to me with `eldrun-send <file>`."
         );
+    }
+
+    #[test]
+    fn the_phone_instruction_replaces_the_default() {
+        let pages = vec![page(1, ".eldrun/inbox/a.png")];
+        let mut parts = Prompt { source: "a.pdf", picture: false, marked: None, failure: None, pages: &pages, instruction: Some("  Fix only the typos.\nAsk me first.  "), send_back: false };
+        let text = prompt(&parts);
+        assert!(text.ends_with("Page 1: @.eldrun/inbox/a.png\nFix only the typos.\nAsk me first."), "{text}");
+        assert!(!text.contains(DEFAULT_INSTRUCTION));
+        parts.instruction = Some(" \n ");
+        assert!(prompt(&parts).ends_with(DEFAULT_INSTRUCTION));
+    }
+
+    #[test]
+    fn an_instruction_is_bounded_and_plain_text() {
+        let mut req = request(MarkupSource::Outbox("20261001-090000-paper.pdf".into()), vec![page(1, ".eldrun/inbox/a.png")]);
+        req.instruction = Some("Line one\n\tLine two".into());
+        assert_eq!(validate(&req), Ok(()));
+        req.instruction = Some("x".repeat(MAX_INSTRUCTION + 1));
+        assert_eq!(validate(&req), Err(MarkupError::Invalid));
+        req.instruction = Some("bell \u{7}".into());
+        assert_eq!(validate(&req), Err(MarkupError::Invalid));
+    }
+
+    #[test]
+    fn the_phone_shows_the_same_default() {
+        let phone = include_str!("../../../../mobile-web/src/markupInstruction.ts");
+        assert!(phone.contains(DEFAULT_INSTRUCTION), "markupInstruction.ts must hold DEFAULT_INSTRUCTION verbatim");
     }
 
     #[test]
