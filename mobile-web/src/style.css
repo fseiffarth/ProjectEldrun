@@ -329,6 +329,11 @@ small { color:#9498aa; }
 .new-tab-local { display:flex; flex-direction:column; gap:6px; }
 .new-tab-local > small { padding:0 6px; color:#9da3b6; font-size:.8rem; overflow-wrap:anywhere; }
 .new-tab-local > .sheet-note { margin:0; }
+.new-tab-held { padding:2px 6px; border-top:1px dashed #383c4d; color:#9da3b6; font-size:.8rem; }
+.new-tab-held summary { padding:8px 0; cursor:pointer; }
+.new-tab-held ul { display:grid; gap:6px; margin:0; padding:0 0 6px; list-style:none; }
+.new-tab-held li { display:flex; flex-wrap:wrap; gap:2px 8px; min-width:0; overflow-wrap:anywhere; }
+.new-tab-held li strong { color:#aeb4c8; font-weight:600; }
 /* The ＋ at the end of the project header. Square against the back chevron
    opposite it, and it never shrinks: the project's name is what gives way. */
 .new-tab { flex:0 0 auto; min-width:44px; padding:8px 12px; font-size:1.25rem; line-height:1.1; }

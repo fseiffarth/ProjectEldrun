@@ -118,8 +118,13 @@ describe("Mobile project screen — the ＋", () => {
     expect((screen.getByRole("button", { name: "New shell" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Claude" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: /Send a file from this phone/ }) as HTMLButtonElement).disabled).toBe(false);
-    // … while a launch mode still needs the window.
-    expect((screen.getByRole("button", { name: "plan" }) as HTMLButtonElement).disabled).toBe(true);
+    // … while a launch mode still needs the window: no dead button in the
+    // grid, one folded group at the foot that names it.
+    expect(screen.queryByRole("button", { name: "plan" })).toBeNull();
+    const held = document.querySelector(".new-tab-held") as HTMLDetailsElement;
+    expect(held.open).toBe(false);
+    expect(held.querySelector("summary")?.textContent).toContain(`Needs the ${BRAND.display} window (2)`);
+    expect(held.textContent).toContain("plan · auto");
     expect(screen.getByText(new RegExp(`No ${BRAND.display} window is open`))).toBeTruthy();
   });
 
