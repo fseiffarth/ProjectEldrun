@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EMPTY_LAYER, addMark, markSent, type Layer } from "../../../mobile-web/src/markup/layer";
 import { SETTLE_MS } from "../../../mobile-web/src/markup/submitState";
+import { DEFAULT_MARKUP_APPLY, readMarkupApply, writeMarkupApply } from "../../../mobile-web/src/markupInstruction";
 
 const store = vi.hoisted(() => ({
   loadLayer: vi.fn(),
@@ -174,6 +175,44 @@ describe("MarkupView · rounds", () => {
     expect(screen.queryByRole("button", { name: "Reload PDF" })).toBeNull();
     rerender(view("working"));
     expect(screen.getByText("Agent is working…")).toBeTruthy();
+  });
+
+  it("offers Make these changes once the agent listed them, and sends the phone's own wording once", async () => {
+    desktop();
+    writeMarkupApply("Go ahead with all of them.");
+    const onSend = vi.fn((): MarkupSend => "sent");
+    const view = (agent: AgentSignal) => <MarkupView tabId="t1" projectId="p1" scope={{ tab: "t1" }} file={PICTURE} onSend={onSend} agent={agent} onClose={() => {}} />;
+    const { rerender } = render(view("idle"));
+    showPicture();
+    await waitFor(() => expect(submitButton().disabled).toBe(false));
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("Round 1"));
+    // Not before the agent is done with the marks.
+    expect(screen.queryByRole("button", { name: /Make these changes/ })).toBeNull();
+    rerender(view("working"));
+    vi.useFakeTimers();
+    rerender(view("idle"));
+    await act(async () => { vi.advanceTimersByTime(SETTLE_MS); });
+    fireEvent.click(screen.getByRole("button", { name: /Make these changes/ }));
+    expect(onSend).toHaveBeenLastCalledWith("Go ahead with all of them.");
+    expect(screen.getByText("Sent — waiting for the agent")).toBeTruthy();
+    // The follow-up's own turn: no second offer once it is done.
+    rerender(view("working"));
+    rerender(view("idle"));
+    await act(async () => { vi.advanceTimersByTime(SETTLE_MS); });
+    expect(screen.getByText("Agent finished")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Make these changes/ })).toBeNull();
+    expect(onSend).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends the default Make these changes prompt while the phone keeps none of its own", () => {
+    expect(readMarkupApply()).toBeNull();
+    writeMarkupApply(`  ${DEFAULT_MARKUP_APPLY} `);
+    expect(readMarkupApply()).toBeNull();
+    writeMarkupApply("Do it\u0007 now");
+    expect(readMarkupApply()).toBe("Do it now");
+    writeMarkupApply("");
+    expect(readMarkupApply()).toBeNull();
   });
 
   it("looks at the PDF once the agent finished, and offers Reload by what it found", async () => {

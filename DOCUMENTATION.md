@@ -440,7 +440,10 @@ redraws the file as it is now, or the newer copy the agent sent, under the same
 layer: unsent marks stay, and the sent ones stay too, dimmed, so each change can
 be checked and its mark then erased by hand (the eraser and Clear page reach
 shown sent marks; ⋯ **Show sent marks** hides them). Nothing removes a mark
-automatically.
+automatically. The default prompt has the agent only list the changes; once it
+has, the pill offers **Make these changes**, which sends the go-ahead (edit the
+sources, rebuild, send the PDF back) — its wording is the second field of Home →
+This phone → **Mark up prompt**.
 
 ### Workspace Apps
 

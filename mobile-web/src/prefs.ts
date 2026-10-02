@@ -65,7 +65,7 @@ export function writeFlag(name: MobileFlag, value: boolean, storage?: FlagStorag
  * answers. `markupInstruction` is free text rather than a choice — what a
  * Mark up Submit tells the agent (`markupInstruction.ts`) — kept here all the
  * same, since it is just as much this phone's own. */
-export type MobileChoice = "agentsSort" | "projectTabsSort" | "speechLang" | "mailAccount" | "theme" | "desktopTheme" | "markupInstruction";
+export type MobileChoice = "agentsSort" | "projectTabsSort" | "speechLang" | "mailAccount" | "theme" | "desktopTheme" | "markupInstruction" | "markupApply";
 
 export function readChoice<T extends string>(name: MobileChoice, accept: (value: unknown) => value is T, fallback: T, storage?: FlagStorage): T {
   try {

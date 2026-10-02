@@ -24,8 +24,10 @@
 export type AgentSignal = "working" | "question" | "idle";
 export type RoundPhase = "sent" | "queued" | "working" | "question" | "finished" | "unconfirmed";
 /** `since`: when `phase` began. `sentAt`: the Submit. `idleSince`: when a
- * working or asking agent was last seen going idle, until it settles. */
-export type Round = { phase: RoundPhase; since: number; sentAt: number; idleSince: number | null };
+ * working or asking agent was last seen going idle, until it settles.
+ * `applied`: this round is the **Make these changes** follow-up, not a
+ * Submit — the button that sends it is offered only on a round without. */
+export type Round = { phase: RoundPhase; since: number; sentAt: number; idleSince: number | null; applied?: boolean };
 
 /** How long idle must hold before a turn counts as finished — as the
  * desktop scheduler's `COMPLETION_STABLE_MS`. */
@@ -34,9 +36,19 @@ export const SETTLE_MS = 3_000;
  * pill stops claiming to know (an agent whose state the host cannot read). */
 export const CONFIRM_MS = 20_000;
 
-/** A Submit went out: into the agent's queue (it was working) or straight in. */
-export function startRound(queued: boolean, now: number): Round {
-  return { phase: queued ? "queued" : "sent", since: now, sentAt: now, idleSince: null };
+/** A Submit went out: into the agent's queue (it was working) or straight in.
+ * `applied`: it was the **Make these changes** follow-up instead. */
+export function startRound(queued: boolean, now: number, applied = false): Round {
+  const round: Round = { phase: queued ? "queued" : "sent", since: now, sentAt: now, idleSince: null };
+  return applied ? { ...round, applied: true } : round;
+}
+
+/** Whether **Make these changes** fits the round: the agent is done with a
+ * Submit's marks (or nothing says what it does) and the follow-up has not
+ * gone out yet — with the default instruction the agent has only listed the
+ * changes. */
+export function canApply(round: Round | null): boolean {
+  return round !== null && !round.applied && (round.phase === "finished" || round.phase === "unconfirmed");
 }
 
 /** A view opened again over marks sent before: no Submit of its own, so the

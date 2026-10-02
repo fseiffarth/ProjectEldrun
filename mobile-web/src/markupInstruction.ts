@@ -33,3 +33,23 @@ export function writeMarkupInstruction(text: string): void {
   const clean = text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "").trim();
   writeChoice("markupInstruction", clean === DEFAULT_MARKUP_INSTRUCTION ? "" : [...clean].slice(0, MAX_MARKUP_INSTRUCTION).join(""));
 }
+
+/** What **Make these changes** sends once the agent has listed the changes
+ * (`docs/pdf_markup_rounds_plan.md` §2.8): a plain prompt the phone words —
+ * the desktop adds nothing to it. Kept beside the instruction, and like it
+ * this phone's own. */
+export const DEFAULT_MARKUP_APPLY = "Make the changes you listed from my marks now: edit the sources the PDF is built from, rebuild it, and send me the rebuilt PDF with `eldrun-send <file>`.";
+
+/** The reader's own **Make these changes** prompt, or `null` while the
+ * default stands. */
+export function readMarkupApply(): string | null {
+  const stored = readChoice("markupApply", isText, "").trim();
+  return stored && stored !== DEFAULT_MARKUP_APPLY ? stored : null;
+}
+
+/** Keeps `text` as this phone's **Make these changes** prompt, cleaned and
+ * bounded as the instruction is; blank (or the default) goes back to it. */
+export function writeMarkupApply(text: string): void {
+  const clean = text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "").trim();
+  writeChoice("markupApply", clean === DEFAULT_MARKUP_APPLY ? "" : [...clean].slice(0, MAX_MARKUP_INSTRUCTION).join(""));
+}

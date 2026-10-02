@@ -10,8 +10,8 @@ import {
 } from "../markup/layer";
 import { composedPng, drawMark, drawPage, INK, layerPng, type Paint } from "../markup/rasterize";
 import { layerKey, loadLayer, moveLayer, saveLayer, stale, type Fingerprint } from "../markup/store";
-import { followRound, nextCheck, startRound, stepRound, type AgentSignal, type Round, type RoundPhase } from "../markup/submitState";
-import { readMarkupInstruction } from "../markupInstruction";
+import { canApply, followRound, nextCheck, startRound, stepRound, type AgentSignal, type Round, type RoundPhase } from "../markup/submitState";
+import { DEFAULT_MARKUP_APPLY, readMarkupApply, readMarkupInstruction } from "../markupInstruction";
 import { sizeLabel } from "../terminal/fileLabels";
 import { AGENT_STATUS_GLYPH } from "./AgentStatusPill";
 import type { MarkupSend } from "./OutboxViewer";
@@ -912,6 +912,22 @@ export function MarkupView({ tabId = "", projectId = "", scope, file: givenFile,
     setSending(null);
   };
 
+  /** **Make these changes**: the agent listed what the marks ask for (the
+   * default instruction edits nothing until told) — one tap tells it to go
+   * ahead, worded in the phone's settings (`markupInstruction.ts`). */
+  const apply = () => {
+    if (!onSend || sending !== null) return;
+    setSendFailure(null);
+    const sent = onSend(readMarkupApply() ?? DEFAULT_MARKUP_APPLY);
+    if (!sent) {
+      setSendFailure(t("mobile.markup.sendFailed.chat"));
+      return;
+    }
+    setCheck(null);
+    setReloadNote(null);
+    setSubmitted(startRound(sent === "queued", Date.now(), true));
+  };
+
   // --- The round: what the agent does with the last Submit -------------------
   const sentShown = hasSent(layer);
   useEffect(() => {
@@ -1005,7 +1021,8 @@ export function MarkupView({ tabId = "", projectId = "", scope, file: givenFile,
   /** Reload as the pill's own button: the agent is done, or nothing says
    * what it does — primary unless the file is known to be unchanged. */
   const pillReload = canReload && submitted && (submitted.phase === "finished" || submitted.phase === "unconfirmed");
-  const reloadPrimary = submitted?.phase === "finished" && check !== "unchanged" && !reloaded;
+  const applyNow = canMark && canApply(submitted);
+  const reloadPrimary = submitted?.phase === "finished" && check !== "unchanged" && !reloaded && (!applyNow || check === "changed");
   const glyph = submitted ? ROUND_GLYPH[submitted.phase] : undefined;
   const register = useCallback((n: number, canvas: HTMLCanvasElement | null) => {
     if (canvas) overlays.current.set(n, canvas);
@@ -1058,6 +1075,8 @@ export function MarkupView({ tabId = "", projectId = "", scope, file: givenFile,
         {glyph && <span className={`agent-status ${glyph}`} aria-hidden="true"><span className="agent-status-glyph">{AGENT_STATUS_GLYPH[glyph]}</span></span>}
         <span className="markup-round-words">{roundWords}</span>
         {roundUntested && <span className="untested">{t("mobile.outbox.untested")}</span>}
+        {applyNow && <button className={reloadPrimary ? "outbox-action markup-apply" : "markup-submit markup-apply"} disabled={reloading || sending !== null || !online}
+          onClick={apply} title={t("mobile.markup.applyTitle")}>{t("mobile.markup.apply")}{isUntested("mobile.markup.apply") && <span className="untested">{t("mobile.outbox.untested")}</span>}</button>}
         {pillReload && <button className={reloadPrimary ? "markup-submit markup-reload" : "outbox-action markup-reload"} disabled={reloading || sending !== null}
           onClick={() => void reload()}>{t("mobile.markup.reload")}</button>}
       </div>}

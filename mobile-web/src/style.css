@@ -1388,6 +1388,8 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .markup-round.finished .markup-round-words { color:#91e6a9; font-weight:600; }
 .markup-round.question .markup-round-words { color:#ffd36b; }
 .markup-round .markup-reload { margin-left:auto; min-height:32px; }
+.markup-round .markup-apply { margin-left:auto; min-height:32px; }
+.markup-round .markup-apply + .markup-reload { margin-left:0; }
 .markup-round .outbox-action { display:inline-flex; align-items:center; padding:0 11px; border:1px solid #34384a; border-radius:999px; background:#141a26; color:#d8e2f5; font:500 .78rem/1 Inter,ui-sans-serif,system-ui,sans-serif; }
 .markup-scroller { position:relative; min-height:0; overflow:auto; overscroll-behavior:contain; touch-action:pan-x pan-y; -webkit-overflow-scrolling:touch; }
 .markup-scroller.finger-draws { touch-action:none; }

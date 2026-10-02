@@ -12,7 +12,7 @@ import {
   type InkMark, type Layer, type TextMark,
 } from "../../../mobile-web/src/markup/layer";
 import { layerKey, loadLayer, moveLayer, saveLayer, SENT_LIMITS, withinLimits, type LayerBackend } from "../../../mobile-web/src/markup/store";
-import { CONFIRM_MS, followRound, nextCheck, SETTLE_MS, startRound, stepRound, type AgentSignal, type Round } from "../../../mobile-web/src/markup/submitState";
+import { canApply, CONFIRM_MS, followRound, nextCheck, SETTLE_MS, startRound, stepRound, type AgentSignal, type Round } from "../../../mobile-web/src/markup/submitState";
 
 const SIZE: [number, number] = [612, 792];
 const ink = (points: [number, number, number][]): InkMark => ({ kind: "ink", color: "red", width: 2, points });
@@ -216,5 +216,25 @@ describe("markup rounds · the pill's machine", () => {
     const restarted = startRound(true, 20_000);
     expect(restarted).toEqual({ phase: "queued", since: 20_000, sentAt: 20_000, idleSince: null });
     expect(followRound("question", 5)).toMatchObject({ phase: "question" });
+  });
+});
+
+describe("markup rounds · Make these changes", () => {
+  it("fits a finished or unconfirmed Submit round, never the follow-up's own", () => {
+    const sent = startRound(false, 0);
+    expect(canApply(null)).toBe(false);
+    expect(canApply(sent)).toBe(false);
+    const working = stepRound(sent, "working", 1);
+    expect(canApply(working)).toBe(false);
+    const finished = stepRound(stepRound(working, "idle", 2), "idle", 2 + SETTLE_MS);
+    expect(finished.phase).toBe("finished");
+    expect(canApply(finished)).toBe(true);
+    expect(canApply(stepRound(sent, "idle", CONFIRM_MS))).toBe(true);
+    const applied = startRound(true, 10, true);
+    expect(applied).toMatchObject({ phase: "queued", applied: true });
+    const done = stepRound(stepRound(stepRound(applied, "working", 11), "idle", 12), "idle", 12 + SETTLE_MS);
+    expect(done.phase).toBe("finished");
+    expect(done.applied).toBe(true);
+    expect(canApply(done)).toBe(false);
   });
 });

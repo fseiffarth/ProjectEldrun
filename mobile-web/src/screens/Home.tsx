@@ -17,8 +17,7 @@ import { SendToDesktop } from "../components/SendToDesktop";
 import { GitMark } from "../components/GitMark";
 import { readSpeechLang, type SpeechLang } from "../speechLang";
 import { NotificationsSheet, pushSummary } from "../components/NotificationsSheet";
-import { MarkupInstructionSheet, markupInstructionSummary } from "../components/MarkupInstructionSheet";
-import { readMarkupInstruction } from "../markupInstruction";
+import { customMarkupPrompts, MarkupInstructionSheet, markupInstructionSummary } from "../components/MarkupInstructionSheet";
 import { getPushState, pushSupport, type HostPushState } from "../push";
 import { EldrunMark } from "../EldrunMark";
 
@@ -149,7 +148,7 @@ export function Home({ open, openTab, todo, mail }: {
   const [speechLang, setSpeechLang] = useState<SpeechLang>(() => readSpeechLang());
   const [speechLangSheet, setSpeechLangSheet] = useState(false);
   /** What a Mark up Submit tells the agent — worded here and nowhere else. */
-  const [markupInstruction, setMarkupInstruction] = useState(() => readMarkupInstruction());
+  const [markupInstruction, setMarkupInstruction] = useState(() => customMarkupPrompts());
   const [markupInstructionSheet, setMarkupInstructionSheet] = useState(false);
   /** The phone's own theme (`theme.ts`); unset, it follows the desktop's. */
   const [theme, setTheme] = useState<PhoneTheme>(() => readPhoneTheme());
