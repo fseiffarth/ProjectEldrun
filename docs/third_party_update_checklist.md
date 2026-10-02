@@ -187,9 +187,20 @@ Claude's `/fast` — different thing.
   `CLAUDE_CODE_CHILD_SESSION=1` and its own `CLAUDE_CODE_SESSION_ID`, so the
   env cannot tell a nested CLI from the tab's; the hook now refuses a foreign
   `clear`/`resume` start sent by a `claude` with another `claude` above it
-  among the processes carrying the tab's id (`/proc`, POSIX only). The turn
+  among the processes carrying the tab's id (`/proc`, POSIX only). Re-checked
+  against 2.1.288 (2026-10-02, live, the same dump: identical keys and values,
+  `--permission-mode manual` reported as `default`; new and unread:
+  `prompt_id` on every event but SessionStart, Stop `session_crons`, a resume
+  start `estimated_cache_write_usd` and `prompt_cache_likely_expired`; the
+  hook's `sed` extractions match `jq` on every payload). That probe unset only
+  `TABTIVITY_TAB_UID`; the hook's legacy preamble filled it back in from the
+  pre-rename name and the `/proc` walk, matching the current name only,
+  counted no `claude` — the `--resume` took the record again, emptying the
+  Reader's chat and Changes panel. The walk now matches the tab's id under
+  any `*_TAB_UID` name. **Probing from a tab:** unset both names, or none and
+  let the guard refuse it. The turn
   events against 2.1.272 by
-  reading the binary's strings, not live — 2.1.287 still carries
+  reading the binary's strings, not live — 2.1.288 still carries
   `permission_prompt`, `elicitation_dialog`, `idle_prompt` and the same six
   permission modes.
 - Session logs: `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; `--resume` is
@@ -209,7 +220,8 @@ Claude's `/fast` — different thing.
   `is_error`, `num_turns: 0` (re-checked live against 2.1.286, 2026-09-30,
   its panel fed through `parseUsageReport`: three meters, the
   "What's contributing" lines kept as notes; 2.1.287, 2026-10-02, prints the
-  same layout plus a `Last 7d` block of the same shape). The
+  same layout plus a `Last 7d` block of the same shape; 2.1.288, 2026-10-02,
+  unchanged, every reset resolved by `resolveResetAt`). The
   panel text is parsed by `shared/usageReport.ts` for the phone's bars, the
   prompt chart's reset lines and auto-continue (five-hour / weekly windows,
   per-model lines) — a re-layout may cost figures. `resolveResetAt` places the
@@ -261,7 +273,7 @@ Claude's `/fast` — different thing.
   Anthropic-compatible endpoint is stood up for Claude (Ollama ≥ 0.15).
 - Mobile: mode family `default | accept edits | plan | auto | bypass
   permissions` — the cycle's labels `accept edits on`, `plan mode on`, `auto
-  mode on` read out of the 2.1.272 bundle (unchanged in 2.1.287) — `default` draws `⏸ manual mode on`
+  mode on` read out of the 2.1.272 bundle (unchanged in 2.1.288) — `default` draws `⏸ manual mode on`
   (seen live on 2.1.284 and 2.1.286; older builds drew nothing), which no mode
   pattern names, so it reads as the silent default. Shift+Tab is the legacy
   backtab `ESC [ Z`.
