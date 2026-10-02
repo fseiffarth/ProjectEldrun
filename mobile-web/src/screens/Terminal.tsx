@@ -303,14 +303,29 @@ const DESKTOP_LIST_FAILURES: Record<string, string> = {
 };
 
 /** A file on its way into the project inbox — from the phone, or copied on
- * the desktop's side — or one that did not make it. A delivered one leaves
- * the list: its `@` reference is in the draft, which is the record. */
+ * the desktop's side — one that landed, or one that did not make it. A
+ * landed one waits beside the composer with its `@` reference until the
+ * message goes: writing the reference into the draft while the reader types
+ * would pull the text out from under their keyboard. */
 interface InboxUpload {
   id: number;
   name: string;
   /** Where the bytes come from; a desktop copy never leaves the desktop. */
   source: "phone" | "desktop";
+  /** The desktop's project-relative reference, once the file has landed. */
+  reference?: string;
   failure?: string;
+}
+
+/** Whether a file is still on its way — Send waits for it. */
+const uploadInFlight = (upload: InboxUpload) => !upload.failure && upload.reference === undefined;
+
+/** The draft with the landed files' `@` references after it — what Send
+ * sends, and what the draft store keeps when the screen goes away. */
+function withAttachments(text: string, uploads: readonly InboxUpload[]): string {
+  const references = uploads.flatMap((upload) => upload.reference === undefined || upload.failure ? [] : [`@${upload.reference}`]);
+  if (references.length === 0) return text;
+  return `${text}${text && !/\s$/u.test(text) ? " " : ""}${references.join(" ")} `;
 }
 
 /** How often an agent tab re-reads its CLI's usage panel for the facts row's
@@ -768,6 +783,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * re-subscribe per keystroke. */
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  /** The files beside the composer (`uploads` below), for the same writers. */
+  const uploadsRef = useRef<InboxUpload[]>([]);
   /** A held prompt being rewritten in the composer (`startEdit`), by its
    * pending id, with the draft it pushed aside. The composer's text is then
    * the prompt's, not the tab's draft: the draft store keeps `before`. */
@@ -776,7 +793,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   editingRef.current = editing;
   /** What the draft store keeps for this tab: never a held prompt's words
    * mid-edit, which a later Send would otherwise deliver a second time. */
-  const savedDraft = () => editingRef.current?.before ?? draftRef.current;
+  const savedDraft = () => editingRef.current?.before ?? withAttachments(draftRef.current, uploadsRef.current);
   /** An edit is on its way to the desktop. */
   const [editSending, setEditSending] = useState(false);
   /** The composer grows with its draft, line by line, up to the CSS
@@ -953,6 +970,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   const [desktopImages, setDesktopImages] = useState<DesktopImage[] | null>(null);
   const [desktopFailure, setDesktopFailure] = useState("");
   const [uploads, setUploads] = useState<InboxUpload[]>([]);
+  uploadsRef.current = uploads;
+  const uploading = uploads.some(uploadInFlight);
+  const attached = uploads.some((upload) => upload.reference !== undefined && !upload.failure);
   /** The pictures the agent left in the project's `.tabtivity/outbox/` for this
    * phone (the desktop's `outbox.rs`), newest first — the gallery beside the
    * tab name, and the one way an image reaches the phone from a session: a
@@ -2365,7 +2385,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * point — the markup view's Submit keeps its layer otherwise. */
   /** `interrupt`: the Send button's hold — a working agent is stopped and the
    * words go in at once instead of waiting for its next idle point. */
-  const submitDraft = (text = draft, fromComposer = true, interrupt = false): boolean => {
+  const submitText = (text: string, fromComposer: boolean, interrupt: boolean): boolean => {
     if (editing && fromComposer) {
       submitEdit(editing, text);
       return true;
@@ -2409,6 +2429,15 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     if (!fromComposer) return true;
     setDraft("");
     endDictation();
+    return true;
+  };
+  /** The composer's words go with the files that landed for them; while one
+   * is still on its way nothing goes, so no reference is left behind. */
+  const submitDraft = (text = draft, fromComposer = true, interrupt = false): boolean => {
+    if (!fromComposer) return submitText(text, false, interrupt);
+    if (uploadsRef.current.some(uploadInFlight)) return false;
+    if (!submitText(withAttachments(text, uploadsRef.current), true, interrupt)) return false;
+    setUploads((current) => current.filter((upload) => upload.reference === undefined));
     return true;
   };
   /** For dictation's spoken send: the session's handlers outlive the render
@@ -2742,7 +2771,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   useEffect(() => {
     const timer = window.setTimeout(() => writeDraft(tab.id, savedDraft()), DRAFT_SAVE_DELAY);
     return () => window.clearTimeout(timer);
-  }, [tab.id, draft]);
+  }, [tab.id, draft, uploads]);
   /** …and once more when this screen goes away, which the delay above would
    * otherwise eat: leaving for the tab list unmounts it, and a phone putting the
    * PWA away kills it without unmounting anything (`pagehide` is the last word
@@ -3135,13 +3164,14 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}@`);
     composerInput.current?.focus();
   };
-  /** Appends one token to the draft with a space on each side as needed. */
-  const appendToDraft = (token: string) => {
-    setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${token} `);
+  /** Marks one file as landed: its row now holds the reference that Send
+   * puts after the message (`withAttachments`). */
+  const uploadLanded = (id: number, reference: string) => {
+    setUploads((current) => current.map((upload) => upload.id === id ? { ...upload, reference } : upload));
   };
-  /** Sends the picked files into the project inbox one by one and writes each
-   * one's `@` reference into the draft as it lands. The reference is the
-   * desktop's — the phone never composes a path. */
+  /** Sends the picked files into the project inbox one by one; each one's
+   * `@` reference goes with the next message once it lands. The reference is
+   * the desktop's — the phone never composes a path. */
   const attachFromPhone = (files: ArrayLike<File> | null) => {
     if (!files || files.length === 0) return;
     const run = uploadRun.current;
@@ -3156,8 +3186,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       void uploadToInbox(tab.id, file, name).then(
         (attachment) => {
           if (uploadRun.current !== run) return;
-          setUploads((current) => current.filter((upload) => upload.id !== id));
-          appendToDraft(`@${attachment.reference}`);
+          uploadLanded(id, attachment.reference);
         },
         (error: unknown) => {
           if (uploadRun.current !== run) return;
@@ -3188,9 +3217,8 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       },
     );
   };
-  /** Asks the desktop to copy one listed image into the project inbox and
-   * writes the reference into the draft as it lands — the same row and the
-   * same `@` a file sent from the phone gets. */
+  /** Asks the desktop to copy one listed image into the project inbox — the
+   * same row and the same `@` a file sent from the phone gets. */
   const attachFromDesktop = (imageId: string) => {
     const image = desktopImages?.find((entry) => entry.id === imageId);
     setDesktopSheet(false);
@@ -3201,8 +3229,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     void attachDesktopImage(tab.id, image.id).then(
       (attachment) => {
         if (uploadRun.current !== run) return;
-        setUploads((current) => current.filter((upload) => upload.id !== id));
-        appendToDraft(`@${attachment.reference}`);
+        uploadLanded(id, attachment.reference);
       },
       (error: unknown) => {
         if (uploadRun.current !== run) return;
@@ -3809,7 +3836,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
       {lastSent && !sessionShown && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
       {uploads.map((upload) => upload.failure
         ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
-        : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>{upload.source === "desktop" ? "Copying from the desktop…" : "Sending to the project inbox…"}</span></div>)}
+        : upload.reference !== undefined
+          ? <div key={upload.id} className="inbox-upload landed" role="status"><strong>{upload.name}</strong><span>{t("mobile.inbox.attached")}{isUntested("mobile.composer.attachHeld") && <> · <em>{t("mobile.focus.untested")}</em></>}</span><button onPointerDown={(event) => event.preventDefault()} onClick={() => dismissUpload(upload.id)} aria-label={t("mobile.inbox.detach", { name: upload.name })} title={t("mobile.inbox.detach", { name: upload.name })}>✕</button></div>
+          : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>{upload.source === "desktop" ? "Copying from the desktop…" : "Sending to the project inbox…"} {t("mobile.inbox.sendWaits")}</span></div>)}
       {signIn && !signInSheet && signIn.url !== hiddenSignIn && <div className="sign-in-notice" role="status">
         <span>{t("mobile.signIn.banner", { agent: agentLabel })}</span>
         <button className="primary" onClick={() => setSignInSheet(true)} aria-haspopup="dialog">{t("mobile.signIn.open")}</button>
@@ -3904,7 +3933,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
             <button className={`composer-keys${keysShown ? " open" : ""}`} onPointerDown={(event) => event.preventDefault()} onClick={toggleKeys} aria-label={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")} aria-expanded={keysShown} aria-controls="terminal-keys" title={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8" /></svg></button>
             <span className="composer-spacer" />
           </>}
-          <button className="send-icon" disabled={!connected || !draft.trim() || editSending} {...(tab.kind === "agent" && !editing ? sendHoldHandlers : {})} onClick={() => {
+          <button className="send-icon" disabled={!connected || (!draft.trim() && !attached) || uploading || editSending} {...(tab.kind === "agent" && !editing ? sendHoldHandlers : {})} onClick={() => {
             if (sendHold.current.fired) {
               sendHold.current.fired = false;
               return;

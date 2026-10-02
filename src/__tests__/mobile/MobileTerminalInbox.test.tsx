@@ -85,6 +85,14 @@ function routeOutbox(inner: (url: string, init?: RequestInit) => Promise<Respons
 const fileInput = () => screen.getByTestId("inbox-file-input") as HTMLInputElement;
 const composer = () => screen.getByLabelText("Message agent") as HTMLTextAreaElement;
 
+/** The landed files waiting beside the composer, by their row text. */
+const landed = () => Array.from(document.querySelectorAll(".inbox-upload.landed")).map((row) => row.textContent ?? "");
+/** The prompt the phone reported as sent — the words that went out. */
+const reportedPrompt = (fetchMock: ReturnType<typeof vi.fn>) => {
+  const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/prompt"));
+  return call ? (JSON.parse(String((call[1] as RequestInit).body)) as { message: string }).message : undefined;
+};
+
 function pick(files: File[]) {
   const input = fileInput();
   Object.defineProperty(input, "files", { configurable: true, value: files });
@@ -160,10 +168,10 @@ describe(`${BRAND.display} Mobile composer + and the frozen reading view`, () =>
     fireEvent.change(gallery);
     await settle(0);
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe("/api/v1/tabs/tab-7/inbox?name=IMG_0099.jpg");
-    expect(composer().value).toContain(`@${NAMES.inboxDir}/20260917-120000-IMG_0099.jpg`);
+    expect(landed().some((text) => text.includes("IMG_0099.jpg"))).toBe(true);
   });
 
-  it("sends a picked file into the project inbox and writes the desktop's reference into the draft", async () => {
+  it("sends a picked file into the project inbox and puts the desktop's reference after the message on Send", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, {
       attachment: { name: "20260831-120000-IMG_0042.jpg", reference: `${NAMES.inboxDir}/20260831-120000-IMG_0042.jpg`, size: 3 },
     }));
@@ -184,11 +192,69 @@ describe(`${BRAND.display} Mobile composer + and the frozen reading view`, () =>
     expect((init.headers as Record<string, string>)["Content-Type"]).toBe("image/jpeg");
     expect(init.body).toBeInstanceOf(File);
 
-    // Delivered: the reference is in the draft and the pending row is gone.
-    expect(composer().value).toBe(`look at this @${NAMES.inboxDir}/20260831-120000-IMG_0042.jpg `);
-    expect(screen.queryByRole("status")).toBeNull();
+    // Delivered: the draft is left alone — the reader may still be typing —
+    // and the file waits in a row of its own.
+    expect(composer().value).toBe("look at this");
+    expect(landed()).toHaveLength(1);
+    expect(landed()[0]).toContain("IMG_0042.jpg");
     // The picker is reset so the same photo can be picked again.
     expect(fileInput().value).toBe("");
+
+    fireEvent.change(composer(), { target: { value: "look at this, the left one" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settle(0);
+    expect(reportedPrompt(fetchMock)).toBe(`look at this, the left one @${NAMES.inboxDir}/20260831-120000-IMG_0042.jpg `);
+    expect(composer().value).toBe("");
+    expect(landed()).toHaveLength(0);
+  });
+
+  it("never touches the draft while a file is on its way, and holds Send until it lands", async () => {
+    let answer: (response: Response) => void = () => {};
+    const fetchMock = vi.fn((url: string) => url.includes("/inbox?")
+      ? new Promise<Response>((resolve) => { answer = resolve; })
+      : Promise.resolve(jsonResponse(200, {})));
+    vi.stubGlobal("fetch", routeOutbox(fetchMock));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await act(async () => {});
+
+    pick([new File(["abc"], "plan.pdf", { type: "application/pdf" })]);
+    fireEvent.change(composer(), { target: { value: "half a sent" } });
+    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    // Enter does not slip past the disabled button either.
+    fireEvent.keyDown(composer(), { key: "Enter" });
+    expect(reportedPrompt(fetchMock)).toBeUndefined();
+
+    await act(async () => {
+      answer(jsonResponse(201, { attachment: { name: "20261002-090000-plan.pdf", reference: `${NAMES.inboxDir}/20261002-090000-plan.pdf`, size: 3 } }));
+    });
+    await settle(0);
+    expect(composer().value).toBe("half a sent");
+    expect(send.disabled).toBe(false);
+
+    // ✕ leaves a landed file out of the message; the words alone still go.
+    fireEvent.click(screen.getByRole("button", { name: "Leave plan.pdf out of the message" }));
+    expect(landed()).toHaveLength(0);
+    fireEvent.click(send);
+    await settle(0);
+    expect(reportedPrompt(fetchMock)).toBe("half a sent");
+  });
+
+  it("keeps a landed file's reference in the saved draft when the screen goes away", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, {
+      attachment: { name: "20261002-090000-a.png", reference: `${NAMES.inboxDir}/20261002-090000-a.png`, size: 3 },
+    }));
+    vi.stubGlobal("fetch", routeOutbox(fetchMock));
+    const view = render(<Terminal tab={TAB} back={() => {}} />);
+    await act(async () => {});
+    fireEvent.change(composer(), { target: { value: "see" } });
+    pick([new File(["abc"], "a.png", { type: "image/png" })]);
+    await settle(0);
+    view.unmount();
+
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await act(async () => {});
+    expect(composer().value).toBe(`see @${NAMES.inboxDir}/20261002-090000-a.png `);
   });
 
   it("reports a refused or oversized file and keeps the draft untouched", async () => {
@@ -252,8 +318,8 @@ describe(`${BRAND.display} Mobile composer + and the frozen reading view`, () =>
     expect(url).toBe("/api/v1/tabs/tab-7/desktop-images");
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({ image_id: "0123456789abcdef0123456789abcdef" });
-    expect(composer().value).toBe(`fix this @${NAMES.inboxDir}/20260903-100000-Screenshot_2026-09-03.png `);
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(composer().value).toBe("fix this");
+    expect(landed().some((text) => text.includes("Screenshot_2026-09-03.png"))).toBe(true);
   });
 
   it("says when the desktop has nothing to attach, and names a copy that failed", async () => {
