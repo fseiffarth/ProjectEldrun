@@ -581,9 +581,6 @@ interface AgentUpdateReport {
   error: string | null;
 }
 
-/** What the last "Check for CLI updates" click found, for the row's own note. */
-type AgentUpdateCheck = { ok: true; updates: number; unread: number } | { ok: false; reason: string };
-
 interface AgentInfo {
   id: string;
   label: string;
@@ -1611,8 +1608,8 @@ export function AgentsPanel({
   const [checkingVersions, setCheckingVersions] = useState(false);
   // Newest published release per installed CLI — only after a click.
   const [updates, setUpdates] = useState<Record<string, AgentUpdateReport>>({});
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
-  const [updateCheck, setUpdateCheck] = useState<AgentUpdateCheck | null>(null);
+  /** The CLIs whose own "Check for update" is in flight. */
+  const [checkingUpdates, setCheckingUpdates] = useState<Record<string, true>>({});
   // Filter over the *not installed* half only (see the two sections below).
   const [search, setSearch] = useState("");
   const logRef = useRef<HTMLPreElement>(null);
@@ -1690,25 +1687,31 @@ export function AgentsPanel({
     }
   };
 
-  // Ask every installed CLI's registry for its newest release — the agent twin
-  // of the local-model "Check for Ollama updates" row, and like it explicit
-  // only: one request per CLI, when clicked and at no other time. The backend
+  // Ask one CLI's registry for its newest release — each card's own button, the
+  // agent twin of the local-model "Check for Ollama updates" row, and like it
+  // explicit only: one request, when clicked and at no other time. The backend
   // re-reads the installed versions first, so the version chips refresh too.
-  const checkUpdates = () => {
-    setCheckingUpdates(true);
-    setUpdateCheck(null);
-    invoke<AgentUpdateReport[]>("check_agent_updates")
+  const checkUpdate = (id: string) => {
+    setCheckingUpdates((c) => ({ ...c, [id]: true }));
+    invoke<AgentUpdateReport[]>("check_agent_updates", { id })
       .then((rows) => {
-        setUpdates(Object.fromEntries(rows.map((row) => [row.agent, row])));
-        setUpdateCheck({
-          ok: true,
-          updates: rows.filter((row) => row.updateAvailable).length,
-          unread: rows.filter((row) => !row.updateAvailable && (!row.latest || !row.current)).length,
-        });
+        setUpdates((u) => ({ ...u, ...Object.fromEntries(rows.map((row) => [row.agent, row])) }));
         loadVersions(false);
       })
-      .catch(() => setUpdateCheck({ ok: false, reason: t("agents.updateCheckNoBackend") }))
-      .finally(() => setCheckingUpdates(false));
+      .catch(() =>
+        setUpdates((u) => ({
+          ...u,
+          [id]: {
+            agent: id,
+            current: null,
+            latest: null,
+            updateAvailable: false,
+            checkable: true,
+            error: t("agents.updateCheckNoBackend"),
+          },
+        })),
+      )
+      .finally(() => setCheckingUpdates(({ [id]: _drop, ...rest }) => rest));
   };
 
   // Run the CLI's own installer again, which fetches the newest release (into
@@ -1930,11 +1933,17 @@ export function AgentsPanel({
               {installing === a.id ? t("agents.updating") : t("agents.updateToLatest", { latest: update.latest })}
             </button>
           )}
-          {update?.error && <span className="local-model-update-note">{t("agents.updateCouldntCheck")}</span>}
+          {update?.error && (
+            <span className="local-model-update-note" title={update.error}>
+              {t("agents.updateCouldntCheck")}
+            </span>
+          )}
           {update && !update.checkable && (
             <span className="local-model-update-note">{t("agents.updateNoRegistry")}</span>
           )}
-          {update && <UntestedTag id="settingsSubPanels.agentUpdates" />}
+          {update && !update.updateAvailable && !update.error && update.latest && current && (
+            <span className="local-model-update-note">{t("agents.updatesNone")}</span>
+          )}
           {!report.supported && !current && (
             <span className="settings-help">{t("agents.versionUnsupported")}</span>
           )}
@@ -1956,6 +1965,16 @@ export function AgentsPanel({
                 : t("agents.versionRecheck")}
             </button>
           )}
+          <button
+            type="button"
+            className="ollama-action-btn"
+            disabled={!!checkingUpdates[a.id] || installing === a.id}
+            title={t("agents.checkUpdatesTitle", { label: a.label })}
+            onClick={() => checkUpdate(a.id)}
+          >
+            {checkingUpdates[a.id] ? t("agents.checkingUpdates") : t("agents.checkUpdates")}
+          </button>
+          <UntestedTag id="settingsSubPanels.agentUpdates" />
           <UntestedTag id="settingsSubPanels.3" />
         </div>
         {moved && (
@@ -2352,36 +2371,6 @@ export function AgentsPanel({
               <p className="settings-help">{t("agents.noneInstalled")}</p>
             ) : (
               <>
-                {/* The local-model menu's check row, same markup: what a check
-                    *finds* shows on each card (the version pair), so the note
-                    here only speaks for the results that have no other place —
-                    a clean check, a failed one, and CLIs it couldn't compare. */}
-                <div className="local-model-check-row">
-                  <button
-                    type="button"
-                    className="tab-new-menu-item"
-                    disabled={checkingUpdates}
-                    title={t("agents.checkUpdatesTitle")}
-                    onClick={checkUpdates}
-                  >
-                    <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
-                      ●
-                    </span>
-                    {checkingUpdates ? t("agents.checkingUpdates") : t("agents.checkUpdates")}
-                    {!checkingUpdates && updateCheck && (
-                      <span className="local-model-update-note">
-                        {!updateCheck.ok
-                          ? updateCheck.reason
-                          : updateCheck.updates > 0
-                            ? t("agents.updatesFound", { count: String(updateCheck.updates) })
-                            : updateCheck.unread > 0
-                              ? t("agents.updatesNoneKnown", { count: String(updateCheck.unread) })
-                              : t("agents.updatesNone")}
-                      </span>
-                    )}
-                  </button>
-                  <UntestedTag id="settingsSubPanels.agentUpdates" />
-                </div>
                 <SettingsList>{installedAgents.map(agentCard)}</SettingsList>
               </>
             )}

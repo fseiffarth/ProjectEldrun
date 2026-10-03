@@ -1579,10 +1579,48 @@ fn wanted_updates(models: Vec<(String, String)>) -> Vec<OllamaModelUpdate> {
 // `ollama --version`) and read whenever the menu opens; the **latest** version
 // is a network request and happens only when the user clicks.
 
-/// Where the newest published version is read from. GitHub's release API rather
-/// than ollama.com: it is the same source the project's own installer consults,
-/// it is unauthenticated, and it answers with a plain tag we can compare.
+/// Where the newest published version is read from: GitHub's releases rather
+/// than ollama.com (whose `/api/version` answers `0.0.0`) — the same source the
+/// project's own installer consults. The release page's redirect comes first
+/// (`agent_latest::github_latest_page`): the REST API's unauthenticated quota is
+/// 60 an hour per IP, and once spent every check failed with "couldn't reach the
+/// release feed" (2026-10-02). The API stays as the fallback.
+const OLLAMA_REPO: &str = "ollama/ollama";
 const OLLAMA_RELEASES_URL: &str = "https://api.github.com/repos/ollama/ollama/releases/latest";
+
+/// The newest Ollama release tag, e.g. `v0.35.1`: the release page's redirect,
+/// else the API. `None` when neither answered with one.
+fn latest_ollama_tag() -> Option<String> {
+    use crate::services::agent_latest::{github_latest_page, tag_from_release_redirect};
+    let from_redirect = crate::paths::command_no_window("curl")
+        .args(["-sSI", "--max-time", "15", &github_latest_page(OLLAMA_REPO)])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| header_value(&String::from_utf8_lossy(&out.stdout), "location"))
+        .and_then(|location| tag_from_release_redirect(&location));
+    if from_redirect.is_some() {
+        return from_redirect;
+    }
+    // GitHub rejects a request with no User-Agent, so one is sent. It names
+    // the app and nothing else — no token, no account, no machine detail.
+    crate::paths::command_no_window("curl")
+        .args([
+            "-fsSL",
+            "--max-time",
+            "15",
+            "-H",
+            concat!("User-Agent: ", crate::app_name!()),
+            "-H",
+            "Accept: application/vnd.github+json",
+            OLLAMA_RELEASES_URL,
+        ])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok())
+        .and_then(|v| v["tag_name"].as_str().map(String::from))
+}
 
 /// The installed and newest-published Ollama versions.
 #[derive(serde::Serialize, Clone, Default)]
@@ -1703,36 +1741,14 @@ pub async fn ollama_version_status(check_remote: bool) -> OllamaVersionStatus {
             return status;
         }
 
-        // GitHub rejects a request with no User-Agent, so one is sent. It names
-        // the app and nothing else — no token, no account, no machine detail.
-        match crate::paths::command_no_window("curl")
-            .args([
-                "-fsSL",
-                "--max-time",
-                "15",
-                "-H",
-                concat!("User-Agent: ", crate::app_name!()),
-                "-H",
-                "Accept: application/vnd.github+json",
-                OLLAMA_RELEASES_URL,
-            ])
-            .output()
-        {
-            Ok(out) if out.status.success() => {
-                let tag = serde_json::from_slice::<serde_json::Value>(&out.stdout)
-                    .ok()
-                    .and_then(|v| v["tag_name"].as_str().map(String::from))
-                    .unwrap_or_default();
-                match parse_version(&tag) {
-                    Some(latest) => {
-                        status.update_available =
-                            version_is_newer(&latest, &status.current).unwrap_or(false);
-                        status.latest = latest;
-                    }
-                    None => status.error = Some("couldn't read the latest version".to_string()),
-                }
+        match latest_ollama_tag().as_deref().map(parse_version) {
+            Some(Some(latest)) => {
+                status.update_available =
+                    version_is_newer(&latest, &status.current).unwrap_or(false);
+                status.latest = latest;
             }
-            _ => status.error = Some("couldn't reach the release feed".to_string()),
+            Some(None) => status.error = Some("couldn't read the latest version".to_string()),
+            None => status.error = Some("couldn't reach the release feed".to_string()),
         }
         status
     })

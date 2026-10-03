@@ -1795,14 +1795,15 @@ pub struct AgentUpdateReport {
     error: Option<String>,
 }
 
-/// Ask each installed CLI's registry for its newest release — Manage CLIs'
-/// "Check for CLI updates", the agent twin of `check_ollama_updates`. Only on
-/// a click: one request per installed CLI that has a known registry, all at
-/// once, each settled on its own so one registry being down costs only its row.
-/// The installed versions are re-read first, so a CLI that updated itself
-/// since the last probe is not offered the update it already has.
+/// Ask installed CLIs' registries for their newest release — each Manage CLIs
+/// card's "Check for update" (`id`), or every installed CLI when `id` is
+/// `None`; the agent twin of `check_ollama_updates`. Only on a click: one
+/// request per CLI that has a known registry, all at once, each settled on its
+/// own so one registry being down costs only its row. The installed versions
+/// are re-read first, so a CLI that updated itself since the last probe is not
+/// offered the update it already has.
 #[tauri::command]
-pub async fn check_agent_updates() -> Vec<AgentUpdateReport> {
+pub async fn check_agent_updates(id: Option<String>) -> Vec<AgentUpdateReport> {
     use crate::services::{agent_latest, agent_versions};
 
     let mut probed: std::collections::HashMap<String, Option<String>> = agent_versions(Some(true))
@@ -1811,7 +1812,7 @@ pub async fn check_agent_updates() -> Vec<AgentUpdateReport> {
         .map(|report| (report.agent, report.version))
         .collect();
     let mut checks = Vec::new();
-    for spec in AGENTS {
+    for spec in AGENTS.iter().filter(|spec| id.as_deref().is_none_or(|id| id == spec.id)) {
         let Some(path) = resolve_spec_path(spec) else {
             continue;
         };
