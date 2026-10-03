@@ -10,7 +10,7 @@ import {
   readerRequest,
   type SessionTranscript,
 } from "../../lib/agents/agentReader";
-import { NO_LIVE, STOP_KEY, answerKeys, readReaderLive, sameReaderLive, type ReaderLive } from "../../lib/agents/readerLive";
+import { NO_LIVE, STOP_KEY, answerKeys, readReaderLive, sameReaderLive, tabStepKeys, type ReaderLive } from "../../lib/agents/readerLive";
 import { onSentPrompt } from "../../lib/agents/sentPrompts";
 import { readerDraft, setReaderDraft } from "../../lib/agents/readerDrafts";
 import { clearAgentTab, sendSteeringPrompt } from "../../lib/shortcuts/steeringAgent";
@@ -113,42 +113,95 @@ const RECOMMENDED = /\s+\(Recommended\)$/u;
 /** The choice the session waits on, as buttons: what it was drawn onto (a
  * permission prompt's command or diff), an agent question's headers as chips,
  * its question, then one row per option. A click sends the arrow keys and
- * Enter a walked highlight would. */
-function LiveQuestion({ live, answered, onAnswer }: {
+ * Enter a walked highlight would. A question that asks several has its
+ * headers as steps: ←/→ and a click on one walk the dialog's tabs, so an
+ * answer can be changed before Submit. */
+function LiveQuestion({ live, answered, busy, onAnswer, onStep }: {
   live: ReaderLive;
+  /** A row was clicked and the session has not redrawn yet. */
   answered: boolean;
+  /** Keys of any kind are on their way: nothing can be clicked. */
+  busy: boolean;
   onAnswer: (index: number) => void;
+  /** Walks the tab row from step `from` to step `to`. */
+  onStep: (from: number, to: number) => void;
 }) {
   const t = useT();
   const question = live.question;
   if (!question) return null;
+  const last = live.tabs.length - (live.tabSubmit ? 0 : 1);
+  const stepped = last > 0;
+  const focus = live.tabFocus;
+  const tabClass = (answeredTab: boolean, index: number) =>
+    [answeredTab && "answered", index === focus && "current"].filter(Boolean).join(" ") || undefined;
   return (
     <div className="terminal-reader-question" role="group" aria-label={t("terminal.reader.question")}>
       <small className="terminal-reader-question-head">{t("terminal.reader.question")}</small>
       {live.context.length > 0 && <pre className="terminal-reader-question-context">{live.context.join("\n")}</pre>}
-      {live.tabs.length > 0 && (
+      {live.tabs.length > 0 && !stepped && (
         <div className="terminal-reader-question-tabs">
           {live.tabs.map((tab, index) => (
             <span key={index} className={tab.answered ? "answered" : undefined}>{tab.answered && "✓ "}{tab.label}</span>
           ))}
         </div>
       )}
+      {stepped && (
+        <div className="terminal-reader-question-tabs stepped" role="toolbar" aria-label={t("terminal.reader.questionSteps")}>
+          <button
+            type="button"
+            className="terminal-reader-question-step"
+            aria-label={t("terminal.reader.questionPrevious")}
+            title={t("terminal.reader.questionPrevious")}
+            disabled={busy || focus === 0}
+            onClick={() => (focus === null ? onStep(1, 0) : onStep(focus, focus - 1))}
+          >←</button>
+          {live.tabs.map((tab, index) => (
+            <button
+              key={index}
+              type="button"
+              className={tabClass(tab.answered, index)}
+              aria-current={index === focus ? "step" : undefined}
+              disabled={busy || focus === null || index === focus}
+              onClick={() => focus !== null && onStep(focus, index)}
+            >{tab.answered && "✓ "}{tab.label}</button>
+          ))}
+          {live.tabSubmit && (
+            <button
+              type="button"
+              className={tabClass(false, live.tabs.length)}
+              aria-current={focus === live.tabs.length ? "step" : undefined}
+              disabled={busy || focus === null || focus === live.tabs.length}
+              onClick={() => focus !== null && onStep(focus, live.tabs.length)}
+            >{t("terminal.reader.questionSubmitStep")}</button>
+          )}
+          <button
+            type="button"
+            className="terminal-reader-question-step"
+            aria-label={t("terminal.reader.questionNext")}
+            title={t("terminal.reader.questionNext")}
+            disabled={busy || focus === last}
+            onClick={() => (focus === null ? onStep(0, 1) : onStep(focus, focus + 1))}
+          >→</button>
+          <UntestedTag id="terminal.reader.questionSteps" />
+        </div>
+      )}
       {live.ask.length > 0 && <p className="terminal-reader-question-ask">{live.ask.join("\n")}</p>}
       <div className="terminal-reader-options">
         {question.options.map((option) => {
           const recommended = RECOMMENDED.exec(option.label);
+          const label = question.review ? t("terminal.reader.questionSubmitStep") : option.label;
           return (
             <button
               key={`${option.index}:${option.label}`}
               type="button"
               className={option.index === question.current ? "terminal-reader-option current" : "terminal-reader-option"}
-              disabled={answered}
+              disabled={busy}
               onClick={() => onAnswer(option.index)}
             >
               <span className="terminal-reader-option-number">{option.number}</span>
               <span className="terminal-reader-option-label">
                 <span>
-                  {recommended ? option.label.slice(0, recommended.index) : option.label}
+                  {recommended ? option.label.slice(0, recommended.index) : label}
                   {recommended && <em className="terminal-reader-recommended">{t("terminal.reader.recommended")}</em>}
                 </span>
                 {option.description && <small>{option.description}</small>}
@@ -570,6 +623,8 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
   /** When a read last saw the agent at work: a sent prompt waits from then. */
   const workingSeenAt = useRef(0);
   const [answered, setAnswered] = useState("");
+  /** What `answered` waits on: a row's answer, or a walk along the tab row. */
+  const [answeredBy, setAnsweredBy] = useState<"row" | "step">("row");
   const [picking, setPicking] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [statusRequest, setStatusRequest] = useState(0);
@@ -643,8 +698,16 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
     const option = question?.options.find((entry) => entry.index === index);
     if (!question || !option || answered) return;
     setAnswered(live.signature);
+    setAnsweredBy("row");
     stuck.current = true;
     void typeKeys(ptyId, answerKeys(question, option)).catch(() => setAnswered(""));
+  };
+  const step = (from: number, to: number) => {
+    const keys = tabStepKeys(live, from, to);
+    if (!live.question || keys.length === 0 || answered) return;
+    setAnswered(live.signature);
+    setAnsweredBy("step");
+    void typeKeys(ptyId, keys).catch(() => setAnswered(""));
   };
   const stop = () => void typeKeys(ptyId, [STOP_KEY]).catch(() => {});
   const shownLive = picking ? NO_LIVE : live;
@@ -1038,7 +1101,13 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
               <small className="terminal-reader-time">{t("terminal.reader.sending")}</small>
             </div>
           ))}
-          <LiveQuestion live={shownLive} answered={!!answered && answered === live.signature} onAnswer={answer} />
+          <LiveQuestion
+            live={shownLive}
+            answered={!!answered && answered === live.signature && answeredBy === "row"}
+            busy={!!answered && answered === live.signature}
+            onAnswer={answer}
+            onStep={step}
+          />
           {openStep ? subagentWorking && (
             <div className="terminal-reader-working" role="status">
               <span className="terminal-reader-working-dots" aria-hidden="true"><i /><i /><i /></span>

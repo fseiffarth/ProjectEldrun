@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { answerKeys, readReaderLive, sameReaderLive } from "../../lib/agents/readerLive";
+import { answerKeys, readReaderLive, sameReaderLive, tabStepKeys } from "../../lib/agents/readerLive";
 import type { ReadableBufferLike } from "../../../mobile-web/src/terminal/readableScreen";
 
 function plainBuffer(rows: string[]): ReadableBufferLike {
@@ -97,6 +97,65 @@ describe("the desktop Reader's live screen", () => {
       "", "❯ 1. v0.2.0", "  2. v0.1.100",
     ]), "Claude");
     expect(sameReaderLive(live, next)).toBe(false);
+    expect(live.tabSubmit).toBe(true);
+    // A plain buffer paints no chip: the step on screen is unknown.
+    expect(live.tabFocus).toBeNull();
+  });
+
+  it("tells two questions of one dialog apart when they offer the same rows", () => {
+    const step = (tabRow: string, ask: string) => readReaderLive(plainBuffer([
+      "> ask me", "", tabRow, "", ask, "", "❯ 1. Yes", "  2. No", "",
+      "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+    ]), "Claude");
+    const first = step("←  ☐ Tests  ☐ Docs  ✔ Submit  →", "Run the tests?");
+    const second = step("←  ☒ Tests  ☐ Docs  ✔ Submit  →", "Update the docs?");
+    expect(first.signature).not.toBe(second.signature);
+  });
+
+  it("reads Codex's several questions off its heading, with no Submit step", () => {
+    const live = readReaderLive(plainBuffer([
+      "› plan it", "",
+      "  Question 2/3 (2 unanswered)",
+      "  Which store should the cache use?",
+      "",
+      "  › 1. Redis (Recommended)    Shared across workers.",
+      "    2. In-process LRU         Simplest.",
+      "",
+      "  tab to add notes | enter to submit answer | ←/→ to navigate questions | esc to interrupt",
+    ]), "Codex");
+    expect(live.question).not.toBeNull();
+    expect(live.tabs.map((tab) => tab.label)).toEqual(["Q1", "Q2", "Q3"]);
+    expect(live.tabFocus).toBe(1);
+    expect(live.tabSubmit).toBe(false);
+    expect(live.tabKeys).toBe("pages");
+  });
+
+  it("keeps Gemini's Review page as a card that submits with Enter and walks back with Shift+Tab", () => {
+    const live = readReaderLive(plainBuffer([
+      "> plan the release", "",
+      "← ✓ Scope │ □ Release tag │ ≡ Review →", "",
+      "Review your answers:", "",
+      "⚠ You have 1 unanswered question", "",
+      "Scope → Fix only",
+      "Release tag → (not answered)",
+      "Enter to submit · Tab/Shift+Tab to edit answers · Esc to cancel",
+    ]), "Gemini");
+    const question = live.question!;
+    expect(question.options.map((option) => option.label)).toEqual(["Submit"]);
+    expect(answerKeys(question, question.options[0])).toEqual(["\r"]);
+    expect(live.tabs).toEqual([{ label: "Scope", answered: true }, { label: "Release tag", answered: false }]);
+    expect(live.tabSubmit).toBe(true);
+    expect(live.tabKeys).toBe("tabs");
+    expect(live.ask).toEqual(["Review your answers:", "", "⚠ You have 1 unanswered question", "", "Scope → Fix only", "Release tag → (not answered)"]);
+    expect(tabStepKeys(live, 2, 1)).toEqual(["\u001b[Z"]);
+  });
+
+  it("walks a several-question dialog's tabs with the arrows", () => {
+    expect(tabStepKeys({ tabKeys: "arrows" }, 2, 1)).toEqual(["\u001b[D"]);
+    expect(tabStepKeys({ tabKeys: "arrows" }, 0, 2)).toEqual(["\u001b[C", "\u001b[C"]);
+    // Codex: PageUp/PageDown, which also work while a notes field is open.
+    expect(tabStepKeys({ tabKeys: "pages" }, 0, 2)).toEqual(["\u001b[6~", "\u001b[6~"]);
+    expect(tabStepKeys({ tabKeys: "pages" }, 1, 0)).toEqual(["\u001b[5~"]);
   });
 
   it("answers with the arrows from the highlight, then Enter", () => {

@@ -1155,6 +1155,16 @@ span.files-close { background:transparent; }
 .question-tabs span { color:#e7e9f2; font:600 1.02rem/1.3 Inter,ui-sans-serif,system-ui,sans-serif; }
 .question-tabs span.answered { color:#7d8499; font-size:.84rem; font-weight:500; }
 .question-list button:disabled { opacity:.6; }
+/* A question that asks several: its headers are steps of the dialog's tab
+   row, walked with ←/→ or a tap, the one on screen marked as the option
+   list's highlighted row is. */
+.question-tabs.stepped { align-items:center; gap:6px; }
+.question-tabs.stepped button { min-height:36px; padding:6px 12px; border:0; border-radius:13px; background:#1e2230; color:#e7e9f2; font:600 .92rem/1.2 Inter,ui-sans-serif,system-ui,sans-serif; }
+.question-tabs.stepped button.answered { color:#98a0b4; font-weight:500; }
+.question-tabs.stepped button.current { color:#8fb6ff; background:#1c2336; box-shadow:inset 0 0 0 1px #8fb6ff; }
+.question-tabs.stepped button.question-step { min-width:40px; font-size:1.05rem; }
+.question-tabs.stepped button:disabled:not(.current) { opacity:.5; }
+.question-tabs.stepped em { color:#98a0b4; font-size:.78rem; }
 /* The free-text row's field (`freeTextRow`), opened under it by a tap: the
    to-do editor's add row — a field and its button side by side. */
 .question-type { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding:6px 0 4px; }

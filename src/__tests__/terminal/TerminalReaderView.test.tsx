@@ -487,6 +487,27 @@ describe("the Reader's live rows", () => {
     expect(group.querySelector(".terminal-reader-recommended")?.textContent).toBe("Recommended");
   });
 
+  it("walks a several-question dialog's tabs with ←/→, so an answer can be changed before Submit", async () => {
+    term = fakeTerminal([
+      "> tag it", "",
+      "←  ☒ Scope  ☒ Release tag  ✔ Submit  →", "",
+      "Review your answers", "",
+      "❯ 1. Submit answers", "  2. Cancel",
+      "", "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+    ]);
+    registerTerminal("p:agent-1", term);
+    reader(host);
+    const steps = await screen.findByRole("toolbar", { name: "Questions" });
+    expect(steps.textContent).toMatch(/✓ Scope.*✓ Release tag.*Submit/);
+    // The row does not say which step is on screen here: the arrows still
+    // walk, the headers wait until it does.
+    expect((screen.getByRole("button", { name: /Scope/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Previous question" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(written).toEqual(["\u001b[D"]);
+    expect(screen.queryByText("Answering…")).toBeNull();
+  });
+
   it("shows the agent at work and stops it with Esc", async () => {
     term = fakeTerminal(["> fix it", "", "✻ Thinking… (9s · ↓ 1.2k tokens · esc to interrupt)", "> ", "  ? for shortcuts"]);
     registerTerminal("p:agent-1", term);

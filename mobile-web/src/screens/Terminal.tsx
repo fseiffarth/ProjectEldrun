@@ -68,6 +68,8 @@ import {
   freeTextRow,
   freeTextWrites,
   mergeSelectRows,
+  questionTabKeys,
+  readReviewStep,
   readSelectPrompt,
   revealSelectRow,
   sameSelectStep,
@@ -79,7 +81,7 @@ import {
   type SelectPrompt,
   type SelectStep,
 } from "../terminal/selectPrompt";
-import { questionParts, type QuestionParts } from "../terminal/questionParts";
+import { NO_QUESTION_PARTS, questionParts, type QuestionParts } from "../terminal/questionParts";
 import {
   isOpenCodeTab,
   openCodePickKeys,
@@ -600,10 +602,15 @@ function noSessionReason(transcript: SessionTranscript | null): TranslationKey {
  * is shown as a tag beside the label rather than as part of it. */
 const RECOMMENDED = /\s+\((Recommended)\)$/u;
 
-function QuestionList({ prompt, tabs, question, sent, sendingLabel, onPick, onType }: {
+function QuestionList({ prompt, tabs, tabFocus, tabSubmit, question, sent, sendingLabel, onPick, onType, onStep }: {
   prompt: SelectPrompt;
   /** The headers of the questions the dialog asks (`readQuestionTabs`). */
   tabs: readonly QuestionTab[];
+  /** The step of `tabs` on screen — `tabs.length` for Submit, null when the
+   * row does not say (`questionTabFocus`). */
+  tabFocus: number | null;
+  /** Whether the tab row ends in a Submit step. */
+  tabSubmit: boolean;
   /** The dialog's own question — the lines `prompt.question` points at. It is
    * the list's heading here, so it is shown in the reading view's own voice
    * (`plain`): a TUI paints its dialog in its own theme, and Codex's light
@@ -616,21 +623,44 @@ function QuestionList({ prompt, tabs, question, sent, sendingLabel, onPick, onTy
   onPick: (option: SelectOption) => void;
   /** The free-text row (`freeTextRow`) answered with the words typed under it. */
   onType: (option: SelectOption, text: string) => void;
+  /** Walks the dialog's tab row from step `from` to step `to`. */
+  onStep: (from: number, to: number) => void;
 }) {
   const t = useT();
   /** The free-text row tapped: its field is open under it until sent. */
   const [typing, setTyping] = useState<number | null>(null);
   const [typed, setTyped] = useState("");
+  /** A question that asks several: its headers are steps of the dialog's tab
+   * row, walked with ←/→ or a tap, so an answer can be changed before Submit. */
+  const last = tabs.length - (tabSubmit ? 0 : 1);
+  const stepped = last > 0;
+  const busy = sent !== undefined;
+  const stepClass = (answered: boolean, index: number) =>
+    [answered && "answered", index === tabFocus && "current"].filter(Boolean).join(" ") || undefined;
   return <>
-    {tabs.length > 0 && <div className="question-tabs">
+    {tabs.length > 0 && !stepped && <div className="question-tabs">
       {tabs.map((tab, index) => <span key={index} className={tab.answered ? "answered" : undefined}>{tab.answered && "✓ "}{tab.label}</span>)}
+    </div>}
+    {stepped && <div className="question-tabs stepped" role="toolbar" aria-label={t("terminal.reader.questionSteps")}>
+      <button className="question-step" aria-label={t("terminal.reader.questionPrevious")} disabled={busy || tabFocus === 0}
+        onClick={() => (tabFocus === null ? onStep(1, 0) : onStep(tabFocus, tabFocus - 1))}>←</button>
+      {tabs.map((tab, index) => <button key={index} className={stepClass(tab.answered, index)} aria-current={index === tabFocus ? "step" : undefined}
+        disabled={busy || tabFocus === null || index === tabFocus}
+        onClick={() => tabFocus !== null && onStep(tabFocus, index)}>{tab.answered && "✓ "}{tab.label}</button>)}
+      {tabSubmit && <button className={stepClass(false, tabs.length)} aria-current={tabFocus === tabs.length ? "step" : undefined}
+        disabled={busy || tabFocus === null || tabFocus === tabs.length}
+        onClick={() => tabFocus !== null && onStep(tabFocus, tabs.length)}>{t("terminal.reader.questionSubmitStep")}</button>}
+      <button className="question-step" aria-label={t("terminal.reader.questionNext")} disabled={busy || tabFocus === last}
+        onClick={() => (tabFocus === null ? onStep(0, 1) : onStep(tabFocus, tabFocus + 1))}>→</button>
+      {isUntested("mobile.question.steps") && <em>{t("mobile.focus.untested")}</em>}
     </div>}
     {question.length > 0 && <div className="question-ask">
       {question.map((line) => <ReadableRow key={line.key} line={line} plain />)}
     </div>}
     <ul className="option-list question-list">{prompt.options.map((option) => {
       const recommended = RECOMMENDED.exec(option.label);
-      const label = recommended ? option.label.slice(0, recommended.index) : option.label;
+      const label = prompt.review ? t("terminal.reader.questionSubmitStep")
+        : recommended ? option.label.slice(0, recommended.index) : option.label;
       const freeText = freeTextRow(option);
       const send = () => {
         if (!typed.trim()) return;
@@ -3419,7 +3449,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * itself — its rows, and where on the tail they start — not just that there
    * is one. */
   const liveQuestion = useMemo(
-    () => (liveTail.length > 0 ? readSelectPrompt(liveTail, agentLabel, paneColumns.current) : null),
+    () => (liveTail.length > 0 ? readSelectPrompt(liveTail, agentLabel, paneColumns.current) ?? readReviewStep(liveTail, agentLabel) : null),
     [liveTail, agentLabel],
   );
   /** The agent as the markup view's round pill reads it: the live screen
@@ -3450,13 +3480,17 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * the list shows it as chips. Such a question and the agent's prose above it
    * are rejoined into paragraphs (`joinProseWraps`) — any other dialog's
    * screen, a diff or a command, stays as drawn. */
-  const { ask: questionAsk, context: questionContext, tabs: questionTabs } = useMemo(
-    (): QuestionParts => (liveQuestion ? questionParts(liveTail, liveQuestion) : { ask: [], context: [], tabs: [] }),
+  const { ask: questionAsk, context: questionContext, tabs: questionTabs, tabFocus: questionTabFocus, tabSubmit: questionTabSubmit, tabKeys: questionStepKeys } = useMemo(
+    (): QuestionParts => (liveQuestion ? questionParts(liveTail, liveQuestion) : NO_QUESTION_PARTS),
     [liveQuestion, liveTail],
   );
   /** What the list on screen *is*, as a string: a stable dep for the effects
-   * below, which must not restart on every repaint of the same question. */
-  const questionSignature = liveQuestion ? selectSignature(liveQuestion) : "";
+   * below, which must not restart on every repaint of the same question. Two
+   * questions of one dialog can offer the same rows (two yes/no questions):
+   * the step they are on tells them apart. */
+  const questionSignature = !liveQuestion ? ""
+    : questionTabs.length === 0 ? selectSignature(liveQuestion)
+    : [selectSignature(liveQuestion), ...questionTabs.map((tab) => `${tab.answered ? "✓" : "☐"}${tab.label}`), `@${questionTabFocus ?? ""}`, ...questionAsk.map((line) => line.text)].join("\n");
   /** The question a tap just answered, while the session has not redrawn yet:
    * its rows stay listed, but nothing can be tapped twice. */
   const [questionSent, setQuestionSent] = useState<{ signature: string; number: number } | null>(null);
@@ -3481,6 +3515,16 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     clearPending();
     if (!deliver(selectKeys(liveQuestion.current, option.index))) return;
     setQuestionSent({ signature: questionSignature, number: option.number });
+  };
+  /** Walks a several-question dialog — Claude Code's ←/→, Codex's
+   * PageUp/PageDown — so an answer already given can be changed before it is
+   * sent. No row is pending, but none can be tapped until the session redraws. */
+  const stepQuestion = (from: number, to: number) => {
+    const keys = questionTabKeys(from, to, questionStepKeys);
+    if (!liveQuestion || questionSent || keys.length === 0) return;
+    clearPending();
+    if (!deliver(keys)) return;
+    setQuestionSent({ signature: questionSignature, number: -1 });
   };
   /** Answers the question's free-text row (`freeTextRow`) with what was typed
    * under it: the highlight walked there, the words, and Enter where Enter
@@ -3863,7 +3907,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
                         something a phone can do — and the question above them
                         is that list's heading. */}
                     {questionContext.length > 0 && <ReadableTurns lines={questionContext} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />}
-                    <QuestionList prompt={liveQuestion} tabs={questionTabs} question={questionAsk} sent={sentSignature === questionSignature ? questionSent?.number : undefined} sendingLabel={t("mobile.transcript.answering")} onPick={answerQuestion} onType={answerQuestionText} />
+                    <QuestionList prompt={liveQuestion} tabs={questionTabs} tabFocus={questionTabFocus} tabSubmit={questionTabSubmit} question={questionAsk} sent={sentSignature === questionSignature ? questionSent?.number : undefined} sendingLabel={t("mobile.transcript.answering")} onPick={answerQuestion} onType={answerQuestionText} onStep={stepQuestion} />
                   </div>}
                   {sessionBusy && <div className="transcript-working" role="status">
                     <span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span>

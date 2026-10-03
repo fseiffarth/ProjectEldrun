@@ -2874,6 +2874,36 @@ html:is([data-steer-region="mail"], [data-steer-region="calendar"], [data-steer-
   font-weight: 500;
   color: var(--text-muted);
 }
+/* A question that asks several: its headers are steps of the dialog's tab
+   row, walked with ←/→ or a click, the one on screen marked. */
+.terminal-reader-question-tabs.stepped {
+  align-items: center;
+  gap: 4px 6px;
+}
+.terminal-reader-question-tabs.stepped button {
+  padding: 2px 8px;
+  font: inherit;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+}
+.terminal-reader-question-tabs.stepped button.answered {
+  font-size: var(--text-xs);
+}
+.terminal-reader-question-tabs.stepped button.current {
+  color: var(--accent);
+  border-color: var(--accent);
+  cursor: var(--cur-default, default);
+}
+.terminal-reader-question-tabs.stepped button:not(.current):hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.terminal-reader-question-tabs.stepped button:disabled:not(.current) {
+  cursor: var(--cur-default, default);
+  opacity: 0.6;
+}
 .terminal-reader-recommended {
   margin-left: 6px;
   font-size: var(--text-xs);
