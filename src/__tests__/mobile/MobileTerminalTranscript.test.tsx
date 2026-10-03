@@ -649,6 +649,25 @@ describe(`${BRAND.display} Mobile Focus reads the stored session`, () => {
     expect(screen.getByRole("button", { name: "Start a new conversation" }).textContent).toBe("Clear");
   });
 
+  it("keeps the chat while a /clear sent mid-turn waits behind the turn, and starts over when it ends", async () => {
+    localStorage.setItem(storageKey("mobile.view.claude"), "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => STORED));
+    const working = { ...TAB, agent_status: "working" } as typeof TAB;
+    const { rerender } = render(<Terminal tab={working} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    // Claude queues it: the conversation is not cleared yet, so nothing is
+    // hidden and there is nothing to undo — an Undo now resumed an older chat.
+    expect(screen.getByText("add a clear button")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Bring back the conversation you just cleared" })).toBeNull();
+
+    rerender(<Terminal tab={{ ...TAB, agent_status: "idle" } as typeof TAB} back={() => {}} />);
+    await settle();
+    expect(screen.queryByText("add a clear button")).toBeNull();
+    expect(screen.getByRole("button", { name: "Bring back the conversation you just cleared" })).toBeTruthy();
+  });
+
   it("takes Undo away once the new chat is given a prompt, and offers it on Codex but not Aider", async () => {
     localStorage.setItem(storageKey("mobile.view.claude"), "focus");
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));

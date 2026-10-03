@@ -1019,6 +1019,10 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * Undo until the new chat is given a prompt (Claude only — the desktop
    * types the resume of the conversation cleared, `undoClear`). */
   const [undoable, setUndoable] = useState(false);
+  /** A `/clear` sent while the agent was in a turn: the CLI queues it behind
+   * the turn (Claude) — the chat on screen is not cleared yet, and its prompt
+   * would be what an Undo then left behind. It starts over at the turn's end. */
+  const [clearQueued, setClearQueued] = useState(false);
   /** What became of the last edit of a held prompt, shown under the composer. */
   const [editNote, setEditNote] = useState<TranslationKey | "">("");
   /** A message on its way to the open subagent, and why the last one did not
@@ -1150,6 +1154,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     setEditing(null);
     setEditNote("");
     setClearedAt(null);
+    setClearQueued(false);
     setClearRefused(false);
     setUndoable(false);
     setUndoNote("");
@@ -2481,6 +2486,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
     } else {
       // The new chat has a prompt now: resuming the old one would leave it.
       setUndoable(false);
+      setClearQueued(false);
       setUndoNote("");
       const sent = pendingPrompt(id, text, storedEntries);
       setPending((current) => [...current, sent].slice(-MAX_PENDING));
@@ -2721,14 +2727,30 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
    * session held stays hidden until the new one is read, unless Codex was busy
    * and refused it — then the conversation goes on, and so does the chat. */
   const startedOver = () => {
-    setPending([]);
     setUndoNote("");
     if (codexBusy()) return;
+    if (agentAtWork) {
+      setClearQueued(true);
+      return;
+    }
+    setPending([]);
+    clearShown();
+  };
+  /** The chat shown starts over, the Clear chip reading Undo. */
+  const clearShown = () => {
     setClearedAt(clearMark(transcript?.entries ?? []));
     // Every agent Tabtivity resumes can take the clear back — the desktop decides
     // how, and says so when a tab is not one of them. Aider resumes nothing.
     setUndoable(slashCliKey !== "aider");
   };
+  // The turn is over: the queued `/clear` runs now. Bubbles held meanwhile
+  // stay — they went in ahead of it.
+  useEffect(() => {
+    if (!clearQueued || agentAtWork) return;
+    setClearQueued(false);
+    clearShown();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires on the turn's end, with the transcript as it stands then
+  }, [clearQueued, agentAtWork]);
   /** The Undo chip: the desktop brings back the conversation just cleared —
    * in-session for Claude, by relaunching the tab onto it for the others, as a
    * restart of Tabtivity would. Claude's hook records the clear a moment after the

@@ -2018,6 +2018,12 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          \x20 SessionEnd) [ \"$reason\" = clear ] || turn=idle ;;\n\
          esac\n\
          [ -n \"$turn\" ] && printf '%s %s' \"$turn\" \"$(date +%s)\" > \"$dir/${UPPER}_TAB_UID.turn\"\n\
+         # A prompt in the conversation a /clear started ends that clear's undo:\n\
+         # resuming the one it ended would leave the prompt behind. Not a session\n\
+         # command, which a CLI may report as a prompt too.\n\
+         if [ \"$event\" = UserPromptSubmit ] && ! printf '%s' \"$input\" | grep -Eq '\"prompt\"[[:space:]]*:[[:space:]]*\"[[:space:]]*/(clear|new|resume)'; then\n\
+         \x20 rm -f \"$dir/${UPPER}_TAB_UID.prev\"\n\
+         fi\n\
          # A /clear keeps the id of the conversation it ended, so the clear can be\n\
          # undone by resuming it; written before the source that says clear.\n\
          if [ \"$event\" = SessionStart ] && [ \"$src\" = clear ] && [ \"$sid\" != \"${{cur:-${UPPER}_TAB_UID}}\" ]; then\n\
@@ -2123,6 +2129,9 @@ fn hook_script_body(live_dir: &str) -> String {
          \x20 'SessionEnd' {{ if (-not ($mr.Success -and ($mr.Groups[1].Value -eq 'clear'))) {{ $turn = 'idle' }} }}\r\n\
          }}\r\n\
          if ($turn -ne '') {{ [IO.File]::WriteAllText(($rec + '.turn'), ($turn + ' ' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) }}\r\n\
+         # A prompt in the conversation a /clear started ends that clear's undo\r\n\
+         # (see the POSIX twin).\r\n\
+         if (($event -eq 'UserPromptSubmit') -and ($payload -notmatch '\"prompt\"\\s*:\\s*\"\\s*/(clear|new|resume)')) {{ Remove-Item -LiteralPath ($rec + '.prev') -Force -ErrorAction SilentlyContinue }}\r\n\
          # A /clear keeps the id of the conversation it ended (see the POSIX twin).\r\n\
          if (($event -eq 'SessionStart') -and $ms.Success -and ($ms.Groups[1].Value -eq 'clear')) {{\r\n\
          \x20 $was = $cur\r\n\
@@ -3056,6 +3065,18 @@ mod tests {
         let (rec, mode) = run_hook(&script, &live, uid, claude, true, &stop(cleared, "plan"));
         assert_eq!(rec.as_deref(), Some(cleared));
         assert_eq!(mode.as_deref(), Some("plan"));
+        // A session command reported as a prompt leaves the undo standing; a
+        // prompt in the new chat ends it — resuming the cleared conversation
+        // would leave that prompt behind (a second `/clear` queued behind its
+        // turn was undone onto the first clear's conversation).
+        let prompt = |text: &str| {
+            format!(r#"{{"session_id":"{cleared}","hook_event_name":"UserPromptSubmit","prompt":"{text}"}}"#)
+        };
+        run_hook(&script, &live, uid, claude, true, &prompt("/clear"));
+        assert_eq!(cleared_session_in(&live, uid, |_| true).as_deref(), Some(uid));
+        run_hook(&script, &live, uid, claude, true, &prompt("fix the build"));
+        assert_eq!(prev(), None);
+        assert_eq!(cleared_session_in(&live, uid, |_| true), None);
         // …and the launch id itself is always the tab's (a relaunch on `--resume
         // <launch>` after a lost record) — that resume is also the undo, after
         // which there is no clear left to take back.
