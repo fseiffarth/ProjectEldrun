@@ -42,7 +42,7 @@ use serde_json::Value;
 
 use crate::services::agent_changes::{opencode_part_changes, AgentChanges};
 use crate::services::agent_transcript::{
-    agent_entry, insert_by_time, subagent_token, transcript_entry, AgentTranscript, TranscriptEntry, MAX_SUBAGENT_DEPTH,
+    agent_entry, agents_unlisted, insert_by_time, subagent_token, transcript_entry, AgentTranscript, TranscriptEntry, MAX_SUBAGENT_DEPTH,
 };
 use crate::services::prompt_blame::epoch_ms_to_iso;
 
@@ -100,11 +100,14 @@ pub fn session_transcript(
         });
     }
     let (mut entries, mut truncated) = read_entries(&conn, &session)?;
-    insert_by_time(&mut entries, children(&conn, &session), truncated);
+    let children = children(&conn, &session);
+    let spawned: Vec<String> = children.iter().filter_map(|entry| entry.subagent.clone()).collect();
+    insert_by_time(&mut entries, children, truncated);
     if entries.len() > limit {
         entries.drain(..entries.len() - limit);
         truncated = true;
     }
+    let agents_earlier = truncated && agents_unlisted(&entries, &spawned);
     Some(AgentTranscript {
         available: true,
         reason: None,
@@ -112,6 +115,7 @@ pub fn session_transcript(
         unchanged: false,
         entries,
         truncated,
+        agents_earlier,
         usage: None,
         model: None,
         tokens: None,

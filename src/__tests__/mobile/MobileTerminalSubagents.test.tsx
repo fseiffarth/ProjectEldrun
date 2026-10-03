@@ -328,7 +328,7 @@ describe(`${BRAND.display} Mobile Reader opens the subagents an agent spawned`, 
       if (url.includes("/transcript")) {
         const expanded = new URL(url, "http://phone").searchParams.get("limit") === "240";
         return Promise.resolve(jsonResponse(200, { transcript: {
-          available: true, version: expanded ? "older:2" : "older:1", truncated: !expanded,
+          available: true, version: expanded ? "older:2" : "older:1", truncated: !expanded, agentsEarlier: !expanded,
           entries: expanded ? MAIN.entries : MAIN.entries.filter((entry) => entry.kind !== "agent"),
         } }));
       }
@@ -343,6 +343,22 @@ describe(`${BRAND.display} Mobile Reader opens the subagents an agent spawned`, 
     await settle();
     within(index).getByRole("button", { name: "Explore · Map the backend" });
     expect(fetch.mock.calls.some(([url]) => String(url).includes("limit=240"))).toBe(true);
+  });
+
+  it("shows no index for a long session that never spawned a subagent", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.endsWith("/outbox")) return Promise.resolve(jsonResponse(200, { files: [] }));
+      if (url.includes("/transcript")) {
+        return Promise.resolve(jsonResponse(200, { transcript: {
+          available: true, version: "long:1", truncated: true,
+          entries: MAIN.entries.filter((entry) => entry.kind !== "agent"),
+        } }));
+      }
+      return Promise.resolve(jsonResponse(404, { error: "not_found" }));
+    }));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    expect(screen.queryByRole("navigation", { name: "Subagents in this conversation" })).toBeNull();
   });
 
   it("steps to the next subagent without going back, and walks into a subagent's own", async () => {

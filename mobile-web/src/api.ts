@@ -700,6 +700,9 @@ export interface SessionTranscript {
   entries: TranscriptEntry[];
   /** Earlier turns exist that this answer does not carry. */
   truncated: boolean;
+  /** Those earlier turns hold a subagent the answer does not list — what
+   * the Subagents index's "+" stands for. */
+  agentsEarlier?: boolean;
   /** The session's own usage figures, where its transcript records them
    *  (Codex's rollout does; Claude's does not). */
   usage?: SessionUsage;

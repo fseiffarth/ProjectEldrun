@@ -172,6 +172,11 @@ pub struct AgentTranscript {
     /// read, or beyond the entry limit. A larger `limit` reaches the latter.
     #[serde(default)]
     pub truncated: bool,
+    /// The turns `truncated` leaves out hold a subagent this answer does not
+    /// list — what the Subagents index's "+" promises. A long session that
+    /// never spawned one is `truncated` without it.
+    #[serde(default, rename = "agentsEarlier", skip_serializing_if = "std::ops::Not::not")]
+    pub agents_earlier: bool,
     /// The session's own usage figures, where its transcript records them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TranscriptUsage>,
@@ -620,13 +625,20 @@ fn read_transcript_in(
     let tokens = newest_tokens(&lines, kind);
     let (mut entries, calls, shell_calls) = parse_entries(lines.into_iter(), kind, sidechain);
     let shells = running_shells(path, &current, shell_calls);
+    // Every subagent the session spawned, as tokens, for `agents_earlier`.
+    let mut spawned_tokens: Vec<String> = Vec::new();
     match spawns {
         Spawns::None => {}
         Spawns::Claude(folder) => {
-            if !calls.is_empty() {
+            // The session's own read only: a subagent's file shares the folder
+            // but spawned none of what it lists.
+            if !calls.is_empty() || (truncated && !sidechain) {
                 let spawned = claude_spawned(folder);
                 for (index, call) in calls {
                     entries[index].subagent = spawned.get(&call).map(|id| subagent_token(id));
+                }
+                if !sidechain {
+                    spawned_tokens = spawned.values().map(|id| subagent_token(id)).collect();
                 }
             }
         }
@@ -636,7 +648,8 @@ fn read_transcript_in(
                 .map(|db| crate::services::codex_store::spawned_threads(db, thread))
                 .find(|children| !children.is_empty())
                 .unwrap_or_default();
-            let placed = children.iter().filter_map(codex_agent_entry).collect();
+            let placed: Vec<TranscriptEntry> = children.iter().filter_map(codex_agent_entry).collect();
+            spawned_tokens = placed.iter().filter_map(|entry| entry.subagent.clone()).collect();
             insert_by_time(&mut entries, placed, truncated);
         }
     }
@@ -645,6 +658,7 @@ fn read_transcript_in(
         entries.drain(..drop);
         truncated = true;
     }
+    let agents_earlier = truncated && agents_unlisted(&entries, &spawned_tokens);
     Some(AgentTranscript {
         available: true,
         reason: None,
@@ -652,6 +666,7 @@ fn read_transcript_in(
         unchanged: false,
         entries,
         truncated,
+        agents_earlier,
         usage,
         model,
         tokens,
@@ -768,6 +783,13 @@ fn claude_spawned(folder: &Path) -> std::collections::HashMap<String, String> {
         }
     }
     spawned
+}
+
+/// Whether any of the session's `spawned` subagents (tokens) is missing from
+/// `entries` — one only the turns a truncated answer leaves out list.
+pub(crate) fn agents_unlisted(entries: &[TranscriptEntry], spawned: &[String]) -> bool {
+    let listed: std::collections::HashSet<&str> = entries.iter().filter_map(|entry| entry.subagent.as_deref()).collect();
+    spawned.iter().any(|token| !listed.contains(token.as_str()))
 }
 
 /// A spawned Codex thread as its parent's `agent` entry, at the moment it was
@@ -1796,6 +1818,39 @@ mod tests {
             vec![("prompt", "long task"), ("agent", "Dig deeper"), ("answer", "The backend is in src-tauri.")]
         );
         assert!(claude_subagent_file(&folder, &subagent_token("elsewhere")).is_none());
+    }
+
+    #[test]
+    fn only_turns_left_out_that_spawned_a_subagent_promise_earlier_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        std::fs::write(
+            &main,
+            concat!(
+                "{\"type\":\"user\",\"timestamp\":\"2026-09-24T10:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"look around\"}}\n",
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-09-24T10:00:01Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_A\",\"name\":\"Agent\",\"input\":{\"description\":\"Map the backend\"}}]}}\n",
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-09-24T10:05:00Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"It reported.\"}]}}\n",
+                "{\"type\":\"user\",\"timestamp\":\"2026-09-24T10:06:00Z\",\"message\":{\"role\":\"user\",\"content\":\"thanks\"}}\n",
+            ),
+        )
+        .unwrap();
+        let folder = dir.path().join("s").join("subagents");
+        let spawns = Spawns::Claude(&folder);
+
+        // Truncated, but no subagent was ever spawned: nothing earlier to find.
+        let none = read_transcript_in(&main, TranscriptKind::Claude, &spawns, false, None, 2).unwrap();
+        assert!(none.truncated && !none.agents_earlier);
+
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("agent-a1b2.meta.json"), r#"{"agentType":"Explore","toolUseId":"toolu_A"}"#).unwrap();
+        let cut = read_transcript_in(&main, TranscriptKind::Claude, &spawns, false, None, 2).unwrap();
+        assert!(cut.truncated && cut.agents_earlier);
+        assert!(serde_json::to_value(&cut).unwrap()["agentsEarlier"].as_bool().unwrap());
+        // The subagent is among the turns read: listed, not promised.
+        let listed = read_transcript_in(&main, TranscriptKind::Claude, &spawns, false, None, 3).unwrap();
+        assert!(listed.truncated && !listed.agents_earlier);
+        let whole = read_transcript_in(&main, TranscriptKind::Claude, &spawns, false, None, DEFAULT_LIMIT).unwrap();
+        assert!(!whole.truncated && !whole.agents_earlier);
     }
 
     #[test]

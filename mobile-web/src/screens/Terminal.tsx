@@ -347,7 +347,7 @@ const LIMITS_POLL = 120_000;
 /** Whether two reads of the stored session carry the same turns, so an
  * unchanged answer does not repaint the view. */
 function sameTranscript(a: SessionTranscript, b: SessionTranscript): boolean {
-  return a.available === b.available && a.truncated === b.truncated && a.version === b.version
+  return a.available === b.available && a.truncated === b.truncated && a.agentsEarlier === b.agentsEarlier && a.version === b.version
     && a.entries.length === b.entries.length
     && a.entries.every((entry, index) => entry.kind === b.entries[index].kind && entry.text === b.entries[index].text && entry.cut === b.entries[index].cut
       // A subagent's handle can arrive after its entry did.
@@ -2021,6 +2021,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
   const storedEntries = useMemo(() => sinceClear ?? transcript?.entries ?? [], [sinceClear, transcript]);
   const sessionEntries = useMemo(() => withPending(storedEntries, pending), [storedEntries, pending]);
   const sessionAgents = useMemo(() => sessionEntries.filter((entry) => entry.kind === "agent"), [sessionEntries]);
+  /** Earlier turns not read in hold a subagent — the index's "+". A long
+   * session that never spawned one would otherwise read "Subagents (0+)". */
+  const agentsEarlier = !!transcript?.truncated && !!transcript.agentsEarlier && !sinceClear;
   /** A prompt the desktop still holds sits below the agent at work. */
   const queuedShown = sessionEntries.some((entry) => entry.queued);
   /** The files the agent sent while this conversation ran, as its messages. */
@@ -3823,11 +3826,11 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
             followReadable(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
             checkPinnedPrompt();
           }}>
-          {sessionShown && !openStep && (sessionAgents.length > 0 || (transcript?.truncated && !sinceClear)) &&
+          {sessionShown && !openStep && (sessionAgents.length > 0 || agentsEarlier) &&
             <nav className="subagent-index" aria-label={t("mobile.subagent.indexRegion")}>
               <button type="button" className="subagent-index-toggle" aria-expanded={subagentListOpen} aria-controls="mobile-subagent-list" onClick={() => setSubagentListOpen((open) => !open)}>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v7a4 4 0 0 0 4 4h7m-3-3 3 3-3 3" /></svg>
-                <span>{t("mobile.subagent.index", { count: `${sessionAgents.length}${transcript?.truncated && !sinceClear ? "+" : ""}` })}{subagentUntested && <em> · {subagentUntested}</em>}</span>
+                <span>{t("mobile.subagent.index", { count: `${sessionAgents.length}${agentsEarlier ? "+" : ""}` })}{subagentUntested && <em> · {subagentUntested}</em>}</span>
                 <svg className={subagentListOpen ? "expanded" : ""} viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
               </button>
               {subagentListOpen && <div id="mobile-subagent-list" className="subagent-index-list">
@@ -3835,7 +3838,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab: ope
                   <small>{entry.role ?? t("mobile.subagent.region")}</small>
                   <span>{entry.text}{entry.cut && "…"}</span>
                 </button>)}
-                {transcript?.truncated && !sinceClear && <button type="button" className="subagent-index-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.subagent.earlier")}</button>}
+                {agentsEarlier && <button type="button" className="subagent-index-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.subagent.earlier")}</button>}
               </div>}
             </nav>}
           {sessionShown && openStep

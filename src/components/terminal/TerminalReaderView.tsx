@@ -891,7 +891,9 @@ export function TerminalReaderView({ host, ptyId, scope, tabKey, cwd, visible, f
   const backLabel = t("mobile.subagent.back", {
     name: subagentPath.length > 1 ? subagentPath[subagentPath.length - 2].task : t("mobile.subagent.main"),
   });
-  const moreEarlier = !!transcript?.available && transcript.truncated && !sinceClear;
+  // Only when those earlier turns hold a subagent: a long session that never
+  // spawned one would otherwise show "Subagents (0+)".
+  const moreEarlier = !!transcript?.available && transcript.truncated && !!transcript.agentsEarlier && !sinceClear;
   /** The open subagent at work — it has not reported back, and the session
    * is at work or it runs in the background — and the model its own
    * conversation names. */
